@@ -168,9 +168,26 @@ Deno.serve(async (req) => {
       }
       const [tx, comps] = await Promise.all([leerTodo('transactions', 'created_at'), leerTodo('comprobantes', 'id')])
       if (tx.error) return json({ ok: false, error: `Movimientos: ${tx.error.message}` }, 500)
+      // La ficha del titular para el estado de cuenta: identificación,
+      // dirección y representante legal. Nada de documentos, fecha de
+      // nacimiento ni PEP: eso es de cumplimiento, no de la contadora.
+      const e = emp as any, raw = (e.raw_data ?? {}) as any
+      const txt = (...vs: unknown[]) => { for (const v of vs) { const s = String(v ?? '').trim(); if (s) return s } return '' }
+      const nit = txt(e.tax_id, e.nit, raw.taxId, raw.nit)
       return json({
         ok: true,
-        empresa: { id: String(emp.id), nombre: nombreEmpresa(emp), email: String(emp.email ?? ''), nit: String((emp as any).tax_id ?? (emp as any).nit ?? (emp as any).raw_data?.nit ?? '') },
+        empresa: {
+          id: String(emp.id), nombre: nombreEmpresa(emp), email: String(emp.email ?? ''), nit,
+          tipoDocumento: txt(e.tax_id_type, raw.taxIdType) || (nit ? 'NIT' : ''),
+          telefono: txt(e.phone, raw.phone, raw.telefono),
+          pais: txt(e.company_country, raw.companyCountry),
+          ciudad: txt(e.company_city, raw.companyCity),
+          direccion: txt(e.company_address, raw.companyAddress),
+          representante: txt(e.rep_legal_name, raw.repLegalName, [e.rep_first_name, e.rep_last_name].filter(Boolean).join(' ')),
+          representanteDoc: [txt(e.rep_doc_type, raw.repDocType), txt(e.rep_doc_number, raw.repDocNumber)].filter(Boolean).join(' '),
+          idLincoin: codigoDe(emp),
+          clienteDesde: e.created_at ?? null,
+        },
         transactions: tx.data ?? [],
         comprobantes: comps.error ? [] : (comps.data ?? []),
         comprobantesError: comps.error ? comps.error.message : null,

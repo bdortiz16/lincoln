@@ -15,6 +15,7 @@ import { llamarFuncion } from '../lib/edge';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
 import { ConfirmarModal } from './ConfirmarModal';
 import { ContadorDetalleMovimiento } from './ContadorDetalleMovimiento';
+import type { FichaEmpresa } from './libroContable';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -41,7 +42,7 @@ const mapTx = (t: any) => ({
   ...(t.raw_data ?? {}),
 });
 
-type Datos = { empresa: { id: string; nombre: string; email: string; nit: string }; transactions: any[]; comprobantes: any[]; comprobantesError: string | null };
+type Datos = { empresa: FichaEmpresa & { id: string; email: string; nit: string }; transactions: any[]; comprobantes: any[]; comprobantesError: string | null };
 type Vinculo = { id: string; nombre: string };
 
 // Iconos de trazo iguales a los de la barra de Empresas.
@@ -295,6 +296,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
                   userId={datos.empresa.id}
                   soloLectura
                   comprobantesExternos={datos.comprobantes}
+                  empresa={datos.empresa}
                   onVerMovimiento={(tx: any) => setDetalle(tx)}
                 />
               )}

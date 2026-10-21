@@ -2,9 +2,11 @@
 //  Contabilidad · Dashboard — Lincoin Empresas
 //
 //  El libro de la cuenta: cuánto entró, cuánto salió, cuánto quedó, y cada
-//  movimiento con su comprobante. Lo que se le mandó a CADA beneficiario ya
-//  no vive acá —eso es una pregunta de cumplimiento y está en Compliance—.
-//  Acá la pregunta es la de un contador: qué pasó con la plata este mes.
+//  movimiento con su comprobante. La pregunta es la de un contador: qué pasó
+//  con la plata este mes. Por eso también está a quién se le envió y de quién
+//  se recibió (cuánto, cuántas veces, mes a mes) y el estado de cuenta del
+//  periodo con su saldo inicial y final, en pantalla, en PDF y en el Excel.
+//  El modelo (asientos, terceros, saldos) vive en libroContable.ts.
 //
 //  POR MONEDA, SIEMPRE. La cuenta tiene pesos y dólares, y no se suman: un
 //  neto que mezcle COP con USD es un número inventado. Arriba hay un selector
@@ -27,9 +29,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
 import { useDatabase } from '../context/DatabaseContext';
-import { descargarXlsx } from '../lib/xlsx';
+import { descargarXlsx, refCelda, type CeldaX, type Estilo, type Hoja } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
 import { AccesoContadorModal } from './AccesoContadorModal';
+import { EstadoCuentaHoja } from './EstadoCuentaHoja';
+import {
+  ENTRA, MESES, MESES_L, asientosDe, claveTercero, cuenta, datosTercero, efecto, esDeTercero, estadoDeCuenta, fichaDeUsuario, fmtMon, terceros,
+  type Asiento, type Dir, type FichaEmpresa, type Moneda, type Tercero,
+} from './libroContable';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -41,59 +48,11 @@ const C = {
 };
 
 export type Periodo = 'mes' | 'anio' | 'historico';
-type Moneda = 'COP' | 'USD';
-type Dir = 'in' | 'out';
 
-const TIPO_ES: Record<string, string> = {
-  load: 'Depósito', send: 'Retiro', dispersion: 'Envío', convert: 'Conversión', tx_created: 'Conversión',
-  pay_received: 'Pago recibido', pay_sent: 'Pago enviado', otc_deposit: 'Depósito OTC', otc_withdraw: 'Retiro OTC',
-};
-const ENTRA = new Set(['load', 'pay_received', 'otc_deposit']);
-const SALE = new Set(['send', 'dispersion', 'pay_sent', 'otc_withdraw']);
-const familia = (cur: any): Moneda => (String(cur ?? '').toUpperCase().startsWith('COP') ? 'COP' : 'USD');
-const cuando = (t: any) => new Date(t?.createdAt ?? t?.created_at ?? t?.date ?? 0).getTime() || 0;
-const cuenta = (t: any) => t?.status === 'Completado' || t?.status === 'Procesando';
-
-// Un asiento: una entrada o una salida, en una moneda. Una operación normal
-// es un asiento; una conversión son dos.
-type Asiento = { tx: any; dir: Dir; monto: number; moneda: Moneda; ts: number; tipo: string; contraparte: string; estado: string };
-const asientosDe = (t: any): Asiento[] => {
-  const ts = cuando(t);
-  const estado = String(t.status ?? '');
-  const base = { tx: t, ts, estado };
-  const contra = (() => {
-    if (t.type === 'dispersion' || t.type === 'send') return String(t.beneficiary ?? t.bank ?? '—');
-    if (t.type === 'pay_received') return String(t.senderName ?? 'Usuario Lincoin');
-    if (t.type === 'pay_sent') return String(t.recipientName ?? 'Usuario Lincoin');
-    if (t.type === 'load') return String(t.method ?? t.bank ?? '—');
-    if (t.type === 'otc_deposit' || t.type === 'otc_withdraw') return String(t.chain ?? t.walletKey ?? t.currency ?? '—');
-    return '—';
-  })();
-  if (t.type === 'convert' || t.type === 'tx_created') {
-    const de = String(t.currency ?? ''), a = String(t.targetCurrency ?? '');
-    const out: Asiento[] = [{ ...base, dir: 'out', monto: Number(t.amount) || 0, moneda: familia(de), tipo: 'Conversión', contraparte: `${de.split('_')[0]} → ${a.split('_')[0] || '?'}` }];
-    const tA = Number(t.targetAmount);
-    if (a && Number.isFinite(tA) && tA > 0) out.push({ ...base, dir: 'in', monto: tA, moneda: familia(a), tipo: 'Conversión', contraparte: `${de.split('_')[0]} → ${a.split('_')[0]}` });
-    return out;
-  }
-  // Ajuste manual del admin: entra o sale según su dirección. Antes no se
-  // contaba y un descuento del admin no bajaba el saldo de la contabilidad.
-  if (t.type === 'adjustment') {
-    const dirAj: Dir = String(t.direction ?? t.raw_data?.direction ?? 'debit') === 'credit' ? 'in' : 'out';
-    return [{ ...base, dir: dirAj, monto: Number(t.amount) || 0, moneda: familia(t.currency), tipo: 'Ajuste', contraparte: 'Lincoin' }];
-  }
-  if (ENTRA.has(t.type)) return [{ ...base, dir: 'in', monto: Number(t.amount) || 0, moneda: familia(t.currency), tipo: TIPO_ES[t.type] ?? t.type, contraparte: contra }];
-  if (SALE.has(t.type)) return [{ ...base, dir: 'out', monto: Number(t.amount) || 0, moneda: familia(t.currency), tipo: TIPO_ES[t.type] ?? t.type, contraparte: contra }];
-  return [];
-};
-
-const fmtMon = (v: number, m: Moneda) => `${v.toLocaleString('es-CO', { maximumFractionDigits: m === 'COP' ? 0 : 2 })} ${m}`;
 const fmtCorto = (v: number, m: Moneda) => {
   if (m === 'COP' && Math.abs(v) >= 1e6) return `${(v / 1e6).toLocaleString('es-CO', { maximumFractionDigits: Math.abs(v) >= 100e6 ? 0 : 1 })} M`;
   return v.toLocaleString('es-CO', { maximumFractionDigits: m === 'COP' ? 0 : 2 });
 };
-const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
-const MESES_L = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
 type Props = {
   transactions: any[];
@@ -103,6 +62,9 @@ type Props = {
    *  llegan de afuera (el servidor los entrega tras verificar el vínculo). */
   soloLectura?: boolean;
   comprobantesExternos?: any[] | null;
+  /** Datos del titular para la ficha y el estado de cuenta. Sin esto se
+   *  toman de la sesión (cuando la empresa mira su propia contabilidad). */
+  empresa?: FichaEmpresa | null;
 };
 
 // ── Factura de comisión por un depósito (modelo PSP) ─────────────────
@@ -273,28 +235,6 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   );
 };
 
-// Datos del tercero de un movimiento para el extracto: nombre, documento y
-// a qué banco y cuenta fue (o de dónde vino). Solo lo que el movimiento
-// guardó; lo que no está queda vacío, no se supone.
-const TIPOS_DOC: Record<string, string> = { CC: 'CC', CE: 'CE', NIT: 'NIT', PP: 'Pasaporte', PPT: 'PPT', TI: 'TI', cc: 'CC', ce: 'CE', nit: 'NIT', passport: 'Pasaporte' };
-function datosTercero(tx: any, contraparte: string): { nombre: string; docTipo: string; docNum: string; banco: string; tipoCuenta: string; cuenta: string } {
-  const rd = tx?.raw_data && typeof tx.raw_data === 'object' ? tx.raw_data : {};
-  const v = (k: string) => tx?.[k] ?? rd?.[k];
-  const rec = (v('recipient') && typeof v('recipient') === 'object') ? v('recipient') : {};
-  const breb = tx?.currency === 'COP_BREB' || v('rail') === 'BREB' || !!rec.keyType;
-  const nombre = String(v('beneficiary') ?? rec.holderName ?? v('beneficiaryName') ?? v('senderName') ?? v('pagador') ?? v('payerName') ?? v('recipientName') ?? contraparte ?? '').trim();
-  const tipoRaw = String(v('documentType') ?? rec.documentType ?? rec.docType ?? v('payerDocumentType') ?? '').trim();
-  const docNum = String(v('documentNumber') ?? rec.documentNumber ?? rec.docNumber ?? v('payerDocument') ?? v('senderDocument') ?? '').trim();
-  const banco = breb ? 'Bre-B' : String(rec.bankName ?? rec.bankCode ?? (v('bank') && v('bank') !== 'ACH' ? v('bank') : (v('payerBank') ?? ''))).split('·')[0].trim();
-  const tc = String(rec.accountType ?? v('accountType') ?? '').toLowerCase();
-  const llaves: Record<string, string> = { celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' };
-  const tipoCuenta = breb
-    ? (rec.keyType ? `Llave ${llaves[String(rec.keyType).toLowerCase()] ?? rec.keyType}` : 'Llave Bre-B')
-    : /corriente|checking/.test(tc) ? 'Corriente' : /ahorro|saving/.test(tc) ? 'Ahorros' : '';
-  const cuenta = String((breb ? (rec.key ?? v('account')) : (rec.accountNumber ?? v('account'))) ?? '').trim();
-  return { nombre, docTipo: TIPOS_DOC[tipoRaw] ?? tipoRaw, docNum, banco, tipoCuenta, cuenta };
-}
-
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties; className?: string }> = ({ children, style, className }) => (
   <div className={className} style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 14, padding: '18px 20px', minWidth: 0, ...style }}>{children}</div>
 );
@@ -318,6 +258,61 @@ function useAncho<T extends HTMLElement>(): [React.RefObject<T>, number] {
   return [ref, w];
 }
 
+// Techo del eje: el primer múltiplo "redondo" (1, 2, 2,5, 5) que, en cuatro
+// pasos, cubre el máximo. El eje siempre arranca en cero.
+const techoDe = (max: number) => {
+  const bruto = max / 4, mag = Math.pow(10, Math.floor(Math.log10(bruto || 1)));
+  const cand = [1, 2, 2.5, 5, 10].map(k => k * mag);
+  const paso = cand.find(k => k >= bruto) ?? cand[cand.length - 1];
+  return paso * 4 >= max ? paso * 4 : paso * 5;
+};
+
+// ── Columnas: una sola serie, mes a mes (lo enviado a un tercero) ───
+type Punto = { rot: string; rotLargo: string; v: number; n: number; elegido?: boolean };
+const Columnas: React.FC<{ puntos: Punto[]; color: string; moneda: Moneda; rotSerie: string }> = ({ puntos, color, moneda, rotSerie }) => {
+  const [ref, ancho] = useAncho<HTMLDivElement>();
+  const [sobre, setSobre] = useState<number | null>(null);
+  const alto = 170, padL = 50, padR = 10, padT = 12, padB = 24;
+  const areaW = ancho - padL - padR, areaH = alto - padT - padB;
+  const techo = techoDe(Math.max(1, ...puntos.map(p => p.v)));
+  const n = puntos.length, slot = n > 0 ? areaW / n : areaW;
+  const barW = Math.max(4, Math.min(24, slot * 0.58));
+  const y = (v: number) => padT + areaH - (v / techo) * areaH;
+  const tip = sobre != null ? puntos[sobre] : null;
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <svg width={ancho} height={alto} style={{ display: 'block', fontFamily: FONT }} onMouseLeave={() => setSobre(null)} role="img" aria-label={`${rotSerie} por mes`}>
+        {[0, 1, 2, 3, 4].map(i => { const g = (techo / 4) * i; return (
+          <g key={i}>
+            <line x1={padL} x2={ancho - padR} y1={y(g)} y2={y(g)} stroke={C.guia} />
+            <text x={padL - 8} y={y(g) + 3.5} textAnchor="end" fontSize={10} fill={C.tenue} style={{ fontVariantNumeric: 'tabular-nums' }}>{g === 0 ? '0' : fmtCorto(g, moneda)}</text>
+          </g>
+        ); })}
+        {puntos.map((p, i) => {
+          const x = padL + slot * i + (slot - barW) / 2;
+          return (
+            <g key={i} opacity={sobre != null && sobre !== i ? 0.45 : 1} style={{ transition: 'opacity 120ms' }} onMouseEnter={() => setSobre(i)}>
+              <rect x={padL + slot * i} y={padT} width={slot} height={areaH} fill="transparent" />
+              {p.v > 0 && <path d={`M${x},${y(0)} V${y(p.v) + 3} q0,-3 3,-3 h${Math.max(0, barW - 6)} q3,0 3,3 V${y(0)} Z`} fill={color} />}
+              <text x={padL + slot * i + slot / 2} y={alto - 7} textAnchor="middle" fontSize={10} fill={p.elegido ? C.text : C.tenue} fontWeight={p.elegido ? 700 : 400}>{p.rot}</text>
+            </g>
+          );
+        })}
+      </svg>
+      {tip && (() => {
+        const cx = padL + slot * (sobre as number) + slot / 2, izq = cx > ancho / 2;
+        return (
+          <div style={{ position: 'absolute', top: 4, left: izq ? undefined : Math.min(cx + 10, ancho - 190), right: izq ? Math.max(ancho - cx + 10, 0) : undefined, background: C.tooltipFondo, border: `1px solid ${C.tooltipBorde}`, borderRadius: 10, padding: '8px 11px', pointerEvents: 'none', minWidth: 170 }}>
+            <p style={{ fontSize: 11, color: C.sub, margin: 0, textTransform: 'capitalize' }}>{tip.rotLargo}</p>
+            <p className="flex items-center justify-between" style={{ fontSize: 12, color: C.text, margin: '4px 0 0', gap: 12 }}><span>{rotSerie}</span><b style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMon(tip.v, moneda)}</b></p>
+            <p style={{ fontSize: 11, color: C.sub, margin: '3px 0 0' }}>{tip.n} {tip.n === 1 ? 'operación' : 'operaciones'}</p>
+          </div>
+        );
+      })()}
+    </div>
+  );
+};
+
 // ── Barras: entradas vs salidas, lado a lado ────────────────────────
 type Cubo = { rot: string; rotLargo: string; entra: number; sale: number };
 const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ cubos, titulo, moneda }) => {
@@ -325,13 +320,7 @@ const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ c
   const [sobre, setSobre] = useState<number | null>(null);
   const alto = 230, padL = 50, padR = 12, padT = 14, padB = 26;
   const areaW = ancho - padL - padR, areaH = alto - padT - padB;
-  const max = Math.max(1, ...cubos.map(c => Math.max(c.entra, c.sale)));
-  const paso = (() => {
-    const bruto = max / 4, mag = Math.pow(10, Math.floor(Math.log10(bruto || 1)));
-    const cand = [1, 2, 2.5, 5, 10].map(k => k * mag);
-    return cand.find(k => k >= bruto) ?? cand[cand.length - 1];
-  })();
-  const techo = paso * 4 >= max ? paso * 4 : paso * 5;
+  const techo = techoDe(Math.max(1, ...cubos.map(c => Math.max(c.entra, c.sale))));
   const n = cubos.length, slot = n > 0 ? areaW / n : areaW;
   const grupoW = Math.max(4, Math.min(26, slot * 0.62)), barW = grupoW / 2;
   const y = (v: number) => padT + areaH - (v / techo) * areaH;
@@ -389,8 +378,17 @@ const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ c
   );
 };
 
-export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null }) => {
+export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null, empresa = null }) => {
+  const { currentUser } = useDatabase();
+  // El titular: lo que mandó el servidor (contador) o la propia sesión.
+  const ficha = empresa ?? (soloLectura ? null : fichaDeUsuario(currentUser));
   const [contadorAbierto, setContadorAbierto] = useState(false);
+  const [estadoAbierto, setEstadoAbierto] = useState(false);
+  // Terceros: a quién se le envió ('out') o de quién se recibió ('in'), y el
+  // que está abierto con su detalle mes a mes.
+  const [vistaTer, setVistaTer] = useState<Dir>('out');
+  const [terAbierto, setTerAbierto] = useState<string | null>(null);
+  const [limiteTer, setLimiteTer] = useState(10);
   const [periodo, setPeriodo] = useState<Periodo>('mes');
   // El mes que se mira con "Mes". null = el mes en curso. La contadora cierra
   // el mes anterior ya entrado el siguiente: tiene que poder volver a
@@ -629,9 +627,48 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     .sort((x, y) => y.ts - x.ts);
   const mostrados = lista.slice(0, limite);
 
-  // Excel con dos hojas: los movimientos listados (con el filtro y la búsqueda
-  // que estén puestos) y un resumen del periodo. Fechas y montos van como
-  // fecha y número reales, no como texto, para que Excel pueda sumar y filtrar.
+  // ── Estado de cuenta del periodo, en la moneda elegida ──
+  const [pDesde, pHasta] = R;
+  const ec = useMemo(() => estadoDeCuenta(asientos, moneda, pDesde, pHasta), [asientos, moneda, pDesde, pHasta]);
+  const fechaLarga = (ts: number) => new Date(ts).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' });
+  const primerTs = useMemo(() => asientos.filter(a => a.moneda === moneda && a.ts > 0).reduce((m, a) => Math.min(m, a.ts), Infinity), [asientos, moneda]);
+  const desdeTxt = periodo === 'historico' ? (Number.isFinite(primerTs) ? fechaLarga(primerTs) : 'el inicio') : fechaLarga(pDesde);
+  // El final de un mes cerrado es su último día; el de lo que sigue abierto, hoy.
+  const hastaTxt = pHasta === Infinity ? `${fechaLarga(Date.now())} (hoy)` : fechaLarga(pHasta - 1);
+  const periodoTxt = periodo === 'mes' ? rotMes : periodo === 'anio' ? `Año ${ahora.getFullYear()}` : 'Histórico';
+
+  // ── Terceros del periodo: a quién se le envió y de quién se recibió ──
+  const enviadoA = useMemo(() => terceros(del, 'out'), [asientos, moneda, pDesde, pHasta]); // eslint-disable-line react-hooks/exhaustive-deps
+  const recibidoDe = useMemo(() => terceros(del, 'in'), [asientos, moneda, pDesde, pHasta]); // eslint-disable-line react-hooks/exhaustive-deps
+  const listaTer = vistaTer === 'out' ? enviadoA : recibidoDe;
+  const totalTer = listaTer.reduce((s, t) => s + t.total, 0);
+  const maxTer = Math.max(1, ...listaTer.map(t => t.total));
+  // El tercero abierto, mes a mes: los 12 meses que terminan en el mes
+  // elegido (o en el actual), con todo lo de la cuenta, no solo el periodo.
+  const serieTer = useMemo(() => {
+    if (!terAbierto) return null;
+    const ref = periodo === 'mes' ? new Date(mesY, mesM, 1) : new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+    const inicio = new Date(ref.getFullYear(), ref.getMonth() - 11, 1);
+    const puntos: Punto[] = Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(ref.getFullYear(), ref.getMonth() - (11 - i), 1);
+      return { rot: `${MESES[d.getMonth()]}${d.getMonth() === 0 || i === 0 ? ` ${String(d.getFullYear()).slice(2)}` : ''}`, rotLargo: `${MESES_L[d.getMonth()]} ${d.getFullYear()}`, v: 0, n: 0, elegido: periodo === 'mes' && i === 11 };
+    });
+    let historico = 0, nHistorico = 0;
+    for (const a of asientos) {
+      if (a.moneda !== moneda || a.dir !== vistaTer || !cuenta(a.tx) || !esDeTercero(a) || claveTercero(a) !== terAbierto) continue;
+      historico += a.monto; nHistorico += 1;
+      const d = new Date(a.ts);
+      const i = (d.getFullYear() - inicio.getFullYear()) * 12 + d.getMonth() - inicio.getMonth();
+      if (i >= 0 && i < 12) { puntos[i].v += a.monto; puntos[i].n += 1; }
+    }
+    return { puntos, doce: puntos.reduce((s, p) => s + p.v, 0), historico, nHistorico };
+  }, [terAbierto, asientos, moneda, vistaTer, periodo, mesY, mesM, ahora]);
+
+  // Excel: el estado de cuenta del periodo, los movimientos listados (con el
+  // filtro y la búsqueda que estén puestos) y a quién se le envió y de quién
+  // se recibió, con su gráfico y, si el periodo tiene varios meses, cuánto
+  // por mes. Fechas y montos van como fecha y número reales, no como texto,
+  // para que Excel pueda sumar y filtrar; el saldo va como fórmula.
   const excel = () => {
     const estadoDoc = (f: { estado: string | null; numero: string | null; tipo: string | null } | undefined) => {
       if (!f?.estado) return '';
@@ -639,62 +676,202 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       const rot = f.estado === 'emitida' ? 'Emitida' : f.estado === 'anulada' ? 'Anulada' : f.estado === 'omitida' ? 'Omitida' : f.estado === 'pendiente' ? 'Pendiente' : f.estado === 'error' ? 'Error' : f.estado;
       return [tipo, rot].filter(Boolean).join(' · ');
     };
-    // Saldo en cada momento: se acumula con TODOS los movimientos de la
-    // moneda desde el primero (no solo los del periodo o el filtro), así el
-    // saldo de cada fila es el que tenía la cuenta justo después de esa
-    // operación. Lo rechazado no mueve el saldo.
+    const c = (v: any, s: Estilo): CeldaX => ({ v: v === undefined || v === '' ? null : v, s });
+    const sMon: Estilo = moneda === 'COP' ? 'cop' : 'usd';
+    const sTot: Estilo = moneda === 'COP' ? 'totalCop' : 'totalUsd';
+    const sKpi: Estilo = moneda === 'COP' ? 'kpiCop' : 'kpiUsd';
+    const fmtEje = moneda === 'COP' ? '"$"#,##0' : '#,##0.00';
+    const conCosto = moneda === 'COP';
+    const sumaCol = (col: number, d: number, h: number, v: number, s: Estilo): CeldaX => ({ f: `SUM(${refCelda(col, d)}:${refCelda(col, h)})`, v, s });
+    const encabezado = (F: CeldaX[][], alt: Record<number, number>, comb: string[], titulo: string, sub: string, cols = 10) => {
+      F.push([{ marca: true }]); alt[F.length - 1] = 28;
+      F.push([c(titulo, 'titulo')]); alt[F.length - 1] = 24;
+      F.push([c(sub, 'nota')]); comb.push(`A${F.length}:${refCelda(cols - 1, F.length - 1)}`);
+    };
+    const seccion = (F: CeldaX[][], alt: Record<number, number>, t: string, cols = 2) => {
+      F.push([]);
+      F.push([c(t, 'seccion'), ...Array.from({ length: cols - 1 }, () => c(null, 'seccion'))]); alt[F.length - 1] = 20;
+    };
+
+    // ── 1. Estado de cuenta: titular, resumen y cada movimiento del periodo
+    //    con el saldo que dejó (fórmula: saldo anterior + entrada − salida −
+    //    costo), del saldo inicial al final.
+    const E: CeldaX[][] = [], combE: string[] = [], altE: Record<number, number> = {};
+    encabezado(E, altE, combE, 'Estado de cuenta', `${ficha?.nombre ? `${ficha.nombre} · ` : ''}${periodoTxt} · ${moneda} · del ${desdeTxt} al ${hastaTxt}`);
+    if (ficha) {
+      seccion(E, altE, 'Titular');
+      const datosFicha: [string, string][] = [
+        ['Titular', ficha.nombre], [ficha.tipoDocumento || 'Documento', ficha.nit ?? ''],
+        ['Dirección', [ficha.direccion, ficha.ciudad, ficha.pais].filter(Boolean).join(', ')],
+        ['Representante legal', [ficha.representante, ficha.representanteDoc].filter(Boolean).join(' · ')],
+        ['Correo', ficha.email ?? ''], ['Teléfono', ficha.telefono ?? ''], ['ID Lincoin', ficha.idLincoin ?? ''],
+      ];
+      for (const [k, v] of datosFicha) if (v) E.push([c(k, 'etiqueta'), c(v, 'kpiTexto')]);
+    }
+    seccion(E, altE, 'Resumen del periodo');
+    const rIni = E.length; E.push([c('Saldo inicial', 'etiqueta'), c(ec.saldoInicial, sKpi)]);
+    const rEnt = E.length; E.push([c(`(+) Entradas · ${ec.nEntradas}`, 'etiqueta'), c(ec.entradas, sKpi)]);
+    const rSal = E.length; E.push([c(`(−) Salidas · ${ec.nSalidas}`, 'etiqueta'), c(ec.salidas, sKpi)]);
+    const rCos = conCosto ? E.length : -1; if (conCosto) E.push([c('(−) Costos de envío', 'etiqueta'), c(ec.costos, sKpi)]);
+    E.push([c('Saldo final', 'totalTexto'), { f: `${refCelda(1, rIni)}+${refCelda(1, rEnt)}-${refCelda(1, rSal)}${conCosto ? `-${refCelda(1, rCos)}` : ''}`, v: ec.saldoFinal, s: sTot }]);
+    if (ec.nNoSuman) E.push([c(`${ec.nNoSuman} ${ec.nNoSuman === 1 ? 'operación rechazada o pendiente aparece' : 'operaciones rechazadas o pendientes aparecen'} abajo sin mover el saldo.`, 'nota')]);
+    if (porTipo.length) {
+      seccion(E, altE, 'Por concepto', 4);
+      E.push(['Concepto', 'Dirección', 'Operaciones', 'Monto'].map(h => c(h, 'th')));
+      for (const [tipo, v] of porTipo) E.push([c(tipo, 'texto'), c(v.dir === 'in' ? 'Entrada' : 'Salida', 'texto'), c(v.n, 'entero'), c(v.monto, sMon)]);
+      if (conCosto && ec.costos > 0) E.push([c('Costo de envío', 'texto'), c('Salida', 'texto'), c(ec.filas.filter(f => f.costo != null).length, 'entero'), c(ec.costos, sMon)]);
+    }
+    seccion(E, altE, 'Movimientos', conCosto ? 11 : 10);
+    const cabE = ['Fecha', 'Concepto', 'Tercero', 'Documento', 'Banco · cuenta', 'Comprobante', 'Estado', 'Entrada', 'Salida', ...(conCosto ? ['Costo del envío'] : []), 'Saldo'];
+    const colEnt = 7, colSal = 8, colCos = conCosto ? 9 : -1, colSaldo = conCosto ? 10 : 9;
+    const rCabE = E.length; E.push(cabE.map(h => c(h, 'th'))); altE[rCabE] = 30;
+    const rSaldoIni = E.length;
+    E.push([c(new Date(periodo === 'historico' && Number.isFinite(primerTs) ? primerTs : pDesde), 'fechaHora'), c('Saldo inicial', 'totalTexto'), ...Array.from({ length: colSaldo - 2 }, () => c(null, 'texto')), { f: refCelda(1, rIni), v: ec.saldoInicial, s: sTot }]);
+    for (const f of ec.filas) {
+      const a = f.a, r = E.length;
+      const ter = datosTercero(a.tx, a.contraparte);
+      const propio = a.tipo === 'Conversión' || a.tipo === 'Ajuste';
+      E.push([
+        c(new Date(a.ts), 'fechaHora'), c(a.tipo, 'texto'), c(propio ? a.contraparte : (ter.nombre || a.contraparte), 'texto'),
+        c(propio ? '' : [ter.docTipo, ter.docNum].filter(Boolean).join(' '), 'texto'),
+        c(propio ? '' : [ter.banco, ter.tipoCuenta, ter.cuenta].filter(Boolean).join(' · '), 'texto'),
+        c(folios[String(a.tx.id)]?.numero ?? '', 'texto'), c(a.estado, 'texto'),
+        c(f.entrada, sMon), c(f.salida, sMon), ...(conCosto ? [c(f.costo, sMon)] : []),
+        { f: `${refCelda(colSaldo, r - 1)}+N(${refCelda(colEnt, r)})-N(${refCelda(colSal, r)})${conCosto ? `-N(${refCelda(colCos, r)})` : ''}`, v: f.saldo, s: sMon },
+      ]);
+    }
+    const dE = rSaldoIni + 1, hE = E.length - 1;
+    if (ec.filas.length) {
+      E.push([c(null, 'totalTexto'), c('Totales del periodo', 'totalTexto'), ...Array.from({ length: 5 }, () => c(null, 'totalTexto')),
+        sumaCol(colEnt, dE, hE, ec.entradas, sTot), sumaCol(colSal, dE, hE, ec.salidas, sTot), ...(conCosto ? [sumaCol(colCos, dE, hE, ec.costos, sTot)] : []),
+        { f: refCelda(colSaldo, hE), v: ec.saldoFinal, s: sTot }]);
+    }
+    E.push([]);
+    E.push([c('Suma lo completado y lo que está en proceso; lo rechazado se lista y no mueve el saldo. El saldo inicial es la suma de todos los movimientos anteriores al periodo, desde el primero en Lincoin. Una conversión es una salida en una moneda y una entrada en la otra.' + (conCosto ? ' El costo de cada envío se descuenta del saldo junto con el monto enviado.' : '') + ' Lincoin no es un banco y este documento no es un extracto bancario.', 'nota')]);
+    combE.push(`A${E.length}:${refCelda(colSaldo, E.length - 1)}`); altE[E.length - 1] = 46;
+    const hojaEstado: Hoja = {
+      nombre: 'Estado de cuenta', filas: E, combinar: combE, altos: altE, cabecera: null, fijar: 0, color: '15181A', imprimirAncho: true,
+      filtro: ec.filas.length ? `${refCelda(0, rCabE)}:${refCelda(colSaldo, hE)}` : null,
+      anchos: [30, 16, 34, 18, 34, 14, 12, 16, 16, ...(conCosto ? [14] : []), 18],
+    };
+
+    // ── 2. Movimientos listados en pantalla (filtro y búsqueda incluidos),
+    //    con lo de Siigo. El saldo de cada fila se acumula con TODOS los
+    //    movimientos de la moneda desde el primero, así es el que tenía la
+    //    cuenta justo después de esa operación.
     const saldoTras = new Map<Asiento, number>();
     let acumulado = 0;
     for (const x of asientos.filter(x => x.moneda === moneda).sort((p, q) => p.ts - q.ts)) {
-      if (cuenta(x.tx)) acumulado += x.dir === 'in' ? x.monto : -x.monto;
+      acumulado += efecto(x);
       saldoTras.set(x, acumulado);
     }
     const filasHoja = [...lista].sort((p, q) => p.ts - q.ts);
     const primera = filasHoja[0];
-    const saldoInicial = primera ? (saldoTras.get(primera) ?? 0) - (cuenta(primera.tx) ? (primera.dir === 'in' ? primera.monto : -primera.monto) : 0) : 0;
-    let totEntradas = 0, totSalidas = 0;
+    const saldoInicial = primera ? (saldoTras.get(primera) ?? 0) - efecto(primera) : 0;
+    let totEntradas = 0, totSalidas = 0, totCostos = 0;
     const movimientos: (string | number | Date | null)[][] = [
-      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
-      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, saldoInicial, moneda, '', '', '', '', '', ''],
+      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Costo del envío', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
+      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, null, saldoInicial, moneda, '', '', '', '', '', ''],
     ];
     for (const a of filasHoja) {
       const f = folios[String(a.tx.id)];
       const suma = cuenta(a.tx);
-      if (suma) { if (a.dir === 'in') totEntradas += a.monto; else totSalidas += a.monto; }
+      if (suma) { if (a.dir === 'in') totEntradas += a.monto; else { totSalidas += a.monto; totCostos += a.costo; } }
       const ter = datosTercero(a.tx, a.contraparte);
       movimientos.push([
         new Date(a.ts), a.tipo, ter.nombre, ter.docTipo, ter.docNum, ter.banco, ter.tipoCuenta, ter.cuenta,
         a.dir === 'in' ? (suma ? a.monto : null) : null,
         a.dir === 'out' ? (suma ? a.monto : null) : null,
+        suma && a.costo > 0 ? a.costo : null,
         saldoTras.get(a) ?? null, a.moneda, a.estado,
         f?.numero ?? '', estadoDoc(f?.factura), f?.factura?.numero ?? '',
         String(a.tx.providerRef ?? a.tx.reference ?? a.tx.txHash ?? ''), String(a.tx.id),
       ]);
     }
     const saldoFinal = filasHoja.length ? (saldoTras.get(filasHoja[filasHoja.length - 1]) ?? saldoInicial) : saldoInicial;
-    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, saldoFinal, moneda, '', '', '', '', '', '']);
-    const rotP = periodo === 'mes' ? rotMes : periodo === 'anio' ? String(ahora.getFullYear()) : 'Histórico';
-    const resumen: (string | number | Date)[][] = [
-      ['Concepto', 'Valor'],
-      ['Periodo', rotP],
-      ['Moneda', moneda],
-      ['Recibido', recibido],
-      ['Enviado', enviado],
-      ['Neto', neto],
-      ['Saldo al inicio de la hoja', saldoInicial],
-      ['Entradas en la hoja', totEntradas],
-      ['Salidas en la hoja', totSalidas],
-      ['Saldo al final de la hoja', saldoFinal],
-      ['Cómo se calcula el saldo', 'Suma de entradas menos salidas completadas o en proceso, desde el primer movimiento en Lincoin. Los rechazados no mueven el saldo.'],
-      ['Movimientos de entrada', nIn],
-      ['Movimientos de salida', nOut],
-      ['Movimientos en la hoja', lista.length],
-      ['Generado', new Date()],
-    ];
+    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, totCostos, saldoFinal, moneda, '', '', '', '', '', '']);
+
+    // ── 3 y 4. A quién se le envió y de quién se recibió: una fila por
+    //    tercero, el gráfico de los 15 primeros y, si el periodo tiene más de
+    //    un mes, cuánto por mes.
+    const mesesPeriodo = (() => {
+      if (periodo === 'mes') return [] as { y: number; m: number }[];
+      const ini = periodo === 'anio' ? new Date(ahora.getFullYear(), 0, 1) : new Date(Number.isFinite(primerTs) ? primerTs : ahora.getTime());
+      const out: { y: number; m: number }[] = [];
+      for (let d = new Date(ini.getFullYear(), ini.getMonth(), 1); d <= ahora; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) out.push({ y: d.getFullYear(), m: d.getMonth() });
+      return out.slice(-36);
+    })();
+    const hojaTerceros = (nombre: string, titulo: string, ters: Tercero[], dir: Dir): Hoja => {
+      const F: CeldaX[][] = [], comb: string[] = [], alt: Record<number, number> = {};
+      const conCostoT = dir === 'out' && conCosto;
+      encabezado(F, alt, comb, titulo, `${ficha?.nombre ? `${ficha.nombre} · ` : ''}${periodoTxt} · ${moneda} · solo lo completado o en proceso`);
+      F.push([]);
+      const cab = ['Nombre', 'Tipo de documento', 'Documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Operaciones', `Total ${moneda}`, ...(conCostoT ? ['Costos de envío'] : []), '% del total', 'Primera', 'Última'];
+      const colTot = 7;
+      const rCab = F.length; F.push(cab.map(h => c(h, 'th'))); alt[rCab] = 30;
+      const d0 = F.length, total = ters.reduce((s, t) => s + t.total, 0);
+      const rTotal = d0 + ters.length;
+      for (const t of ters) {
+        const r = F.length;
+        F.push([c(t.nombre, 'texto'), c(t.docTipo, 'texto'), c(t.docNum, 'texto'), c(t.banco, 'texto'), c(t.tipoCuenta, 'texto'), c(t.cuenta, 'texto'),
+          c(t.n, 'entero'), c(t.total, sMon), ...(conCostoT ? [c(t.costos, sMon)] : []),
+          { f: `IF(${refCelda(colTot, rTotal)}=0,0,${refCelda(colTot, r)}/${refCelda(colTot, rTotal)})`, v: total ? t.total / total : 0, s: 'pct' },
+          c(new Date(t.primera), 'dia'), c(new Date(t.ultima), 'dia')]);
+      }
+      const h0 = F.length - 1;
+      if (ters.length) {
+        F.push([c('Total', 'totalTexto'), ...Array.from({ length: 5 }, () => c(null, 'totalTexto')),
+          sumaCol(6, d0, h0, ters.reduce((s, t) => s + t.n, 0), 'totalEntero'), sumaCol(colTot, d0, h0, total, sTot),
+          ...(conCostoT ? [sumaCol(8, d0, h0, ters.reduce((s, t) => s + t.costos, 0), sTot)] : []),
+          { v: 1, s: 'totalPct' }, c(null, 'totalTexto'), c(null, 'totalTexto')]);
+      } else F.push([c('Sin movimientos en el periodo.', 'nota')]);
+      // El gráfico va debajo de la tabla, en filas reservadas: a la derecha
+      // la hoja quedaba tan ancha que al imprimir todo salía diminuto.
+      const graficos: Hoja['graficos'] = [];
+      if (ters.length >= 2) {
+        const k = Math.min(15, ters.length), altoG = Math.max(14, k + 6);
+        F.push([]);
+        graficos.push({
+          tipo: 'barras', titulo: `${titulo} · ${k} principales (${moneda})`, serie: `Total ${moneda}`,
+          colCategorias: 0, colValores: colTot, desdeFila: d0, hastaFila: d0 + k - 1,
+          formato: fmtEje, color: dir === 'out' ? '15181A' : '22A35C', col: 0, fila: F.length, ancho: 8, alto: altoG,
+        });
+        for (let i = 0; i < altoG; i++) F.push([]);
+      }
+      // Cuánto por mes a cada tercero.
+      if (mesesPeriodo.length > 1 && ters.length) {
+        seccion(F, alt, `${dir === 'out' ? 'Enviado' : 'Recibido'} por mes`, mesesPeriodo.length + 3);
+        F.push(['Nombre', 'Documento', ...mesesPeriodo.map(o => `${MESES[o.m]} ${o.y}`), 'Total'].map(h => c(h, 'th')));
+        const dm = F.length;
+        for (const t of ters) {
+          const r = F.length;
+          const porMes = mesesPeriodo.map(o => t.asientos.filter(a => { const d = new Date(a.ts); return d.getFullYear() === o.y && d.getMonth() === o.m; }).reduce((s, a) => s + a.monto, 0));
+          F.push([c(t.nombre, 'texto'), c([t.docTipo, t.docNum].filter(Boolean).join(' '), 'texto'), ...porMes.map(v => c(v || null, sMon)),
+            { f: `SUM(${refCelda(2, r)}:${refCelda(mesesPeriodo.length + 1, r)})`, v: porMes.reduce((s, v) => s + v, 0), s: sMon }]);
+        }
+        const hm = F.length - 1;
+        F.push([c('Total', 'totalTexto'), c(null, 'totalTexto'), ...mesesPeriodo.map((o, i) => sumaCol(2 + i, dm, hm, ters.reduce((s, t) => s + t.asientos.filter(a => { const d = new Date(a.ts); return d.getFullYear() === o.y && d.getMonth() === o.m; }).reduce((x, a) => x + a.monto, 0), 0), sTot)),
+          sumaCol(mesesPeriodo.length + 2, dm, hm, total, sTot)]);
+      }
+      return {
+        nombre, filas: F, combinar: comb, altos: alt, graficos, cabecera: null, fijar: 0, imprimirAncho: true,
+        color: dir === 'out' ? '15181A' : '22A35C',
+        filtro: ters.length ? `${refCelda(0, rCab)}:${refCelda(cab.length - 1, h0)}` : null,
+        // Las columnas de los meses (de la C en adelante) comparten ancho con
+        // la tabla de arriba: ninguna menos de 16, o los montos salen "###".
+        anchos: Array.from({ length: Math.max(cab.length, mesesPeriodo.length > 1 ? mesesPeriodo.length + 3 : 0) }, (_, i) => {
+          const base = [34, 14, 16, 22, 16, 22, 12, 18, ...(conCostoT ? [16] : []), 11, 12, 12][i] ?? 0;
+          return mesesPeriodo.length > 1 && i >= 2 ? Math.max(base, 16) : base || 12;
+        }),
+      };
+    };
+
     const rotArchivo = periodo === 'mes' ? `${mesY}-${String(mesM + 1).padStart(2, '0')}` : periodo;
     descargarXlsx(`lincoin-contabilidad-${moneda}-${rotArchivo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
-      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 18, 8, 12, 14, 22, 12, 30, 38] },
-      { nombre: 'Resumen', filas: resumen, anchos: [30, 40] },
+      hojaEstado,
+      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 14, 18, 8, 12, 14, 22, 12, 30, 38] },
+      hojaTerceros('Enviado a', 'A quién se le envió', enviadoA, 'out'),
+      hojaTerceros('Recibido de', 'De quién se recibió', recibidoDe, 'in'),
     ]);
   };
 
@@ -779,6 +956,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       </div>
       {configAbierta && !soloLectura && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
       {contadorAbierto && !soloLectura && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} />}
+      {estadoAbierto && (
+        <EstadoCuentaHoja estado={ec} ficha={ficha} periodoTxt={periodoTxt} desdeTxt={desdeTxt} hastaTxt={hastaTxt}
+          folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />
+      )}
       {comisionPara && cfgFact && (
         <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
       )}
@@ -806,6 +987,61 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         {kpi('MOVIMIENTOS', String(nIn + nOut), `${nIn} ${nIn === 1 ? 'recibido' : 'recibidos'} · ${nOut} ${nOut === 1 ? 'enviado' : 'enviados'}`)}
       </div>
 
+      {/* 2b. Estado de cuenta del periodo y, para la contadora, el titular. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
+        <Tarjeta>
+          <div className="flex items-start justify-between flex-wrap" style={{ gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <Rotulo>ESTADO DE CUENTA · {periodoTxt.toUpperCase()} · {moneda}</Rotulo>
+              <p style={{ fontSize: 12, color: C.sub, margin: '5px 0 0' }}>Del {desdeTxt} al {hastaTxt}</p>
+            </div>
+            <button onClick={() => setEstadoAbierto(true)} className="lincoin-btn-white"
+              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12.5, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              Ver estado de cuenta · PDF
+            </button>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            {([
+              ['Saldo inicial', fmtMon(ec.saldoInicial, moneda), C.text, false],
+              [`(+) Entradas · ${ec.nEntradas}`, `+${fmtMon(ec.entradas, moneda)}`, C.entra, false],
+              [`(−) Salidas · ${ec.nSalidas}`, `−${fmtMon(ec.salidas, moneda)}`, C.text, false],
+              ...(moneda === 'COP' ? [[`(−) Costos de envío`, `−${fmtMon(ec.costos, moneda)}`, C.text, false]] : []),
+              ['Saldo final', fmtMon(ec.saldoFinal, moneda), C.text, true],
+            ] as [string, string, string, boolean][]).map(([k, v, col, fuerte]) => (
+              <div key={k} className="flex items-center justify-between" style={{ gap: 12, padding: fuerte ? '10px 0 2px' : '7px 0', borderTop: `1px solid ${fuerte ? 'rgba(255,255,255,0.18)' : C.borde}` }}>
+                <span style={{ fontSize: fuerte ? 13.5 : 12.5, color: fuerte ? C.text : C.sub, fontWeight: fuerte ? 800 : 500 }}>{k}</span>
+                <span style={{ fontSize: fuerte ? 16 : 13, color: col, fontWeight: fuerte ? 800 : 700, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', letterSpacing: fuerte ? '-0.3px' : 0 }}>{v}</span>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>
+            El saldo inicial suma todo lo anterior al periodo. {moneda === 'COP' ? 'Cada envío descuenta el monto y su costo. ' : ''}Lo rechazado no mueve el saldo{ec.nNoSuman ? ` (${ec.nNoSuman} en el periodo)` : ''}. El PDF trae cada movimiento con su saldo y a quién se le envió.
+          </p>
+        </Tarjeta>
+        {soloLectura && ficha && (
+          <Tarjeta>
+            <Rotulo>DATOS DE LA EMPRESA</Rotulo>
+            <div style={{ marginTop: 10 }}>
+              {([
+                ['Razón social', ficha.nombre],
+                [ficha.tipoDocumento || 'NIT', ficha.nit ?? ''],
+                ['Dirección', [ficha.direccion, ficha.ciudad, ficha.pais].filter(Boolean).join(', ')],
+                ['Representante legal', [ficha.representante, ficha.representanteDoc].filter(Boolean).join(' · ')],
+                ['Correo', ficha.email ?? ''],
+                ['Teléfono', ficha.telefono ?? ''],
+                ['ID Lincoin', ficha.idLincoin ?? ''],
+                ['Cliente desde', ficha.clienteDesde ? fechaLarga(new Date(ficha.clienteDesde).getTime()) : ''],
+              ] as [string, string][]).filter(([, v]) => v).map(([k, v]) => (
+                <div key={k} className="flex items-start justify-between" style={{ gap: 14, padding: '7px 0', borderTop: `1px solid ${C.borde}` }}>
+                  <span style={{ fontSize: 12, color: C.sub, flexShrink: 0 }}>{k}</span>
+                  <span style={{ fontSize: 12.5, color: C.text, fontWeight: 600, textAlign: 'right', wordBreak: 'break-word', minWidth: 0 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </Tarjeta>
+        )}
+      </div>
+
       {/* 3. Gráfico + por tipo */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
         <Barras cubos={cubos} moneda={moneda} titulo={periodo === 'mes' ? `MOVIMIENTOS POR DÍA · ${rotMes.toUpperCase()}` : 'MOVIMIENTOS POR MES'} />
@@ -825,6 +1061,99 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             ))}
         </Tarjeta>
       </div>
+
+      {/* 3b. A quién se le envió / de quién se recibió, en el periodo. La
+          barra de cada fila es su parte del total; al tocar una fila se ve
+          cuánto se le envió mes a mes (12 meses) y cada operación. */}
+      <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '16px 20px 12px' }}>
+          <div style={{ minWidth: 0 }}>
+            <Rotulo>{vistaTer === 'out' ? 'A QUIÉN SE LE ENVIÓ' : 'DE QUIÉN SE RECIBIÓ'} · {periodoTxt.toUpperCase()} · {moneda}</Rotulo>
+            <p style={{ fontSize: 12, color: C.sub, margin: '5px 0 0' }}>
+              {listaTer.length === 0 ? 'Sin movimientos en el periodo.' : `${listaTer.length} ${listaTer.length === 1 ? 'tercero' : 'terceros'} · ${fmtMon(totalTer, moneda)} · toca uno para verlo mes a mes`}
+            </p>
+          </div>
+          <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3 }}>
+            {([['out', 'Enviado a'], ['in', 'Recibido de']] as [Dir, string][]).map(([k, rot]) => (
+              <button key={k} onClick={() => { setVistaTer(k); setTerAbierto(null); setLimiteTer(10); }} style={seg(vistaTer === k)}>{rot}</button>
+            ))}
+          </div>
+        </div>
+        {listaTer.length > 0 && (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+              <thead><tr>{[vistaTer === 'out' ? 'BENEFICIARIO' : 'QUIÉN PAGÓ', 'OPERACIONES', vistaTer === 'out' ? 'ENVIADO' : 'RECIBIDO', '% DEL TOTAL', 'ÚLTIMA'].map((h, i) => <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 0 ? 'left' : 'right', padding: '8px 20px', borderBottom: `1px solid ${C.borde}`, borderTop: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {listaTer.slice(0, limiteTer).map(t => {
+                  const abierto = terAbierto === t.clave;
+                  const color = vistaTer === 'out' ? C.sale : C.entra;
+                  const det = [[t.docTipo, t.docNum].filter(Boolean).join(' '), [t.banco, t.tipoCuenta, t.cuenta].filter(Boolean).join(' · ')].filter(Boolean).join(' · ');
+                  return (
+                    <React.Fragment key={t.clave}>
+                      <tr className="lincoin-fila-mov" onClick={() => setTerAbierto(abierto ? null : t.clave)} aria-expanded={abierto}
+                        style={{ cursor: 'pointer', background: abierto ? 'rgba(255,255,255,0.03)' : undefined }}>
+                        <td style={{ padding: '11px 20px', borderBottom: abierto ? 'none' : `1px solid ${C.borde}`, minWidth: 260 }}>
+                          <p className="flex items-center" style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, gap: 7 }}>
+                            <span style={{ fontSize: 10, color: C.tenue, width: 9, display: 'inline-block', transform: abierto ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }}>▶</span>
+                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 380 }}>{t.nombre || '—'}</span>
+                          </p>
+                          {det && <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0 16px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 420 }}>{det}</p>}
+                          <div style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.06)', margin: '7px 0 0 16px', overflow: 'hidden', maxWidth: 420 }}>
+                            <div style={{ width: `${Math.max(2, (t.total / maxTer) * 100)}%`, height: '100%', background: color, borderRadius: 999 }} />
+                          </div>
+                        </td>
+                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{t.n}</td>
+                        <td style={{ padding: '11px 20px', fontSize: 13.5, fontWeight: 700, color: vistaTer === 'in' ? C.entra : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>
+                          {fmtMon(t.total, moneda)}
+                          {t.costos > 0 && <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: C.tenue }}>+ {fmtMon(t.costos, moneda)} de costo</span>}
+                        </td>
+                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{totalTer > 0 ? `${((t.total / totalTer) * 100).toLocaleString('es-CO', { maximumFractionDigits: 1 })} %` : '—'}</td>
+                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{new Date(t.ultima).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                      </tr>
+                      {abierto && serieTer && (
+                        <tr>
+                          <td colSpan={5} style={{ padding: '4px 20px 16px 36px', borderBottom: `1px solid ${C.borde}`, background: 'rgba(255,255,255,0.03)' }}>
+                            <div className="flex items-baseline justify-between flex-wrap" style={{ gap: 10, marginBottom: 6 }}>
+                              <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>{vistaTer === 'out' ? 'ENVIADO' : 'RECIBIDO'} POR MES · ÚLTIMOS 12 MESES</p>
+                              <p style={{ fontSize: 12, color: C.sub, margin: 0 }}>12 meses: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtMon(serieTer.doce, moneda)}</b> · desde el inicio: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtMon(serieTer.historico, moneda)}</b> en {serieTer.nHistorico} {serieTer.nHistorico === 1 ? 'operación' : 'operaciones'}</p>
+                            </div>
+                            <Columnas puntos={serieTer.puntos} color={vistaTer === 'out' ? C.sale : C.entra} moneda={moneda} rotSerie={vistaTer === 'out' ? 'Enviado' : 'Recibido'} />
+                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '12px 0 4px' }}>OPERACIONES · {periodoTxt.toUpperCase()}</p>
+                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                              <tbody>
+                                {[...t.asientos].sort((x, y) => y.ts - x.ts).map((a, i) => (
+                                  <tr key={`${a.tx.id}-${i}`}>
+                                    <td style={{ padding: '6px 0', fontSize: 12, color: C.medio, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', borderTop: `1px solid ${C.borde}` }}>{fecha(a.ts)}</td>
+                                    <td style={{ padding: '6px 12px', fontSize: 12, color: C.text, borderTop: `1px solid ${C.borde}` }}>{a.tipo}</td>
+                                    <td style={{ padding: '6px 12px', fontSize: 12, color: C.tenue, fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>{folios[String(a.tx.id)]?.numero ?? ''}</td>
+                                    <td style={{ padding: '6px 12px', fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', color: estadoColor(a.estado), whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>{a.estado.toUpperCase()}</td>
+                                    <td style={{ padding: '6px 0', fontSize: 12.5, fontWeight: 700, color: a.dir === 'in' ? C.entra : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>
+                                      {fmtMon(a.monto, moneda)}{a.costo > 0 && <span style={{ fontSize: 11, fontWeight: 500, color: C.tenue }}> + {fmtMon(a.costo, moneda)}</span>}
+                                    </td>
+                                    <td style={{ padding: '6px 0 6px 12px', textAlign: 'right', borderTop: `1px solid ${C.borde}` }}>
+                                      {onVerMovimiento && <button onClick={() => onVerMovimiento(a.tx)} style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '3px 9px', cursor: 'pointer' }}>Ver</button>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {listaTer.length > limiteTer && (
+          <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 20px', borderTop: `1px solid ${C.borde}` }}>
+            <span style={{ fontSize: 12, color: C.sub }}>Mostrando {Math.min(limiteTer, listaTer.length)} de {listaTer.length}</span>
+            <button onClick={() => setLimiteTer(l => l + 25)} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Ver más →</button>
+          </div>
+        )}
+      </Tarjeta>
 
       {/* 4. Resumen por mes */}
       <Tarjeta style={{ padding: '18px 0 6px' }}>

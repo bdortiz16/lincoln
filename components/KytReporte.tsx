@@ -19,6 +19,7 @@
 //  es lo peor que puede decir un reporte de cumplimiento: alguien opera con eso.
 // ══════════════════════════════════════════════════════════════════
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { hallazgosEnEspanol, bandaDeRiesgo } from '../lib/kytTextos';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -195,7 +196,10 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
   const expDirecta = porTipo('direct');
   const expIndirecta = porTipo('indirect');
 
-  return (
+  // Portal sobre <body>: la regla de impresión de index.css esconde todo hijo
+  // de <body> sin lincoin-print-root. Montado dentro de la app, el reporte
+  // se escondía con ella y se imprimía en blanco.
+  return createPortal(
     <div className="fixed inset-0 lincoin-print-root" style={{ zIndex: 90, background: 'rgba(4,5,5,0.8)', overflow: 'auto' }}>
       <div className="no-imprimir flex items-center justify-between flex-wrap"
         style={{ gap: 12, position: 'sticky', top: 0, padding: '12px 18px', background: '#0C0E0D', borderBottom: '1px solid rgba(255,255,255,0.12)', fontFamily: FONT }}>
@@ -888,7 +892,8 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           </p>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

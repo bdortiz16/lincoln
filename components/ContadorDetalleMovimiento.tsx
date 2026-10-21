@@ -11,6 +11,7 @@
 //  Siigo, que trae el estado DIAN al día. Solo lectura: nada se emite acá.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Copy, FileText, ExternalLink, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
@@ -86,8 +87,12 @@ const Hoja: React.FC<{ nombreArchivo: string; onCerrar: () => void; children: Re
     window.print();
     setTimeout(volver, 4000);
   };
-  return (
-    <div className="lincoin-hoja-capa" onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 95, background: 'rgba(4,5,4,0.88)', overflowY: 'auto', padding: '20px 12px', fontFamily: FONT }}>
+  // En un portal sobre <body> con lincoin-print-root: al imprimir, index.css
+  // esconde (display:none) todo hijo de <body> que no la tenga, o sea la app
+  // entera. Dentro de la app, la hoja se escondía con ella y el PDF salía en
+  // blanco.
+  return createPortal(
+    <div className="lincoin-hoja-capa lincoin-print-root" onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 95, background: 'rgba(4,5,4,0.88)', overflowY: 'auto', padding: '20px 12px', fontFamily: FONT }}>
       <div onClick={e => e.stopPropagation()} style={{ maxWidth: 720, margin: '0 auto' }}>
         <div className="lincoin-hoja-barra flex items-center justify-end" style={{ gap: 8, marginBottom: 10 }}>
           <button onClick={imprimir} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '9px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={14} /> Descargar PDF</button>
@@ -100,14 +105,14 @@ const Hoja: React.FC<{ nombreArchivo: string; onCerrar: () => void; children: Re
       <style>{`
         @media print {
           @page { size: letter; margin: 14mm; }
-          body * { visibility: hidden !important; }
-          .lincoin-hoja, .lincoin-hoja * { visibility: visible !important; }
           .lincoin-hoja-capa { position: static !important; background: #fff !important; padding: 0 !important; overflow: visible !important; }
-          .lincoin-hoja { position: absolute; left: 0; top: 0; width: 100%; border-radius: 0 !important; padding: 0 !important; }
+          .lincoin-hoja-capa > div { max-width: none !important; }
+          .lincoin-hoja { border-radius: 0 !important; padding: 0 !important; }
           .lincoin-hoja-barra { display: none !important; }
         }
       `}</style>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

@@ -253,6 +253,8 @@ button[class~="bg-[#4ADE80]"] {
    esto el navegador imprime el dashboard entero de fondo. */
 @media print {
   body > *:not(.lincoin-print-root) { display: none !important; }
+  /* La línea verde de arriba es de pantalla: en papel salía en cada hoja. */
+  body::before { display: none !important; }
   .lincoin-print-root { position: static !important; inset: auto !important;
     background: #FFFFFF !important; overflow: visible !important; }
   .no-imprimir { display: none !important; }
