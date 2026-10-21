@@ -2423,14 +2423,47 @@ Deno.serve(async (req: Request) => {
         // VÁLIDO (acertó la ventana) que llegó dos veces, no alguien adivinando.
         // Contarlo bloqueaba la cuenta del admin y la IP de la oficina por un
         // reenvío de la propia pantalla. Queda en la auditoría aparte.
+        // ── El MISMO pedido, repetido ─────────────────────────────────────
+        // Caso real: cada ingreso quedaba "login_2fa_completo" y, medio
+        // segundo después (o a la vez), el mismo código otra vez → "ya
+        // utilizado". La red reintenta el POST (conexión cortada antes de la
+        // respuesta) y el navegador se queda con la respuesta del REINTENTO:
+        // la persona ve un rechazo de un código que sí entró.
+        // Si ESTA MISMA sesión ya quedó verificada con ESTE código, el
+        // repetido responde lo mismo que el original. Un código capturado y
+        // usado desde OTRA sesión sigue rechazado: su sesión no está
+        // verificada.
+        const sidV = sessionIdOf(req)
+        const mismaSesionYaVerificada = async (): Promise<boolean> => {
+          if (!sidV || !etapaLogin) return false
+          // El original puede estar terminando en paralelo: se espera un poco
+          // a que anote la sesión antes de decidir.
+          for (let i = 0; i < 12; i++) {
+            const { data: f } = await db.from('users').select('raw_data').eq('id', uidV).single()
+            const rd = ((f as any)?.raw_data ?? {}) as Record<string, any>
+            const ses: any[] = Array.isArray(rd.mfaSessions) ? rd.mfaSessions : []
+            const hit = ses.find((x: any) => x?.sid === sidV && (x?.stage ?? 'full') === 'full')
+            if (hit && Number(rd.mfaLastCounter ?? -1) === counter && Date.now() - new Date(hit.at).getTime() < 5 * 60_000) return true
+            await new Promise(r => setTimeout(r, 250))
+          }
+          return false
+        }
         const lastCounter = Number(raw.mfaLastCounter ?? -1)
         if (Number.isFinite(lastCounter) && counter <= lastCounter) {
+          if (counter === lastCounter && await mismaSesionYaVerificada()) {
+            await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV })
+            return json({ ok: true, repetido: true })
+          }
           await auditAdmin(req, 'auth.mfa_code_reused', { userId: uidV, tipo: 'app' })
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
         // Dos pedidos con el MISMO código a la vez leían el contador viejo y
         // pasaban los dos. El candado (llave primaria en la base) deja uno.
         if ((await reclamarCandado(db, `totp:${uidV}:${counter}`, 600, uidV, 'mfa_totp')) === 'ocupado') {
+          if (await mismaSesionYaVerificada()) {
+            await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV, simultaneo: true })
+            return json({ ok: true, repetido: true })
+          }
           await auditAdmin(req, 'auth.mfa_code_reused', { userId: uidV, tipo: 'app', simultaneo: true })
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
