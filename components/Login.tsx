@@ -55,6 +55,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [mfaCode, setMfaCode] = useState('');
   const [mfaError, setMfaError] = useState('');
   const [mfaLoading, setMfaLoading] = useState(false);
+  const verificandoRef = useRef(false);
   // CAPTCHA (Turnstile) — token de un solo uso; captchaKey remonta el widget.
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaKey, setCaptchaKey] = useState(0);
@@ -114,9 +115,16 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
   const handleVerify2FA = async () => {
     if (mfaCode.length !== 6) return;
+    // Un solo envío a la vez. El estado mfaLoading tarda un render en llegar:
+    // el envío automático al completar los 6 dígitos más un toque en
+    // "Verificar" (o un Enter) mandaban el MISMO código dos veces. El primero
+    // entraba y el segundo volvía "código ya utilizado", que la pantalla
+    // mostraba como "Código incorrecto" a alguien que lo había puesto bien.
+    if (verificandoRef.current) return;
+    verificandoRef.current = true;
     setMfaLoading(true);
     setMfaError('');
-    const user = await completeMFALogin(mfaCode);
+    const user = await completeMFALogin(mfaCode).finally(() => { verificandoRef.current = false; });
     setMfaLoading(false);
     if (!user) {
       // El motivo que mandó el servidor, tal cual: límite de intentos (con
