@@ -1998,7 +1998,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // rechazo por límite de intentos NO es un código malo — contarlo
           // otra vez inflaba el conteo que bloquea la IP y castigaba dos
           // veces por lo mismo.
-          if (r?.error !== 'too_many_attempts') {
+          // Tampoco un código YA USADO: era válido y llegó dos veces. Contarlo
+          // como ingreso fallido bloqueaba la IP (3 en una hora contra una
+          // cuenta de admin) por un reenvío de la propia pantalla.
+          if (r?.error !== 'too_many_attempts' && r?.error !== 'code_reused') {
             logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
           }
           return null;

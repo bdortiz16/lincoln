@@ -2419,14 +2419,19 @@ Deno.serve(async (req: Request) => {
         }
         // Un código ya usado NO vale una segunda vez, aunque su ventana siga
         // abierta. Es lo que cierra la reutilización del código capturado.
+        // Un código ya usado NO cuenta como intento fallido: era un código
+        // VÁLIDO (acertó la ventana) que llegó dos veces, no alguien adivinando.
+        // Contarlo bloqueaba la cuenta del admin y la IP de la oficina por un
+        // reenvío de la propia pantalla. Queda en la auditoría aparte.
         const lastCounter = Number(raw.mfaLastCounter ?? -1)
         if (Number.isFinite(lastCounter) && counter <= lastCounter) {
-          await noteMfaFail('código ya utilizado')
+          await auditAdmin(req, 'auth.mfa_code_reused', { userId: uidV, tipo: 'app' })
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
         // Dos pedidos con el MISMO código a la vez leían el contador viejo y
         // pasaban los dos. El candado (llave primaria en la base) deja uno.
         if ((await reclamarCandado(db, `totp:${uidV}:${counter}`, 600, uidV, 'mfa_totp')) === 'ocupado') {
+          await auditAdmin(req, 'auth.mfa_code_reused', { userId: uidV, tipo: 'app', simultaneo: true })
           return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
         }
         await mergeRaw(db, uidV, { mfaLastCounter: counter })
