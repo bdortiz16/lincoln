@@ -93,22 +93,26 @@ jobs:
           # exista en el repo. Al agregar una función nueva hay que añadirla
           # aquí — si no, el panel la llama y recibe un 404 sin explicación.
           FUNCTIONS="gasfree mouv-proxy finity-proxy finity-webhook admin-data get-system-config notify-transaction user-login admin-login delete-self fastforex-sync fx-snapshot notify-account-events notify-limit-increase send-compliance-email crisp-proxy email-otp kumplo tusdatos kyt otc-mesa push gowd-webhook resend-webhook facturacion contador autorizaciones gowd"
-          # Hasta 3 intentos por función: el registro de imágenes (ghcr.io) a
+          # Hasta 5 intentos por función: el registro de imágenes (ghcr.io) a
           # veces responde "toomanyrequests" al bajar el edge-runtime, y eso
-          # no es un error de la función — al rato pasa solo.
+          # no es un error de la función — al rato pasa solo. Con 3 intentos
+          # (20 s y 40 s) no alcanzó: el límite duró unos 2 minutos.
+          ESPERAS="20 40 80 120"
           for fn in $FUNCTIONS; do
             echo "▶ Desplegando $fn…"
             OK=0
-            for intento in 1 2 3; do
+            intento=1
+            for espera in $ESPERAS ultimo; do
               if supabase functions deploy "$fn" \
                   --project-ref "$SUPABASE_PROJECT_REF" \
                   --no-verify-jwt 2>&1; then
                 OK=1; break
               fi
-              if [ $intento -lt 3 ]; then
-                echo "↻ $fn: intento $intento falló, reintento en $((intento * 20)) s…"
-                sleep $((intento * 20))
+              if [ "$espera" != "ultimo" ]; then
+                echo "↻ $fn: intento $intento falló, reintento en $espera s…"
+                sleep "$espera"
               fi
+              intento=$((intento + 1))
             done
             if [ $OK -eq 1 ]; then
               echo "✅ $fn desplegada"
