@@ -5,8 +5,8 @@
 //  recibir dinero de una empresa registrada que la haya autorizado. Para
 //  eso la persona escribe el ID Lincoin de la empresa y manda su nombre,
 //  su documento, una foto sosteniéndolo, el documento por las dos caras,
-//  el RUT, la cámara de comercio y la declaración de renta (estas dos, si
-//  le aplican) y de dónde vienen sus fondos. La empresa ve la solicitud con
+//  el RUT, la cámara de comercio, la declaración de renta (todos
+//  obligatorios) y de dónde vienen sus fondos. La empresa ve la solicitud con
 //  todo eso, la aprueba (fijándole un tope mensual) o la rechaza, y puede
 //  revocarla después.
 //
@@ -27,7 +27,7 @@
 //
 //  Acciones (todas con JWT):
 //    Persona:  subir_doc {tipo, nombre, mime, base64}  → {path}   (uno por pedido)
-//              solicitar {codigoEmpresa, nombre, docType, docNumber, foto, documentos, noAplica, origenFondos}
+//              solicitar {codigoEmpresa, nombre, docType, docNumber, foto, documentos, origenFondos}
 //              estado {}
 //    Empresa:  listar {}  ·  ver_foto {personaId}  ·  aprobar {personaId, topeMensual}
 //              rechazar {personaId}  ·  revocar {personaId}  ·  tope {personaId, topeMensual}
@@ -65,9 +65,6 @@ const TIPOS_DOC: Record<string, string> = {
   camara_comercio: 'Cámara de comercio',
   declaracion_renta: 'Declaración de renta',
 }
-// La cámara de comercio y la declaración de renta no las tiene todo el
-// mundo: quien no las tiene lo dice expresamente, y eso queda en el expediente.
-const OPCIONALES = ['camara_comercio', 'declaracion_renta']
 const FUENTES: Record<string, string> = {
   salario: 'Salario',
   honorarios: 'Honorarios o prestación de servicios',
@@ -77,11 +74,9 @@ const FUENTES: Record<string, string> = {
   familia: 'Ayuda de familiares o remesas',
   otro: 'Otro',
 }
-// El pasaporte no tiene reverso.
-const requeridos = (docType: string, noAplica: Record<string, boolean>) => [
-  'doc_frente', ...(docType === 'PAS' ? [] : ['doc_reverso']), 'rut',
-  ...OPCIONALES.filter(t => !noAplica[t]),
-]
+// Todos son obligatorios: el documento por las dos caras, el RUT, la cámara
+// de comercio y la declaración de renta.
+const REQUERIDOS = Object.keys(TIPOS_DOC)
 
 let bucketListo = false
 async function asegurarBucket() {
@@ -281,17 +276,12 @@ Deno.serve(async (req) => {
       if (of.declaraLicitud !== true) return json({ ok: false, error: 'Falta tu declaración de que los fondos vienen de actividades lícitas.' }, 400)
       const origenFondos: OrigenFondos = { fuente, fuenteTexto: FUENTES[fuente], detalle, declaraLicitud: true }
 
-      // Los documentos: cada uno tiene que estar en el bucket. Quien no tiene
-      // cámara de comercio o no declara renta lo marca, y queda escrito.
-      const na = (body.noAplica ?? {}) as Record<string, unknown>
-      const noAplica: Record<string, boolean> = Object.fromEntries(OPCIONALES.map(t => [t, na[t] === true]))
+      // Los documentos: todos obligatorios, y cada uno tiene que estar en el bucket.
       const documentos = await documentosValidos(yo.id, body.documentos)
-      const faltan = requeridos(docType, noAplica).filter(t => !documentos.some(d => d.tipo === t))
+      const faltan = REQUERIDOS.filter(t => !documentos.some(d => d.tipo === t))
       if (faltan.length) {
         return json({ ok: false, error: `Falta adjuntar: ${faltan.map(t => TIPOS_DOC[t]).join(', ')}.` }, 400)
       }
-      // Si marcó "no aplica" pero igual lo adjuntó, vale el documento.
-      for (const d of documentos) if (noAplica[d.tipo]) noAplica[d.tipo] = false
 
       // El código lo escribe cada cuenta en su perfil y no es único en la base:
       // si dos empresas lo comparten no se adivina a cuál mandar la foto.
@@ -308,7 +298,7 @@ Deno.serve(async (req) => {
       solicitudes.unshift(sol)
       const e1 = await guardarEmpresa(String(emp.id), autorizadas, solicitudes.slice(0, 50))
       if (e1) return json({ ok: false, error: `No se pudo guardar la solicitud: ${e1}` }, 500)
-      const expediente = { documentos, noAplica, origenFondos, at: sol.at }
+      const expediente = { documentos, origenFondos, at: sol.at }
       const e2 = await guardarPersona(yo.id,
         { autorizacion: { estado: 'pendiente', empresaId: String(emp.id), empresaNombre: nombreEmpresa(emp), nombre, docType, docNumber, expediente, at: sol.at } },
         { autorizacionFoto: foto })
@@ -378,7 +368,6 @@ Deno.serve(async (req) => {
         ok: true,
         foto: String((p?.documents as any)?.autorizacionFoto ?? '') || null,
         documentos,
-        noAplica: Object.entries(expediente?.noAplica ?? {}).filter(([, v]) => v === true).map(([k]) => TIPOS_DOC[k] ?? k),
         origenFondos: expediente?.origenFondos ?? null,
         // Solicitudes de antes de pedir el expediente: no lo tienen.
         sinExpediente: !expediente,

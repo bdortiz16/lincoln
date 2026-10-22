@@ -91,7 +91,6 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
   // Los adjuntos llegan con un enlace firmado que vence en una hora.
   type Expediente = {
     documentos: { tipo: string; nombreTipo: string; nombre: string; url: string | null; esPdf: boolean }[];
-    noAplica: string[];
     origenFondos: { fuenteTexto: string; detalle: string; declaraLicitud: boolean } | null;
     sinExpediente: boolean;
   };
@@ -102,7 +101,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
     setFotoDe(p); setFoto('cargando'); setExpediente(null);
     const r = await llamarFuncion('autorizaciones', { action: 'ver_foto', personaId: p.id }, 30000);
     setFoto(r?.ok && r.foto ? String(r.foto) : null);
-    if (r?.ok) setExpediente({ documentos: Array.isArray(r.documentos) ? r.documentos : [], noAplica: Array.isArray(r.noAplica) ? r.noAplica : [], origenFondos: r.origenFondos ?? null, sinExpediente: !!r.sinExpediente });
+    if (r?.ok) setExpediente({ documentos: Array.isArray(r.documentos) ? r.documentos : [], origenFondos: r.origenFondos ?? null, sinExpediente: !!r.sinExpediente });
   };
 
   // ── Aprobar (con tope) / cambiar tope ──────────────────────────────
@@ -204,7 +203,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
         <div>
           <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: C.text, margin: 0 }}>Personas autorizadas</h2>
           <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5, maxWidth: 680 }}>
-            Las personas que operan con tu empresa abren una cuenta <b style={{ color: C.text }}>Persona</b> en Lincoin, escriben tu ID y te mandan sus datos, una foto sosteniendo su documento, el documento por las dos caras, el RUT, la cámara de comercio y la declaración de renta (si les aplican) y el origen de sus fondos. Tú revisas, apruebas con un tope mensual de retiro, y desde aquí les cargas saldo en pesos. Solo una persona autorizada puede recibir dinero tuyo.
+            Las personas que operan con tu empresa abren una cuenta <b style={{ color: C.text }}>Persona</b> en Lincoin, escriben tu ID y te mandan sus datos, una foto sosteniendo su documento, el documento por las dos caras, el RUT, la cámara de comercio, la declaración de renta y el origen de sus fondos. Tú revisas, apruebas con un tope mensual de retiro, y desde aquí les cargas saldo en pesos. Solo una persona autorizada puede recibir dinero tuyo.
           </p>
         </div>
         <div style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 12, padding: '10px 14px', minWidth: 200 }}>
@@ -372,9 +371,6 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
                     </span>
                     <span className="flex items-center" style={{ fontSize: 12, fontWeight: 700, color: d.url ? C.verde : C.tenue, gap: 4, flexShrink: 0 }}>{d.url ? <>Abrir <ExternalLink size={12} /></> : 'No disponible'}</span>
                   </a>
-                ))}
-                {expediente.noAplica.map(n => (
-                  <p key={n} style={{ fontSize: 12, color: C.sub, margin: 0, padding: '2px 2px' }}>{n}: <b style={{ color: C.text }}>declaró que no aplica</b></p>
                 ))}
               </div>
             </div>

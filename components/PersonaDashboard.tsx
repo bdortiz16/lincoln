@@ -201,8 +201,6 @@ const FUENTES_FONDOS: Array<[string, string]> = [
   ['salario', 'Salario'], ['honorarios', 'Honorarios o prestación de servicios'], ['negocio', 'Ventas de mi negocio'],
   ['pension', 'Pensión'], ['inversiones', 'Rentas o inversiones'], ['familia', 'Ayuda de familiares o remesas'], ['otro', 'Otro'],
 ];
-// La cámara de comercio y la declaración de renta no las tiene todo el mundo.
-type NoAplica = { camara_comercio: boolean; declaracion_renta: boolean };
 // Prepara un adjunto para subirlo: las fotos se reducen (JPEG) y los PDF
 // van tal cual. Una foto que el navegador no sabe abrir (HEIC) va tal cual.
 const prepararAdjunto = async (f: File): Promise<{ base64: string; mime: string; nombre: string }> => {
@@ -432,7 +430,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const [solError, setSolError] = useState<string | null>(null);
   const [solListo, setSolListo] = useState<string | null>(null);
   const [solArchivos, setSolArchivos] = useState<Partial<Record<TipoAdjunto, File>>>({});
-  const [solNoAplica, setSolNoAplica] = useState<NoAplica>({ camara_comercio: false, declaracion_renta: false });
   const [solFuente, setSolFuente] = useState('');
   const [solDetalle, setSolDetalle] = useState('');
   const [solLicito, setSolLicito] = useState(false);
@@ -443,7 +440,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     const d = auth?.datos;
     setSolEmpresa(''); setSolNombre(d?.nombre || String(cu.name || cu.fullName || '')); setSolDocType(d?.docType || 'CC'); setSolDocNumber(d?.docNumber || '');
     setSolFoto(null); setSolError(null); setSolListo(null);
-    setSolArchivos({}); setSolNoAplica({ camara_comercio: false, declaracion_renta: false }); setSolFuente(''); setSolDetalle(''); setSolLicito(false); setSolProgreso(null);
+    setSolArchivos({}); setSolFuente(''); setSolDetalle(''); setSolLicito(false); setSolProgreso(null);
     setPanel('autorizacion');
   };
   const elegirAdjunto = (t: TipoAdjunto, f: File | null) => {
@@ -466,12 +463,12 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     if (solNombre.trim().length < 5 || !solNombre.trim().includes(' ')) { setSolError('Escribe tu nombre completo, como aparece en el documento.'); return; }
     if (solDocNumber.replace(/[^0-9A-Za-z]/g, '').length < 5) { setSolError('Escribe el número de tu documento.'); return; }
     if (!solFoto) { setSolError('Falta la foto sosteniendo tu documento.'); return; }
+    // Todos obligatorios: el documento por las dos caras, RUT, cámara de
+    // comercio y declaración de renta.
     const pedidos: Array<[TipoAdjunto, string]> = [
       ['doc_frente', `${docNombre}: ${esPasaporte ? 'la página de la foto' : 'el frente'}`],
-      ...(esPasaporte ? [] : [['doc_reverso', `${docNombre}: el reverso`] as [TipoAdjunto, string]]),
-      ['rut', 'el RUT'],
-      ...(solNoAplica.camara_comercio ? [] : [['camara_comercio', 'la cámara de comercio (o marca que no tienes)'] as [TipoAdjunto, string]]),
-      ...(solNoAplica.declaracion_renta ? [] : [['declaracion_renta', 'la declaración de renta (o marca que no declaras)'] as [TipoAdjunto, string]]),
+      ['doc_reverso', `${docNombre}: ${esPasaporte ? 'la página de la firma' : 'el reverso'}`],
+      ['rut', 'el RUT'], ['camara_comercio', 'la cámara de comercio'], ['declaracion_renta', 'la declaración de renta'],
     ];
     const faltan = pedidos.filter(([t]) => !solArchivos[t]).map(([, n]) => n);
     if (faltan.length) { setSolError(`Falta adjuntar ${faltan.join(', ')}.`); return; }
@@ -482,7 +479,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     try {
       // Uno por uno: cada documento puede pesar hasta 5 MB.
       const documentos: { tipo: TipoAdjunto; path: string; nombre: string }[] = [];
-      const enviar = (Object.keys(solArchivos) as TipoAdjunto[]).filter(t => !(esPasaporte && t === 'doc_reverso'));
+      const enviar = pedidos.map(([t]) => t);
       for (const [i, t] of enviar.entries()) {
         const f = solArchivos[t]!;
         setSolProgreso(`Subiendo documentos (${i + 1} de ${enviar.length})…`);
@@ -495,7 +492,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       setSolProgreso('Enviando la solicitud…');
       const r = await llamarFuncion('autorizaciones', {
         action: 'solicitar', codigoEmpresa: id, nombre: solNombre.trim(), docType: solDocType, docNumber: solDocNumber, foto: solFoto,
-        documentos, noAplica: solNoAplica, origenFondos: { fuente: solFuente, detalle: solDetalle.trim(), declaraLicitud: solLicito },
+        documentos, origenFondos: { fuente: solFuente, detalle: solDetalle.trim(), declaraLicitud: solLicito },
       }, 90000);
       if (!r?.ok) { setSolError(r?.error ?? 'No se pudo enviar la solicitud. Intenta de nuevo.'); return; }
       setSolListo(String(r.empresa?.nombre ?? id));
@@ -837,7 +834,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 <p style={{ fontSize: 15.5, fontWeight: 700, margin: 0 }}>{pendiente ? `${pendiente.nombre} está revisando tu solicitud` : 'Pide la autorización de tu empresa'}</p>
                 <p style={{ fontSize: 13.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
                   {pendiente ? 'Cuando la apruebe, tu cuenta queda activa y ves aquí tu tope mensual. Esta pantalla se actualiza sola.'
-                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, adjunta tu documento y tu RUT, y cuéntanos de dónde vienen tus fondos.'}
+                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, adjunta tu documento por las dos caras, tu RUT, tu cámara de comercio y tu declaración de renta, y cuéntanos de dónde vienen tus fondos.'}
                 </p>
               </div>
               {pendiente ? <Pill onClick={() => setPanel('perfil')}>VER DATOS</Pill> : <BotonPrimario onClick={abrirAutorizacion} style={{ padding: '12px 20px' }}>Pedir autorización</BotonPrimario>}
@@ -1345,18 +1342,16 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Etiqueta>{esPasaporte ? 'TU PASAPORTE' : `TU ${docNombre.toUpperCase()} POR LAS DOS CARAS`}</Etiqueta>
+                <Etiqueta>{`TU ${docNombre.toUpperCase()} POR LAS DOS CARAS`}</Etiqueta>
                 <Adjunto titulo={esPasaporte ? 'Página de la foto' : 'Frente'} ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_frente} onElegir={f => elegirAdjunto('doc_frente', f)} apagado={solOcupado} />
-                {!esPasaporte && <Adjunto titulo="Reverso" ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_reverso} onElegir={f => elegirAdjunto('doc_reverso', f)} apagado={solOcupado} />}
+                <Adjunto titulo={esPasaporte ? 'Página de la firma' : 'Reverso'} ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_reverso} onElegir={f => elegirAdjunto('doc_reverso', f)} apagado={solOcupado} />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <Etiqueta>DOCUMENTOS TRIBUTARIOS</Etiqueta>
                 <Adjunto titulo="RUT" ayuda="PDF de la DIAN o foto, actualizado" archivo={solArchivos.rut} onElegir={f => elegirAdjunto('rut', f)} apagado={solOcupado} />
-                <Adjunto titulo="Cámara de comercio" ayuda="Certificado de matrícula mercantil, de menos de 30 días" archivo={solArchivos.camara_comercio} onElegir={f => elegirAdjunto('camara_comercio', f)} apagado={solOcupado || solNoAplica.camara_comercio} />
-                <Casilla marcada={solNoAplica.camara_comercio} onCambiar={v => { setSolNoAplica(n => ({ ...n, camara_comercio: v })); if (v) elegirAdjunto('camara_comercio', null); }}>No tengo negocio inscrito en Cámara de Comercio.</Casilla>
-                <Adjunto titulo="Declaración de renta" ayuda="La del último año gravable" archivo={solArchivos.declaracion_renta} onElegir={f => elegirAdjunto('declaracion_renta', f)} apagado={solOcupado || solNoAplica.declaracion_renta} />
-                <Casilla marcada={solNoAplica.declaracion_renta} onCambiar={v => { setSolNoAplica(n => ({ ...n, declaracion_renta: v })); if (v) elegirAdjunto('declaracion_renta', null); }}>No estoy obligado a declarar renta.</Casilla>
+                <Adjunto titulo="Cámara de comercio" ayuda="Certificado de matrícula mercantil, de menos de 30 días" archivo={solArchivos.camara_comercio} onElegir={f => elegirAdjunto('camara_comercio', f)} apagado={solOcupado} />
+                <Adjunto titulo="Declaración de renta" ayuda="La del último año gravable" archivo={solArchivos.declaracion_renta} onElegir={f => elegirAdjunto('declaracion_renta', f)} apagado={solOcupado} />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
