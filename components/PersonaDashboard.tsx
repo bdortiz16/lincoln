@@ -1,9 +1,11 @@
 // ══════════════════════════════════════════════════════════════════
-//  Portal Personas — lincoin.me/portal_personas
+//  Portal Operadores — lincoin.me/portal_personas
 //
-//  Una billetera digital en pesos. Una empresa registrada en Lincoin
-//  (modelo PSP) autoriza a la persona y le carga saldo por su ID Lincoin;
-//  la persona lo ve, deposita por PSE y lo envía.
+//  Un operador es el cliente de una empresa registrada en Lincoin (modelo
+//  PSP), persona natural o empresa. Su empresa lo acepta, el equipo de
+//  cumplimiento de Lincoin lo aprueba con un tope mensual, y la empresa le
+//  carga saldo por su ID Lincoin. Es una billetera digital en pesos: el
+//  operador ve su saldo, deposita por PSE y envía.
 //
 //  Un solo saldo en pesos (COP), sin billeteras ni conversiones. Enviar
 //  pregunta primero CÓMO:
@@ -152,16 +154,19 @@ const VISTA_RUTA: Record<string, Vista> = Object.fromEntries(Object.entries(RUTA
 
 type Panel = 'enviar' | 'llave' | 'recargar' | 'recibir' | 'llaves' | 'tarjetas' | 'seguridad' | 'limites' | 'notificaciones' | 'invita' | 'cobrar' | 'autorizacion' | 'perfil' | null;
 
-// ─── Autorización por una empresa ────────────────────────────────────
-// La persona solo puede recibir dinero de UNA empresa registrada que la haya
-// autorizado. Pide la autorización con el ID de la empresa, su nombre, su
-// documento y una foto sosteniéndolo; la empresa aprueba y le fija el tope
-// mensual de retiro. Todo lo escribe el servidor (función `autorizaciones`).
+// ─── Autorización: la empresa acepta, Cumplimiento aprueba ───────────
+// El operador (cliente de una empresa registrada en Lincoin, persona o
+// empresa) solo puede recibir dinero cuando su empresa lo ACEPTÓ y el equipo
+// de cumplimiento de Lincoin revisó sus documentos, le fijó el tope mensual
+// y lo APROBÓ. Todo lo escribe el servidor (función `autorizaciones`).
+type TipoOperador = 'persona' | 'empresa';
 type EstadoAuth = {
   autorizada: { id: string; nombre: string; topeMensual: number | null } | null;
-  pendiente: { id: string; nombre: string } | null;
+  // etapa: 'empresa' = la empresa aún no lo acepta; 'cumplimiento' = ya lo
+  // aceptó y falta la revisión de Cumplimiento.
+  pendiente: { id: string; nombre: string; etapa?: 'empresa' | 'cumplimiento' } | null;
   usadoMes: number;
-  datos: { estado?: string; empresaNombre?: string; nombre?: string; docType?: string; docNumber?: string; at?: string } | null;
+  datos: { estado?: string; empresaNombre?: string; nombre?: string; docType?: string; docNumber?: string; tipoOperador?: TipoOperador; representante?: { nombre?: string; docType?: string; docNumber?: string }; motivo?: string | null; por?: string; at?: string } | null;
 };
 const TIPOS_DOC: Array<[string, string]> = [['CC', 'Cédula de ciudadanía'], ['CE', 'Cédula de extranjería'], ['PAS', 'Pasaporte'], ['PPT', 'Permiso por protección temporal']];
 // El titular de una llave puede ser una empresa.
@@ -197,10 +202,17 @@ const leerBase64 = (file: File): Promise<string> => new Promise((res, rej) => {
 type TipoAdjunto = 'doc_frente' | 'doc_reverso' | 'rut' | 'camara_comercio' | 'declaracion_renta';
 const MIME_ADJUNTO = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic'];
 const NOMBRE_DOC: Record<string, string> = { CC: 'Cédula', CE: 'Cédula de extranjería', PAS: 'Pasaporte', PPT: 'PPT' };
-const FUENTES_FONDOS: Array<[string, string]> = [
-  ['salario', 'Salario'], ['honorarios', 'Honorarios o prestación de servicios'], ['negocio', 'Ventas de mi negocio'],
-  ['pension', 'Pensión'], ['inversiones', 'Rentas o inversiones'], ['familia', 'Ayuda de familiares o remesas'], ['otro', 'Otro'],
-];
+const FUENTES_FONDOS: Record<TipoOperador, Array<[string, string]>> = {
+  persona: [
+    ['salario', 'Salario'], ['honorarios', 'Honorarios o prestación de servicios'], ['negocio', 'Ventas de mi negocio'],
+    ['pension', 'Pensión'], ['inversiones', 'Rentas o inversiones'], ['familia', 'Ayuda de familiares o remesas'], ['otro', 'Otro'],
+  ],
+  empresa: [
+    ['negocio', 'Ventas o servicios de la empresa'], ['aportes', 'Aportes de socios'], ['financiacion', 'Préstamos o financiación'],
+    ['inversiones', 'Rentas o inversiones'], ['otro', 'Otro'],
+  ],
+};
+const tipoGuardado = (): TipoOperador | null => { try { const v = localStorage.getItem('lincoin_tipo_operador'); return v === 'empresa' || v === 'persona' ? v : null; } catch { return null; } };
 // Prepara un adjunto para subirlo: las fotos se reducen (JPEG) y los PDF
 // van tal cual. Una foto que el navegador no sabe abrir (HEIC) va tal cual.
 const prepararAdjunto = async (f: File): Promise<{ base64: string; mime: string; nombre: string }> => {
@@ -419,12 +431,23 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   }, [auth?.pendiente?.id]);
   const autorizada = auth?.autorizada ?? null;
   const pendiente = auth?.pendiente ?? null;
-  const estadoTxt = autorizada ? `AUTORIZADA · ${autorizada.nombre.toUpperCase()}` : pendiente ? 'AUTORIZACIÓN EN REVISIÓN' : auth?.datos?.estado === 'rechazada' ? 'SOLICITUD RECHAZADA' : auth?.datos?.estado === 'revocada' ? 'AUTORIZACIÓN RETIRADA' : 'IDENTIFICACIÓN PENDIENTE';
+  const enCumplimiento = pendiente?.etapa === 'cumplimiento';
+  const estadoTxt = autorizada ? `AUTORIZADA · ${autorizada.nombre.toUpperCase()}` : enCumplimiento ? 'EN REVISIÓN DE CUMPLIMIENTO' : pendiente ? 'ESPERANDO A TU EMPRESA' : auth?.datos?.estado === 'rechazada' ? 'SOLICITUD RECHAZADA' : auth?.datos?.estado === 'revocada' ? 'AUTORIZACIÓN RETIRADA' : 'IDENTIFICACIÓN PENDIENTE';
+  // Persona natural o empresa: lo eligió al registrarse (o al pedir la
+  // autorización, si entró con Google).
+  const tipoCuenta: TipoOperador = (auth?.datos?.tipoOperador ?? cu.raw_data?.tipoOperador ?? cu.tipoOperador ?? tipoGuardado() ?? 'persona') === 'empresa' ? 'empresa' : 'persona';
+  const nombreCorto = tipoCuenta === 'empresa' ? nombre : nombre.split(' ')[0];
 
+  const [solTipo, setSolTipo] = useState<TipoOperador>('persona');
+  const esEmpresa = solTipo === 'empresa';
   const [solEmpresa, setSolEmpresa] = useState('');
   const [solNombre, setSolNombre] = useState('');
   const [solDocType, setSolDocType] = useState('CC');
   const [solDocNumber, setSolDocNumber] = useState('');
+  // Empresa: el representante legal (su documento y su foto).
+  const [solRepNombre, setSolRepNombre] = useState('');
+  const [solRepDocType, setSolRepDocType] = useState('CC');
+  const [solRepDocNumber, setSolRepDocNumber] = useState('');
   const [solFoto, setSolFoto] = useState<string | null>(null);
   const [solOcupado, setSolOcupado] = useState(false);
   const [solError, setSolError] = useState<string | null>(null);
@@ -434,11 +457,18 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const [solDetalle, setSolDetalle] = useState('');
   const [solLicito, setSolLicito] = useState(false);
   const [solProgreso, setSolProgreso] = useState<string | null>(null);
-  const docNombre = NOMBRE_DOC[solDocType] ?? 'Documento';
-  const esPasaporte = solDocType === 'PAS';
+  // El documento que va por las dos caras: el del operador o, si es una
+  // empresa, el de su representante legal.
+  const docVisible = esEmpresa ? solRepDocType : solDocType;
+  const docNombre = NOMBRE_DOC[docVisible] ?? 'Documento';
+  const esPasaporte = docVisible === 'PAS';
   const abrirAutorizacion = () => {
     const d = auth?.datos;
-    setSolEmpresa(''); setSolNombre(d?.nombre || String(cu.name || cu.fullName || '')); setSolDocType(d?.docType || 'CC'); setSolDocNumber(d?.docNumber || '');
+    const t: TipoOperador = d?.tipoOperador ?? tipoCuenta;
+    setSolTipo(t);
+    setSolEmpresa(''); setSolNombre(d?.nombre || (t === 'empresa' ? String(cu.companyName || cu.name || '') : String(cu.name || cu.fullName || '').replace(/^Usuario Nuevo$/, '')));
+    setSolDocType(t === 'empresa' ? 'CC' : (d?.docType && d.docType !== 'NIT' ? d.docType : 'CC')); setSolDocNumber(d?.docNumber || '');
+    setSolRepNombre(d?.representante?.nombre || ''); setSolRepDocType(d?.representante?.docType || 'CC'); setSolRepDocNumber(d?.representante?.docNumber || '');
     setSolFoto(null); setSolError(null); setSolListo(null);
     setSolArchivos({}); setSolFuente(''); setSolDetalle(''); setSolLicito(false); setSolProgreso(null);
     setPanel('autorizacion');
@@ -460,11 +490,18 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     setSolError(null);
     const id = solEmpresa.trim().toUpperCase();
     if (id.length < 4) { setSolError('Escribe el ID Lincoin de la empresa.'); return; }
-    if (solNombre.trim().length < 5 || !solNombre.trim().includes(' ')) { setSolError('Escribe tu nombre completo, como aparece en el documento.'); return; }
-    if (solDocNumber.replace(/[^0-9A-Za-z]/g, '').length < 5) { setSolError('Escribe el número de tu documento.'); return; }
-    if (!solFoto) { setSolError('Falta la foto sosteniendo tu documento.'); return; }
-    // Todos obligatorios: el documento por las dos caras, RUT, cámara de
-    // comercio y declaración de renta.
+    if (esEmpresa) {
+      if (solNombre.trim().length < 3) { setSolError('Escribe la razón social, como aparece en la cámara de comercio.'); return; }
+      if (solDocNumber.replace(/\D/g, '').length < 9) { setSolError('Escribe el NIT completo, con el dígito de verificación.'); return; }
+      if (solRepNombre.trim().length < 5 || !solRepNombre.trim().includes(' ')) { setSolError('Escribe el nombre completo del representante legal.'); return; }
+      if (solRepDocNumber.replace(/[^0-9A-Za-z]/g, '').length < 5) { setSolError('Escribe el documento del representante legal.'); return; }
+    } else {
+      if (solNombre.trim().length < 5 || !solNombre.trim().includes(' ')) { setSolError('Escribe tu nombre completo, como aparece en el documento.'); return; }
+      if (solDocNumber.replace(/[^0-9A-Za-z]/g, '').length < 5) { setSolError('Escribe el número de tu documento.'); return; }
+    }
+    if (!solFoto) { setSolError(esEmpresa ? 'Falta la foto del representante legal sosteniendo su documento.' : 'Falta la foto sosteniendo tu documento.'); return; }
+    // Todos obligatorios: el documento por las dos caras (el del representante
+    // legal, si es empresa), RUT, cámara de comercio y declaración de renta.
     const pedidos: Array<[TipoAdjunto, string]> = [
       ['doc_frente', `${docNombre}: ${esPasaporte ? 'la página de la foto' : 'el frente'}`],
       ['doc_reverso', `${docNombre}: ${esPasaporte ? 'la página de la firma' : 'el reverso'}`],
@@ -472,9 +509,9 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     ];
     const faltan = pedidos.filter(([t]) => !solArchivos[t]).map(([, n]) => n);
     if (faltan.length) { setSolError(`Falta adjuntar ${faltan.join(', ')}.`); return; }
-    if (!solFuente) { setSolError('Cuéntanos de dónde vienen tus fondos.'); return; }
-    if (solFuente === 'otro' && solDetalle.trim().length < 5) { setSolError('Describe de dónde vienen tus fondos.'); return; }
-    if (!solLicito) { setSolError('Falta tu declaración de que tus fondos vienen de actividades lícitas.'); return; }
+    if (!solFuente) { setSolError('Cuéntanos de dónde vienen los fondos.'); return; }
+    if (solFuente === 'otro' && solDetalle.trim().length < 5) { setSolError('Describe de dónde vienen los fondos.'); return; }
+    if (!solLicito) { setSolError('Falta la declaración de que los fondos vienen de actividades lícitas.'); return; }
     setSolOcupado(true);
     try {
       // Uno por uno: cada documento puede pesar hasta 5 MB.
@@ -491,7 +528,9 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       }
       setSolProgreso('Enviando la solicitud…');
       const r = await llamarFuncion('autorizaciones', {
-        action: 'solicitar', codigoEmpresa: id, nombre: solNombre.trim(), docType: solDocType, docNumber: solDocNumber, foto: solFoto,
+        action: 'solicitar', codigoEmpresa: id, tipoOperador: solTipo, nombre: solNombre.trim(),
+        docType: esEmpresa ? 'NIT' : solDocType, docNumber: solDocNumber, foto: solFoto,
+        ...(esEmpresa ? { representante: { nombre: solRepNombre.trim(), docType: solRepDocType, docNumber: solRepDocNumber } } : {}),
         documentos, origenFondos: { fuente: solFuente, detalle: solDetalle.trim(), declaraLicitud: solLicito },
       }, 90000);
       if (!r?.ok) { setSolError(r?.error ?? 'No se pudo enviar la solicitud. Intenta de nuevo.'); return; }
@@ -733,11 +772,11 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const prefs = { correo: true, whatsapp: false, alertas: true, ...(cu.raw_data?.prefsNotificaciones ?? cu.prefsNotificaciones ?? {}) };
   const togglePref = (k: keyof typeof prefs) => updateUserRawData(cu.id, { prefsNotificaciones: { ...prefs, [k]: !prefs[k] } });
 
-  // El tope mensual de retiro lo fija la empresa que autoriza; el consumo
+  // El tope mensual lo fija el equipo de cumplimiento al aprobar; el consumo
   // del mes lo calcula el servidor (envíos a banco y Bre-B).
   const limiteMensual = autorizada?.topeMensual ?? null;
   const retiradoMes = auth?.usadoMes ?? 0;
-  const topeTxt = autorizada ? (limiteMensual ? `${fmt(retiradoMes)} de ${fmt(limiteMensual)} este mes` : `${fmt(retiradoMes)} este mes · sin tope`) : 'Lo fija la empresa que te autorice';
+  const topeTxt = autorizada ? (limiteMensual ? `${fmt(retiradoMes)} de ${fmt(limiteMensual)} este mes` : `${fmt(retiradoMes)} este mes · sin tope`) : 'Lo fija Cumplimiento al aprobar tu cuenta';
 
   const tab = (v: Vista, txt: string) => (
     <button key={v} onClick={() => setVista(v)} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 600, color: vista === v ? C.text : C.medio, background: vista === v ? 'rgba(255,255,255,0.07)' : 'transparent', border: 'none', borderRadius: 10, padding: '9px 16px', cursor: 'pointer' }}>{txt}</button>
@@ -781,7 +820,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         <div className="flex items-center" style={{ gap: 24, minWidth: 0 }}>
           <button onClick={() => setVista('inicio')} className="flex items-center" style={{ gap: 14, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: C.text, fontFamily: FONT }}>
             <span style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.7px', lineHeight: 1 }}>Lincoin<span style={{ color: C.verde }}>.</span></span>
-            <span className="persona-rotulo"><Rotulo>PERSONAS</Rotulo></span>
+            <span className="persona-rotulo"><Rotulo>OPERADORES</Rotulo></span>
           </button>
           <nav className="persona-tabs flex items-center" style={{ gap: 2 }}>
             {tab('inicio', 'Inicio')}{tab('movimientos', 'Cuenta')}{tab('beneficiarios', 'Beneficiarios')}{tab('ayuda', 'Ayuda')}
@@ -808,7 +847,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           </div>
           <button onClick={() => setPanel('perfil')} title="Detalles de mi cuenta" className="flex items-center persona-sec" style={{ gap: 10, border: `1px solid ${C.bordeFuerte}`, borderRadius: 12, padding: '5px 14px 5px 5px', cursor: 'pointer', background: 'transparent', color: C.text, fontFamily: FONT, height: 44 }}>
             <span style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800 }}>{iniciales(nombre)}</span>
-            <span className="persona-nombre" style={{ fontSize: 15, fontWeight: 700 }}>{nombre.split(' ')[0]}</span>
+            <span className="persona-nombre" style={{ fontSize: 15, fontWeight: 700, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombreCorto}</span>
           </button>
           <button className="persona-salir" onClick={() => setConfirmarSalir(true)} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.bordeFuerte}`, borderRadius: 12, padding: '0 18px', height: 44, cursor: 'pointer' }}>Salir</button>
         </div>
@@ -822,7 +861,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           <div className="flex items-end justify-between flex-wrap" style={{ gap: 12 }}>
             <div>
               <p style={{ fontSize: 15, color: C.sub, margin: 0 }}>Hola,</p>
-              <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.6px', margin: '2px 0 0' }}>{nombre.split(' ')[0]}</h1>
+              <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.6px', margin: '2px 0 0' }}>{nombreCorto}</h1>
             </div>
             <Pill verde={!!autorizada} naranja={!autorizada && !pendiente} onClick={() => (autorizada || pendiente ? setPanel('perfil') : abrirAutorizacion())}>{auth ? estadoTxt : kycOk ? 'IDENTIDAD VERIFICADA' : 'IDENTIFICACIÓN PENDIENTE'}</Pill>
           </div>
@@ -831,10 +870,12 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           {auth && !autorizada && (
             <div className="flex items-center justify-between flex-wrap" style={{ gap: 14, background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.35)', borderRadius: R, padding: '16px 18px' }}>
               <div style={{ flex: '1 1 260px' }}>
-                <p style={{ fontSize: 15.5, fontWeight: 700, margin: 0 }}>{pendiente ? `${pendiente.nombre} está revisando tu solicitud` : 'Pide la autorización de tu empresa'}</p>
+                <p style={{ fontSize: 15.5, fontWeight: 700, margin: 0 }}>{enCumplimiento ? `${pendiente!.nombre} te aceptó: falta Cumplimiento` : pendiente ? `${pendiente.nombre} está revisando tu solicitud` : auth?.datos?.estado === 'rechazada' ? 'Tu solicitud no fue aprobada' : 'Pide la autorización de tu empresa'}</p>
                 <p style={{ fontSize: 13.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
-                  {pendiente ? 'Cuando la apruebe, tu cuenta queda activa y ves aquí tu tope mensual. Esta pantalla se actualiza sola.'
-                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, adjunta tu documento por las dos caras, tu RUT, tu cámara de comercio y tu declaración de renta, y cuéntanos de dónde vienen tus fondos.'}
+                  {enCumplimiento ? 'El equipo de cumplimiento de Lincoin está revisando tus documentos. Cuando te apruebe, tu cuenta queda activa y ves aquí tu tope mensual. Esta pantalla se actualiza sola.'
+                    : pendiente ? 'Cuando te acepte como su cliente, el equipo de cumplimiento de Lincoin revisa tus documentos. Esta pantalla se actualiza sola.'
+                    : auth?.datos?.estado === 'rechazada' && auth.datos.motivo ? `Motivo: ${auth.datos.motivo} Corrige lo que haga falta y vuelve a pedirla.`
+                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin de la que seas cliente. Escribe su ID, adjunta tus documentos y cuéntanos de dónde vienen tus fondos.'}
                 </p>
               </div>
               {pendiente ? <Pill onClick={() => setPanel('perfil')}>VER DATOS</Pill> : <BotonPrimario onClick={abrirAutorizacion} style={{ padding: '12px 20px' }}>Pedir autorización</BotonPrimario>}
@@ -945,7 +986,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 ['¿Cómo envío a otro banco?', 'Toca Enviar → A una llave Bre-B y escribe la llave de la persona: su celular, correo, cédula o @llave. Te mostramos a nombre de quién está, la confirmas y llega en segundos.'],
                 ['¿Por qué me piden esperar al enviar a alguien nuevo?', 'La primera vez que le envías a una persona revisamos que el envío sea seguro. Suele tardar cerca de un minuto y después ya no se repite.'],
                 ['¿Cuándo tendré mis propias llaves Bre-B?', 'Pronto. Vas a poder recibir desde cualquier banco con tu celular, tu correo o tu cédula. Mientras tanto, recibe con tu ID Lincoin.'],
-                ['¿Quién fija mi tope mensual?', 'La empresa que te autoriza. Si necesitas uno más alto, pídeselo: ella lo cambia desde su panel y aquí se actualiza solo.'],
+                ['¿Quién aprueba mi cuenta y fija mi tope?', 'Tu empresa te acepta como su cliente, y el equipo de cumplimiento de Lincoin revisa tus documentos, aprueba tu cuenta y fija tu tope mensual. Si necesitas uno más alto, escríbenos a soporte.'],
                 ['¿Puedo cambiar de empresa?', 'Sí. En Detalles de mi cuenta escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
               ].map(([q, a]) => (
                 <div key={q} style={{ padding: '14px 0', borderTop: `1px solid ${C.borde}` }}><p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{q}</p><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{a}</p></div>
@@ -1238,8 +1279,8 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
             </>)}
           </div>
           <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '16px 0 0' }}>
-            {autorizada ? `El tope lo fija ${autorizada.nombre}, la empresa que te autoriza. Si necesitas uno más alto, pídeselo directamente: ella lo cambia desde su panel y aquí se actualiza solo.`
-              : 'El tope lo fija la empresa que te autorice. Mientras no tengas una empresa, no puedes recibir ni enviar dinero.'}
+            {autorizada ? 'El tope lo fija el equipo de cumplimiento de Lincoin al aprobar tu cuenta. Si necesitas uno más alto, escríbenos a soporte y lo revisamos.'
+              : 'El tope lo fija el equipo de cumplimiento de Lincoin cuando aprueba tu cuenta. Mientras no estés aprobado, no puedes recibir ni enviar dinero.'}
           </p>
           <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '10px 0 0' }}>Cuentan los envíos a llaves Bre-B y a cuentas de banco del mes calendario. Enviar a otra persona Lincoin no lo consume.</p>
           {!autorizada && !pendiente && <BotonPrimario onClick={abrirAutorizacion} style={{ marginTop: 16, width: '100%' }}>Pedir autorización</BotonPrimario>}
@@ -1247,9 +1288,15 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       )}
 
       {panel === 'perfil' && (
-        <Drawer titulo="Detalles de mi cuenta" sub="Tus datos, tu ID Lincoin y la empresa que te autoriza." onCerrar={cerrarPanel}>
+        <Drawer titulo="Detalles de mi cuenta" sub="Tus datos, tu ID Lincoin y la empresa de la que eres cliente." onCerrar={cerrarPanel}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {([['Nombre', auth?.datos?.nombre || nombre], ['Correo', String(cu.email ?? '')], ['ID Lincoin', codigo], ['Cuenta', 'Lincoin · pesos colombianos (COP)'], ['Documento', auth?.datos?.docType ? `${TIPOS_DOC.find(t => t[0] === auth?.datos?.docType)?.[1] ?? auth?.datos?.docType} ${auth?.datos?.docNumber ?? ''}` : 'Sin registrar']] as const).map(([k, v]) => (
+            {([
+              [tipoCuenta === 'empresa' ? 'Razón social' : 'Nombre', auth?.datos?.nombre || nombre],
+              ['Tipo de operador', tipoCuenta === 'empresa' ? 'Empresa' : 'Persona natural'],
+              ['Correo', String(cu.email ?? '')], ['ID Lincoin', codigo], ['Cuenta', 'Lincoin · pesos colombianos (COP)'],
+              ['Documento', auth?.datos?.docType ? `${TIPOS_DOC.find(t => t[0] === auth?.datos?.docType)?.[1] ?? auth?.datos?.docType} ${auth?.datos?.docNumber ?? ''}` : 'Sin registrar'],
+              ...(auth?.datos?.representante?.nombre ? [['Representante legal', auth.datos.representante.nombre]] : []),
+            ] as Array<[string, string]>).map(([k, v]) => (
               <div key={k} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 0', borderBottom: `1px solid ${C.borde}` }}>
                 <span style={{ fontSize: 13.5, color: C.sub }}>{k}</span>
                 <span className="flex items-center" style={{ gap: 8 }}>
@@ -1261,27 +1308,27 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           </div>
 
           <div style={{ marginTop: 22 }}>
-            <Etiqueta>EMPRESA QUE TE AUTORIZA</Etiqueta>
+            <Etiqueta>EMPRESA DE LA QUE ERES CLIENTE</Etiqueta>
             <div style={{ background: autorizada ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${autorizada ? 'rgba(74,222,128,0.3)' : C.borde}`, borderRadius: 12, padding: '14px 16px' }}>
               {autorizada ? (<>
                 <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{autorizada.nombre}</p><Pill verde>AUTORIZADA</Pill></div>
                 <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Tope mensual: <b style={{ color: C.text }}>{limiteMensual ? `${fmt(limiteMensual)} COP` : 'sin tope'}</b> · usado {fmt(retiradoMes)}</p>
                 {auth?.datos?.at && <p style={{ fontSize: 12.5, color: C.tenue, margin: '4px 0 0' }}>Desde {fecha(auth.datos.at)}</p>}
               </>) : pendiente ? (<>
-                <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{pendiente.nombre}</p><Pill>EN REVISIÓN</Pill></div>
-                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>La empresa está revisando tus datos y tus documentos. Cuando apruebe, aquí aparece tu tope.</p>
+                <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{pendiente.nombre}</p><Pill>{enCumplimiento ? 'EN CUMPLIMIENTO' : 'EN REVISIÓN'}</Pill></div>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{enCumplimiento ? 'Te aceptó como su cliente. El equipo de cumplimiento de Lincoin revisa tus documentos; cuando te apruebe, aquí aparece tu tope.' : 'La empresa está revisando tu solicitud. Después la revisa el equipo de cumplimiento de Lincoin.'}</p>
               </>) : (<>
                 <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Ninguna todavía</p><Pill naranja>PENDIENTE</Pill></div>
-                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{auth?.datos?.estado === 'rechazada' ? `${auth.datos.empresaNombre ?? 'La empresa'} rechazó tu solicitud. Revisa tus datos y vuelve a pedirla.` : auth?.datos?.estado === 'revocada' ? `${auth.datos.empresaNombre ?? 'La empresa'} retiró tu autorización. Puedes pedirla a otra empresa.` : 'Solo puedes recibir dinero de una empresa registrada que te haya autorizado.'}</p>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{auth?.datos?.estado === 'rechazada' ? (auth.datos.por === 'cumplimiento' ? `El equipo de cumplimiento de Lincoin no aprobó tu cuenta${auth.datos.motivo ? `: ${auth.datos.motivo}` : '.'} Corrige lo que haga falta y vuelve a pedirla.` : `${auth.datos.empresaNombre ?? 'La empresa'} no te aceptó como cliente. Revisa tus datos y vuelve a pedirla.`) : auth?.datos?.estado === 'revocada' ? (auth.datos.por === 'cumplimiento' ? `El equipo de cumplimiento de Lincoin retiró tu autorización${auth.datos.motivo ? `: ${auth.datos.motivo}` : '.'}` : `${auth.datos.empresaNombre ?? 'La empresa'} dejó de operar contigo. Puedes pedir autorización a otra empresa.`) : 'Solo puedes recibir dinero de una empresa registrada de la que seas cliente, cuando Cumplimiento te apruebe.'}</p>
               </>)}
             </div>
-            {pendiente && autorizada && <p style={{ fontSize: 12.5, color: C.sub, margin: '10px 0 0', lineHeight: 1.5 }}>También pediste autorización a <b style={{ color: C.text }}>{pendiente.nombre}</b>. Cuando apruebe, reemplaza a {autorizada.nombre}.</p>}
+            {pendiente && autorizada && <p style={{ fontSize: 12.5, color: C.sub, margin: '10px 0 0', lineHeight: 1.5 }}>También pediste autorización a <b style={{ color: C.text }}>{pendiente.nombre}</b>. Cuando Cumplimiento te apruebe con ella, reemplaza a {autorizada.nombre}.</p>}
           </div>
 
           <div style={{ marginTop: 22 }}>
             {autorizada ? (<>
               <BotonSecundario onClick={abrirAutorizacion} style={{ width: '100%' }}>Cambiar de empresa</BotonSecundario>
-              <p style={{ fontSize: 12.5, color: C.tenue, margin: '10px 0 0', lineHeight: 1.55 }}>Para operar con otra empresa escribes su ID y la nueva empresa te aprueba; en ese momento reemplaza a {autorizada.nombre}. No puedes quitar tu empresa actual sin haber puesto la nueva: nunca te quedas sin empresa por el camino.</p>
+              <p style={{ fontSize: 12.5, color: C.tenue, margin: '10px 0 0', lineHeight: 1.55 }}>Para operar con otra empresa escribes su ID; ella te acepta, Cumplimiento te aprueba y en ese momento reemplaza a {autorizada.nombre}. No puedes quitar tu empresa actual sin haber puesto la nueva: nunca te quedas sin empresa por el camino.</p>
             </>) : (
               <BotonPrimario onClick={abrirAutorizacion} style={{ width: '100%' }}>{pendiente ? 'Pedir a otra empresa' : 'Pedir autorización'}</BotonPrimario>
             )}
@@ -1297,77 +1344,107 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       )}
 
       {panel === 'autorizacion' && (
-        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy te autoriza ${autorizada.nombre}. La nueva empresa la reemplaza cuando apruebe.` : 'La empresa revisa tus datos y tus documentos, y te aprueba con un tope mensual.'} onCerrar={cerrarPanel}>
+        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy operas con ${autorizada.nombre}. La nueva empresa la reemplaza cuando Cumplimiento te apruebe.` : 'Tu empresa te acepta como su cliente y el equipo de cumplimiento de Lincoin revisa tus documentos y fija tu tope mensual.'} onCerrar={cerrarPanel}>
           {solListo ? (
             <div style={{ textAlign: 'center', padding: '30px 0' }}>
               <span style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', display: 'grid', placeItems: 'center', margin: '0 auto' }}><Check size={28} color={C.verde} /></span>
               <p style={{ fontSize: 20, fontWeight: 800, margin: '18px 0 0' }}>Solicitud enviada</p>
-              <p style={{ fontSize: 14, color: C.sub, margin: '8px 0 0', lineHeight: 1.5 }}>{solListo} ya la tiene. Cuando la apruebe, tu cuenta se actualiza sola; no hace falta recargar.</p>
+              <p style={{ fontSize: 14, color: C.sub, margin: '8px 0 0', lineHeight: 1.5 }}>{solListo} ya la tiene. Cuando te acepte, el equipo de cumplimiento de Lincoin revisa tus documentos. Tu cuenta se actualiza sola; no hace falta recargar.</p>
               <BotonPrimario onClick={() => setPanel(null)} style={{ marginTop: 24 }}>Listo</BotonPrimario>
             </div>
           ) : (
             <form onSubmit={enviarSolicitud} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div>
+                <Etiqueta>TE REGISTRAS COMO</Etiqueta>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {([['persona', 'Persona natural'], ['empresa', 'Empresa']] as const).map(([v, t]) => (
+                    <button key={v} type="button" onClick={() => { setSolTipo(v); setSolFuente(''); setSolError(null); }} disabled={solOcupado}
+                      style={{ fontFamily: FONT, fontSize: 14, fontWeight: 700, color: solTipo === v ? '#0A0B0A' : C.text, background: solTipo === v ? C.text : 'rgba(255,255,255,0.05)', border: `1px solid ${solTipo === v ? C.text : C.bordeFuerte}`, borderRadius: 11, padding: '11px 12px', cursor: 'pointer' }}>{t}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
                 <Etiqueta>ID LINCOIN DE LA EMPRESA</Etiqueta>
                 <Campo value={solEmpresa} onChange={e => setSolEmpresa(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8))} placeholder="Ej. A1B2C3" autoFocus style={{ fontFamily: MONO, fontSize: 20, fontWeight: 700, letterSpacing: '3px' }} />
-                <p style={{ fontSize: 12.5, color: C.tenue, margin: '6px 0 0' }}>La empresa lo copia desde su panel, en "Personas autorizadas".</p>
+                <p style={{ fontSize: 12.5, color: C.tenue, margin: '6px 0 0' }}>La empresa de la que eres cliente lo copia desde su panel, en "Clientes".</p>
               </div>
-              <div>
-                <Etiqueta>TU NOMBRE COMPLETO</Etiqueta>
-                <Campo value={solNombre} onChange={e => setSolNombre(e.target.value.slice(0, 120))} placeholder="Como aparece en tu documento" autoComplete="name" />
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 10 }}>
+              {esEmpresa ? (<>
                 <div>
-                  <Etiqueta>DOCUMENTO</Etiqueta>
-                  <Selector value={solDocType} onChange={e => setSolDocType(e.target.value)}>
-                    {TIPOS_DOC.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{k} · {n}</option>)}
-                  </Selector>
+                  <Etiqueta>RAZÓN SOCIAL</Etiqueta>
+                  <Campo value={solNombre} onChange={e => setSolNombre(e.target.value.slice(0, 120))} placeholder="Como aparece en la cámara de comercio" autoComplete="organization" />
                 </div>
                 <div>
-                  <Etiqueta>NÚMERO</Etiqueta>
-                  <Campo value={solDocNumber} onChange={e => setSolDocNumber(e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 30))} inputMode="numeric" placeholder="Sin puntos" />
+                  <Etiqueta>NIT</Etiqueta>
+                  <Campo value={solDocNumber} onChange={e => setSolDocNumber(e.target.value.replace(/\D/g, '').slice(0, 15))} inputMode="numeric" placeholder="Con el dígito de verificación, sin puntos" />
                 </div>
-              </div>
+                <div>
+                  <Etiqueta>REPRESENTANTE LEGAL</Etiqueta>
+                  <Campo value={solRepNombre} onChange={e => setSolRepNombre(e.target.value.slice(0, 120))} placeholder="Nombre completo, como aparece en su documento" />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 10, marginTop: 10 }}>
+                    <Selector value={solRepDocType} onChange={e => setSolRepDocType(e.target.value)} aria-label="Tipo de documento del representante">
+                      {TIPOS_DOC.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{k} · {n}</option>)}
+                    </Selector>
+                    <Campo value={solRepDocNumber} onChange={e => setSolRepDocNumber(e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 30))} inputMode="numeric" placeholder="Número, sin puntos" aria-label="Número de documento del representante" />
+                  </div>
+                </div>
+              </>) : (<>
+                <div>
+                  <Etiqueta>TU NOMBRE COMPLETO</Etiqueta>
+                  <Campo value={solNombre} onChange={e => setSolNombre(e.target.value.slice(0, 120))} placeholder="Como aparece en tu documento" autoComplete="name" />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 10 }}>
+                  <div>
+                    <Etiqueta>DOCUMENTO</Etiqueta>
+                    <Selector value={solDocType} onChange={e => setSolDocType(e.target.value)}>
+                      {TIPOS_DOC.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{k} · {n}</option>)}
+                    </Selector>
+                  </div>
+                  <div>
+                    <Etiqueta>NÚMERO</Etiqueta>
+                    <Campo value={solDocNumber} onChange={e => setSolDocNumber(e.target.value.replace(/[^0-9A-Za-z]/g, '').slice(0, 30))} inputMode="numeric" placeholder="Sin puntos" />
+                  </div>
+                </div>
+              </>)}
               <div>
-                <Etiqueta>FOTO SOSTENIENDO TU DOCUMENTO</Etiqueta>
+                <Etiqueta>{esEmpresa ? 'FOTO DEL REPRESENTANTE LEGAL SOSTENIENDO SU DOCUMENTO' : 'FOTO SOSTENIENDO TU DOCUMENTO'}</Etiqueta>
                 <label className="persona-sec" style={{ display: 'block', border: `1px dashed ${C.bordeFuerte}`, borderRadius: 12, padding: solFoto ? 8 : '22px 16px', textAlign: 'center', cursor: 'pointer', background: 'rgba(255,255,255,0.03)' }}>
                   <input type="file" accept="image/*" capture="user" onChange={e => elegirFoto(e.target.files?.[0])} style={{ display: 'none' }} />
-                  {solFoto ? <img src={solFoto} alt="Tu foto sosteniendo el documento" style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 8, display: 'block', margin: '0 auto' }} /> : (<>
+                  {solFoto ? <img src={solFoto} alt="Foto sosteniendo el documento" style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 8, display: 'block', margin: '0 auto' }} /> : (<>
                     <User size={26} color={C.sub} strokeWidth={1.6} style={{ margin: '0 auto' }} />
                     <p style={{ fontSize: 14, fontWeight: 700, margin: '10px 0 0' }}>Tomar o subir la foto</p>
-                    <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>Tu cara y el documento al frente, con buena luz. Que se lea el nombre y el número.</p>
+                    <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{esEmpresa ? 'La cara del representante y su documento al frente' : 'Tu cara y el documento al frente'}, con buena luz. Que se lea el nombre y el número.</p>
                   </>)}
                 </label>
                 {solFoto && <button type="button" onClick={() => setSolFoto(null)} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', padding: 0, marginTop: 8, cursor: 'pointer' }}>Tomar otra</button>}
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Etiqueta>{`TU ${docNombre.toUpperCase()} POR LAS DOS CARAS`}</Etiqueta>
+                <Etiqueta>{esEmpresa ? `${docNombre.toUpperCase()} DEL REPRESENTANTE POR LAS DOS CARAS` : `TU ${docNombre.toUpperCase()} POR LAS DOS CARAS`}</Etiqueta>
                 <Adjunto titulo={esPasaporte ? 'Página de la foto' : 'Frente'} ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_frente} onElegir={f => elegirAdjunto('doc_frente', f)} apagado={solOcupado} />
                 <Adjunto titulo={esPasaporte ? 'Página de la firma' : 'Reverso'} ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_reverso} onElegir={f => elegirAdjunto('doc_reverso', f)} apagado={solOcupado} />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Etiqueta>DOCUMENTOS TRIBUTARIOS</Etiqueta>
-                <Adjunto titulo="RUT" ayuda="PDF de la DIAN o foto, actualizado" archivo={solArchivos.rut} onElegir={f => elegirAdjunto('rut', f)} apagado={solOcupado} />
-                <Adjunto titulo="Cámara de comercio" ayuda="Certificado de matrícula mercantil, de menos de 30 días" archivo={solArchivos.camara_comercio} onElegir={f => elegirAdjunto('camara_comercio', f)} apagado={solOcupado} />
+                <Etiqueta>{esEmpresa ? 'DOCUMENTOS DE LA EMPRESA' : 'DOCUMENTOS TRIBUTARIOS'}</Etiqueta>
+                <Adjunto titulo={esEmpresa ? 'RUT de la empresa' : 'RUT'} ayuda="PDF de la DIAN o foto, actualizado" archivo={solArchivos.rut} onElegir={f => elegirAdjunto('rut', f)} apagado={solOcupado} />
+                <Adjunto titulo="Cámara de comercio" ayuda={esEmpresa ? 'Certificado de existencia y representación legal, de menos de 30 días' : 'Certificado de matrícula mercantil, de menos de 30 días'} archivo={solArchivos.camara_comercio} onElegir={f => elegirAdjunto('camara_comercio', f)} apagado={solOcupado} />
                 <Adjunto titulo="Declaración de renta" ayuda="La del último año gravable" archivo={solArchivos.declaracion_renta} onElegir={f => elegirAdjunto('declaracion_renta', f)} apagado={solOcupado} />
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Etiqueta>ORIGEN DE TUS FONDOS</Etiqueta>
-                <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: '-2px 0 0' }}>¿De dónde viene el dinero que vas a manejar en Lincoin?</p>
+                <Etiqueta>{esEmpresa ? 'ORIGEN DE LOS FONDOS' : 'ORIGEN DE TUS FONDOS'}</Etiqueta>
+                <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: '-2px 0 0' }}>{esEmpresa ? '¿De dónde viene el dinero que la empresa va a manejar en Lincoin?' : '¿De dónde viene el dinero que vas a manejar en Lincoin?'}</p>
                 <Selector value={solFuente} onChange={e => { setSolFuente(e.target.value); setSolError(null); }} style={{ color: solFuente ? C.text : C.sub }}>
                   <option value="" style={{ color: '#000' }}>Elige una opción…</option>
-                  {FUENTES_FONDOS.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{n}</option>)}
+                  {FUENTES_FONDOS[solTipo].map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{n}</option>)}
                 </Selector>
-                <Campo value={solDetalle} onChange={e => setSolDetalle(e.target.value.slice(0, 300))} placeholder={solFuente === 'otro' ? 'Cuéntanos de dónde viene' : 'Detalle (opcional): empresa, actividad o negocio'} />
-                <Casilla marcada={solLicito} onCambiar={v => { setSolLicito(v); setSolError(null); }}>Declaro que mis recursos provienen de actividades lícitas y que la información y los documentos que entrego son verdaderos.</Casilla>
+                <Campo value={solDetalle} onChange={e => setSolDetalle(e.target.value.slice(0, 300))} placeholder={solFuente === 'otro' ? 'Cuéntanos de dónde viene' : esEmpresa ? 'Detalle (opcional): actividad, clientes o socios' : 'Detalle (opcional): empresa, actividad o negocio'} />
+                <Casilla marcada={solLicito} onCambiar={v => { setSolLicito(v); setSolError(null); }}>{esEmpresa ? 'Declaro que los recursos de la empresa provienen de actividades lícitas y que la información y los documentos que entrego son verdaderos.' : 'Declaro que mis recursos provienen de actividades lícitas y que la información y los documentos que entrego son verdaderos.'}</Casilla>
               </div>
 
               {solError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{solError}</p>}
               <BotonPrimario type="submit" disabled={solOcupado}>{solOcupado ? (solProgreso ?? 'Enviando…') : 'Enviar solicitud'}</BotonPrimario>
-              <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Tus documentos solo los ven la empresa a la que le pides autorización y el equipo de cumplimiento de Lincoin.</p>
+              <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Los documentos los revisa el equipo de cumplimiento de Lincoin. Tu empresa ve tus datos y tu foto.</p>
             </form>
           )}
         </Drawer>

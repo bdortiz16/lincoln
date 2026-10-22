@@ -100,14 +100,14 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
-            {/* PERSONAS */}
+            {/* OPERADORES: los clientes de nuestros clientes (cuentas 'personal') */}
             <button onClick={onSelectPersonal} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <User className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
               </div>
-              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Personas</h3>
+              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Operadores</h3>
               <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
-                Tu cuenta en pesos. Recibe saldo de las empresas con las que trabajas usando tu ID Lincoin.
+                Para los clientes de las empresas que usan Lincoin, personas o empresas. Recibe saldo con tu ID Lincoin.
               </p>
               <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
                 Ingresar <ChevronRight size={15} />

@@ -34,6 +34,31 @@ export async function pedirAdmin(body: any): Promise<any> {
   return d;
 }
 
+// Llamada a la función `autorizaciones` (operadores: los clientes de
+// nuestros clientes) con la sesión del admin.
+export async function pedirAutorizaciones(body: Record<string, unknown>): Promise<any> {
+  const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+  const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+  let jwt: string | null = null;
+  try {
+    const k = Object.keys(localStorage).find((key) => key.startsWith('sb-') && key.endsWith('-auth-token'));
+    if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
+  } catch { /* sin sesión */ }
+  try {
+    const r = await fetch(`${SURL}/functions/v1/autorizaciones`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(45000),
+    });
+    const t = await r.text();
+    if (!t) return { ok: false, error: `El servicio no respondió (HTTP ${r.status}).` };
+    try { return JSON.parse(t); } catch { return { ok: false, error: `Respuesta no válida (HTTP ${r.status}).` }; }
+  } catch (e: any) {
+    return { ok: false, error: e?.name === 'TimeoutError' ? 'El servicio tardó demasiado en responder.' : 'No se pudo contactar el servicio.' };
+  }
+}
+
 // Llamada a la función `gowd` (cuentas en Brasil) con la sesión del admin.
 export async function pedirGowd(body: Record<string, unknown>): Promise<any> {
   const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';

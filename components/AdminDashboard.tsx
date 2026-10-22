@@ -99,11 +99,12 @@ import { AdminReconcile } from './AdminReconcile';
 import { AdminContabilidad } from './AdminContabilidad';
 import { AdminLimitesEnvio } from './AdminLimitesEnvio';
 import { AdminCupos } from './AdminCupos';
+import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
-import { pedirAdmin } from './adminApi';
+import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
@@ -230,7 +231,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 // Las dos secciones que agrupan varias pantallas. El orden es el de las
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
-const GRUPO_CUMP = ['compliance', 'cupos', 'risk', 'tusdatos', 'kumplo'];
+const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'tusdatos', 'kumplo'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
@@ -238,7 +239,7 @@ const TAB_TITLES: Record<string, string> = {
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
-  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', cupos: 'Cupos por beneficiario',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', cupos: 'Cupos por beneficiario', operadores: 'Operadores',
   otcCierres: 'Cierres OTC', gowd: 'Gowd · Brasil',
 };
 
@@ -495,7 +496,7 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
 };
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'comando' | 'otcCierres' | 'gowd'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>('overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -1413,6 +1414,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
     const t = setInterval(() => { if (!document.hidden) leer(); }, 60000);
     return () => { vivo = false; clearInterval(t); };
   }, [enCupos]);
+
+  // Operadores (clientes de nuestros clientes) que su empresa ya aceptó y
+  // esperan a Cumplimiento: revisar documentos, fijar tope y aprobar.
+  const [operadoresPend, setOperadoresPend] = useState(0);
+  const [operadoresVer, setOperadoresVer] = useState(0);
+  const enOperadores = activeTab === 'operadores';
+  useEffect(() => {
+    let vivo = true;
+    const leer = async () => {
+      try {
+        const d = await pedirAutorizaciones({ action: 'admin_operadores' });
+        if (vivo && d?.ok) setOperadoresPend(Array.isArray(d.pendientes) ? d.pendientes.length : 0);
+      } catch { /* el badge no puede tumbar el panel */ }
+    };
+    leer();
+    const t = setInterval(() => { if (!document.hidden) leer(); }, 60000);
+    return () => { vivo = false; clearInterval(t); };
+  }, [enOperadores, operadoresVer]);
 
   // Una cuenta BLOQUEADA o en LISTA NEGRA no cuenta como pendiente: no hay nada
   // que aprobarle (ya le negaste el acceso), y aparecer ahí solo ensucia la
@@ -4832,7 +4851,7 @@ const renderDesign = () => (
                                 una: adentro llevan sus pestañas. Antes eran
                                 siete renglones sueltos. */}
                             <AdminSidebarItem icon={Shield} label="Seguridad" active={GRUPO_SEG.includes(activeTab)} onClick={() => navTo('security')} />
-                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend > 0 ? cuposPend : undefined} onClick={() => navTo(cuposPend > 0 ? 'cupos' : 'compliance')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo(operadoresPend > 0 ? 'operadores' : cuposPend > 0 ? 'cupos' : 'compliance')} />
                             <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
                             <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
@@ -4915,6 +4934,9 @@ const renderDesign = () => (
                                             border: `1px solid ${on ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)'}`,
                                         }}>
                                         {SUBTAB_TITLES[t] ?? TAB_TITLES[t] ?? t}
+                                        {t === 'operadores' && operadoresPend > 0 && (
+                                            <span style={{ marginLeft: 7, fontSize: 10.5, fontWeight: 800, color: '#070808', background: '#FBBF24', borderRadius: 999, padding: '1px 7px' }}>{operadoresPend}</span>
+                                        )}
                                         {t === 'cupos' && cuposPend > 0 && (
                                             <span style={{ marginLeft: 7, fontSize: 10.5, fontWeight: 800, color: '#070808', background: '#FBBF24', borderRadius: 999, padding: '1px 7px' }}>{cuposPend}</span>
                                         )}
@@ -4991,6 +5013,7 @@ const renderDesign = () => (
                     dentro de Cumplimiento, para que las solicitudes de aumento
                     no queden al fondo de la bandeja de casos. */}
                 {activeTab === 'cupos' && <div className="animate-in fade-in duration-300"><AdminCupos /></div>}
+                {activeTab === 'operadores' && <div className="animate-in fade-in duration-300"><AdminOperadores onCambio={() => setOperadoresVer(v => v + 1)} /></div>}
                 {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
                 {activeTab === 'gasfree' && (<>

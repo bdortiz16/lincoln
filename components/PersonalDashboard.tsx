@@ -285,7 +285,7 @@ const VIEW_PATHS: Record<string, string> = {
   servicios: '/empresas_servicios',
   mouv: '/empresas_mesa-otc',
   contactos: '/empresas_beneficiarios',
-  clientes: '/empresas_personas_autorizadas',
+  clientes: '/empresas_clientes',
   contabilidad: '/empresas_contabilidad',
   compliance: '/empresas_compliance',
   walletsGasfree: '/empresas_wallets',
@@ -293,7 +293,7 @@ const VIEW_PATHS: Record<string, string> = {
 const RUTAS_VIEJAS: Record<string, string> = {
   '/inicio': 'dashboard', '/movimientos': 'movements', '/billetera': 'wallet-detail', '/perfil': 'profile',
   '/notificaciones': 'notifications', '/invita': 'referrals', '/aliados': 'affiliates', '/ajustes': 'settings',
-  '/servicios': 'servicios', '/beneficiarios': 'contactos', '/clientes': 'clientes', '/empresas_clientes': 'clientes', '/contabilidad': 'contabilidad',
+  '/servicios': 'servicios', '/beneficiarios': 'contactos', '/clientes': 'clientes', '/empresas_personas_autorizadas': 'clientes', '/contabilidad': 'contabilidad',
   '/compliance': 'compliance', '/wallets': 'walletsGasfree',
 };
 // 'mouv' es la unica vista con DOS entradas distintas —Dispersar por Bre-B y
@@ -4601,8 +4601,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       {/* Beneficiarios, Contabilidad y Compliance son tres vistas de la misma
           lista y comparten todo lo de abajo: la verificación de antecedentes,
           los movimientos, los modales. Una sola sección con tres caras. */}
-      {/* Personas autorizadas: las cuentas Persona que operan con la empresa
-          (solicitudes con foto, tope mensual, carga de saldo en COP). */}
+      {/* Clientes: los operadores de la empresa (clientes de nuestros clientes).
+          La empresa los acepta, Cumplimiento los aprueba y fija el tope, y
+          desde aquí se les carga saldo en COP. */}
       {activeView === 'clientes' && (
           <ClientesSection
               showToast={showToast}

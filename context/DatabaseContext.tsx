@@ -2332,6 +2332,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         notifications: [],
         ownReferralCode: id.slice(-6).toUpperCase(),
         referralCode: data.referralCode,
+        // Operadores: persona natural o empresa (lo eligen al registrarse).
+        ...(data.tipoOperador ? { tipoOperador: data.tipoOperador } : {}),
       },
     };
 

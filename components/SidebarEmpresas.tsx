@@ -128,7 +128,7 @@ export const SidebarEmpresas: React.FC<Props> = ({
     { clave: 'movements', etiqueta: 'Movimientos', icono: I.reloj, activo: activeView === 'movements', onClick: ir('movements') },
     { clave: 'contactos', etiqueta: 'Beneficiarios', icono: I.personas, activo: activeView === 'contactos', onClick: ir('contactos') },
     // Clientes (PSP): las personas a las que la empresa les carga saldo por su ID Lincoin.
-    { clave: 'clientes', etiqueta: 'Personas autorizadas', icono: I.clientes, activo: activeView === 'clientes', onClick: ir('clientes') },
+    { clave: 'clientes', etiqueta: 'Clientes', icono: I.clientes, activo: activeView === 'clientes', onClick: ir('clientes') },
     // Contabilidad y Compliance: las dos lecturas de la lista de beneficiarios
     // — cuánta plata se le movió a cada quien, y quién puede recibirla.
     { clave: 'contabilidad', etiqueta: 'Contabilidad', icono: I.libro, activo: activeView === 'contabilidad', onClick: ir('contabilidad') },

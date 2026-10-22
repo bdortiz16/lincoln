@@ -1429,7 +1429,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   <p className="text-xs text-green-500 font-bold uppercase mb-0.5">Enviando</p>
                                   <p className="text-2xl font-extrabold text-green-700">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
                               </div>
-                              {/* Personas autorizadas por la empresa: salen primero, con un
+                              {/* Clientes aprobados de la empresa: salen primero, con un
                                   toque se carga su ID. Son a quienes la empresa les paga. */}
                               {(() => {
                                   const cu: any = currentUser ?? {};
@@ -1438,7 +1438,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   if (!conCodigo.length) return null;
                                   return (
                                       <div>
-                                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-2">Tus personas autorizadas</p>
+                                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-2">Tus clientes</p>
                                           <div className="flex flex-wrap gap-2">
                                               {conCodigo.slice(0, 12).map((a: any) => (
                                                   <button key={a.id} type="button" onClick={() => handlePayLookup(String(a.codigo))}

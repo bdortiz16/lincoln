@@ -24,9 +24,9 @@ interface LoginProps {
 // por dónde debe entrar. Devuelve el mensaje, o null si sí corresponde.
 export const errorDePortal = (portal: string, rolCuenta?: string): string | null => {
   if (!rolCuenta || rolCuenta === 'admin' || portal === 'contador' || rolCuenta === portal) return null;
-  if (rolCuenta === 'personal') return 'Esta cuenta es de Personas. Este es el portal de Empresas: entra por Personas en lincoin.me/ingresar_personas.';
+  if (rolCuenta === 'personal') return 'Esta cuenta es de Operadores. Este es el portal de Empresas: entra por Operadores en lincoin.me/ingresar_personas.';
   if (rolCuenta === 'contador') return 'Esta cuenta es de contador. Entra por Empresas → Contabilidad.';
-  return 'Esta cuenta es de Empresas. Este es el portal de Personas: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
+  return 'Esta cuenta es de Empresas. Este es el portal de Operadores: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
 };
 
 export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business', errorInicial = null }) => {

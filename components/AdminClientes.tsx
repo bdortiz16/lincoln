@@ -1333,13 +1333,13 @@ const Kyc: React.FC<any> = ({ sel, verifyUser, refreshData, showToast, verificad
         )}
       </Tarjeta>
 
-      {/* Personas autorizadas por esta empresa (modelo PSP): a quiénes les
-          puede cargar saldo y pagar, con el tope mensual que les fijó. Lo
-          escribe el servidor (función autorizaciones); acá solo se lee. */}
+      {/* Clientes de esta empresa (operadores, modelo PSP): a quiénes les
+          puede cargar saldo y pagar, con el tope que les fijó Cumplimiento.
+          Lo escribe el servidor (función autorizaciones); acá solo se lee. */}
       {(Array.isArray(raw.personasAutorizadas) && raw.personasAutorizadas.length > 0) || (Array.isArray(raw.personasSolicitudes) && raw.personasSolicitudes.length > 0) ? (
         <Tarjeta>
-          <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Personas autorizadas</p>
-          <p style={{ fontSize: 12, color: C.sub, margin: '4px 0 0' }}>Personas a las que esta empresa puede cargar saldo y pagar, y su tope mensual de retiro.</p>
+          <p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Clientes (operadores)</p>
+          <p style={{ fontSize: 12, color: C.sub, margin: '4px 0 0' }}>Los clientes de esta empresa: los aprobados por Cumplimiento (con su tope mensual) y los que esperan. Se revisan en Cumplimiento → Operadores.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
             {(raw.personasAutorizadas ?? []).map((a: any) => (
               <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '9px 12px' }}>
@@ -1359,7 +1359,7 @@ const Kyc: React.FC<any> = ({ sel, verifyUser, refreshData, showToast, verificad
                   <p style={{ fontSize: 13, fontWeight: 700, margin: 0, color: C.text }}>{s.nombre}</p>
                   <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0' }}>{s.docType} {s.docNumber} · {s.email}</p>
                 </div>
-                <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: '1px', color: C.sub, margin: 0 }}>PENDIENTE</p>
+                <p style={{ fontSize: 11, fontWeight: 800, letterSpacing: '1px', color: C.sub, margin: 0 }}>{s.estado === 'cumplimiento' ? 'EN CUMPLIMIENTO' : 'ESPERA A LA EMPRESA'}</p>
               </div>
             ))}
           </div>
