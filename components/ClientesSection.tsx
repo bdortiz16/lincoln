@@ -170,10 +170,16 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
       if (!ok) { setErrorCarga('Código incorrecto. Intenta de nuevo.'); setCodigo2fa(''); return; }
       const { data, error } = await supabase.rpc('lincoin_cargar_cliente', { p_codigo: cargaPara.codigo, p_monto: montoNum, p_nota: nota.trim() || null });
       if (error) {
+        // "does not exist" no alcanza para decir que falta la función: la
+        // versión vieja SÍ estaba y fallaba por dentro con "function
+        // isfinite(numeric) does not exist", y se leía como si no existiera.
         const m = String(error.message ?? '');
-        setErrorCarga(/could not find|does not exist|schema cache|404/i.test(m)
+        const code = String((error as any).code ?? '');
+        setErrorCarga(code === 'PGRST202' || /could not find the function/i.test(m)
           ? 'La función de carga todavía no está en la base. Falta correr la migración 2026_personas_autorizadas.sql en Supabase.'
-          : m);
+          : code === '42883' || /isfinite/i.test(m)
+            ? 'La función de carga de la base es una versión vieja con un error. Corre de nuevo 2026_personas_autorizadas.sql en Supabase.'
+            : m);
         return;
       }
       if (data?.error) { setErrorCarga(String(data.error) + (data.disponible != null ? ` (disponible: ${fmtCop(Number(data.disponible))})` : '')); return; }

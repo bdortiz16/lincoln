@@ -515,7 +515,7 @@ BEGIN
    FOR UPDATE;
 
   IF v_empresa_rol IS DISTINCT FROM 'business' THEN
-    RETURN jsonb_build_object('error', 'Solo una cuenta Empresa puede cargar saldo a personas');
+    RETURN jsonb_build_object('error', 'Solo una cuenta Empresa puede cargar saldo a sus clientes');
   END IF;
 
   SELECT id::text, full_name, role, COALESCE(balances, '{}'::jsonb)
@@ -531,11 +531,11 @@ BEGIN
     RETURN jsonb_build_object('error', 'No puedes cargarte saldo a ti mismo');
   END IF;
   IF v_cliente_rol IS DISTINCT FROM 'personal' THEN
-    RETURN jsonb_build_object('error', 'Ese ID no es de una cuenta Persona');
+    RETURN jsonb_build_object('error', 'Ese ID no es de una cuenta de operador');
   END IF;
 
   IF NOT (COALESCE(v_empresa_raw -> 'personasAutorizadas', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', v_cliente_id))) THEN
-    RETURN jsonb_build_object('error', 'Esa persona no está autorizada por tu empresa. Apruébala en Personas autorizadas.');
+    RETURN jsonb_build_object('error', 'Ese cliente todavía no está aprobado para operar con tu empresa. Revisa su estado en Clientes.');
   END IF;
 
   FOREACH v_riel IN ARRAY ARRAY['COP', 'COP_BREB', 'COP_ACH'] LOOP
@@ -571,7 +571,7 @@ BEGIN
     v_tx_empresa, v_empresa_id::uuid, 'pay_sent', v_monto, 'COP', 'Completado',
     jsonb_build_object(
       'psp', true,
-      'title', 'Carga de saldo a persona autorizada',
+      'title', 'Carga de saldo a cliente',
       'beneficiaryName', v_cliente_nombre,
       'recipientName', v_cliente_nombre,
       'counterpartyId', v_cliente_id,
@@ -676,10 +676,10 @@ BEGIN
 
   IF v_recipient_role = 'personal' THEN
     IF v_sender_role IS DISTINCT FROM 'business' THEN
-      RETURN jsonb_build_object('error', 'Una persona solo puede recibir dinero de una empresa registrada en Lincoin.');
+      RETURN jsonb_build_object('error', 'Ese ID es de un operador: solo recibe dinero de la empresa con la que opera.');
     END IF;
     IF NOT (COALESCE(v_sender_raw -> 'personasAutorizadas', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', v_recipient_id))) THEN
-      RETURN jsonb_build_object('error', 'Esa persona no está autorizada por tu empresa. Apruébala en Personas autorizadas.');
+      RETURN jsonb_build_object('error', 'Ese cliente todavía no está aprobado para operar con tu empresa. Revisa su estado en Clientes.');
     END IF;
   END IF;
 

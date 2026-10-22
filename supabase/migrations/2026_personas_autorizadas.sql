@@ -1,21 +1,33 @@
--- ============================================================================
--- PERSONAS AUTORIZADAS: una persona solo recibe dinero de la empresa que la
--- autorizo, y esa empresa le fija su tope mensual.
--- ============================================================================
---
--- El vinculo vive en la fila de la EMPRESA (raw_data.personasAutorizadas,
--- lista de {id, nombre, docType, docNumber, topeMensual, at}) y solo lo
--- escribe el servidor (funcion edge "autorizaciones"). La persona lleva un
--- espejo en raw_data.empresaAutorizante = {id, nombre}, tambien escrito por
--- el servidor, para que su portal sepa de quien depende.
---
--- Este archivo reemplaza dos funciones:
---   1. lincoin_cargar_cliente: la carga de saldo exige que la persona este
---      autorizada por la empresa que carga.
---   2. cuypay_transfer (pago entre usuarios por ID): una persona solo puede
---      recibir de una empresa que la autorizo; ademas ahora deja los dos
---      movimientos en transactions (antes movia saldo sin registro).
--- ============================================================================
+CREATE OR REPLACE FUNCTION public.motivo_bloqueo(p_uid text)
+RETURNS text
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $bloqueo$
+DECLARE
+  f jsonb;
+BEGIN
+  SELECT to_jsonb(u) INTO f FROM public.users u WHERE u.id::text = p_uid;
+  IF f IS NULL THEN
+    RETURN 'Usuario no encontrado';
+  END IF;
+  IF f ->> 'is_blocked' = 'true' OR f -> 'raw_data' ->> 'isBlocked' = 'true' THEN
+    RETURN 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.';
+  END IF;
+  IF f -> 'raw_data' ->> 'blacklisted' = 'true' THEN
+    RETURN 'Esta cuenta está en la lista negra y no puede realizar operaciones.';
+  END IF;
+  IF f ->> 'compliance_hold' = 'true' THEN
+    RETURN 'Tu cuenta tiene una revisión de cumplimiento pendiente. Mientras tanto no puede enviar dinero.';
+  END IF;
+  RETURN NULL;
+END;
+$bloqueo$;
+
+REVOKE ALL ON FUNCTION public.motivo_bloqueo(text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.motivo_bloqueo(text) TO service_role;
+
 
 CREATE OR REPLACE FUNCTION public.lincoin_cargar_cliente(
   p_codigo TEXT,
@@ -53,9 +65,13 @@ BEGIN
   IF v_empresa_id IS NULL THEN
     RETURN jsonb_build_object('error', 'No autorizado');
   END IF;
+  IF public.motivo_bloqueo(v_empresa_id) IS NOT NULL THEN
+    RETURN jsonb_build_object('error', public.motivo_bloqueo(v_empresa_id));
+  END IF;
+  PERFORM set_config('lincoin.rpc_confiable', 'on', true);
 
   v_monto := round(p_monto, 2);
-  IF v_monto IS NULL OR v_monto <= 0 OR NOT isfinite(v_monto) THEN
+  IF v_monto IS NULL OR v_monto <= 0 OR v_monto >= 1e15 THEN
     RETURN jsonb_build_object('error', 'Monto inválido');
   END IF;
   v_nota := NULLIF(left(btrim(COALESCE(p_nota, '')), 140), '');
@@ -67,7 +83,7 @@ BEGIN
    FOR UPDATE;
 
   IF v_empresa_rol IS DISTINCT FROM 'business' THEN
-    RETURN jsonb_build_object('error', 'Solo una cuenta Empresa puede cargar saldo a personas');
+    RETURN jsonb_build_object('error', 'Solo una cuenta Empresa puede cargar saldo a sus clientes');
   END IF;
 
   SELECT id::text, full_name, role, COALESCE(balances, '{}'::jsonb)
@@ -83,12 +99,11 @@ BEGIN
     RETURN jsonb_build_object('error', 'No puedes cargarte saldo a ti mismo');
   END IF;
   IF v_cliente_rol IS DISTINCT FROM 'personal' THEN
-    RETURN jsonb_build_object('error', 'Ese ID no es de una cuenta Persona');
+    RETURN jsonb_build_object('error', 'Ese ID no es de una cuenta de operador');
   END IF;
 
-  -- La persona tiene que estar AUTORIZADA por esta empresa.
   IF NOT (COALESCE(v_empresa_raw -> 'personasAutorizadas', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', v_cliente_id))) THEN
-    RETURN jsonb_build_object('error', 'Esa persona no está autorizada por tu empresa. Apruébala en Personas autorizadas.');
+    RETURN jsonb_build_object('error', 'Ese cliente todavía no está aprobado para operar con tu empresa. Revisa su estado en Clientes.');
   END IF;
 
   FOREACH v_riel IN ARRAY ARRAY['COP', 'COP_BREB', 'COP_ACH'] LOOP
@@ -124,7 +139,7 @@ BEGIN
     v_tx_empresa, v_empresa_id::uuid, 'pay_sent', v_monto, 'COP', 'Completado',
     jsonb_build_object(
       'psp', true,
-      'title', 'Carga de saldo a persona autorizada',
+      'title', 'Carga de saldo a cliente',
       'beneficiaryName', v_cliente_nombre,
       'recipientName', v_cliente_nombre,
       'counterpartyId', v_cliente_id,
@@ -167,10 +182,6 @@ REVOKE ALL ON FUNCTION public.lincoin_cargar_cliente(TEXT, NUMERIC, TEXT) FROM P
 GRANT EXECUTE ON FUNCTION public.lincoin_cargar_cliente(TEXT, NUMERIC, TEXT) TO authenticated;
 
 
--- ─── Pago entre usuarios por ID ─────────────────────────────────────────────
--- Reglas nuevas: una PERSONA solo recibe de una EMPRESA que la autorizo (ni
--- de otra persona, ni de una empresa que no la haya aprobado). Y cada pago
--- deja sus dos movimientos.
 CREATE OR REPLACE FUNCTION public.cuypay_transfer(
   p_sender_id      TEXT,
   p_recipient_code TEXT,
@@ -196,8 +207,12 @@ BEGIN
   IF auth.uid() IS NULL OR auth.uid()::text <> p_sender_id THEN
     RETURN jsonb_build_object('error', 'No autorizado');
   END IF;
+  IF public.motivo_bloqueo(p_sender_id) IS NOT NULL THEN
+    RETURN jsonb_build_object('error', public.motivo_bloqueo(p_sender_id));
+  END IF;
+  PERFORM set_config('lincoin.rpc_confiable', 'on', true);
 
-  IF p_amount IS NULL OR p_amount <= 0 OR NOT isfinite(p_amount) THEN
+  IF p_amount IS NULL OR p_amount <= 0 OR p_amount >= 1e15 THEN
     RETURN jsonb_build_object('error', 'Monto inválido');
   END IF;
 
@@ -221,20 +236,18 @@ BEGIN
     RETURN jsonb_build_object('error', 'Usuario no encontrado');
   END IF;
 
-  -- Bloquea la fila del emisor: saldo y debito quedan serializados.
   SELECT full_name, role, COALESCE(raw_data, '{}'::jsonb), COALESCE((balances->>p_currency)::NUMERIC, 0)
     INTO v_sender_name, v_sender_role, v_sender_raw, v_sender_bal
     FROM public.users
    WHERE id::text = p_sender_id
    FOR UPDATE;
 
-  -- Una persona solo recibe de la empresa que la autorizo.
   IF v_recipient_role = 'personal' THEN
     IF v_sender_role IS DISTINCT FROM 'business' THEN
-      RETURN jsonb_build_object('error', 'Una persona solo puede recibir dinero de una empresa registrada en Lincoin.');
+      RETURN jsonb_build_object('error', 'Ese ID es de un operador: solo recibe dinero de la empresa con la que opera.');
     END IF;
     IF NOT (COALESCE(v_sender_raw -> 'personasAutorizadas', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', v_recipient_id))) THEN
-      RETURN jsonb_build_object('error', 'Esa persona no está autorizada por tu empresa. Apruébala en Personas autorizadas.');
+      RETURN jsonb_build_object('error', 'Ese cliente todavía no está aprobado para operar con tu empresa. Revisa su estado en Clientes.');
     END IF;
   END IF;
 
