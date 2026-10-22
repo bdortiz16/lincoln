@@ -1,3 +1,45 @@
+DO $candado$
+DECLARE
+  v_guard regprocedure := to_regprocedure('public.guard_users_sensitive_cols()');
+BEGIN
+  IF v_guard IS NOT NULL AND position('rpc_confiable' in pg_get_functiondef(v_guard)) = 0 THEN
+    EXECUTE $f$
+CREATE OR REPLACE FUNCTION public.guard_users_sensitive_cols()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $guard$
+DECLARE
+  caller UUID := auth.uid();
+  sensitive TEXT[] := ARRAY[
+    'role', 'admin_role', 'kyc_status', 'kyc_verified_at',
+    'balances', 'crypto_balances', 'is_blocked',
+    'assigned_currency', 'didit_session_id'
+  ];
+  col TEXT;
+  old_val TEXT;
+  new_val TEXT;
+BEGIN
+  IF current_setting('lincoin.rpc_confiable', true) = 'on' THEN RETURN NEW; END IF;
+  IF caller IS NULL THEN RETURN NEW; END IF;
+  IF public.is_any_admin() THEN RETURN NEW; END IF;
+  FOREACH col IN ARRAY sensitive LOOP
+    old_val := to_jsonb(OLD) ->> col;
+    new_val := to_jsonb(NEW) ->> col;
+    IF old_val IS DISTINCT FROM new_val THEN
+      RAISE EXCEPTION 'Cannot change column "%" (sensitive, admin-only)', col;
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END
+$guard$
+$f$;
+  END IF;
+END
+$candado$;
+
+
 CREATE OR REPLACE FUNCTION public.motivo_bloqueo(p_uid text)
 RETURNS text
 LANGUAGE plpgsql

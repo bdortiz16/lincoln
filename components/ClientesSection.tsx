@@ -177,8 +177,8 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
         const code = String((error as any).code ?? '');
         setErrorCarga(code === 'PGRST202' || /could not find the function/i.test(m)
           ? 'La función de carga todavía no está en la base. Falta correr la migración 2026_personas_autorizadas.sql en Supabase.'
-          : code === '42883' || /isfinite/i.test(m)
-            ? 'La función de carga de la base es una versión vieja con un error. Corre de nuevo 2026_personas_autorizadas.sql en Supabase.'
+          : code === '42883' || /isfinite|cannot change column/i.test(m)
+            ? 'La base tiene una versión vieja de la carga o de su candado de saldos. Corre de nuevo 2026_personas_autorizadas.sql en Supabase.'
             : m);
         return;
       }
