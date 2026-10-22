@@ -7,15 +7,12 @@
 //  carga saldo por su ID Lincoin. Es una billetera digital en pesos: el
 //  operador ve su saldo, deposita por PSE y envía.
 //
-//  Un solo saldo en pesos (COP), sin billeteras ni conversiones. Enviar
-//  pregunta primero CÓMO:
-//    · a una llave Bre-B — inmediata: se consulta el titular de la llave,
-//      la persona lo confirma, queda guardado como beneficiario y se
-//      verifican sus antecedentes ANTES de pedir el monto;
-//    · a un cliente Lincoin — por su ID, gratis;
-//    · a una cuenta de banco — beneficiarios inscritos, hasta 2 días hábiles.
-//  El servidor (mouv-proxy) vuelve a aplicar todo: titular de la llave,
-//  antecedentes, autorización de la empresa y tope mensual.
+//  Un solo saldo en pesos (COP), sin billeteras ni conversiones. Enviar es
+//  el MISMO flujo de Empresas (EnviarDineroModal): monto, método, beneficiario
+//  inscrito y confirmación. Lo único propio es que los tres saldos en pesos
+//  se leen como uno, porque el servidor (mouv-proxy) cubre el riel del envío
+//  desde el saldo en pesos. El servidor también aplica la autorización de la
+//  empresa y el tope mensual.
 //
 //  Las llaves propias para recibir y la tarjeta todavía no se muestran:
 //  nada que parezca que funciona y no.
@@ -23,13 +20,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Copy, Check, Eye, EyeOff, Bell, ArrowUpRight, Plus, ArrowLeftRight, Clock, ArrowDownLeft, X, Link2, FileText, BarChart3,
-  Shield, Gift, MessageSquare, Search, ChevronRight, ChevronLeft, Download, User, Landmark, Zap,
+  Shield, Gift, MessageSquare, Search, ChevronRight, ChevronLeft, Download, User,
   Users, House, CircleHelp, Wallet, Loader2, LogOut,
 } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { llamarFuncion } from '../lib/edge';
 import { descargarXlsx } from '../lib/xlsx';
-import { completarNit, digitoVerificacionNit } from '../lib/nit';
 import { ConfirmarModal } from './ConfirmarModal';
 import { ContactsSection, MouvContact } from './ContactsSection';
 import { EnviarDineroModal, EnviarHandle, prefillDeContacto } from './EnviarDineroModal';
@@ -61,9 +57,6 @@ const diaDe = (ts: any) => {
 };
 const iniciales = (n: string) => n.trim().split(/\s+/).slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || 'L';
 const nombrePropio = (n: string) => n.trim().toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
-const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
-const ocultarDoc = (d: string) => (d.length > 4 ? `•••• ${d.slice(-4)}` : d);
-const esperar = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const ROTULO: Record<string, string> = {
   pay_received: 'Saldo recibido', pay_sent: 'Envío a persona Lincoin', load: 'Depósito', send: 'Envío',
@@ -71,88 +64,13 @@ const ROTULO: Record<string, string> = {
 };
 const ENTRA = new Set(['pay_received', 'load', 'adjustment', 'referral_payout', 'receive']);
 
-// ─── Llaves Bre-B ────────────────────────────────────────────────────
-// La persona escribe la llave como la tenga; el tipo se deduce. El que
-// manda es el del directorio Bre-B (lo devuelve la consulta del titular),
-// y el servidor también lo vuelve a preguntar antes de enviar.
-type TipoLlave = 'celular' | 'cedula' | 'correo' | 'alfanumerico';
-const TIPO_LLAVE_TXT: Record<TipoLlave, string> = { celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: '@llave' };
-const tipoLlave = (v: string): TipoLlave => {
-  const t = v.trim();
-  if (t.startsWith('@')) return 'alfanumerico';
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return 'correo';
-  if (/^[+\d\s().-]+$/.test(t)) {
-    const d10 = dig(t).replace(/^57(?=\d{10}$)/, '');
-    if (/^3\d{9}$/.test(d10)) return 'celular';
-    if (d10.length >= 5 && d10.length <= 11) return 'cedula';
-  }
-  return 'alfanumerico';
-};
-const normalizarLlave = (v: string, tipo: TipoLlave) => {
-  const t = v.trim();
-  if (tipo === 'celular') return dig(t).replace(/^57(?=\d{10}$)/, '');
-  if (tipo === 'cedula') return dig(t);
-  if (tipo === 'correo') return t.toLowerCase();
-  return t;
-};
-const tipoDeDirectorio = (k: unknown): TipoLlave | null => {
-  const s = String(k ?? '').toLowerCase();
-  if (!s) return null;
-  if (/cel|phone|movil|mobile|tel/.test(s)) return 'celular';
-  if (/mail|correo/.test(s)) return 'correo';
-  if (/alfa|alpha|alias|nick/.test(s)) return 'alfanumerico';
-  if (/doc|ced|ident|nit|\bid\b|national/.test(s)) return 'cedula';
-  return null;
-};
-// Igual que el servidor: las llaves de celular viajan con y sin +57.
-const normLlave = (v: unknown) => {
-  const t = String(v ?? '').trim().toLowerCase();
-  const d = t.replace(/\D/g, '');
-  if (d && d.length >= 10 && /^[+\d\s().-]+$/.test(t)) return d.replace(/^57(?=\d{10}$)/, '');
-  return t;
-};
-// El mismo documento escrito distinto: un NIT con o sin dígito de
-// verificación. El dígito extra solo cuenta si es el DV correcto.
-const mismoDoc = (x: unknown, y: unknown) => {
-  const a = dig(x).replace(/^0+/, ''), b = dig(y).replace(/^0+/, '');
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const [largo, corto] = a.length > b.length ? [a, b] : [b, a];
-  return largo.length === corto.length + 1 && corto.length >= 8 && largo.startsWith(corto) && Number(largo[largo.length - 1]) === digitoVerificacionNit(corto);
-};
-// Los NIT de empresa son 9 dígitos que empiezan por 8 o 9 (sin el DV).
-const pareceNit = (d: string) => /^[89]\d{8}$/.test(d);
-
-// El veredicto de antecedentes de un destinatario. Mismo criterio que la
-// lista de beneficiarios y que el servidor. null = todavía no hay resultado.
-type Veredicto = { estado: 'ok' } | { estado: 'bloqueado'; motivo: string } | { estado: 'espera'; motivo: string };
-const juzgar = (k: any): Veredicto | null => {
-  if (!k || typeof k !== 'object') return null;
-  const est = String(k.estado ?? '');
-  // El titular que no autoriza la consulta no frena: es su derecho.
-  if (est === 'sin_autorizacion') return { estado: 'ok' };
-  if (est !== 'finalizado') return null;
-  if (k.aprobadoManual === true) return { estado: 'ok' };
-  if (k.nombreCoincide === false) return { estado: 'bloqueado', motivo: 'El documento no corresponde al titular de esta llave. Revisa el número del documento e inténtalo otra vez.' };
-  if (k.documentoVigente === false) return { estado: 'bloqueado', motivo: 'El documento del titular no está vigente, así que no podemos enviarle dinero.' };
-  if (k.operable === false || String(k.categoria ?? '') === 'alto') return { estado: 'bloqueado', motivo: 'Por seguridad no podemos enviar dinero a esta persona. Si crees que es un error, escríbenos a soporte.' };
-  return { estado: 'ok' };
-};
-
-// Los beneficiarios son LOS MISMOS que en Empresas: mismo formulario, misma
-// inscripción en el riel, misma verificación de antecedentes (AML). Viven en
-// raw_data.mouvContacts y los administra ContactsSection.
-const viaDe = (c: MouvContact): string => c.destKind === 'breb'
-  ? `Llave Bre-B ···${String(c.brebKey ?? c.accountNumber ?? '').slice(-4)}`
-  : `${c.bank || 'Cuenta bancaria'} ···${String(c.accountNumber ?? '').slice(-4)}`;
-
 // "movimientos" es la vista de la cuenta (saldo, acciones y movimientos):
 // la ruta se conserva para no romper enlaces guardados.
 type Vista = 'inicio' | 'movimientos' | 'beneficiarios' | 'ayuda';
 const RUTA_VISTA: Record<Vista, string> = { inicio: '/portal_personas', movimientos: '/personas_movimientos', beneficiarios: '/personas_beneficiarios', ayuda: '/personas_ayuda' };
 const VISTA_RUTA: Record<string, Vista> = Object.fromEntries(Object.entries(RUTA_VISTA).map(([v, p]) => [p, v as Vista]));
 
-type Panel = 'enviar' | 'llave' | 'recargar' | 'recibir' | 'seguridad' | 'limites' | 'notificaciones' | 'invita' | 'cobrar' | 'autorizacion' | 'perfil' | null;
+type Panel = 'recargar' | 'recibir' | 'seguridad' | 'limites' | 'notificaciones' | 'invita' | 'cobrar' | 'autorizacion' | 'perfil' | null;
 
 // ─── Autorización: la empresa acepta, Cumplimiento aprueba ───────────
 // El operador (cliente de una empresa registrada en Lincoin, persona o
@@ -319,24 +237,9 @@ const Fila: React.FC<{ icono: React.ElementType; titulo: string; sub?: string; d
   </button>
 );
 
-// Opción grande del "¿Cómo quieres enviar?".
-const Opcion: React.FC<{ icono: React.ElementType; titulo: string; sub: string; pill?: string; onClick: () => void }> = ({ icono: I, titulo, sub, pill, onClick }) => (
-  <button onClick={onClick} className="persona-func" style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, color: C.text }}>
-    <span style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><I size={19} strokeWidth={1.9} /></span>
-    <span style={{ flex: 1, minWidth: 0 }}>
-      <span className="flex items-center flex-wrap" style={{ gap: 8 }}>
-        <span style={{ fontSize: 15.5, fontWeight: 700 }}>{titulo}</span>
-        {pill && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '1.2px', color: C.verde, border: '1px solid rgba(74,222,128,0.35)', borderRadius: 999, padding: '3px 8px' }}>{pill}</span>}
-      </span>
-      <span style={{ display: 'block', fontSize: 13, color: C.sub, marginTop: 3, lineHeight: 1.45 }}>{sub}</span>
-    </span>
-    <ChevronRight size={18} color={C.sub} />
-  </button>
-);
-
 // ─── Portal ──────────────────────────────────────────────────────────
 export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
-  const { currentUser, transactions, refreshData, enrollMFA, verifyMFAEnrollment, updateUserRawData, actualizarListaRaw, markNotificationsRead } = useDatabase();
+  const { currentUser, transactions, refreshData, enrollMFA, verifyMFAEnrollment, updateUserRawData, markNotificationsRead } = useDatabase();
   const cu: any = currentUser ?? {};
 
   const codigo: string = String(cu.ownReferralCode || String(cu.id ?? '').slice(-6)).toUpperCase();
@@ -559,184 +462,12 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     if (!mfaActivo) { avisar('Para enviar dinero activa primero la verificación en dos pasos, en Seguridad.', true); abrirSeguridad(); return false; }
     return true;
   };
-  const abrirEnviar = () => { if (puedeEnviar()) setPanel('enviar'); };
-  // Bre-B sale por la cuenta inmediata que paga con el saldo en pesos; una
-  // cuenta de banco, por ACH. En los dos casos, beneficiario ya verificado.
-  const abrirModalContacto = (c: MouvContact) => {
-    enviarRef.current?.abrir({ ...prefillDeContacto(c), metodo: c.destKind === 'breb' ? 'breb2' : 'ach', rail: 'COP_ACH' });
-  };
-  const abrirAClienteLincoin = () => {
-    setPanel(null);
-    enviarRef.current?.abrir({ mode: 'pay', contact: null, rail: 'COP', form: { destinationCountry: 'Colombia', destinationCurrency: 'COP' } });
-  };
-  const abrirACuentaBanco = () => {
-    setPanel(null);
-    enviarRef.current?.abrir({ mode: 'bank', contact: null, metodo: 'ach', rail: 'COP_ACH', form: { destinationCountry: 'Colombia', destinationCurrency: 'COP' } });
-  };
+  const abrirEnviar = () => { if (puedeEnviar()) enviarRef.current?.abrir(); };
+  // Desde Beneficiarios: abre Enviar con el beneficiario cargado, igual que
+  // en Empresas. Solo falta el monto.
+  const enviarAContacto = (c: MouvContact) => { setVista('inicio'); enviarRef.current?.abrir(prefillDeContacto(c)); };
   const callGasfree = (payload: Record<string, unknown>) => llamarFuncion('gasfree', payload, 90000);
-
-  // ── Enviar a una llave Bre-B ───────────────────────────────────────
-  // llave → titular (lo dice el directorio) → la persona confirma → queda
-  // guardado como beneficiario → antecedentes → monto (modal).
-  type PasoLlave = 'llave' | 'buscando' | 'titular' | 'verificando' | 'bloqueado' | 'espera';
-  const [llPaso, setLlPaso] = useState<PasoLlave>('llave');
-  const [llValor, setLlValor] = useState('');
-  const [llError, setLlError] = useState<string | null>(null);
-  const [llTitular, setLlTitular] = useState<{ nombre: string; doc: string; banco: string | null; tipo: TipoLlave; llave: string } | null>(null);
-  const [llDocTipo, setLlDocTipo] = useState('CC');
-  const [llDocNum, setLlDocNum] = useState('');
-  const [llMotivo, setLlMotivo] = useState('');
-  const [llContacto, setLlContacto] = useState<MouvContact | null>(null);
-  // Cada apertura o cierre del panel cambia la generación: una consulta que
-  // vuelve tarde ya no toca la pantalla siguiente.
-  const llGen = useRef(0);
-  const cerrarPanel = () => { llGen.current += 1; setPanel(null); };
-  const abrirLlave = () => {
-    llGen.current += 1;
-    setLlPaso('llave'); setLlValor(''); setLlError(null); setLlTitular(null); setLlDocTipo('CC'); setLlDocNum(''); setLlMotivo(''); setLlContacto(null);
-    setPanel('llave');
-  };
-  const llTipoEscrito = llValor.trim().length >= 3 ? tipoLlave(llValor) : null;
-
-  const buscarLlave = async (e?: React.FormEvent, valor?: string) => {
-    e?.preventDefault();
-    if (llPaso === 'buscando' && valor === undefined) return;
-    const crudo = (valor ?? llValor).trim();
-    if (crudo.length < 3) { setLlError('Escribe la llave: celular, correo, cédula o @llave.'); return; }
-    const tipo = tipoLlave(crudo);
-    const llave = normalizarLlave(crudo, tipo);
-    const gen = llGen.current;
-    setLlError(null); setLlPaso('buscando');
-    const r = await llamarFuncion('mouv-proxy', { action: 'resolve_breb_key', user_id: cu.id, keyValue: llave, keyType: tipo }, 25000);
-    if (gen !== llGen.current) return;
-    const nombreT = String(r?.fullName ?? '').trim();
-    if (r?.ok && r?.found && nombreT) {
-      const doc = dig(r.idValue);
-      setLlTitular({ nombre: nombreT, doc, banco: r.bank ? String(r.bank) : null, tipo: tipoDeDirectorio(r.keyType) ?? tipo, llave });
-      setLlDocTipo(pareceNit(doc) ? 'NIT' : 'CC'); setLlDocNum('');
-      setLlPaso('titular');
-      return;
-    }
-    setLlPaso('llave');
-    setLlError(r?.ok && r?.found
-      ? 'No pudimos ver el titular de esta llave. Pídele a la persona que la revise o envíale por otro medio.'
-      : r?.found === false
-        ? 'Esa llave no existe o no está activa. Revísala con quien te la dio.'
-        : (r?.message || 'No pudimos consultar la llave ahora. Intenta de nuevo en un momento.'));
-  };
-
-  // Antecedentes del destinatario. Si la verificación no corre para esta
-  // cuenta, no hay nada que esperar (el servidor tampoco espera).
-  const verificarAntecedentes = async (c: MouvContact, gen: number): Promise<Veredicto | null> => {
-    const uid = cu.id;
-    const doc = dig(c.docNumber);
-    if (!doc) return { estado: 'ok' };
-    const e0 = await llamarFuncion('tusdatos', { action: 'estado', userId: uid }, 30000);
-    if (gen !== llGen.current) return null;
-    if (!e0?.ok) return { estado: 'espera', motivo: 'No pudimos revisar la verificación del destinatario en este momento. Intenta de nuevo en un minuto.' };
-    const f0 = e0.beneficiarios?.[doc];
-    const archivada = String(f0?.estado ?? '') === 'archivado';
-    const v0 = archivada ? null : juzgar(f0);
-    if (v0) return v0;
-    if (!e0.activo || !e0.enLaPrueba) return { estado: 'ok' };
-    if (!f0 || archivada) {
-      const l = await llamarFuncion('tusdatos', { action: 'verificar_beneficiario', userId: uid, nombre: c.name, documento: doc, tipoDocumento: String(c.docType || 'CC').toUpperCase() }, 60000);
-      if (gen !== llGen.current) return null;
-      if (l?.error === 'tope_diario') return { estado: 'espera', motivo: String(l.message ?? 'Llegaste al máximo de verificaciones de hoy. Intenta de nuevo mañana.') };
-      const v = l?.ok ? juzgar(l.beneficiario) : null;
-      if (v) return v;
-    }
-    // Suele tardar cerca de un minuto. Se recoge cada 5 s hasta 2,5 minutos.
-    const hasta = Date.now() + 150_000;
-    for (let vuelta = 1; Date.now() < hasta; vuelta++) {
-      await esperar(5000);
-      if (gen !== llGen.current) return null;
-      if (vuelta % 6 === 0) await llamarFuncion('tusdatos', { action: 'verificar_pendientes', userId: uid, limite: 2 }, 60000);
-      await llamarFuncion('tusdatos', { action: 'recoger_pendientes', userId: uid }, 30000);
-      const e = await llamarFuncion('tusdatos', { action: 'estado', userId: uid }, 30000);
-      if (gen !== llGen.current) return null;
-      const v = e?.ok ? juzgar(e.beneficiarios?.[doc]) : null;
-      if (v) return v;
-    }
-    return { estado: 'espera', motivo: 'La verificación está tardando más de lo normal. Puedes seguir esperando o cerrar: el destinatario queda guardado y le envías desde «Contactos previos» apenas termine.' };
-  };
-
-  // Verifica y, si todo está bien, abre el monto.
-  const verificarYEnviar = async (c: MouvContact) => {
-    const gen = llGen.current;
-    setLlContacto(c); setLlError(null); setLlPaso('verificando');
-    const v = await verificarAntecedentes(c, gen);
-    if (!v || gen !== llGen.current) return;
-    if (v.estado === 'ok') {
-      llGen.current += 1;
-      setPanel(null);
-      refreshData().catch(() => {});
-      abrirModalContacto(c);
-      return;
-    }
-    setLlMotivo(v.motivo);
-    setLlPaso(v.estado);
-  };
-
-  // La persona confirmó el titular: se guarda (o se reusa) el beneficiario.
-  const confirmarTitular = async () => {
-    if (!llTitular || llPaso !== 'titular') return;
-    const docBase = llTitular.doc || dig(llDocNum);
-    if (docBase.length < 5) { setLlError('Escribe el número de documento del titular.'); return; }
-    const docTipo = llDocTipo;
-    const docGuardado = docTipo === 'NIT' ? dig(completarNit(docBase)) : docBase;
-    const gen = llGen.current;
-    setLlError(null); setLlPaso('verificando');
-
-    const mismaLlave = contactosRaw.filter(c => c?.destKind === 'breb' && normLlave(c.brebKey ?? c.accountNumber) === normLlave(llTitular.llave));
-    const otro = mismaLlave.find(c => dig(c.docNumber) && !mismoDoc(c.docNumber, docGuardado));
-    if (otro) {
-      setLlMotivo(`Ya tienes esta llave guardada como ${nombrePropio(otro.name)} con otro documento. Corrígela o bórrala en Beneficiarios y vuelve a intentar.`);
-      setLlPaso('bloqueado');
-      return;
-    }
-    let contacto: MouvContact | null = mismaLlave.find(c => mismoDoc(c.docNumber, docGuardado)) ?? null;
-    if (!contacto) {
-      const datos = {
-        kind: (docTipo === 'NIT' ? 'empresa' : 'persona') as MouvContact['kind'],
-        name: llTitular.nombre, docType: docTipo, docNumber: docGuardado,
-        bank: llTitular.banco || `Bre-B · ${TIPO_LLAVE_TXT[llTitular.tipo]}`,
-        brebKeyType: llTitular.tipo, brebKey: llTitular.llave, accountNumber: llTitular.llave,
-      };
-      // Guardada antes sin documento: se completa con el del titular.
-      const sinDoc = mismaLlave.find(c => !dig(c.docNumber));
-      const nuevo: MouvContact = sinDoc ? { ...sinDoc, ...datos } : {
-        id: `ct_${Math.random().toString(36).slice(2, 10)}`, mouvId: null,
-        country: 'Colombia', accountType: 'savings', status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
-        destKind: 'breb', ...datos,
-      };
-      const ok = await actualizarListaRaw(cu.id, 'mouvContacts', l => [nuevo, ...l.filter((x: any) => x?.id !== nuevo.id)], contactosRaw);
-      if (gen !== llGen.current) return;
-      if (!ok) { setLlError('No pudimos guardar el destinatario (tu sesión pudo vencer). Vuelve a entrar e inténtalo otra vez.'); setLlPaso('titular'); return; }
-      contacto = nuevo;
-    }
-    await verificarYEnviar(contacto);
-  };
-
-  // Desde "Contactos previos" o Beneficiarios: misma verificación. Una llave
-  // guardada sin documento pasa antes por el titular, que es de donde sale.
-  const enviarAContacto = (c: MouvContact) => {
-    const llave = String(c.brebKey ?? c.accountNumber ?? '').trim();
-    if (c.destKind === 'breb' && !dig(c.docNumber) && llave) {
-      abrirLlave();
-      setLlValor(llave);
-      buscarLlave(undefined, llave);
-      return;
-    }
-    llGen.current += 1;
-    setLlTitular(null); setLlMotivo(''); setLlError(null);
-    setPanel('llave');
-    verificarYEnviar(c);
-  };
-  const volverDeLlave = () => {
-    if (llPaso === 'titular') { llGen.current += 1; setLlPaso('llave'); setLlError(null); }
-    else setPanel('enviar');
-  };
+  const cerrarPanel = () => setPanel(null);
 
   // ── Depositar (PSE) ────────────────────────────────────────────────
   const [recMonto, setRecMonto] = useState('');
@@ -967,8 +698,8 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <Rotulo>PREGUNTAS FRECUENTES</Rotulo>
               {[
                 ['¿Cómo recibo dinero?', 'Copia tu ID Lincoin (en Recibir) y dáselo a la empresa o a la persona Lincoin que te va a enviar. Te llega al instante y sin comisión. También puedes depositar desde tu banco por PSE.'],
-                ['¿Cómo envío a otro banco?', 'Toca Enviar → A una llave Bre-B y escribe la llave de la persona: su celular, correo, cédula o @llave. Te mostramos a nombre de quién está, la confirmas y llega en segundos.'],
-                ['¿Por qué me piden esperar al enviar a alguien nuevo?', 'La primera vez que le envías a una persona revisamos que el envío sea seguro. Suele tardar cerca de un minuto y después ya no se repite.'],
+                ['¿Cómo envío a otro banco?', 'Primero inscribe a la persona en Beneficiarios, con su llave Bre-B o su cuenta de banco. Después toca Enviar, escribe el monto y elige cómo: Bre-B llega en segundos y ACH en los ciclos bancarios.'],
+                ['¿Por qué no puedo enviarle a alguien que acabo de inscribir?', 'Cuando inscribes a alguien revisamos que el envío sea seguro. Suele tardar cerca de un minuto; cuando termina ya le puedes enviar.'],
                 ['¿Quién aprueba mi cuenta y fija mi tope?', 'Tu empresa te acepta como su cliente, y el equipo de cumplimiento de Lincoin revisa tus documentos, aprueba tu cuenta y fija tu tope mensual. Si necesitas uno más alto, escríbenos a soporte.'],
                 ['¿Puedo cambiar de empresa?', 'Sí. En Detalles de mi cuenta escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
               ].map(([q, a]) => (
@@ -1011,128 +742,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         onVerMovimiento={() => setVista('movimientos')}
         saldoUnificado
       />
-
-      {panel === 'enviar' && (
-        <Drawer titulo="Enviar" sub="¿Cómo quieres hacer el envío?" onCerrar={cerrarPanel}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <Opcion icono={Zap} titulo="A una llave Bre-B" pill="INMEDIATA" sub="Con su celular, correo, cédula o @llave. Llega en segundos a cualquier banco." onClick={abrirLlave} />
-            <Opcion icono={User} titulo="A un cliente Lincoin" pill="GRATIS" sub="Con su ID Lincoin. Al instante y sin comisión." onClick={abrirAClienteLincoin} />
-            <Opcion icono={Landmark} titulo="A una cuenta de banco" sub="Ahorros o corriente, a un beneficiario inscrito. Puede tardar hasta 2 días hábiles." onClick={abrirACuentaBanco} />
-          </div>
-          <div style={{ marginTop: 26 }}>
-            <Rotulo>CONTACTOS PREVIOS</Rotulo>
-            {contactos.length === 0 ? (
-              <p style={{ fontSize: 13.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.5 }}>Aquí aparecen las personas a las que ya les enviaste. La primera vez, envía a su llave Bre-B.</p>
-            ) : (
-              <div style={{ marginTop: 6 }}>
-                {contactos.slice(0, 12).map((c, i) => (
-                  <button key={c.id} onClick={() => enviarAContacto(c)} className="persona-fila" style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: i ? `1px solid ${C.borde}` : 'none', padding: '12px 2px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, color: C.text }}>
-                    <span style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800, flexShrink: 0 }}>{iniciales(c.name)}</span>
-                    <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ display: 'block', fontSize: 14.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombrePropio(c.name)}</span>
-                      <span style={{ display: 'block', fontSize: 12.5, color: C.sub, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{viaDe(c)}</span>
-                    </span>
-                    <ChevronRight size={17} color={C.sub} />
-                  </button>
-                ))}
-                {contactos.length > 12 && <button onClick={() => { setPanel(null); setVista('beneficiarios'); }} style={{ fontFamily: FONT, fontSize: 13.5, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: '10px 0 0', cursor: 'pointer' }}>Ver todos →</button>}
-              </div>
-            )}
-          </div>
-        </Drawer>
-      )}
-
-      {panel === 'llave' && (
-        <Drawer
-          titulo={llPaso === 'titular' ? '¿Es la persona correcta?' : llPaso === 'verificando' ? 'Verificando' : llPaso === 'bloqueado' ? 'No se puede enviar' : llPaso === 'espera' ? 'Sigue en verificación' : 'Enviar a una llave'}
-          sub={llPaso === 'llave' || llPaso === 'buscando' ? 'Bre-B · inmediata a cualquier banco' : undefined}
-          onAtras={llPaso === 'llave' || llPaso === 'titular' ? volverDeLlave : undefined}
-          onCerrar={cerrarPanel}>
-          {(llPaso === 'llave' || llPaso === 'buscando') && (
-            <form onSubmit={buscarLlave} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div>
-                <Etiqueta>LLAVE BRE-B</Etiqueta>
-                <Campo value={llValor} onChange={e => { setLlValor(e.target.value.slice(0, 80)); setLlError(null); }} placeholder="Correo, celular, cédula o @llave" autoFocus autoComplete="off" autoCapitalize="none" spellCheck={false} disabled={llPaso === 'buscando'} style={{ fontSize: 17, fontWeight: 700, padding: '14px 16px' }} />
-                <p style={{ fontSize: 12.5, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>
-                  {llTipoEscrito ? <>Parece un{llTipoEscrito === 'alfanumerico' ? 'a' : ''} <b style={{ color: C.medio }}>{TIPO_LLAVE_TXT[llTipoEscrito].toLowerCase()}</b>. Antes de enviar te mostramos a nombre de quién está.</> : 'Antes de enviar te mostramos a nombre de quién está la llave.'}
-                </p>
-              </div>
-              {llError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{llError}</p>}
-              <BotonPrimario type="submit" disabled={llPaso === 'buscando' || llValor.trim().length < 3} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                {llPaso === 'buscando' ? <><Loader2 size={16} className="animate-spin" /> Buscando la llave…</> : 'Continuar'}
-              </BotonPrimario>
-            </form>
-          )}
-
-          {llPaso === 'titular' && llTitular && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 16px', textAlign: 'center' }}>
-                <span style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', margin: '0 auto', fontSize: 18, fontWeight: 800 }}>{iniciales(llTitular.nombre)}</span>
-                <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', margin: '12px 0 0' }}>{nombrePropio(llTitular.nombre)}</p>
-                <p style={{ fontSize: 13, color: C.sub, margin: '4px 0 0' }}>{TIPO_LLAVE_TXT[llTitular.tipo]} · <span style={{ fontFamily: MONO, color: C.medio }}>{llTitular.llave}</span></p>
-              </div>
-              <div style={{ border: `1px solid ${C.borde}`, borderRadius: 12, overflow: 'hidden' }}>
-                {llTitular.banco && (
-                  <div className="flex items-center justify-between" style={{ gap: 12, padding: '12px 14px', fontSize: 13.5 }}>
-                    <span style={{ color: C.sub }}>Banco</span><b style={{ textAlign: 'right' }}>{llTitular.banco}</b>
-                  </div>
-                )}
-                <div style={{ padding: '12px 14px', borderTop: llTitular.banco ? `1px solid ${C.borde}` : 'none' }}>
-                  {llTitular.doc ? (
-                    <div className="flex items-center justify-between" style={{ gap: 12, fontSize: 13.5 }}>
-                      <span style={{ color: C.sub }}>Documento</span>
-                      <span className="flex items-center" style={{ gap: 8 }}>
-                        <select value={llDocTipo} onChange={e => setLlDocTipo(e.target.value)} aria-label="Tipo de documento" style={{ fontFamily: FONT, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 8, padding: '5px 6px', fontSize: 12.5, fontWeight: 700 }}>
-                          {TIPOS_DOC_TITULAR.map(([k]) => <option key={k} value={k} style={{ color: '#000' }}>{k}</option>)}
-                        </select>
-                        <b style={{ fontFamily: MONO }}>{ocultarDoc(llTitular.doc)}</b>
-                      </span>
-                    </div>
-                  ) : (<>
-                    <p style={{ fontSize: 13.5, color: C.medio, margin: '0 0 10px', lineHeight: 1.5 }}>Para enviarle necesitamos el documento del titular. Pídeselo a la persona.</p>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 8 }}>
-                      <Selector value={llDocTipo} onChange={e => setLlDocTipo(e.target.value)} aria-label="Tipo de documento">
-                        {TIPOS_DOC_TITULAR.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{n}</option>)}
-                      </Selector>
-                      <Campo value={llDocNum} onChange={e => { setLlDocNum(e.target.value.replace(/\D/g, '').slice(0, 15)); setLlError(null); }} inputMode="numeric" placeholder="Número, sin puntos" />
-                    </div>
-                  </>)}
-                </div>
-              </div>
-              <p style={{ fontSize: 12.5, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Revisa que sea la persona a la que le quieres enviar. Una transferencia Bre-B no se puede reversar.</p>
-              {llError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{llError}</p>}
-              <div className="flex" style={{ gap: 10 }}>
-                <BotonSecundario onClick={() => { llGen.current += 1; setLlPaso('llave'); setLlError(null); }} style={{ flex: 1 }}>Cambiar llave</BotonSecundario>
-                <BotonPrimario onClick={confirmarTitular} style={{ flex: 1.4 }}>Sí, continuar</BotonPrimario>
-              </div>
-            </div>
-          )}
-
-          {llPaso === 'verificando' && (
-            <div style={{ textAlign: 'center', padding: '34px 4px' }}>
-              <Loader2 size={34} color={C.verde} className="animate-spin" style={{ margin: '0 auto' }} />
-              <p style={{ fontSize: 18, fontWeight: 800, margin: '20px 0 0' }}>{llContacto ? `Revisando el envío a ${nombrePropio(llContacto.name).split(' ')[0]}` : 'Preparando el envío'}</p>
-              <p style={{ fontSize: 14, color: C.sub, margin: '8px auto 0', lineHeight: 1.55, maxWidth: 320 }}>Revisamos que el envío sea seguro. La primera vez suele tardar cerca de un minuto; no cierres esta ventana.</p>
-            </div>
-          )}
-
-          {(llPaso === 'bloqueado' || llPaso === 'espera') && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ background: llPaso === 'bloqueado' ? 'rgba(251,146,60,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${llPaso === 'bloqueado' ? 'rgba(251,146,60,0.35)' : C.borde}`, borderRadius: 12, padding: '16px' }}>
-                {llContacto && <p style={{ fontSize: 15, fontWeight: 800, margin: '0 0 6px' }}>{nombrePropio(llContacto.name)}</p>}
-                <p style={{ fontSize: 14, color: C.medio, margin: 0, lineHeight: 1.55 }}>{llMotivo}</p>
-              </div>
-              <div className="flex" style={{ gap: 10 }}>
-                {llPaso === 'espera' && llContacto
-                  ? <><BotonSecundario onClick={cerrarPanel} style={{ flex: 1 }}>Cerrar</BotonSecundario><BotonPrimario onClick={() => { llGen.current += 1; verificarYEnviar(llContacto); }} style={{ flex: 1.4 }}>Seguir esperando</BotonPrimario></>
-                  : llMotivo.includes('Beneficiarios')
-                    ? <><BotonSecundario onClick={cerrarPanel} style={{ flex: 1 }}>Cerrar</BotonSecundario><BotonPrimario onClick={() => { cerrarPanel(); setVista('beneficiarios'); }} style={{ flex: 1.4 }}>Ir a Beneficiarios</BotonPrimario></>
-                    : <BotonPrimario onClick={cerrarPanel} style={{ flex: 1 }}>Entendido</BotonPrimario>}
-              </div>
-            </div>
-          )}
-        </Drawer>
-      )}
 
       {panel === 'recibir' && (
         <Drawer titulo="Recibir" sub="Comparte tu ID Lincoin para que te envíen." onCerrar={cerrarPanel}>

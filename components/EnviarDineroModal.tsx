@@ -1126,7 +1126,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       );
                                   })}
                               </div>
-                              {/* Mover entre cuentas — fila secundaria, no es un envío */}
+                              {/* Mover entre cuentas — fila secundaria, no es un envío.
+                                  Operadores tienen un solo saldo: no hay entre qué mover. */}
+                              {!saldoUnificado && (
                               <button
                                   onClick={() => { setIsSendModalOpen(false); setSendStep(1); setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}
                                   className="w-full flex items-center justify-between transition-colors hover:bg-white/[0.04]"
@@ -1134,6 +1136,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   <span style={{ fontSize: 12.5, color: '#878E88' }}>¿Solo quieres mover saldo entre tus rieles?</span>
                                   <span style={{ fontSize: 12.5, fontWeight: 600, color: '#F4F4F2' }}>Mover entre mis cuentas →</span>
                               </button>
+                              )}
                               <div className="flex" style={{ gap: 9 }}>
                                   <button onClick={() => setSendStep(1)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
                                   <button
