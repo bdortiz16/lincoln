@@ -4,7 +4,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
-import { validarNit, completarNit, nitSinDv } from '../lib/nit';
+import { validarNit, completarNit, nitSinDv, esNitEmpresa } from '../lib/nit';
 import { MUNICIPIOS, municipioPorCodigo } from '../lib/municipios';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
@@ -80,6 +80,9 @@ export type ContactStatus = 'en_proceso' | 'aprobada' | 'rechazada';
 // banco lo exige solo con dígitos ("personal_id_number debe ser solo
 // dígitos") y un NIT escrito 901258216-0 rebotaba. El pasaporte puede traer
 // letras: ahí solo se quitan los separadores.
+// El número tiene forma de NIT de empresa pero se eligió otro tipo.
+const NIT_COMO_CEDULA = 'Ese número es el NIT de una empresa. Elige «NIT» como tipo de documento: así se verifican bien sus antecedentes.';
+
 export const limpiarDoc = (v: string, tipo?: string): string =>
     tipo === 'PAS' ? String(v ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase() : String(v ?? '').replace(/\D/g, '');
 
@@ -765,7 +768,14 @@ export const ContactsSection: React.FC<{
                     // El directorio entrega el NIT sin dígito de verificación;
                     // acá va completo, así que se le calcula y se le agrega.
                     const docCrudo = String(r.idValue ?? '').trim();
-                    const doc = fm.docType === 'NIT' ? completarNit(docCrudo) : docCrudo;
+                    // Si el titular es una EMPRESA (su número tiene forma de NIT
+                    // de empresa), el tipo pasa a NIT. Antes se quedaba en
+                    // "Cédula", que es el de arranque: la empresa quedaba
+                    // inscrita con CC y la consulta de antecedentes, hecha como
+                    // cédula, la marcaba de riesgo alto.
+                    const esEmpresa = esNitEmpresa(docCrudo);
+                    const tipo = esEmpresa ? 'NIT' : fm.docType;
+                    const doc = tipo === 'NIT' ? completarNit(docCrudo) : docCrudo;
                     const escritoNombre = fm.name.trim();
                     const escritoDoc = fm.docNumber.trim();
                     const chocaN = !!real && !!escritoNombre && escritoNombre.toLowerCase() !== real.toLowerCase();
@@ -773,9 +783,10 @@ export const ContactsSection: React.FC<{
                     if (chocaN || chocaD) return { ...fm, bank: fm.bank };   // no se toca nada: manda el aviso
                     return {
                         ...fm,
+                        kind: esEmpresa ? 'empresa' : fm.kind,
                         name: real || fm.name,
                         docNumber: doc || fm.docNumber,
-                        docType: doc ? (fm.docType || 'CC') : fm.docType,
+                        docType: doc ? (tipo || 'CC') : fm.docType,
                         bank: r.bank ?? fm.bank,
                     };
                 });
@@ -977,6 +988,7 @@ export const ContactsSection: React.FC<{
         if (f.country === 'Colombia' && f.destKind === 'breb') {
             if (!f.name.trim()) { setNotice({ ok: false, text: 'Ponle un alias al destinatario.' }); return; }
             if (!f.brebKey.trim()) { setNotice({ ok: false, text: 'Escribe la llave Bre-B.' }); return; }
+            if (f.docType !== 'NIT' && esNitEmpresa(f.docNumber)) { setNotice({ ok: false, text: NIT_COMO_CEDULA }); return; }
             // En Bre-B el documento es opcional; si es un NIT, va completo.
             if (f.docType === 'NIT' && f.docNumber.trim()) {
                 const v = validarNit(f.docNumber);
@@ -1018,6 +1030,7 @@ export const ContactsSection: React.FC<{
             if (nd.length < 6 || nd.length > 20) { setNotice({ ok: false, text: 'El número de cuenta debe tener entre 6 y 20 dígitos, sin guiones ni espacios.' }); return; }
             f = { ...f, accountNumber: nd };
         }
+        if (f.country === 'Colombia' && f.docType !== 'NIT' && esNitEmpresa(f.docNumber)) { setNotice({ ok: false, text: NIT_COMO_CEDULA }); return; }
         // Un NIT va completo: 10 dígitos, con el de verificación, y que cuadre.
         if (f.docType === 'NIT') {
             const v = validarNit(f.docNumber);
@@ -1982,7 +1995,7 @@ export const ContactsSection: React.FC<{
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
                                     <label style={LBL}>Tipo de documento</label>
-                                    <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))} style={INP}>
+                                    <select value={form.docType} onChange={e => { const t = e.target.value; setForm(fm => ({ ...fm, docType: t, docNumber: t === 'NIT' ? completarNit(fm.docNumber) : fm.docNumber })); }} style={INP}>
                                         {DOC_TYPES.map(d => <option key={d.v} value={d.v}>{d.l}</option>)}
                                     </select>
                                 </div>
@@ -2014,7 +2027,7 @@ export const ContactsSection: React.FC<{
                         <div className="grid grid-cols-2 gap-3">
                             <div>
                                 <label style={LBL}>Tipo de documento</label>
-                                <select value={form.docType} onChange={e => setForm(fm => ({ ...fm, docType: e.target.value }))} style={INP}>
+                                <select value={form.docType} onChange={e => { const t = e.target.value; setForm(fm => ({ ...fm, docType: t, docNumber: t === 'NIT' ? completarNit(fm.docNumber) : fm.docNumber })); }} style={INP}>
                                     {DOC_TYPES.map(d => <option key={d.v} value={d.v}>{d.l}</option>)}
                                 </select>
                             </div>

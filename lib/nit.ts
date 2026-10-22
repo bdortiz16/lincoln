@@ -48,6 +48,16 @@ export function completarNit(numero: string): string {
     return dv === null ? numero : `${d}${dv}`;
 }
 
+// ¿Es el NIT de una EMPRESA? Los de personas jurídicas tienen 9 dígitos y
+// empiezan por 8 o 9 (800…, 860…, 900…, 901…), con o sin el DV pegado. Una
+// cédula no tiene esa forma: las nuevas son de 10 dígitos y empiezan por 1.
+// Mismo criterio que el servidor (supabase/functions/_shared/cupos.ts).
+export function esNitEmpresa(numero: string): boolean {
+    let d = String(numero ?? '').replace(/\D/g, '').replace(/^0+/, '');
+    if (d.length === 10 && /^[89]/.test(d) && digitoVerificacionNit(d.slice(0, 9)) === Number(d[9])) d = d.slice(0, 9);
+    return /^[89]\d{8}$/.test(d);
+}
+
 // Los 9 dígitos base, sin DV, para quien lo pide así. Solo se quita el
 // último dígito si de verdad es el DV de los otros nueve.
 export function nitSinDv(numero: string): string {

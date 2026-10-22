@@ -43,6 +43,7 @@ import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
+import { esNitEmpresa } from '../_shared/cupos.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -1207,6 +1208,15 @@ async function consultar(
 ): Promise<{ ok: boolean; ficha?: Ficha; error?: string; message?: string }> {
   const doc = String(d.documento ?? '').replace(/[.,\s]/g, '').trim()
   if (!doc) return { ok: false, error: 'sin_documento', message: 'Falta el número de documento.' }
+
+  // Una EMPRESA inscrita con "cédula": como CC, TusDatos no puede validar un
+  // NIT y lo marca riesgo alto ("No se pudo determinar la validez del
+  // documento"), así que el beneficiario quedaba bloqueado sin motivo real.
+  // Si el número tiene forma de NIT de empresa, se consulta como NIT.
+  if ((d.tipoDocumento || 'CC').toUpperCase() === 'CC' && esNitEmpresa(doc)) {
+    await auditar('tusdatos.tipo_corregido', { userId, documento: doc, de: 'CC', a: 'NIT' })
+    d = { ...d, tipoDocumento: 'NIT' }
+  }
 
   // ── LINCOIN RISK primero ────────────────────────────────────────────────
   // Si otra cuenta ya pagó por esta persona y el dato sigue vigente, se reusa.
