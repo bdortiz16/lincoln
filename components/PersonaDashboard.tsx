@@ -17,13 +17,13 @@
 //  El servidor (mouv-proxy) vuelve a aplicar todo: titular de la llave,
 //  antecedentes, autorización de la empresa y tope mensual.
 //
-//  Lo que aún no está (llaves propias para recibir, tarjeta) se dice tal
-//  cual, con "pronto". Nada que parezca que funciona y no.
+//  Las llaves propias para recibir y la tarjeta todavía no se muestran:
+//  nada que parezca que funciona y no.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Copy, Check, Eye, EyeOff, Bell, ArrowUpRight, Plus, ArrowLeftRight, Clock, ArrowDownLeft, X, Link2, FileText, BarChart3,
-  Shield, Gift, MessageSquare, Search, ChevronRight, ChevronLeft, Download, User, Landmark, KeyRound, CreditCard, Zap,
+  Shield, Gift, MessageSquare, Search, ChevronRight, ChevronLeft, Download, User, Landmark, Zap,
   Users, House, CircleHelp, Wallet, Loader2, LogOut,
 } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
@@ -152,7 +152,7 @@ type Vista = 'inicio' | 'movimientos' | 'beneficiarios' | 'ayuda';
 const RUTA_VISTA: Record<Vista, string> = { inicio: '/portal_personas', movimientos: '/personas_movimientos', beneficiarios: '/personas_beneficiarios', ayuda: '/personas_ayuda' };
 const VISTA_RUTA: Record<string, Vista> = Object.fromEntries(Object.entries(RUTA_VISTA).map(([v, p]) => [p, v as Vista]));
 
-type Panel = 'enviar' | 'llave' | 'recargar' | 'recibir' | 'llaves' | 'tarjetas' | 'seguridad' | 'limites' | 'notificaciones' | 'invita' | 'cobrar' | 'autorizacion' | 'perfil' | null;
+type Panel = 'enviar' | 'llave' | 'recargar' | 'recibir' | 'seguridad' | 'limites' | 'notificaciones' | 'invita' | 'cobrar' | 'autorizacion' | 'perfil' | null;
 
 // ─── Autorización: la empresa acepta, Cumplimiento aprueba ───────────
 // El operador (cliente de una empresa registrada en Lincoin, persona o
@@ -260,7 +260,6 @@ const Rotulo: React.FC<{ children: React.ReactNode; style?: React.CSSProperties 
 const Pill: React.FC<{ children: React.ReactNode; verde?: boolean; naranja?: boolean; onClick?: () => void }> = ({ children, verde, naranja, onClick }) => (
   <span onClick={onClick} role={onClick ? 'button' : undefined} style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.5px', color: verde ? C.verde : naranja ? NARANJA : C.sub, border: `1px solid ${verde ? 'rgba(74,222,128,0.4)' : naranja ? 'rgba(251,146,60,0.5)' : C.bordeFuerte}`, background: naranja ? 'rgba(251,146,60,0.08)' : 'transparent', borderRadius: 999, padding: '6px 12px', whiteSpace: 'nowrap', cursor: onClick ? 'pointer' : 'default' }}>{children}</span>
 );
-const Pronto: React.FC = () => <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '1.2px', color: C.sub, border: `1px solid ${C.bordeFuerte}`, borderRadius: 999, padding: '3px 8px', whiteSpace: 'nowrap' }}>PRONTO</span>;
 const BotonPrimario: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>> = ({ style, children, ...p }) => (
   <button {...p} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, border: 'none', borderRadius: 11, padding: '13px 18px', cursor: 'pointer', opacity: p.disabled ? 0.55 : 1, ...style }}>{children}</button>
 );
@@ -301,15 +300,14 @@ const Drawer: React.FC<{ titulo: string; sub?: string; onCerrar: () => void; onA
 };
 
 // Botón redondo de acción (Depositar, Enviar…).
-const Accion: React.FC<{ icono: React.ElementType; txt: string; onClick: () => void; principal?: boolean; pronto?: boolean }> = ({ icono: I, txt, onClick, principal, pronto }) => (
+const Accion: React.FC<{ icono: React.ElementType; txt: string; onClick: () => void; principal?: boolean }> = ({ icono: I, txt, onClick, principal }) => (
   <button onClick={onClick} className="persona-acc" style={{ fontFamily: FONT, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 64, flex: '1 0 64px', color: C.text, position: 'relative', padding: '4px 0' }}>
-    <span className={principal ? 'lincoin-btn-white' : 'persona-acc-c'} style={{ width: 58, height: 58, borderRadius: '50%', background: principal ? undefined : 'rgba(255,255,255,0.06)', border: principal ? 'none' : `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', opacity: pronto ? 0.6 : 1 }}><I size={22} strokeWidth={1.9} /></span>
-    <span style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', lineHeight: 1.25, color: pronto ? C.sub : C.text }}>{txt}</span>
-    {pronto && <span style={{ position: 'absolute', top: -2, left: '50%', transform: 'translateX(4px)', fontSize: 8, fontWeight: 800, letterSpacing: '1px', color: C.sub, background: C.fondo, border: `1px solid ${C.bordeFuerte}`, borderRadius: 999, padding: '2px 6px' }}>PRONTO</span>}
+    <span className={principal ? 'lincoin-btn-white' : 'persona-acc-c'} style={{ width: 58, height: 58, borderRadius: '50%', background: principal ? undefined : 'rgba(255,255,255,0.06)', border: principal ? 'none' : `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center' }}><I size={22} strokeWidth={1.9} /></span>
+    <span style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', lineHeight: 1.25, color: C.text }}>{txt}</span>
   </button>
 );
 
-// Fila de lista (Detalles de mi cuenta, Mis tarjetas…).
+// Fila de lista (Detalles de mi cuenta, Beneficiarios…).
 const Fila: React.FC<{ icono: React.ElementType; titulo: string; sub?: string; derecha?: React.ReactNode; onClick?: () => void; primera?: boolean }> = ({ icono: I, titulo, sub, derecha, onClick, primera }) => (
   <button onClick={onClick} className="persona-fila" style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: primera ? 'none' : `1px solid ${C.borde}`, padding: '15px 4px', cursor: onClick ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 14, color: C.text }}>
     <span style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(255,255,255,0.05)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><I size={18} strokeWidth={1.8} /></span>
@@ -334,17 +332,6 @@ const Opcion: React.FC<{ icono: React.ElementType; titulo: string; sub: string; 
     </span>
     <ChevronRight size={18} color={C.sub} />
   </button>
-);
-
-// Tarjeta Mastercard Lincoin (aún no existe: se muestra como "pronto").
-const TarjetaLincoin: React.FC = () => (
-  <div style={{ aspectRatio: '1.586', width: '100%', maxWidth: 340, margin: '0 auto', borderRadius: 16, background: NEGRO_LINCOIN, border: `1px solid ${C.bordeFuerte}`, position: 'relative', overflow: 'hidden' }}>
-    <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 85% 10%, rgba(74,222,128,0.18), transparent 45%)' }} />
-    <span style={{ position: 'absolute', top: 18, left: 20, fontSize: 16, fontWeight: 800, letterSpacing: '-0.5px', color: C.text }}>Lincoin<span style={{ color: C.verde }}>.</span></span>
-    <span style={{ position: 'absolute', bottom: 20, left: 20, fontFamily: MONO, fontSize: 13, letterSpacing: '2px', color: C.sub }}>•••• •••• •••• ••••</span>
-    <span style={{ position: 'absolute', bottom: 18, right: 38, width: 26, height: 26, borderRadius: '50%', background: '#EB001B' }} />
-    <span style={{ position: 'absolute', bottom: 18, right: 20, width: 26, height: 26, borderRadius: '50%', background: '#F79E1B', opacity: 0.9 }} />
-  </div>
 );
 
 // ─── Portal ──────────────────────────────────────────────────────────
@@ -789,7 +776,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       <Accion icono={Plus} txt="Depositar" onClick={() => abrirDeposito('recargar')} />
       <Accion icono={ArrowUpRight} txt="Enviar" onClick={abrirEnviar} principal />
       <Accion icono={ArrowDownLeft} txt="Recibir" onClick={() => setPanel('recibir')} />
-      <Accion icono={KeyRound} txt="Tus llaves" onClick={() => setPanel('llaves')} pronto />
       <Accion icono={FileText} txt="Extracto" onClick={extracto} />
     </div>
   );
@@ -900,7 +886,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           {/* Tu cuenta */}
           <Tarjeta style={{ padding: '6px 16px' }}>
             <Fila primera icono={User} titulo="Detalles de mi cuenta" sub={`ID Lincoin ${codigo}${autorizada ? ` · ${autorizada.nombre}` : ''}`} onClick={() => setPanel('perfil')} />
-            <Fila icono={CreditCard} titulo="Mis tarjetas" sub="Tarjeta Mastercard Lincoin" onClick={() => setPanel('tarjetas')} derecha={<Pronto />} />
             <Fila icono={Users} titulo="Beneficiarios" sub={contactos.length ? `${contactos.length} guardado(s)` : 'Llaves Bre-B y cuentas de banco'} onClick={() => setVista('beneficiarios')} />
             <Fila icono={BarChart3} titulo="Tope mensual" sub={topeTxt} onClick={() => setPanel('limites')} />
             <Fila icono={Shield} titulo="Seguridad" sub={mfaActivo ? 'Verificación en dos pasos activa' : 'Activa la verificación en dos pasos'} onClick={abrirSeguridad} derecha={mfaActivo ? <Pill verde>ACTIVA</Pill> : undefined} />
@@ -937,7 +922,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           {acciones}
           <Tarjeta style={{ padding: '6px 16px' }}>
             <Fila primera icono={Wallet} titulo="Datos de la cuenta" sub={`ID Lincoin ${codigo} · pesos colombianos`} onClick={() => setPanel('perfil')} />
-            <Fila icono={KeyRound} titulo="Tus llaves Bre-B" sub="Recibe con tu celular, correo o cédula" onClick={() => setPanel('llaves')} derecha={<Pronto />} />
           </Tarjeta>
           <Tarjeta>
             <div className="flex items-center justify-between" style={{ gap: 10 }}>
@@ -985,7 +969,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 ['¿Cómo recibo dinero?', 'Copia tu ID Lincoin (en Recibir) y dáselo a la empresa o a la persona Lincoin que te va a enviar. Te llega al instante y sin comisión. También puedes depositar desde tu banco por PSE.'],
                 ['¿Cómo envío a otro banco?', 'Toca Enviar → A una llave Bre-B y escribe la llave de la persona: su celular, correo, cédula o @llave. Te mostramos a nombre de quién está, la confirmas y llega en segundos.'],
                 ['¿Por qué me piden esperar al enviar a alguien nuevo?', 'La primera vez que le envías a una persona revisamos que el envío sea seguro. Suele tardar cerca de un minuto y después ya no se repite.'],
-                ['¿Cuándo tendré mis propias llaves Bre-B?', 'Pronto. Vas a poder recibir desde cualquier banco con tu celular, tu correo o tu cédula. Mientras tanto, recibe con tu ID Lincoin.'],
                 ['¿Quién aprueba mi cuenta y fija mi tope?', 'Tu empresa te acepta como su cliente, y el equipo de cumplimiento de Lincoin revisa tus documentos, aprueba tu cuenta y fija tu tope mensual. Si necesitas uno más alto, escríbenos a soporte.'],
                 ['¿Puedo cambiar de empresa?', 'Sí. En Detalles de mi cuenta escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
               ].map(([q, a]) => (
@@ -1161,38 +1144,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           <p style={{ fontSize: 14, color: C.medio, margin: '16px 0 0', lineHeight: 1.55 }}>Dáselo a la empresa que te carga saldo o a otra persona Lincoin. Te llega al instante y sin comisión.</p>
           <div style={{ marginTop: 18, borderTop: `1px solid ${C.borde}` }}>
             <Fila primera icono={Link2} titulo="Cobrar con un link de PSE" sub="Para que te pague alguien desde su banco" onClick={() => abrirDeposito('cobrar')} />
-            <Fila icono={KeyRound} titulo="Tus llaves Bre-B" sub="Recibe desde cualquier banco" onClick={() => setPanel('llaves')} derecha={<Pronto />} />
           </div>
-        </Drawer>
-      )}
-
-      {panel === 'llaves' && (
-        <Drawer titulo="Tus llaves Bre-B" sub="Recibe desde cualquier banco, al instante." onCerrar={cerrarPanel}>
-          <div style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 16px' }}>
-            <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Muy pronto</p><Pronto /></div>
-            <p style={{ fontSize: 14, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>Vas a poder registrar tus propias llaves para que te envíen desde cualquier banco con solo tu celular, tu correo o tu cédula.</p>
-          </div>
-          <div style={{ marginTop: 14 }}>
-            {(['celular', 'correo', 'cedula', 'alfanumerico'] as TipoLlave[]).map((t, i) => (
-              <div key={t} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 2px', borderTop: i ? `1px solid ${C.borde}` : 'none', color: C.sub }}>
-                <span className="flex items-center" style={{ gap: 12 }}><KeyRound size={16} /> <span style={{ fontSize: 14.5, fontWeight: 600 }}>{TIPO_LLAVE_TXT[t]}</span></span>
-                <span style={{ fontSize: 12.5 }}>Sin registrar</span>
-              </div>
-            ))}
-          </div>
-          <p style={{ fontSize: 13.5, color: C.sub, margin: '16px 0 0', lineHeight: 1.55 }}>Mientras tanto, recibe con tu ID Lincoin o con un link de PSE.</p>
-          <BotonPrimario onClick={() => setPanel('recibir')} style={{ marginTop: 14, width: '100%' }}>Recibir con mi ID</BotonPrimario>
-        </Drawer>
-      )}
-
-      {panel === 'tarjetas' && (
-        <Drawer titulo="Mis tarjetas" sub="Paga en comercios y en internet con tu saldo." onCerrar={cerrarPanel}>
-          <TarjetaLincoin />
-          <div className="flex items-center justify-between" style={{ gap: 10, marginTop: 20 }}>
-            <div><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Tarjeta Lincoin</p><p style={{ fontSize: 13.5, color: C.sub, margin: '2px 0 0' }}>Mastercard con tu saldo en pesos</p></div>
-            <Pronto />
-          </div>
-          <p style={{ fontSize: 13.5, color: C.sub, margin: '14px 0 0', lineHeight: 1.55 }}>Todavía no está disponible. Te avisamos por correo cuando puedas pedirla.</p>
         </Drawer>
       )}
 
