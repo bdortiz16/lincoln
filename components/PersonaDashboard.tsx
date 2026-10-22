@@ -1,28 +1,33 @@
 // ══════════════════════════════════════════════════════════════════
 //  Portal Personas — lincoin.me/portal_personas
 //
-//  La cuenta en pesos (y otras billeteras) de un cliente de una empresa.
-//  Una empresa registrada en Lincoin (modelo PSP) le carga saldo por su ID
-//  Lincoin; la persona lo ve, lo envía a otra persona Lincoin o lo convierte
-//  entre sus billeteras.
+//  Una billetera digital en pesos. Una empresa registrada en Lincoin
+//  (modelo PSP) autoriza a la persona y le carga saldo por su ID Lincoin;
+//  la persona lo ve, deposita por PSE y lo envía.
 //
-//  Una sola tarjeta de saldo con chips de billetera: cambiar el chip cambia
-//  el saldo de ESA tarjeta. No hay otra lista de billeteras en la página.
-//  Solo tres acciones: Enviar, Recargar, Convertir. Retirar va dentro de
-//  Enviar (a banco o Bre-B) y recibir es dar el ID.
+//  Un solo saldo en pesos (COP), sin billeteras ni conversiones. Enviar
+//  pregunta primero CÓMO:
+//    · a una llave Bre-B — inmediata: se consulta el titular de la llave,
+//      la persona lo confirma, queda guardado como beneficiario y se
+//      verifican sus antecedentes ANTES de pedir el monto;
+//    · a un cliente Lincoin — por su ID, gratis;
+//    · a una cuenta de banco — beneficiarios inscritos, hasta 2 días hábiles.
+//  El servidor (mouv-proxy) vuelve a aplicar todo: titular de la llave,
+//  antecedentes, autorización de la empresa y tope mensual.
 //
-//  Lo que aún no está (USD/EUR, tarjeta, retiro a banco para personas) se
-//  dice tal cual, con "pronto". Nada que parezca que funciona y no.
+//  Lo que aún no está (llaves propias para recibir, tarjeta) se dice tal
+//  cual, con "pronto". Nada que parezca que funciona y no.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Copy, Check, Eye, EyeOff, Bell, ArrowUpRight, Plus, ArrowLeftRight, Clock, ArrowDownLeft, ArrowRight, X,
-  Link2, TrendingUp, FileText, BarChart3, Shield, Gift, MessageSquare, Search, ChevronRight, Download, User, Landmark,
+  Copy, Check, Eye, EyeOff, Bell, ArrowUpRight, Plus, ArrowLeftRight, Clock, ArrowDownLeft, X, Link2, FileText, BarChart3,
+  Shield, Gift, MessageSquare, Search, ChevronRight, ChevronLeft, Download, User, Landmark, KeyRound, CreditCard, Zap,
+  Users, House, CircleHelp, Wallet, Loader2, LogOut,
 } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
-import { useExchangeRates } from '../context/ExchangeRateContext';
 import { llamarFuncion } from '../lib/edge';
 import { descargarXlsx } from '../lib/xlsx';
+import { completarNit, digitoVerificacionNit } from '../lib/nit';
 import { ConfirmarModal } from './ConfirmarModal';
 import { ContactsSection, MouvContact } from './ContactsSection';
 import { EnviarDineroModal, EnviarHandle, prefillDeContacto } from './EnviarDineroModal';
@@ -35,49 +40,117 @@ const C = {
   text: '#F4F4F2', sub: '#878E88', tenue: '#6b716c', medio: '#b9beba', verde: '#4ADE80',
 };
 const R = 14, RG = 18;
+const NARANJA = '#FB923C';
+const NEGRO_LINCOIN = 'linear-gradient(135deg, #121413 0%, #0C0E0D 60%, #0A0B0A 100%)';
 
-// ─── Billeteras ──────────────────────────────────────────────────────
-type Billetera = { code: string; simbolo: string; locale: string; nombre: string; desc: string; pronto?: boolean };
-const BILLETERAS: Billetera[] = [
-  { code: 'COP', simbolo: '$', locale: 'es-CO', nombre: 'Pesos colombianos', desc: 'saldo que te cargan las empresas con las que trabajas' },
-  { code: 'BRL', simbolo: 'R$', locale: 'pt-BR', nombre: 'Reales', desc: 'recibe y retira por Pix' },
-  { code: 'PEN', simbolo: 'S/', locale: 'es-PE', nombre: 'Soles', desc: 'retira a tu banco o Yape' },
-  { code: 'CLP', simbolo: '$', locale: 'es-CL', nombre: 'Pesos chilenos', desc: 'retira a tu banco' },
-  { code: 'MXN', simbolo: '$', locale: 'es-MX', nombre: 'Pesos mexicanos', desc: 'retira por SPEI' },
-  { code: 'ARS', simbolo: '$', locale: 'es-AR', nombre: 'Pesos argentinos', desc: 'retira por CVU/CBU' },
-  { code: 'USD', simbolo: 'US$', locale: 'en-US', nombre: 'Dólares', desc: 'cuenta en dólares', pronto: true },
-  { code: 'EUR', simbolo: '€', locale: 'de-DE', nombre: 'Euros', desc: 'cuenta en euros', pronto: true },
-];
-const billetera = (code: string) => BILLETERAS.find(b => b.code === code) ?? BILLETERAS[0];
-const decimales = (code: string) => (['COP', 'CLP', 'ARS'].includes(code) ? 0 : 2);
-const fmt = (v: number, code: string, conSimbolo = true) => {
-  const b = billetera(code);
-  const n = (Number(v) || 0).toLocaleString(b.locale, { minimumFractionDigits: 0, maximumFractionDigits: decimales(code) });
-  return conSimbolo ? `${b.simbolo}${b.simbolo.length > 1 ? ' ' : ''}${n}` : n;
-};
-const soloNumero = (s: string) => s.replace(/[^\d.,]/g, '').replace(',', '.');
-const numero = (s: string) => Number(soloNumero(s)) || 0;
+// ─── Formato ─────────────────────────────────────────────────────────
+const fmt = (v: number) => `$ ${Math.round(Number(v) || 0).toLocaleString('es-CO')}`;
+const montoMov = (v: number, cur: string) => cur === 'COP' ? fmt(v) : `${(Number(v) || 0).toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${cur}`;
+const numero = (s: string) => Number(String(s).replace(/\D/g, '')) || 0;
 const fecha = (ts: any) => { const d = new Date(ts ?? 0); return isNaN(d.getTime()) ? '' : d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+const hora = (ts: any) => { const d = new Date(ts ?? 0); return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }); };
+const diaDe = (ts: any) => {
+  const d = new Date(ts ?? 0);
+  if (isNaN(d.getTime())) return '';
+  const hoy = new Date();
+  if (d.toDateString() === hoy.toDateString()) return 'Hoy';
+  if (d.toDateString() === new Date(Date.now() - 86400000).toDateString()) return 'Ayer';
+  return d.toLocaleDateString('es-CO', { day: 'numeric', month: 'long', ...(d.getFullYear() !== hoy.getFullYear() ? { year: 'numeric' as const } : {}) });
+};
 const iniciales = (n: string) => n.trim().split(/\s+/).slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || 'L';
 const nombrePropio = (n: string) => n.trim().toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '');
+const ocultarDoc = (d: string) => (d.length > 4 ? `•••• ${d.slice(-4)}` : d);
+const esperar = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const ROTULO: Record<string, string> = {
-  pay_received: 'Saldo recibido', pay_sent: 'Envío a persona Lincoin', load: 'Recarga', send: 'Retiro',
-  convert: 'Conversión', adjustment: 'Ajuste de saldo', referral_payout: 'Bono de referido', receive: 'Recibido',
+  pay_received: 'Saldo recibido', pay_sent: 'Envío a persona Lincoin', load: 'Depósito', send: 'Envío',
+  dispersion: 'Envío', convert: 'Conversión', adjustment: 'Ajuste de saldo', referral_payout: 'Bono de referido', receive: 'Recibido',
 };
 const ENTRA = new Set(['pay_received', 'load', 'adjustment', 'referral_payout', 'receive']);
 
+// ─── Llaves Bre-B ────────────────────────────────────────────────────
+// La persona escribe la llave como la tenga; el tipo se deduce. El que
+// manda es el del directorio Bre-B (lo devuelve la consulta del titular),
+// y el servidor también lo vuelve a preguntar antes de enviar.
+type TipoLlave = 'celular' | 'cedula' | 'correo' | 'alfanumerico';
+const TIPO_LLAVE_TXT: Record<TipoLlave, string> = { celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: '@llave' };
+const tipoLlave = (v: string): TipoLlave => {
+  const t = v.trim();
+  if (t.startsWith('@')) return 'alfanumerico';
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return 'correo';
+  if (/^[+\d\s().-]+$/.test(t)) {
+    const d10 = dig(t).replace(/^57(?=\d{10}$)/, '');
+    if (/^3\d{9}$/.test(d10)) return 'celular';
+    if (d10.length >= 5 && d10.length <= 11) return 'cedula';
+  }
+  return 'alfanumerico';
+};
+const normalizarLlave = (v: string, tipo: TipoLlave) => {
+  const t = v.trim();
+  if (tipo === 'celular') return dig(t).replace(/^57(?=\d{10}$)/, '');
+  if (tipo === 'cedula') return dig(t);
+  if (tipo === 'correo') return t.toLowerCase();
+  return t;
+};
+const tipoDeDirectorio = (k: unknown): TipoLlave | null => {
+  const s = String(k ?? '').toLowerCase();
+  if (!s) return null;
+  if (/cel|phone|movil|mobile|tel/.test(s)) return 'celular';
+  if (/mail|correo/.test(s)) return 'correo';
+  if (/alfa|alpha|alias|nick/.test(s)) return 'alfanumerico';
+  if (/doc|ced|ident|nit|\bid\b|national/.test(s)) return 'cedula';
+  return null;
+};
+// Igual que el servidor: las llaves de celular viajan con y sin +57.
+const normLlave = (v: unknown) => {
+  const t = String(v ?? '').trim().toLowerCase();
+  const d = t.replace(/\D/g, '');
+  if (d && d.length >= 10 && /^[+\d\s().-]+$/.test(t)) return d.replace(/^57(?=\d{10}$)/, '');
+  return t;
+};
+// El mismo documento escrito distinto: un NIT con o sin dígito de
+// verificación. El dígito extra solo cuenta si es el DV correcto.
+const mismoDoc = (x: unknown, y: unknown) => {
+  const a = dig(x).replace(/^0+/, ''), b = dig(y).replace(/^0+/, '');
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const [largo, corto] = a.length > b.length ? [a, b] : [b, a];
+  return largo.length === corto.length + 1 && corto.length >= 8 && largo.startsWith(corto) && Number(largo[largo.length - 1]) === digitoVerificacionNit(corto);
+};
+// Los NIT de empresa son 9 dígitos que empiezan por 8 o 9 (sin el DV).
+const pareceNit = (d: string) => /^[89]\d{8}$/.test(d);
+
+// El veredicto de antecedentes de un destinatario. Mismo criterio que la
+// lista de beneficiarios y que el servidor. null = todavía no hay resultado.
+type Veredicto = { estado: 'ok' } | { estado: 'bloqueado'; motivo: string } | { estado: 'espera'; motivo: string };
+const juzgar = (k: any): Veredicto | null => {
+  if (!k || typeof k !== 'object') return null;
+  const est = String(k.estado ?? '');
+  // El titular que no autoriza la consulta no frena: es su derecho.
+  if (est === 'sin_autorizacion') return { estado: 'ok' };
+  if (est !== 'finalizado') return null;
+  if (k.aprobadoManual === true) return { estado: 'ok' };
+  if (k.nombreCoincide === false) return { estado: 'bloqueado', motivo: 'El documento no corresponde al titular de esta llave. Revisa el número del documento e inténtalo otra vez.' };
+  if (k.documentoVigente === false) return { estado: 'bloqueado', motivo: 'El documento del titular no está vigente, así que no podemos enviarle dinero.' };
+  if (k.operable === false || String(k.categoria ?? '') === 'alto') return { estado: 'bloqueado', motivo: 'Por seguridad no podemos enviar dinero a esta persona. Si crees que es un error, escríbenos a soporte.' };
+  return { estado: 'ok' };
+};
+
 // Los beneficiarios son LOS MISMOS que en Empresas: mismo formulario, misma
 // inscripción en el riel, misma verificación de antecedentes (AML). Viven en
-// raw_data.mouvContacts / walletContacts y los administra ContactsSection.
-type Beneficiario = { id: string; name: string; via: string; contacto: MouvContact };
-const viaDe = (c: MouvContact): string => c.accountKind === 'wallet' ? `${c.walletCoin ?? 'USDT'} · ${c.walletNetwork ?? ''}`.trim() : c.destKind === 'breb' ? 'Llave Bre-B' : (c.bank || 'Cuenta bancaria');
+// raw_data.mouvContacts y los administra ContactsSection.
+const viaDe = (c: MouvContact): string => c.destKind === 'breb'
+  ? `Llave Bre-B ···${String(c.brebKey ?? c.accountNumber ?? '').slice(-4)}`
+  : `${c.bank || 'Cuenta bancaria'} ···${String(c.accountNumber ?? '').slice(-4)}`;
 
+// "movimientos" es la vista de la cuenta (saldo, acciones y movimientos):
+// la ruta se conserva para no romper enlaces guardados.
 type Vista = 'inicio' | 'movimientos' | 'beneficiarios' | 'ayuda';
 const RUTA_VISTA: Record<Vista, string> = { inicio: '/portal_personas', movimientos: '/personas_movimientos', beneficiarios: '/personas_beneficiarios', ayuda: '/personas_ayuda' };
 const VISTA_RUTA: Record<string, Vista> = Object.fromEntries(Object.entries(RUTA_VISTA).map(([v, p]) => [p, v as Vista]));
 
-type Panel = 'recargar' | 'convertir' | 'seguridad' | 'tasas' | 'limites' | 'notificaciones' | 'invita' | 'ayuda' | 'cobrar' | 'autorizacion' | 'perfil' | null;
+type Panel = 'enviar' | 'llave' | 'recargar' | 'recibir' | 'llaves' | 'tarjetas' | 'seguridad' | 'limites' | 'notificaciones' | 'invita' | 'cobrar' | 'autorizacion' | 'perfil' | null;
 
 // ─── Autorización por una empresa ────────────────────────────────────
 // La persona solo puede recibir dinero de UNA empresa registrada que la haya
@@ -91,6 +164,8 @@ type EstadoAuth = {
   datos: { estado?: string; empresaNombre?: string; nombre?: string; docType?: string; docNumber?: string; at?: string } | null;
 };
 const TIPOS_DOC: Array<[string, string]> = [['CC', 'Cédula de ciudadanía'], ['CE', 'Cédula de extranjería'], ['PAS', 'Pasaporte'], ['PPT', 'Permiso por protección temporal']];
+// El titular de una llave puede ser una empresa.
+const TIPOS_DOC_TITULAR: Array<[string, string]> = [['CC', 'Cédula'], ['CE', 'Cédula de extranjería'], ['NIT', 'NIT (empresa)'], ['PAS', 'Pasaporte'], ['PPT', 'PPT']];
 // La foto se reduce en el navegador (lado mayor 1280 px, JPEG) para que pese
 // poco y suba rápido; el servidor rechaza más de 2,5 MB.
 const comprimirFoto = (file: File): Promise<string> => new Promise((res, rej) => {
@@ -111,16 +186,16 @@ const comprimirFoto = (file: File): Promise<string> => new Promise((res, rej) =>
 });
 
 // ─── Piezas ──────────────────────────────────────────────────────────
-const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties; grande?: boolean }> = ({ children, style, grande }) => (
-  <section style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: grande ? RG : R, padding: grande ? 24 : 20, ...style }}>{children}</section>
+const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
+  <section style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: R, padding: 20, ...style }}>{children}</section>
 );
 const Rotulo: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
   <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '2.5px', color: C.sub, margin: 0, ...style }}>{children}</p>
 );
-const NARANJA = '#FB923C';
 const Pill: React.FC<{ children: React.ReactNode; verde?: boolean; naranja?: boolean; onClick?: () => void }> = ({ children, verde, naranja, onClick }) => (
   <span onClick={onClick} role={onClick ? 'button' : undefined} style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.5px', color: verde ? C.verde : naranja ? NARANJA : C.sub, border: `1px solid ${verde ? 'rgba(74,222,128,0.4)' : naranja ? 'rgba(251,146,60,0.5)' : C.bordeFuerte}`, background: naranja ? 'rgba(251,146,60,0.08)' : 'transparent', borderRadius: 999, padding: '6px 12px', whiteSpace: 'nowrap', cursor: onClick ? 'pointer' : 'default' }}>{children}</span>
 );
+const Pronto: React.FC = () => <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '1.2px', color: C.sub, border: `1px solid ${C.bordeFuerte}`, borderRadius: 999, padding: '3px 8px', whiteSpace: 'nowrap' }}>PRONTO</span>;
 const BotonPrimario: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement>> = ({ style, children, ...p }) => (
   <button {...p} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 14, border: 'none', borderRadius: 11, padding: '13px 18px', cursor: 'pointer', opacity: p.disabled ? 0.55 : 1, ...style }}>{children}</button>
 );
@@ -131,8 +206,11 @@ const Campo: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = ({ style, .
   <input {...p} style={{ fontFamily: FONT, width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 11, padding: '12px 14px', fontSize: 14, outline: 'none', ...style }} />
 );
 const Etiqueta: React.FC<{ children: React.ReactNode }> = ({ children }) => <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.5px', color: C.sub, margin: '0 0 8px' }}>{children}</p>;
+const Selector: React.FC<React.SelectHTMLAttributes<HTMLSelectElement>> = ({ style, children, ...p }) => (
+  <select {...p} style={{ fontFamily: FONT, width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 11, padding: '12px 12px', fontSize: 14, fontWeight: 700, ...style }}>{children}</select>
+);
 
-const Drawer: React.FC<{ titulo: string; sub?: string; onCerrar: () => void; children: React.ReactNode }> = ({ titulo, sub, onCerrar, children }) => {
+const Drawer: React.FC<{ titulo: string; sub?: string; onCerrar: () => void; onAtras?: () => void; children: React.ReactNode }> = ({ titulo, sub, onCerrar, onAtras, children }) => {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
     window.addEventListener('keydown', onKey);
@@ -140,11 +218,14 @@ const Drawer: React.FC<{ titulo: string; sub?: string; onCerrar: () => void; chi
   }, [onCerrar]);
   return (
     <div onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(3px)', display: 'flex', justifyContent: 'flex-end' }}>
-      <aside onClick={e => e.stopPropagation()} className="persona-drawer" style={{ width: 420, maxWidth: '100%', height: '100%', background: C.tarjeta, borderLeft: `1px solid ${C.borde}`, padding: '24px 24px 32px', overflowY: 'auto', fontFamily: FONT }}>
+      <aside onClick={e => e.stopPropagation()} className="persona-drawer" style={{ width: 440, maxWidth: '100%', height: '100%', background: C.tarjeta, borderLeft: `1px solid ${C.borde}`, padding: '24px 24px 32px', overflowY: 'auto', fontFamily: FONT }}>
         <div className="flex items-start justify-between" style={{ gap: 12 }}>
-          <div>
-            <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: C.text, margin: 0 }}>{titulo}</h2>
-            {sub && <p style={{ fontSize: 13, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{sub}</p>}
+          <div className="flex items-start" style={{ gap: 10, minWidth: 0 }}>
+            {onAtras && <button onClick={onAtras} aria-label="Atrás" style={{ width: 34, height: 34, borderRadius: 10, border: `1px solid ${C.bordeFuerte}`, background: 'transparent', color: C.sub, cursor: 'pointer', display: 'grid', placeItems: 'center', flexShrink: 0 }}><ChevronLeft size={16} /></button>}
+            <div style={{ minWidth: 0 }}>
+              <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: C.text, margin: 0 }}>{titulo}</h2>
+              {sub && <p style={{ fontSize: 13, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{sub}</p>}
+            </div>
           </div>
           <button onClick={onCerrar} aria-label="Cerrar" style={{ width: 34, height: 34, borderRadius: 10, border: `1px solid ${C.bordeFuerte}`, background: 'transparent', color: C.sub, cursor: 'pointer', display: 'grid', placeItems: 'center', flexShrink: 0 }}><X size={16} /></button>
         </div>
@@ -154,19 +235,56 @@ const Drawer: React.FC<{ titulo: string; sub?: string; onCerrar: () => void; chi
   );
 };
 
-// Mini tarjeta Mastercard 52×34: negro, "L." y los círculos.
-const MiniTarjeta: React.FC = () => (
-  <div style={{ width: 52, height: 34, borderRadius: 6, background: 'linear-gradient(135deg, #121413 0%, #0C0E0D 60%, #0A0B0A 100%)', border: `1px solid ${C.bordeFuerte}`, position: 'relative', flexShrink: 0 }}>
-    <span style={{ position: 'absolute', top: 4, left: 6, fontSize: 9, fontWeight: 800, color: C.text, letterSpacing: '-0.3px' }}>L<span style={{ color: C.verde }}>.</span></span>
-    <span style={{ position: 'absolute', bottom: 4, right: 12, width: 10, height: 10, borderRadius: '50%', background: '#EB001B' }} />
-    <span style={{ position: 'absolute', bottom: 4, right: 6, width: 10, height: 10, borderRadius: '50%', background: '#F79E1B', opacity: 0.9 }} />
+// Botón redondo de acción (Depositar, Enviar…).
+const Accion: React.FC<{ icono: React.ElementType; txt: string; onClick: () => void; principal?: boolean; pronto?: boolean }> = ({ icono: I, txt, onClick, principal, pronto }) => (
+  <button onClick={onClick} className="persona-acc" style={{ fontFamily: FONT, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 64, flex: '1 0 64px', color: C.text, position: 'relative', padding: '4px 0' }}>
+    <span className={principal ? 'lincoin-btn-white' : 'persona-acc-c'} style={{ width: 58, height: 58, borderRadius: '50%', background: principal ? undefined : 'rgba(255,255,255,0.06)', border: principal ? 'none' : `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', opacity: pronto ? 0.6 : 1 }}><I size={22} strokeWidth={1.9} /></span>
+    <span style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', lineHeight: 1.25, color: pronto ? C.sub : C.text }}>{txt}</span>
+    {pronto && <span style={{ position: 'absolute', top: -2, left: '50%', transform: 'translateX(4px)', fontSize: 8, fontWeight: 800, letterSpacing: '1px', color: C.sub, background: C.fondo, border: `1px solid ${C.bordeFuerte}`, borderRadius: 999, padding: '2px 6px' }}>PRONTO</span>}
+  </button>
+);
+
+// Fila de lista (Detalles de mi cuenta, Mis tarjetas…).
+const Fila: React.FC<{ icono: React.ElementType; titulo: string; sub?: string; derecha?: React.ReactNode; onClick?: () => void; primera?: boolean }> = ({ icono: I, titulo, sub, derecha, onClick, primera }) => (
+  <button onClick={onClick} className="persona-fila" style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: primera ? 'none' : `1px solid ${C.borde}`, padding: '15px 4px', cursor: onClick ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: 14, color: C.text }}>
+    <span style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(255,255,255,0.05)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><I size={18} strokeWidth={1.8} /></span>
+    <span style={{ flex: 1, minWidth: 0 }}>
+      <span style={{ display: 'block', fontSize: 15, fontWeight: 700 }}>{titulo}</span>
+      {sub && <span style={{ display: 'block', fontSize: 13, color: C.sub, marginTop: 2, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</span>}
+    </span>
+    {derecha ?? (onClick ? <ChevronRight size={18} color={C.sub} /> : null)}
+  </button>
+);
+
+// Opción grande del "¿Cómo quieres enviar?".
+const Opcion: React.FC<{ icono: React.ElementType; titulo: string; sub: string; pill?: string; onClick: () => void }> = ({ icono: I, titulo, sub, pill, onClick }) => (
+  <button onClick={onClick} className="persona-func" style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 14, color: C.text }}>
+    <span style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><I size={19} strokeWidth={1.9} /></span>
+    <span style={{ flex: 1, minWidth: 0 }}>
+      <span className="flex items-center flex-wrap" style={{ gap: 8 }}>
+        <span style={{ fontSize: 15.5, fontWeight: 700 }}>{titulo}</span>
+        {pill && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '1.2px', color: C.verde, border: '1px solid rgba(74,222,128,0.35)', borderRadius: 999, padding: '3px 8px' }}>{pill}</span>}
+      </span>
+      <span style={{ display: 'block', fontSize: 13, color: C.sub, marginTop: 3, lineHeight: 1.45 }}>{sub}</span>
+    </span>
+    <ChevronRight size={18} color={C.sub} />
+  </button>
+);
+
+// Tarjeta Mastercard Lincoin (aún no existe: se muestra como "pronto").
+const TarjetaLincoin: React.FC = () => (
+  <div style={{ aspectRatio: '1.586', width: '100%', maxWidth: 340, margin: '0 auto', borderRadius: 16, background: NEGRO_LINCOIN, border: `1px solid ${C.bordeFuerte}`, position: 'relative', overflow: 'hidden' }}>
+    <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 85% 10%, rgba(74,222,128,0.18), transparent 45%)' }} />
+    <span style={{ position: 'absolute', top: 18, left: 20, fontSize: 16, fontWeight: 800, letterSpacing: '-0.5px', color: C.text }}>Lincoin<span style={{ color: C.verde }}>.</span></span>
+    <span style={{ position: 'absolute', bottom: 20, left: 20, fontFamily: MONO, fontSize: 13, letterSpacing: '2px', color: C.sub }}>•••• •••• •••• ••••</span>
+    <span style={{ position: 'absolute', bottom: 18, right: 38, width: 26, height: 26, borderRadius: '50%', background: '#EB001B' }} />
+    <span style={{ position: 'absolute', bottom: 18, right: 20, width: 26, height: 26, borderRadius: '50%', background: '#F79E1B', opacity: 0.9 }} />
   </div>
 );
 
 // ─── Portal ──────────────────────────────────────────────────────────
 export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
-  const { currentUser, transactions, refreshData, sendCuypayPayment, performConversion, enrollMFA, verifyMFAEnrollment, verifyMfaCode, updateUserRawData, markNotificationsRead } = useDatabase();
-  const { getRate } = useExchangeRates();
+  const { currentUser, transactions, refreshData, enrollMFA, verifyMFAEnrollment, updateUserRawData, actualizarListaRaw, markNotificationsRead } = useDatabase();
   const cu: any = currentUser ?? {};
 
   const codigo: string = String(cu.ownReferralCode || String(cu.id ?? '').slice(-6)).toUpperCase();
@@ -174,24 +292,17 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const kycOk = String(cu.kycStatus ?? '') === 'approved';
   const mfaActivo = !!cu.mfaEnabled;
   const saldo = (code: string) => Number(cu.balances?.[code] ?? 0) || 0;
-
-  // Billeteras activas: las que trae el backend, en el orden de BILLETERAS;
-  // las demás quedan detrás de "+N más" (USD y EUR siempre como pronto).
-  const activas = useMemo(() => BILLETERAS.filter(b => !b.pronto && cu.balances && Object.prototype.hasOwnProperty.call(cu.balances, b.code)), [cu.balances]);
-  const visibles = activas.length ? activas : [BILLETERAS[0]];
-  const primeras = visibles.slice(0, 4);
-  const restantes = BILLETERAS.filter(b => !primeras.includes(b));
-  const [walletActiva, setWalletActiva] = useState('COP');
-  const [masAbierto, setMasAbierto] = useState(false);
-  const [oculto, setOculto] = useState(false);
-  const wa = billetera(walletActiva);
-  const totalEnCop = useMemo(() => BILLETERAS.reduce((s, b) => { const v = saldo(b.code); if (!v) return s; const r = b.code === 'COP' ? 1 : (getRate(b.code, 'COP') || 0); return s + v * r; }, 0), [cu.balances, getRate]);
-  const enmascarar = (s: string) => (oculto ? '••••' : s);
+  // Un solo saldo en pesos: el riel de cada envío lo cubre el servidor.
+  const totalCop = ['COP', 'COP_BREB', 'COP_ACH'].reduce((t, k) => t + saldo(k), 0);
+  const [oculto, setOculto] = useState(() => { try { return localStorage.getItem('lincoin.personas.oculto') === '1'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('lincoin.personas.oculto', oculto ? '1' : '0'); } catch { /* */ } }, [oculto]);
+  const enmascarar = (s: string) => (oculto ? '$ ••••' : s);
 
   // Vista y dirección
   const [vista, setVista] = useState<Vista>(() => { try { return VISTA_RUTA[window.location.pathname] ?? 'inicio'; } catch { return 'inicio'; } });
   useEffect(() => {
     try { const p = RUTA_VISTA[vista]; if (window.location.pathname !== p) window.history.pushState({ vista }, '', p); } catch { /* */ }
+    try { window.scrollTo(0, 0); } catch { /* */ }
   }, [vista]);
   useEffect(() => {
     const onPop = () => { const v = VISTA_RUTA[window.location.pathname]; if (v) setVista(v); };
@@ -213,18 +324,27 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const hayNuevas = notifs.some(n => !n?.read);
   const [notifAbierto, setNotifAbierto] = useState(false);
 
-  // Beneficiarios: la misma lista que administra ContactsSection.
-  const beneficiarios: Beneficiario[] = useMemo(() => {
-    const raw = cu.raw_data ?? cu;
-    const lista: MouvContact[] = [...(Array.isArray(raw?.walletContacts) ? raw.walletContacts : []), ...(Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : [])];
-    return lista.filter(c => c && c.id && c.status !== 'rechazada').map(c => ({ id: String(c.id), name: c.name, via: viaDe(c), contacto: c }));
-  }, [cu]);
+  // Beneficiarios (destinos en pesos): la misma lista que administra ContactsSection.
+  const contactosRaw: MouvContact[] = useMemo(() => (
+    Array.isArray(cu?.raw_data?.mouvContacts) ? cu.raw_data.mouvContacts : Array.isArray(cu?.mouvContacts) ? cu.mouvContacts : []
+  ), [cu]);
+  const contactos: MouvContact[] = useMemo(() => contactosRaw
+    .filter(c => c && c.id && c.status !== 'rechazada' && c.accountKind !== 'wallet' && (c.country ?? 'Colombia') === 'Colombia')
+    .sort((a, b) => (Date.parse(String(b.createdAt ?? '')) || 0) - (Date.parse(String(a.createdAt ?? '')) || 0)), [contactosRaw]);
 
   // Movimientos
   const movs = useMemo(() => (transactions ?? [])
     .filter((t: any) => t.userId === cu.id)
     .sort((a: any, b: any) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()), [transactions, cu.id]);
   const contraparte = (t: any) => t.counterpartyName ?? t.senderName ?? t.recipientName ?? t.beneficiaryName ?? '';
+  const [busca, setBusca] = useState('');
+  const movsFiltrados = useMemo(() => {
+    const q = busca.trim().toLowerCase();
+    if (!q) return movs;
+    const qd = q.replace(/\D/g, '');
+    return movs.filter((t: any) => `${t.title ?? ''} ${ROTULO[t.type] ?? ''} ${contraparte(t)} ${t.note ?? ''} ${t.status ?? ''}`.toLowerCase().includes(q)
+      || (qd.length >= 3 && String(Math.round(Number(t.amount) || 0)).includes(qd)));
+  }, [movs, busca]);
   const extracto = () => {
     const filas: (string | number | Date)[][] = [['Fecha', 'Tipo', 'Detalle', 'Monto', 'Moneda', 'Estado', 'Nota', 'Id']];
     for (const t of movs) filas.push([new Date(t.createdAt ?? 0), t.title || ROTULO[t.type] || t.type, contraparte(t), (ENTRA.has(t.type) ? 1 : -1) * (Number(t.amount) || 0), String(t.currency ?? '').split('_')[0], t.status ?? '', t.note ?? '', String(t.id)]);
@@ -284,74 +404,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     refreshData().catch(() => {});
   };
 
-  // ── Enviar: el MISMO modal que Empresas (EnviarDineroModal) ─────────
-  const enviarRef = useRef<EnviarHandle>(null);
-  const totalCop = ['COP', 'COP_BREB', 'COP_ACH'].reduce((t, k) => t + saldo(k), 0);
-  const abrirEnviar = (b?: Beneficiario) => {
-    if (auth && !autorizada) { avisar(pendiente ? 'Tu empresa todavía no aprueba tu autorización. Cuando lo haga, puedes enviar.' : 'Para enviar dinero primero necesitas la autorización de una empresa registrada en Lincoin.', true); if (!pendiente) abrirAutorizacion(); return; }
-    if (!mfaActivo) { avisar('Para enviar dinero activa primero la verificación en dos pasos, en Seguridad.', true); abrirSeguridad(); return; }
-    enviarRef.current?.abrir(b ? prefillDeContacto(b.contacto) : undefined);
-  };
-  const callGasfree = (payload: Record<string, unknown>) => llamarFuncion('gasfree', payload, 90000);
-
-  // ── Recargar (PSE) ─────────────────────────────────────────────────
-  const [recMonto, setRecMonto] = useState('');
-  const [recOcupado, setRecOcupado] = useState(false);
-  const [recError, setRecError] = useState<string | null>(null);
-  const [recLink, setRecLink] = useState<string | null>(null);
-  const irAPse = async (e: React.FormEvent) => {
-    e.preventDefault(); setRecError(null); setRecLink(null);
-    const m = numero(recMonto);
-    if (m < 20000) { setRecError('El mínimo es $ 20.000 COP.'); return; }
-    setRecOcupado(true);
-    const r = await llamarFuncion('finity-proxy', { action: 'create_payment_link', user_id: cu.id, copAmount: m }, 60000);
-    setRecOcupado(false);
-    if (r?.ok && r?.link) { setRecLink(String(r.link)); try { window.open(String(r.link), '_blank', 'noopener'); } catch { /* */ } refreshData().catch(() => {}); }
-    else setRecError(r?.message || r?.error || 'No se pudo abrir PSE. Intenta de nuevo.');
-  };
-
-  // ── Convertir ──────────────────────────────────────────────────────
-  const [convA, setConvA] = useState('PEN');
-  const [convMonto, setConvMonto] = useState('');
-  const [convSeg, setConvSeg] = useState(30);
-  const [convOcupado, setConvOcupado] = useState(false);
-  const [convError, setConvError] = useState<string | null>(null);
-  const [convPaso, setConvPaso] = useState<'datos' | 'revisar' | 'listo'>('datos');
-  const convDestinos = BILLETERAS.filter(b => !b.pronto && b.code !== wa.code);
-  const tasa = getRate(wa.code, convA) || 0;
-  const convMontoNum = numero(convMonto);
-  const convRecibe = convMontoNum * tasa;
-  useEffect(() => {
-    if (panel !== 'convertir') return;
-    setConvSeg(30);
-    const t = setInterval(() => setConvSeg(s => (s <= 1 ? 30 : s - 1)), 1000);
-    return () => clearInterval(t);
-  }, [panel, wa.code, convA]);
-  const revisarConversion = (e: React.FormEvent) => {
-    e.preventDefault(); setConvError(null);
-    if (!tasa) { setConvError('No hay tasa disponible para este par en este momento.'); return; }
-    if (convMontoNum <= 0) { setConvError('Escribe el monto.'); return; }
-    if (convMontoNum > saldo(wa.code)) { setConvError(`Tienes ${fmt(saldo(wa.code), wa.code)} ${wa.code} disponibles.`); return; }
-    setConvPaso('revisar');
-  };
-  // Candado síncrono contra el doble toque: se marca antes de cualquier await
-  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
-  const ejecutarConversionEnCursoRef = useRef(false);
-  const ejecutarConversion = async () => {
-    if (ejecutarConversionEnCursoRef.current) return;
-    ejecutarConversionEnCursoRef.current = true;
-    try { return await ejecutarConversionUnaVez(); } finally { ejecutarConversionEnCursoRef.current = false; }
-  };
-  const ejecutarConversionUnaVez = async () => {
-    if (convOcupado) return;
-    setConvOcupado(true); setConvError(null);
-    const r = await performConversion(wa.code, convA, convMontoNum, Number(convRecibe.toFixed(decimales(convA))), 0);
-    setConvOcupado(false);
-    if (r?.error) { setConvError(r.error); setConvPaso('datos'); return; }
-    setConvPaso('listo');
-    refreshData().catch(() => {});
-  };
-
   // ── Seguridad (2FA) ────────────────────────────────────────────────
   const [mfaQr, setMfaQr] = useState<{ qrCode: string; secret: string; factorId: string } | null>(null);
   const [mfaCodigo, setMfaCodigo] = useState('');
@@ -373,67 +425,277 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     refreshData().catch(() => {});
   };
 
+  // ── Enviar: el MISMO modal que Empresas (EnviarDineroModal) ─────────
+  const enviarRef = useRef<EnviarHandle>(null);
+  const puedeEnviar = (): boolean => {
+    if (auth && !autorizada) { avisar(pendiente ? 'Tu empresa todavía no aprueba tu autorización. Cuando lo haga, puedes enviar.' : 'Para enviar dinero primero necesitas la autorización de una empresa registrada en Lincoin.', true); if (!pendiente) abrirAutorizacion(); return false; }
+    if (!mfaActivo) { avisar('Para enviar dinero activa primero la verificación en dos pasos, en Seguridad.', true); abrirSeguridad(); return false; }
+    return true;
+  };
+  const abrirEnviar = () => { if (puedeEnviar()) setPanel('enviar'); };
+  // Bre-B sale por la cuenta inmediata que paga con el saldo en pesos; una
+  // cuenta de banco, por ACH. En los dos casos, beneficiario ya verificado.
+  const abrirModalContacto = (c: MouvContact) => {
+    enviarRef.current?.abrir({ ...prefillDeContacto(c), metodo: c.destKind === 'breb' ? 'breb2' : 'ach', rail: 'COP_ACH' });
+  };
+  const abrirAClienteLincoin = () => {
+    setPanel(null);
+    enviarRef.current?.abrir({ mode: 'pay', contact: null, rail: 'COP', form: { destinationCountry: 'Colombia', destinationCurrency: 'COP' } });
+  };
+  const abrirACuentaBanco = () => {
+    setPanel(null);
+    enviarRef.current?.abrir({ mode: 'bank', contact: null, metodo: 'ach', rail: 'COP_ACH', form: { destinationCountry: 'Colombia', destinationCurrency: 'COP' } });
+  };
+  const callGasfree = (payload: Record<string, unknown>) => llamarFuncion('gasfree', payload, 90000);
+
+  // ── Enviar a una llave Bre-B ───────────────────────────────────────
+  // llave → titular (lo dice el directorio) → la persona confirma → queda
+  // guardado como beneficiario → antecedentes → monto (modal).
+  type PasoLlave = 'llave' | 'buscando' | 'titular' | 'verificando' | 'bloqueado' | 'espera';
+  const [llPaso, setLlPaso] = useState<PasoLlave>('llave');
+  const [llValor, setLlValor] = useState('');
+  const [llError, setLlError] = useState<string | null>(null);
+  const [llTitular, setLlTitular] = useState<{ nombre: string; doc: string; banco: string | null; tipo: TipoLlave; llave: string } | null>(null);
+  const [llDocTipo, setLlDocTipo] = useState('CC');
+  const [llDocNum, setLlDocNum] = useState('');
+  const [llMotivo, setLlMotivo] = useState('');
+  const [llContacto, setLlContacto] = useState<MouvContact | null>(null);
+  // Cada apertura o cierre del panel cambia la generación: una consulta que
+  // vuelve tarde ya no toca la pantalla siguiente.
+  const llGen = useRef(0);
+  const cerrarPanel = () => { llGen.current += 1; setPanel(null); };
+  const abrirLlave = () => {
+    llGen.current += 1;
+    setLlPaso('llave'); setLlValor(''); setLlError(null); setLlTitular(null); setLlDocTipo('CC'); setLlDocNum(''); setLlMotivo(''); setLlContacto(null);
+    setPanel('llave');
+  };
+  const llTipoEscrito = llValor.trim().length >= 3 ? tipoLlave(llValor) : null;
+
+  const buscarLlave = async (e?: React.FormEvent, valor?: string) => {
+    e?.preventDefault();
+    if (llPaso === 'buscando' && valor === undefined) return;
+    const crudo = (valor ?? llValor).trim();
+    if (crudo.length < 3) { setLlError('Escribe la llave: celular, correo, cédula o @llave.'); return; }
+    const tipo = tipoLlave(crudo);
+    const llave = normalizarLlave(crudo, tipo);
+    const gen = llGen.current;
+    setLlError(null); setLlPaso('buscando');
+    const r = await llamarFuncion('mouv-proxy', { action: 'resolve_breb_key', user_id: cu.id, keyValue: llave, keyType: tipo }, 25000);
+    if (gen !== llGen.current) return;
+    const nombreT = String(r?.fullName ?? '').trim();
+    if (r?.ok && r?.found && nombreT) {
+      const doc = dig(r.idValue);
+      setLlTitular({ nombre: nombreT, doc, banco: r.bank ? String(r.bank) : null, tipo: tipoDeDirectorio(r.keyType) ?? tipo, llave });
+      setLlDocTipo(pareceNit(doc) ? 'NIT' : 'CC'); setLlDocNum('');
+      setLlPaso('titular');
+      return;
+    }
+    setLlPaso('llave');
+    setLlError(r?.ok && r?.found
+      ? 'No pudimos ver el titular de esta llave. Pídele a la persona que la revise o envíale por otro medio.'
+      : r?.found === false
+        ? 'Esa llave no existe o no está activa. Revísala con quien te la dio.'
+        : (r?.message || 'No pudimos consultar la llave ahora. Intenta de nuevo en un momento.'));
+  };
+
+  // Antecedentes del destinatario. Si la verificación no corre para esta
+  // cuenta, no hay nada que esperar (el servidor tampoco espera).
+  const verificarAntecedentes = async (c: MouvContact, gen: number): Promise<Veredicto | null> => {
+    const uid = cu.id;
+    const doc = dig(c.docNumber);
+    if (!doc) return { estado: 'ok' };
+    const e0 = await llamarFuncion('tusdatos', { action: 'estado', userId: uid }, 30000);
+    if (gen !== llGen.current) return null;
+    if (!e0?.ok) return { estado: 'espera', motivo: 'No pudimos revisar la verificación del destinatario en este momento. Intenta de nuevo en un minuto.' };
+    const f0 = e0.beneficiarios?.[doc];
+    const archivada = String(f0?.estado ?? '') === 'archivado';
+    const v0 = archivada ? null : juzgar(f0);
+    if (v0) return v0;
+    if (!e0.activo || !e0.enLaPrueba) return { estado: 'ok' };
+    if (!f0 || archivada) {
+      const l = await llamarFuncion('tusdatos', { action: 'verificar_beneficiario', userId: uid, nombre: c.name, documento: doc, tipoDocumento: String(c.docType || 'CC').toUpperCase() }, 60000);
+      if (gen !== llGen.current) return null;
+      if (l?.error === 'tope_diario') return { estado: 'espera', motivo: String(l.message ?? 'Llegaste al máximo de verificaciones de hoy. Intenta de nuevo mañana.') };
+      const v = l?.ok ? juzgar(l.beneficiario) : null;
+      if (v) return v;
+    }
+    // Suele tardar cerca de un minuto. Se recoge cada 5 s hasta 2,5 minutos.
+    const hasta = Date.now() + 150_000;
+    for (let vuelta = 1; Date.now() < hasta; vuelta++) {
+      await esperar(5000);
+      if (gen !== llGen.current) return null;
+      if (vuelta % 6 === 0) await llamarFuncion('tusdatos', { action: 'verificar_pendientes', userId: uid, limite: 2 }, 60000);
+      await llamarFuncion('tusdatos', { action: 'recoger_pendientes', userId: uid }, 30000);
+      const e = await llamarFuncion('tusdatos', { action: 'estado', userId: uid }, 30000);
+      if (gen !== llGen.current) return null;
+      const v = e?.ok ? juzgar(e.beneficiarios?.[doc]) : null;
+      if (v) return v;
+    }
+    return { estado: 'espera', motivo: 'La verificación está tardando más de lo normal. Puedes seguir esperando o cerrar: el destinatario queda guardado y le envías desde «Contactos previos» apenas termine.' };
+  };
+
+  // Verifica y, si todo está bien, abre el monto.
+  const verificarYEnviar = async (c: MouvContact) => {
+    const gen = llGen.current;
+    setLlContacto(c); setLlError(null); setLlPaso('verificando');
+    const v = await verificarAntecedentes(c, gen);
+    if (!v || gen !== llGen.current) return;
+    if (v.estado === 'ok') {
+      llGen.current += 1;
+      setPanel(null);
+      refreshData().catch(() => {});
+      abrirModalContacto(c);
+      return;
+    }
+    setLlMotivo(v.motivo);
+    setLlPaso(v.estado);
+  };
+
+  // La persona confirmó el titular: se guarda (o se reusa) el beneficiario.
+  const confirmarTitular = async () => {
+    if (!llTitular || llPaso !== 'titular') return;
+    const docBase = llTitular.doc || dig(llDocNum);
+    if (docBase.length < 5) { setLlError('Escribe el número de documento del titular.'); return; }
+    const docTipo = llDocTipo;
+    const docGuardado = docTipo === 'NIT' ? dig(completarNit(docBase)) : docBase;
+    const gen = llGen.current;
+    setLlError(null); setLlPaso('verificando');
+
+    const mismaLlave = contactosRaw.filter(c => c?.destKind === 'breb' && normLlave(c.brebKey ?? c.accountNumber) === normLlave(llTitular.llave));
+    const otro = mismaLlave.find(c => dig(c.docNumber) && !mismoDoc(c.docNumber, docGuardado));
+    if (otro) {
+      setLlMotivo(`Ya tienes esta llave guardada como ${nombrePropio(otro.name)} con otro documento. Corrígela o bórrala en Beneficiarios y vuelve a intentar.`);
+      setLlPaso('bloqueado');
+      return;
+    }
+    let contacto: MouvContact | null = mismaLlave.find(c => mismoDoc(c.docNumber, docGuardado)) ?? null;
+    if (!contacto) {
+      const datos = {
+        kind: (docTipo === 'NIT' ? 'empresa' : 'persona') as MouvContact['kind'],
+        name: llTitular.nombre, docType: docTipo, docNumber: docGuardado,
+        bank: llTitular.banco || `Bre-B · ${TIPO_LLAVE_TXT[llTitular.tipo]}`,
+        brebKeyType: llTitular.tipo, brebKey: llTitular.llave, accountNumber: llTitular.llave,
+      };
+      // Guardada antes sin documento: se completa con el del titular.
+      const sinDoc = mismaLlave.find(c => !dig(c.docNumber));
+      const nuevo: MouvContact = sinDoc ? { ...sinDoc, ...datos } : {
+        id: `ct_${Math.random().toString(36).slice(2, 10)}`, mouvId: null,
+        country: 'Colombia', accountType: 'savings', status: 'aprobada', createdAt: new Date().toISOString(), lastError: null,
+        destKind: 'breb', ...datos,
+      };
+      const ok = await actualizarListaRaw(cu.id, 'mouvContacts', l => [nuevo, ...l.filter((x: any) => x?.id !== nuevo.id)], contactosRaw);
+      if (gen !== llGen.current) return;
+      if (!ok) { setLlError('No pudimos guardar el destinatario (tu sesión pudo vencer). Vuelve a entrar e inténtalo otra vez.'); setLlPaso('titular'); return; }
+      contacto = nuevo;
+    }
+    await verificarYEnviar(contacto);
+  };
+
+  // Desde "Contactos previos" o Beneficiarios: misma verificación. Una llave
+  // guardada sin documento pasa antes por el titular, que es de donde sale.
+  const enviarAContacto = (c: MouvContact) => {
+    const llave = String(c.brebKey ?? c.accountNumber ?? '').trim();
+    if (c.destKind === 'breb' && !dig(c.docNumber) && llave) {
+      abrirLlave();
+      setLlValor(llave);
+      buscarLlave(undefined, llave);
+      return;
+    }
+    llGen.current += 1;
+    setLlTitular(null); setLlMotivo(''); setLlError(null);
+    setPanel('llave');
+    verificarYEnviar(c);
+  };
+  const volverDeLlave = () => {
+    if (llPaso === 'titular') { llGen.current += 1; setLlPaso('llave'); setLlError(null); }
+    else setPanel('enviar');
+  };
+
+  // ── Depositar (PSE) ────────────────────────────────────────────────
+  const [recMonto, setRecMonto] = useState('');
+  const [recOcupado, setRecOcupado] = useState(false);
+  const [recError, setRecError] = useState<string | null>(null);
+  const [recLink, setRecLink] = useState<string | null>(null);
+  const abrirDeposito = (p: 'recargar' | 'cobrar') => { setRecMonto(''); setRecError(null); setRecLink(null); setPanel(p); };
+  const irAPse = async (e: React.FormEvent) => {
+    e.preventDefault(); setRecError(null); setRecLink(null);
+    const m = numero(recMonto);
+    if (m < 20000) { setRecError('El mínimo es $ 20.000 COP.'); return; }
+    setRecOcupado(true);
+    const r = await llamarFuncion('finity-proxy', { action: 'create_payment_link', user_id: cu.id, copAmount: m }, 60000);
+    setRecOcupado(false);
+    if (r?.ok && r?.link) { setRecLink(String(r.link)); if (panel === 'recargar') { try { window.open(String(r.link), '_blank', 'noopener'); } catch { /* */ } } refreshData().catch(() => {}); }
+    else setRecError(r?.message || r?.error || 'No se pudo abrir PSE. Intenta de nuevo.');
+  };
+
   // ── Notificaciones (preferencias) ──────────────────────────────────
   const prefs = { correo: true, whatsapp: false, alertas: true, ...(cu.raw_data?.prefsNotificaciones ?? cu.prefsNotificaciones ?? {}) };
   const togglePref = (k: keyof typeof prefs) => updateUserRawData(cu.id, { prefsNotificaciones: { ...prefs, [k]: !prefs[k] } });
 
   // El tope mensual de retiro lo fija la empresa que autoriza; el consumo
-  // del mes lo calcula el servidor (retiros a banco/Bre-B).
+  // del mes lo calcula el servidor (envíos a banco y Bre-B).
   const limiteMensual = autorizada?.topeMensual ?? null;
   const retiradoMes = auth?.usadoMes ?? 0;
+  const topeTxt = autorizada ? (limiteMensual ? `${fmt(retiradoMes)} de ${fmt(limiteMensual)} este mes` : `${fmt(retiradoMes)} este mes · sin tope`) : 'Lo fija la empresa que te autorice';
 
-  const avatarRef = useRef<HTMLDivElement>(null);
-  const funciones: Array<{ icono: React.ElementType; titulo: string; desc: string; abrir: () => void }> = [
-    { icono: Link2, titulo: 'Cobrar con link', desc: 'Comparte un link y te pagan en tu billetera', abrir: () => setPanel('cobrar') },
-    { icono: TrendingUp, titulo: 'Tasas de cambio', desc: 'COP, BRL, PEN, CLP, MXN en vivo', abrir: () => setPanel('tasas') },
-    { icono: FileText, titulo: 'Extractos y certificados', desc: 'PDF mensual y certificado de cuenta', abrir: extracto },
-    { icono: BarChart3, titulo: 'Límites', desc: autorizada ? (limiteMensual ? `${fmt(limiteMensual, 'COP')} COP al mes` : 'Sin tope fijado por tu empresa') : 'Los fija la empresa que te autoriza', abrir: () => setPanel('limites') },
-    { icono: User, titulo: 'Mi perfil', desc: autorizada ? `Autorizada por ${autorizada.nombre}` : 'Nombre, documento y empresa', abrir: () => setPanel('perfil') },
-    { icono: Shield, titulo: 'Seguridad', desc: 'Contraseña, 2 pasos y dispositivos', abrir: abrirSeguridad },
-    { icono: Gift, titulo: 'Invita y gana', desc: 'Gana por cada amigo que se registre', abrir: () => setPanel('invita') },
-    { icono: Bell, titulo: 'Notificaciones', desc: 'Correo, WhatsApp y alertas', abrir: () => setPanel('notificaciones') },
-    { icono: MessageSquare, titulo: 'Ayuda y soporte', desc: 'Chat con nuestro equipo', abrir: () => setVista('ayuda') },
-  ];
-
-  const chip = (b: Billetera, activo: boolean, punteado = false): React.CSSProperties => ({
-    fontFamily: FONT, fontSize: 13, fontWeight: 700, letterSpacing: '0.5px', padding: '9px 18px', borderRadius: 999, cursor: b.pronto ? 'default' : 'pointer',
-    background: activo ? C.text : 'transparent', color: activo ? '#0A0A0A' : b.pronto ? C.tenue : C.text,
-    border: `1px ${punteado ? 'dashed' : 'solid'} ${activo ? C.text : C.bordeFuerte}`, whiteSpace: 'nowrap',
-  });
   const tab = (v: Vista, txt: string) => (
-    <button key={v} onClick={() => setVista(v)} style={{ fontFamily: FONT, fontSize: 16, fontWeight: 600, color: vista === v ? C.text : C.medio, background: vista === v ? 'rgba(255,255,255,0.07)' : 'transparent', border: 'none', borderRadius: 10, padding: '10px 18px', cursor: 'pointer' }}>{txt}</button>
+    <button key={v} onClick={() => setVista(v)} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 600, color: vista === v ? C.text : C.medio, background: vista === v ? 'rgba(255,255,255,0.07)' : 'transparent', border: 'none', borderRadius: 10, padding: '9px 16px', cursor: 'pointer' }}>{txt}</button>
+  );
+  const iconoBtn: React.CSSProperties = { width: 44, height: 44, borderRadius: 12, border: `1px solid ${C.bordeFuerte}`, background: 'transparent', color: C.text, cursor: 'pointer', display: 'grid', placeItems: 'center', position: 'relative', flexShrink: 0 };
+
+  // Saldo + acciones: la tarjeta de la cuenta, en Inicio y en Cuenta.
+  const acciones = (
+    <div className="flex persona-acciones" style={{ gap: 6, overflowX: 'auto', paddingBottom: 2 }}>
+      <Accion icono={Plus} txt="Depositar" onClick={() => abrirDeposito('recargar')} />
+      <Accion icono={ArrowUpRight} txt="Enviar" onClick={abrirEnviar} principal />
+      <Accion icono={ArrowDownLeft} txt="Recibir" onClick={() => setPanel('recibir')} />
+      <Accion icono={KeyRound} txt="Tus llaves" onClick={() => setPanel('llaves')} pronto />
+      <Accion icono={FileText} txt="Extracto" onClick={extracto} />
+    </div>
   );
 
   // ── Render ─────────────────────────────────────────────────────────
   return (
     <div style={{ minHeight: '100vh', background: C.fondo, color: C.text, fontFamily: FONT }}>
       <style>{`
-        .persona-sec:hover, .persona-func:hover, .persona-chip:hover { border-color: rgba(74,222,128,0.5) !important; }
-        .persona-ben:hover .persona-ben-av { border-color: rgba(74,222,128,0.5) !important; }
-        @media (max-width: 860px) { .persona-grid-principal { grid-template-columns: 1fr !important; } .persona-tabs { display: none !important; } }
-        @media (max-width: 520px) { .persona-drawer { width: 100% !important; } .persona-main { padding: 20px 16px 40px !important; } }
+        .persona-sec:hover, .persona-func:hover { border-color: rgba(74,222,128,0.5) !important; }
+        .persona-acc:hover .persona-acc-c { border-color: rgba(74,222,128,0.5) !important; }
+        .persona-fila:hover { background: rgba(255,255,255,0.02) !important; }
+        .persona-acciones::-webkit-scrollbar { display: none; }
+        @media (max-width: 860px) {
+          .persona-tabs { display: none !important; }
+          .persona-bottom { display: flex !important; }
+          .persona-main { padding-bottom: 104px !important; }
+        }
+        @media (max-width: 560px) {
+          .persona-drawer { width: 100% !important; }
+          .persona-main { padding: 18px 16px 104px !important; }
+          .persona-head { padding: 0 16px !important; }
+          .persona-rotulo, .persona-nombre, .persona-salir { display: none !important; }
+        }
       `}</style>
 
       {/* Barra superior */}
-      <header style={{ borderBottom: `1px solid ${C.borde}`, padding: '0 32px', height: 100, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-        <div className="flex items-center" style={{ gap: 28 }}>
-          <div className="flex items-center" style={{ gap: 16 }}>
-            <p style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.8px', margin: 0, lineHeight: 1 }}>Lincoin<span style={{ color: C.verde }}>.</span></p>
-            <Rotulo>PERSONAS</Rotulo>
-          </div>
-          <nav className="persona-tabs flex items-center" style={{ gap: 4 }}>
-            {tab('inicio', 'Inicio')}{tab('movimientos', 'Movimientos')}{tab('beneficiarios', 'Beneficiarios')}{tab('ayuda', 'Ayuda')}
+      <header className="persona-head" style={{ position: 'sticky', top: 0, zIndex: 40, background: 'rgba(7,8,8,0.92)', backdropFilter: 'blur(8px)', borderBottom: `1px solid ${C.borde}`, padding: '0 28px', height: 72, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div className="flex items-center" style={{ gap: 24, minWidth: 0 }}>
+          <button onClick={() => setVista('inicio')} className="flex items-center" style={{ gap: 14, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: C.text, fontFamily: FONT }}>
+            <span style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.7px', lineHeight: 1 }}>Lincoin<span style={{ color: C.verde }}>.</span></span>
+            <span className="persona-rotulo"><Rotulo>PERSONAS</Rotulo></span>
+          </button>
+          <nav className="persona-tabs flex items-center" style={{ gap: 2 }}>
+            {tab('inicio', 'Inicio')}{tab('movimientos', 'Cuenta')}{tab('beneficiarios', 'Beneficiarios')}{tab('ayuda', 'Ayuda')}
           </nav>
         </div>
-        <div className="flex items-center" style={{ gap: 12 }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <button onClick={() => setOculto(v => !v)} aria-label={oculto ? 'Mostrar saldo' : 'Ocultar saldo'} title={oculto ? 'Mostrar saldo' : 'Ocultar saldo'} style={iconoBtn}>{oculto ? <EyeOff size={18} /> : <Eye size={18} />}</button>
           <div style={{ position: 'relative' }}>
-            <button onClick={() => { setNotifAbierto(v => !v); if (hayNuevas) markNotificationsRead(); }} aria-label="Notificaciones" style={{ width: 54, height: 54, borderRadius: 14, border: `1px solid ${C.bordeFuerte}`, background: 'transparent', color: C.text, cursor: 'pointer', display: 'grid', placeItems: 'center', position: 'relative' }}>
+            <button onClick={() => { setNotifAbierto(v => !v); if (hayNuevas) markNotificationsRead(); }} aria-label="Notificaciones" style={iconoBtn}>
               <Bell size={18} />
-              {hayNuevas && <span style={{ position: 'absolute', top: 14, right: 16, width: 8, height: 8, borderRadius: '50%', background: C.verde }} />}
+              {hayNuevas && <span style={{ position: 'absolute', top: 11, right: 12, width: 8, height: 8, borderRadius: '50%', background: C.verde }} />}
             </button>
             {notifAbierto && (
-              <div onMouseLeave={() => setNotifAbierto(false)} style={{ position: 'absolute', right: 0, top: 62, width: 320, background: C.tarjeta, border: `1px solid ${C.bordeFuerte}`, borderRadius: R, padding: 14, zIndex: 50 }}>
-                <Rotulo>NOTIFICACIONES</Rotulo>
+              <div onMouseLeave={() => setNotifAbierto(false)} style={{ position: 'absolute', right: 0, top: 52, width: 'min(320px, calc(100vw - 32px))', background: C.tarjeta, border: `1px solid ${C.bordeFuerte}`, borderRadius: R, padding: 14, zIndex: 50 }}>
+                <div className="flex items-center justify-between"><Rotulo>NOTIFICACIONES</Rotulo><button onClick={() => setNotifAbierto(false)} aria-label="Cerrar" style={{ background: 'transparent', border: 'none', color: C.sub, cursor: 'pointer' }}><X size={14} /></button></div>
                 {notifs.length === 0 ? <p style={{ fontSize: 13, color: C.tenue, margin: '10px 0 0' }}>Nada nuevo por ahora.</p> : notifs.slice(0, 8).map((n: any, i: number) => (
                   <div key={i} style={{ padding: '10px 0', borderTop: i ? `1px solid ${C.borde}` : 'none' }}>
                     <p style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>{n.title ?? n.titulo ?? 'Aviso'}</p>
@@ -443,210 +705,123 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               </div>
             )}
           </div>
-          <div ref={avatarRef} onClick={() => setPanel('perfil')} title="Mi perfil" className="flex items-center persona-sec" style={{ gap: 12, border: `1px solid ${C.bordeFuerte}`, borderRadius: 14, padding: '8px 18px 8px 8px', cursor: 'pointer' }}>
-            <span style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800 }}>{iniciales(nombre)}</span>
-            <span style={{ fontSize: 16, fontWeight: 700 }}>{nombre.split(' ')[0]}</span>
-          </div>
-          <button onClick={() => setConfirmarSalir(true)} style={{ fontFamily: FONT, fontSize: 16, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.bordeFuerte}`, borderRadius: 14, padding: '14px 22px', cursor: 'pointer' }}>Salir</button>
+          <button onClick={() => setPanel('perfil')} title="Detalles de mi cuenta" className="flex items-center persona-sec" style={{ gap: 10, border: `1px solid ${C.bordeFuerte}`, borderRadius: 12, padding: '5px 14px 5px 5px', cursor: 'pointer', background: 'transparent', color: C.text, fontFamily: FONT, height: 44 }}>
+            <span style={{ width: 32, height: 32, borderRadius: 9, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800 }}>{iniciales(nombre)}</span>
+            <span className="persona-nombre" style={{ fontSize: 15, fontWeight: 700 }}>{nombre.split(' ')[0]}</span>
+          </button>
+          <button className="persona-salir" onClick={() => setConfirmarSalir(true)} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.bordeFuerte}`, borderRadius: 12, padding: '0 18px', height: 44, cursor: 'pointer' }}>Salir</button>
         </div>
       </header>
 
-      <main className="persona-main" style={{ maxWidth: 1080, margin: '0 auto', padding: 32, display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <main className="persona-main" style={{ maxWidth: vista === 'beneficiarios' ? 1080 : 680, margin: '0 auto', padding: '28px 24px 48px', display: 'flex', flexDirection: 'column', gap: 20 }}>
         {aviso && <div style={{ fontSize: 13.5, fontWeight: 600, color: aviso.mal ? C.text : C.verde, background: 'rgba(255,255,255,0.04)', border: `1px solid ${aviso.mal ? C.bordeFuerte : 'rgba(74,222,128,0.35)'}`, borderRadius: 12, padding: '12px 16px' }}>{aviso.txt}</div>}
 
         {vista === 'inicio' && (<>
-          {/* 1. Saludo */}
-          <div className="flex items-end justify-between flex-wrap" style={{ gap: 14 }}>
+          {/* Saludo */}
+          <div className="flex items-end justify-between flex-wrap" style={{ gap: 12 }}>
             <div>
               <p style={{ fontSize: 15, color: C.sub, margin: 0 }}>Hola,</p>
-              <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-0.6px', margin: '4px 0 0' }}>{nombre}</h1>
+              <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.6px', margin: '2px 0 0' }}>{nombre.split(' ')[0]}</h1>
             </div>
-            <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
-              <Pill verde={!!autorizada} naranja={!autorizada && !pendiente} onClick={() => (autorizada || pendiente ? setPanel('perfil') : abrirAutorizacion())}>{auth ? estadoTxt : kycOk ? 'IDENTIDAD VERIFICADA' : 'IDENTIFICACIÓN PENDIENTE'}</Pill>
-            </div>
+            <Pill verde={!!autorizada} naranja={!autorizada && !pendiente} onClick={() => (autorizada || pendiente ? setPanel('perfil') : abrirAutorizacion())}>{auth ? estadoTxt : kycOk ? 'IDENTIDAD VERIFICADA' : 'IDENTIFICACIÓN PENDIENTE'}</Pill>
           </div>
 
-          {/* Aviso: sin empresa que la autorice, la cuenta no puede recibir ni enviar. */}
+          {/* Sin empresa que la autorice, la cuenta no puede recibir ni enviar. */}
           {auth && !autorizada && (
-            <div className="flex items-center justify-between flex-wrap" style={{ gap: 14, background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.35)', borderRadius: R, padding: '16px 20px' }}>
-              <div style={{ flex: '1 1 320px' }}>
-                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>{pendiente ? `${pendiente.nombre} está revisando tu solicitud` : 'Pide la autorización de tu empresa'}</p>
-                <p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
+            <div className="flex items-center justify-between flex-wrap" style={{ gap: 14, background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.35)', borderRadius: R, padding: '16px 18px' }}>
+              <div style={{ flex: '1 1 260px' }}>
+                <p style={{ fontSize: 15.5, fontWeight: 700, margin: 0 }}>{pendiente ? `${pendiente.nombre} está revisando tu solicitud` : 'Pide la autorización de tu empresa'}</p>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
                   {pendiente ? 'Cuando la apruebe, tu cuenta queda activa y ves aquí tu tope mensual. Esta pantalla se actualiza sola.'
                     : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, tu nombre y tu documento, y toma una foto sosteniéndolo.'}
                 </p>
               </div>
-              {pendiente ? <Pill onClick={() => setPanel('perfil')}>VER DATOS</Pill> : <BotonPrimario onClick={abrirAutorizacion} style={{ padding: '13px 22px' }}>Pedir autorización</BotonPrimario>}
+              {pendiente ? <Pill onClick={() => setPanel('perfil')}>VER DATOS</Pill> : <BotonPrimario onClick={abrirAutorizacion} style={{ padding: '12px 20px' }}>Pedir autorización</BotonPrimario>}
             </div>
           )}
 
-          {/* 2. Fila principal */}
-          <div className="persona-grid-principal" style={{ display: 'grid', gridTemplateColumns: '1.55fr 1fr', gap: 24 }}>
-            <section style={{ background: 'linear-gradient(135deg, #121413, #0C0E0D 60%, #0A0B0A)', border: `1px solid ${C.borde}`, borderRadius: RG, padding: 28, position: 'relative', overflow: 'hidden' }}>
-              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 88% 8%, rgba(74,222,128,0.14), transparent 45%)', pointerEvents: 'none' }} />
-              <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, position: 'relative' }}>
-                <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
-                  {primeras.map(b => <button key={b.code} className="persona-chip" onClick={() => setWalletActiva(b.code)} style={chip(b, walletActiva === b.code)}>{b.code}</button>)}
-                  {restantes.length > 0 && (
-                    <div style={{ position: 'relative' }}>
-                      <button className="persona-chip" onClick={() => setMasAbierto(v => !v)} style={chip({ ...wa, pronto: false }, false, true)}>{restantes.some(b => b.code === walletActiva) ? walletActiva : `+${restantes.length} más`}</button>
-                      {masAbierto && (
-                        <div onMouseLeave={() => setMasAbierto(false)} style={{ position: 'absolute', top: 44, left: 0, background: C.tarjeta, border: `1px solid ${C.bordeFuerte}`, borderRadius: 12, padding: 6, zIndex: 20, minWidth: 200 }}>
-                          {restantes.map(b => (
-                            <button key={b.code} onClick={() => { if (!b.pronto) { setWalletActiva(b.code); setMasAbierto(false); } }}
-                              style={{ fontFamily: FONT, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, width: '100%', background: 'transparent', border: 'none', color: b.pronto ? C.tenue : C.text, fontSize: 13.5, fontWeight: 700, padding: '9px 10px', borderRadius: 8, cursor: b.pronto ? 'default' : 'pointer', textAlign: 'left' }}>
-                              <span>{b.code} <span style={{ color: C.tenue, fontWeight: 500 }}>· {b.nombre}</span></span>
-                              {b.pronto && <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '1px', color: C.tenue }}>PRONTO</span>}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <button onClick={() => setOculto(v => !v)} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 600, color: C.medio, background: 'transparent', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  {oculto ? <Eye size={16} /> : <EyeOff size={16} />} {oculto ? 'Mostrar' : 'Ocultar'}
-                </button>
-              </div>
+          {/* Cuenta Lincoin */}
+          <button onClick={() => setVista('movimientos')} style={{ fontFamily: FONT, textAlign: 'left', width: '100%', cursor: 'pointer', color: C.text, background: NEGRO_LINCOIN, border: `1px solid ${C.borde}`, borderRadius: RG, padding: '22px 22px 24px', position: 'relative', overflow: 'hidden' }}>
+            <span style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 88% 8%, rgba(74,222,128,0.14), transparent 45%)', pointerEvents: 'none' }} />
+            <span className="flex items-center justify-between" style={{ position: 'relative' }}>
+              <span style={{ fontSize: 16, fontWeight: 700 }}>Cuenta Lincoin</span>
+              <ChevronRight size={20} color={C.sub} />
+            </span>
+            <span style={{ display: 'block', fontSize: 13.5, color: C.sub, marginTop: 16, position: 'relative' }}>Saldo disponible</span>
+            <span style={{ display: 'block', fontSize: 40, fontWeight: 800, letterSpacing: '-1.4px', marginTop: 6, fontVariantNumeric: 'tabular-nums', lineHeight: 1.05, position: 'relative' }}>
+              {enmascarar(fmt(totalCop))} <span style={{ fontSize: 18, color: C.sub, fontWeight: 700, letterSpacing: 0 }}>COP</span>
+            </span>
+          </button>
 
-              <p style={{ fontSize: 46, fontWeight: 800, letterSpacing: '-1.5px', margin: '26px 0 0', fontVariantNumeric: 'tabular-nums', position: 'relative', lineHeight: 1 }}>
-                {enmascarar(fmt(saldo(wa.code), wa.code))} <span style={{ fontSize: 22, color: C.sub, fontWeight: 700, letterSpacing: 0 }}>{wa.code}</span>
-              </p>
-              <p style={{ fontSize: 15, color: C.medio, margin: '14px 0 0', position: 'relative' }}>{wa.nombre} · {wa.desc}</p>
-              <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', position: 'relative' }}>Total en todas tus billeteras: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{enmascarar(fmt(totalEnCop, 'COP'))} COP</b></p>
+          {acciones}
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 14, marginTop: 28, position: 'relative' }}>
-                <button onClick={() => abrirEnviar()} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, border: 'none', borderRadius: 14, padding: '22px 12px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}><ArrowUpRight size={22} /> Enviar</button>
-                <button onClick={() => { setRecMonto(''); setRecError(null); setRecLink(null); setPanel('recargar'); }} className="persona-sec" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, borderRadius: 14, padding: '22px 12px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}><Plus size={22} /> Recargar</button>
-                <button onClick={() => { setConvMonto(''); setConvError(null); setConvPaso('datos'); setConvA(convDestinos[0]?.code ?? 'PEN'); setPanel('convertir'); }} className="persona-sec" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 16, color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, borderRadius: 14, padding: '22px 12px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}><ArrowLeftRight size={22} /> Convertir</button>
-              </div>
-            </section>
-
-            <Tarjeta grande>
-              <Rotulo>MI ID LINCOIN</Rotulo>
-              <div className="flex items-center justify-between" style={{ gap: 12, marginTop: 14 }}>
-                <p style={{ fontFamily: MONO, fontSize: 34, fontWeight: 700, letterSpacing: '4px', margin: 0, lineHeight: 1 }}>{codigo}</p>
-                <BotonPrimario onClick={copiar} style={{ padding: '12px 22px', display: 'inline-flex', alignItems: 'center', gap: 8 }}>{copiado ? <><Check size={15} /> Copiado</> : <><Copy size={15} /> Copiar</>}</BotonPrimario>
-              </div>
-              <p style={{ fontSize: 15, color: C.medio, margin: '20px 0 0', lineHeight: 1.55 }}>Dáselo a la empresa que te va a cargar saldo, o a otra persona Lincoin para recibir un envío. Sin comisión.</p>
-              <div className="flex items-center" style={{ gap: 14, marginTop: 34, background: 'rgba(255,255,255,0.03)', border: `1px solid rgba(255,255,255,0.1)`, borderRadius: 12, padding: '16px 18px' }}>
-                <MiniTarjeta />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Tarjeta Lincoin</p>
-                  <p style={{ fontSize: 13, color: C.sub, margin: '2px 0 0' }}>Mastercard para pagar con tu saldo</p>
-                </div>
-                <Pill>PRONTO</Pill>
-              </div>
-            </Tarjeta>
-          </div>
-
-          {/* 3. Estado */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 24 }}>
-            <Tarjeta>
-              <div className="flex items-center justify-between" style={{ gap: 10 }}>
-                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Tope de retiro mensual</p>
-                <p style={{ fontSize: 15, color: C.sub, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{autorizada ? (limiteMensual ? `${fmt(retiradoMes, 'COP')} / ${fmt(limiteMensual, 'COP')}` : `${fmt(retiradoMes, 'COP')} · sin tope`) : '—'}</p>
-              </div>
-              <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', marginTop: 20, overflow: 'hidden' }}>
-                <div style={{ width: `${autorizada && limiteMensual ? Math.min(100, Math.max(1.5, (retiradoMes / limiteMensual) * 100)) : 0}%`, height: '100%', background: retiradoMes >= (limiteMensual ?? Infinity) ? NARANJA : C.verde, borderRadius: 999 }} />
-              </div>
-              <p style={{ fontSize: 14, color: C.sub, margin: '18px 0 0', lineHeight: 1.5 }}>{autorizada ? `Lo fija ${autorizada.nombre}.` : 'Lo fija la empresa que te autorice.'}</p>
-            </Tarjeta>
-            <Tarjeta>
-              <div className="flex items-center justify-between" style={{ gap: 14 }}>
-                <div>
-                  <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Cuenta para retiros</p>
-                  <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{beneficiarios.length ? `${beneficiarios.length} beneficiario(s) inscrito(s)` : 'Aún no agregas una cuenta bancaria o llave Bre-B'}</p>
-                </div>
-                <BotonSecundario onClick={() => setVista('beneficiarios')} style={{ padding: '13px 22px' }}>Agregar</BotonSecundario>
-              </div>
-            </Tarjeta>
-            <Tarjeta>
-              <div className="flex items-center justify-between" style={{ gap: 14 }}>
-                <div>
-                  <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Seguridad</p>
-                  <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{mfaActivo ? 'Verificación en dos pasos activa' : 'Activa la verificación en dos pasos'}</p>
-                </div>
-                {mfaActivo ? <Pill verde>ACTIVA</Pill> : <BotonSecundario onClick={abrirSeguridad} style={{ padding: '13px 22px' }}>Activar</BotonSecundario>}
-              </div>
-            </Tarjeta>
-          </div>
-
-          {/* 4. Beneficiarios frecuentes */}
-          <Tarjeta>
-            <div className="flex items-center justify-between">
-              <Rotulo>BENEFICIARIOS FRECUENTES</Rotulo>
-              <button onClick={() => setVista('beneficiarios')} style={{ fontFamily: FONT, fontSize: 15, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Ver todos →</button>
-            </div>
-            <div className="flex items-start" style={{ gap: 28, marginTop: 24, overflowX: 'auto', paddingBottom: 4 }}>
-              <button onClick={() => setVista('beneficiarios')} className="persona-ben" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 90 }}>
-                <span className="persona-ben-av" style={{ width: 50, height: 50, borderRadius: '50%', border: `1px dashed ${C.medio}`, display: 'grid', placeItems: 'center', color: C.text }}><Plus size={18} /></span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>Nuevo</span>
-              </button>
-              {beneficiarios.slice(0, 8).map(b => (
-                <button key={b.id} onClick={() => abrirEnviar(b)} className="persona-ben" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, minWidth: 90 }}>
-                  <span className="persona-ben-av" style={{ width: 50, height: 50, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', fontSize: 14, fontWeight: 800, color: C.text }}>{iniciales(b.name)}</span>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: C.text, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
-                  <span style={{ fontSize: 12, color: C.sub, marginTop: -6, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.via}</span>
-                </button>
-              ))}
-            </div>
+          {/* Tu cuenta */}
+          <Tarjeta style={{ padding: '6px 16px' }}>
+            <Fila primera icono={User} titulo="Detalles de mi cuenta" sub={`ID Lincoin ${codigo}${autorizada ? ` · ${autorizada.nombre}` : ''}`} onClick={() => setPanel('perfil')} />
+            <Fila icono={CreditCard} titulo="Mis tarjetas" sub="Tarjeta Mastercard Lincoin" onClick={() => setPanel('tarjetas')} derecha={<Pronto />} />
+            <Fila icono={Users} titulo="Beneficiarios" sub={contactos.length ? `${contactos.length} guardado(s)` : 'Llaves Bre-B y cuentas de banco'} onClick={() => setVista('beneficiarios')} />
+            <Fila icono={BarChart3} titulo="Tope mensual" sub={topeTxt} onClick={() => setPanel('limites')} />
+            <Fila icono={Shield} titulo="Seguridad" sub={mfaActivo ? 'Verificación en dos pasos activa' : 'Activa la verificación en dos pasos'} onClick={abrirSeguridad} derecha={mfaActivo ? <Pill verde>ACTIVA</Pill> : undefined} />
           </Tarjeta>
 
-          {/* 5. Movimientos */}
+          {/* Movimientos recientes */}
           <Tarjeta>
             <div className="flex items-center justify-between" style={{ gap: 10 }}>
               <Rotulo>MOVIMIENTOS</Rotulo>
-              <BotonSecundario onClick={extracto} style={{ padding: '11px 20px', fontSize: 15 }}>Descargar extracto</BotonSecundario>
+              {movs.length > 0 && <button onClick={() => setVista('movimientos')} style={{ fontFamily: FONT, fontSize: 14, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Ver todos →</button>}
             </div>
-            <ListaMovimientos movs={movs.slice(0, 8)} contraparte={contraparte} oculto={oculto} vacioAncho />
-            {movs.length > 8 && <button onClick={() => setVista('movimientos')} style={{ fontFamily: FONT, fontSize: 14, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: 0, marginTop: 14, cursor: 'pointer' }}>Ver todos →</button>}
+            <ListaMovimientos movs={movs.slice(0, 5)} contraparte={contraparte} oculto={oculto} />
           </Tarjeta>
 
-          {/* 6. Más funciones */}
-          <Tarjeta>
-            <Rotulo>MÁS FUNCIONES</Rotulo>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginTop: 24 }}>
-              {funciones.map(f => (
-                <button key={f.titulo} onClick={f.abrir} className="persona-func" style={{ fontFamily: FONT, textAlign: 'left', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 16, color: C.text }}>
-                  <span style={{ width: 56, height: 56, borderRadius: 14, background: 'rgba(255,255,255,0.05)', display: 'grid', placeItems: 'center', flexShrink: 0 }}><f.icono size={22} strokeWidth={1.8} /></span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 17, fontWeight: 700 }}>{f.titulo}</span>
-                    <span style={{ display: 'block', fontSize: 14, color: C.sub, marginTop: 2, lineHeight: 1.4 }}>{f.desc}</span>
-                  </span>
-                  <ArrowRight size={18} color={C.sub} />
-                </button>
-              ))}
-            </div>
+          {/* Más */}
+          <Tarjeta style={{ padding: '6px 16px' }}>
+            <Fila primera icono={Link2} titulo="Cobrar con link" sub="Un enlace de pago por PSE para que te paguen" onClick={() => abrirDeposito('cobrar')} />
+            <Fila icono={Gift} titulo="Invita y gana" sub="Tu ID es también tu código de invitación" onClick={() => setPanel('invita')} />
+            <Fila icono={Bell} titulo="Notificaciones" sub="Correo, WhatsApp y alertas" onClick={() => setPanel('notificaciones')} />
+            <Fila icono={MessageSquare} titulo="Ayuda y soporte" sub="Escríbenos y una persona te responde" onClick={() => setVista('ayuda')} />
           </Tarjeta>
-
-          {/* 7. Próximamente */}
-          <div className="flex items-center flex-wrap" style={{ gap: 14, border: `1px dashed ${C.bordeFuerte}`, borderRadius: R, padding: '22px 28px' }}>
-            <Rotulo style={{ marginRight: 14 }}>PRÓXIMAMENTE</Rotulo>
-            {[['USD', 'cuenta en dólares'], ['EUR', 'cuenta en euros'], ['USDC', 'dólar de Circle'], ['EURC', 'euro de Circle'], ['Tarjeta', 'Mastercard Lincoin']].map(([t, d]) => (
-              <span key={t} style={{ fontSize: 16, color: C.medio, border: `1px solid ${C.bordeFuerte}`, borderRadius: 999, padding: '12px 22px', whiteSpace: 'nowrap' }}><b style={{ color: C.text }}>{t}</b> · {d}</span>
-            ))}
-          </div>
         </>)}
 
-        {vista === 'movimientos' && (
+        {/* Cuenta: saldo, acciones y todos los movimientos con buscador. */}
+        {vista === 'movimientos' && (<>
+          <div className="flex items-center" style={{ gap: 12 }}>
+            <button onClick={() => setVista('inicio')} aria-label="Volver" style={{ ...iconoBtn, width: 40, height: 40 }}><ChevronLeft size={18} /></button>
+            <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Cuenta Lincoin</h1>
+          </div>
+          <div>
+            <p style={{ fontSize: 13.5, color: C.sub, margin: 0 }}>Saldo disponible</p>
+            <p style={{ fontSize: 40, fontWeight: 800, letterSpacing: '-1.4px', margin: '6px 0 0', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>{enmascarar(fmt(totalCop))} <span style={{ fontSize: 18, color: C.sub, fontWeight: 700, letterSpacing: 0 }}>COP</span></p>
+          </div>
+          {acciones}
+          <Tarjeta style={{ padding: '6px 16px' }}>
+            <Fila primera icono={Wallet} titulo="Datos de la cuenta" sub={`ID Lincoin ${codigo} · pesos colombianos`} onClick={() => setPanel('perfil')} />
+            <Fila icono={KeyRound} titulo="Tus llaves Bre-B" sub="Recibe con tu celular, correo o cédula" onClick={() => setPanel('llaves')} derecha={<Pronto />} />
+          </Tarjeta>
           <Tarjeta>
             <div className="flex items-center justify-between" style={{ gap: 10 }}>
-              <div><h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Movimientos</h1><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0' }}>{movs.length ? `${movs.length} en total` : 'Todo lo que entra y sale de tus billeteras.'}</p></div>
-              <BotonSecundario onClick={extracto} style={{ padding: '11px 20px', fontSize: 15, display: 'inline-flex', alignItems: 'center', gap: 8 }}><Download size={15} /> Descargar extracto</BotonSecundario>
+              <Rotulo>MOVIMIENTOS</Rotulo>
+              <button onClick={extracto} className="persona-sec" style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.bordeFuerte}`, borderRadius: 10, padding: '8px 12px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={14} /> Extracto</button>
             </div>
-            <ListaMovimientos movs={movs} contraparte={contraparte} oculto={oculto} vacioAncho />
+            {movs.length > 0 && (
+              <div style={{ position: 'relative', marginTop: 14 }}>
+                <Search size={15} color={C.sub} style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)' }} />
+                <Campo value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar por nombre, tipo o monto" style={{ paddingLeft: 36 }} />
+              </div>
+            )}
+            {busca && movsFiltrados.length === 0
+              ? <p style={{ fontSize: 14, color: C.sub, margin: '18px 0 4px', textAlign: 'center' }}>Sin movimientos para «{busca}».</p>
+              : <ListaMovimientos movs={movsFiltrados} contraparte={contraparte} oculto={oculto} agrupar />}
           </Tarjeta>
-        )}
+        </>)}
 
         {/* Beneficiarios: la MISMA sección que Empresas — inscripción, AML y
-            verificación idénticas. Enviar desde ahí abre el panel con el
-            beneficiario cargado. */}
+            verificación idénticas. Enviar desde ahí pasa por la verificación
+            y abre el monto con el beneficiario cargado. */}
         {vista === 'beneficiarios' && (
           <ContactsSection
             vista="beneficiarios"
             onBack={() => setVista('inicio')}
-            onSendTo={(c: MouvContact) => abrirEnviar({ id: String(c.id), name: c.name, via: viaDe(c), contacto: c })}
+            onSendTo={(c: MouvContact) => { if (puedeEnviar()) enviarAContacto(c); }}
           />
         )}
 
@@ -654,21 +829,23 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           <Tarjeta>
             <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Ayuda y soporte</h1>
             <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>Escríbenos y una persona del equipo te responde.</p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginTop: 22 }}>
-              <button onClick={() => { try { (window as any).$crisp?.push(['do', 'chat:open']); } catch { /* */ } if (!(window as any).$crisp) window.open('mailto:soporte@lincoin.me', '_blank'); }} className="persona-func" style={{ fontFamily: FONT, textAlign: 'left', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 20px', cursor: 'pointer', color: C.text }}>
-                <p style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Chat con nuestro equipo</p><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0' }}>Abre el chat de soporte</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 20 }}>
+              <button onClick={() => { try { (window as any).$crisp?.push(['do', 'chat:open']); } catch { /* */ } if (!(window as any).$crisp) window.open('mailto:soporte@lincoin.me', '_blank'); }} className="persona-func" style={{ fontFamily: FONT, textAlign: 'left', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '16px 18px', cursor: 'pointer', color: C.text }}>
+                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Chat con nuestro equipo</p><p style={{ fontSize: 13.5, color: C.sub, margin: '4px 0 0' }}>Abre el chat de soporte</p>
               </button>
-              <a href="mailto:soporte@lincoin.me" className="persona-func" style={{ fontFamily: FONT, textDecoration: 'none', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 20px', color: C.text, display: 'block' }}>
-                <p style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Correo</p><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0' }}>soporte@lincoin.me</p>
+              <a href="mailto:soporte@lincoin.me" className="persona-func" style={{ fontFamily: FONT, textDecoration: 'none', background: 'rgba(255,255,255,0.02)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '16px 18px', color: C.text, display: 'block' }}>
+                <p style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Correo</p><p style={{ fontSize: 13.5, color: C.sub, margin: '4px 0 0' }}>soporte@lincoin.me</p>
               </a>
             </div>
             <div style={{ marginTop: 24 }}>
               <Rotulo>PREGUNTAS FRECUENTES</Rotulo>
               {[
-                ['¿Cómo recibo saldo?', 'Copia tu ID Lincoin y dáselo a la empresa o a la persona que te va a enviar. Te llega al instante y sin comisión.'],
-                ['¿Puedo retirar a mi banco?', 'Sí: inscribe tu cuenta o tu llave Bre-B en Beneficiarios, espera la validación, y envíale desde Enviar → A banco o Bre-B.'],
-                ['¿Quién fija mi tope de retiro?', 'La empresa que te autoriza. Si necesitas uno más alto, pídeselo: ella lo cambia desde su panel y aquí se actualiza solo.'],
-                ['¿Puedo cambiar de empresa?', 'Sí. En Mi perfil escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
+                ['¿Cómo recibo dinero?', 'Copia tu ID Lincoin (en Recibir) y dáselo a la empresa o a la persona Lincoin que te va a enviar. Te llega al instante y sin comisión. También puedes depositar desde tu banco por PSE.'],
+                ['¿Cómo envío a otro banco?', 'Toca Enviar → A una llave Bre-B y escribe la llave de la persona: su celular, correo, cédula o @llave. Te mostramos a nombre de quién está, la confirmas y llega en segundos.'],
+                ['¿Por qué me piden esperar al enviar a alguien nuevo?', 'La primera vez que le envías a una persona revisamos que el envío sea seguro. Suele tardar cerca de un minuto y después ya no se repite.'],
+                ['¿Cuándo tendré mis propias llaves Bre-B?', 'Pronto. Vas a poder recibir desde cualquier banco con tu celular, tu correo o tu cédula. Mientras tanto, recibe con tu ID Lincoin.'],
+                ['¿Quién fija mi tope mensual?', 'La empresa que te autoriza. Si necesitas uno más alto, pídeselo: ella lo cambia desde su panel y aquí se actualiza solo.'],
+                ['¿Puedo cambiar de empresa?', 'Sí. En Detalles de mi cuenta escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
               ].map(([q, a]) => (
                 <div key={q} style={{ padding: '14px 0', borderTop: `1px solid ${C.borde}` }}><p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{q}</p><p style={{ fontSize: 14, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{a}</p></div>
               ))}
@@ -676,6 +853,21 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           </Tarjeta>
         )}
       </main>
+
+      {/* Navegación inferior en celular */}
+      <nav className="persona-bottom" style={{ display: 'none', position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 45, background: 'rgba(12,14,13,0.97)', borderTop: `1px solid ${C.borde}`, padding: '8px 6px calc(8px + env(safe-area-inset-bottom))', justifyContent: 'space-around', alignItems: 'center' }}>
+        {([['inicio', 'Inicio', House], ['movimientos', 'Cuenta', Wallet], [null, 'Enviar', ArrowUpRight], ['beneficiarios', 'Beneficiarios', Users], ['ayuda', 'Ayuda', CircleHelp]] as const).map(([v, txt, I]) => {
+          const activo = v !== null && vista === v;
+          return (
+            <button key={txt} onClick={() => (v === null ? abrirEnviar() : setVista(v))} style={{ fontFamily: FONT, flex: 1, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, color: activo ? C.text : C.sub, padding: '4px 0' }}>
+              {v === null
+                ? <span className="lincoin-btn-white" style={{ width: 38, height: 38, borderRadius: '50%', display: 'grid', placeItems: 'center' }}><I size={18} /></span>
+                : <I size={20} strokeWidth={activo ? 2.2 : 1.8} />}
+              <span style={{ fontSize: 11, fontWeight: activo ? 700 : 600 }}>{txt}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* ── Paneles laterales ── */}
       <EnviarDineroModal
@@ -688,7 +880,6 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         movements={movs}
         onIrA={(v) => {
           if (v === 'settings') abrirSeguridad();
-          // "Inscribir beneficiario" desde el envío: antes solo cerraba el panel.
           else if (v === 'contactos' || v === 'beneficiarios') setVista('beneficiarios');
           else if (v === 'movimientos' || v === 'history') setVista('movimientos');
         }}
@@ -696,71 +887,217 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         saldoUnificado
       />
 
-      {panel === 'recargar' && (
-        <Drawer titulo="Recargar" sub={wa.code === 'COP' ? 'Por PSE, desde tu banco. Mínimo $ 20.000.' : `La recarga está disponible en la billetera COP.`} onCerrar={() => setPanel(null)}>
-          {wa.code !== 'COP' ? (
-            <BotonSecundario onClick={() => setWalletActiva('COP')}>Cambiar a COP</BotonSecundario>
-          ) : (
-            <form onSubmit={irAPse} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div>
-                <Etiqueta>MONTO EN COP</Etiqueta>
-                <div style={{ position: 'relative' }}>
-                  <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: C.sub, fontWeight: 700 }}>$</span>
-                  <Campo value={recMonto ? Number(numero(recMonto)).toLocaleString('es-CO') : ''} onChange={e => setRecMonto(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" autoFocus style={{ paddingLeft: 30, fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }} />
-                </div>
-                <p style={{ fontSize: 13, color: C.tenue, margin: '8px 0 0' }}>Mínimo $ 20.000 COP. Pagas desde tu banco en PSE y el saldo te queda al confirmarse.</p>
+      {panel === 'enviar' && (
+        <Drawer titulo="Enviar" sub="¿Cómo quieres hacer el envío?" onCerrar={cerrarPanel}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <Opcion icono={Zap} titulo="A una llave Bre-B" pill="INMEDIATA" sub="Con su celular, correo, cédula o @llave. Llega en segundos a cualquier banco." onClick={abrirLlave} />
+            <Opcion icono={User} titulo="A un cliente Lincoin" pill="GRATIS" sub="Con su ID Lincoin. Al instante y sin comisión." onClick={abrirAClienteLincoin} />
+            <Opcion icono={Landmark} titulo="A una cuenta de banco" sub="Ahorros o corriente, a un beneficiario inscrito. Puede tardar hasta 2 días hábiles." onClick={abrirACuentaBanco} />
+          </div>
+          <div style={{ marginTop: 26 }}>
+            <Rotulo>CONTACTOS PREVIOS</Rotulo>
+            {contactos.length === 0 ? (
+              <p style={{ fontSize: 13.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.5 }}>Aquí aparecen las personas a las que ya les enviaste. La primera vez, envía a su llave Bre-B.</p>
+            ) : (
+              <div style={{ marginTop: 6 }}>
+                {contactos.slice(0, 12).map((c, i) => (
+                  <button key={c.id} onClick={() => enviarAContacto(c)} className="persona-fila" style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: i ? `1px solid ${C.borde}` : 'none', padding: '12px 2px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, color: C.text }}>
+                    <span style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800, flexShrink: 0 }}>{iniciales(c.name)}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 14.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nombrePropio(c.name)}</span>
+                      <span style={{ display: 'block', fontSize: 12.5, color: C.sub, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{viaDe(c)}</span>
+                    </span>
+                    <ChevronRight size={17} color={C.sub} />
+                  </button>
+                ))}
+                {contactos.length > 12 && <button onClick={() => { setPanel(null); setVista('beneficiarios'); }} style={{ fontFamily: FONT, fontSize: 13.5, fontWeight: 700, color: C.verde, background: 'transparent', border: 'none', padding: '10px 0 0', cursor: 'pointer' }}>Ver todos →</button>}
               </div>
-              {recError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0, lineHeight: 1.5 }}>{recError}</p>}
-              {recLink && <p style={{ fontSize: 13.5, color: C.verde, margin: 0, lineHeight: 1.5 }}>Se abrió PSE en otra pestaña. Si no la ves, <a href={recLink} target="_blank" rel="noreferrer" style={{ color: C.verde, textDecoration: 'underline' }}>ábrela aquí</a>.</p>}
-              <BotonPrimario type="submit" disabled={recOcupado}>{recOcupado ? 'Preparando…' : 'Ir a PSE'}</BotonPrimario>
+            )}
+          </div>
+        </Drawer>
+      )}
+
+      {panel === 'llave' && (
+        <Drawer
+          titulo={llPaso === 'titular' ? '¿Es la persona correcta?' : llPaso === 'verificando' ? 'Verificando' : llPaso === 'bloqueado' ? 'No se puede enviar' : llPaso === 'espera' ? 'Sigue en verificación' : 'Enviar a una llave'}
+          sub={llPaso === 'llave' || llPaso === 'buscando' ? 'Bre-B · inmediata a cualquier banco' : undefined}
+          onAtras={llPaso === 'llave' || llPaso === 'titular' ? volverDeLlave : undefined}
+          onCerrar={cerrarPanel}>
+          {(llPaso === 'llave' || llPaso === 'buscando') && (
+            <form onSubmit={buscarLlave} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <Etiqueta>LLAVE BRE-B</Etiqueta>
+                <Campo value={llValor} onChange={e => { setLlValor(e.target.value.slice(0, 80)); setLlError(null); }} placeholder="Correo, celular, cédula o @llave" autoFocus autoComplete="off" autoCapitalize="none" spellCheck={false} disabled={llPaso === 'buscando'} style={{ fontSize: 17, fontWeight: 700, padding: '14px 16px' }} />
+                <p style={{ fontSize: 12.5, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>
+                  {llTipoEscrito ? <>Parece un{llTipoEscrito === 'alfanumerico' ? 'a' : ''} <b style={{ color: C.medio }}>{TIPO_LLAVE_TXT[llTipoEscrito].toLowerCase()}</b>. Antes de enviar te mostramos a nombre de quién está.</> : 'Antes de enviar te mostramos a nombre de quién está la llave.'}
+                </p>
+              </div>
+              {llError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{llError}</p>}
+              <BotonPrimario type="submit" disabled={llPaso === 'buscando' || llValor.trim().length < 3} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                {llPaso === 'buscando' ? <><Loader2 size={16} className="animate-spin" /> Buscando la llave…</> : 'Continuar'}
+              </BotonPrimario>
             </form>
+          )}
+
+          {llPaso === 'titular' && llTitular && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 16px', textAlign: 'center' }}>
+                <span style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.bordeFuerte}`, display: 'grid', placeItems: 'center', margin: '0 auto', fontSize: 18, fontWeight: 800 }}>{iniciales(llTitular.nombre)}</span>
+                <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.3px', margin: '12px 0 0' }}>{nombrePropio(llTitular.nombre)}</p>
+                <p style={{ fontSize: 13, color: C.sub, margin: '4px 0 0' }}>{TIPO_LLAVE_TXT[llTitular.tipo]} · <span style={{ fontFamily: MONO, color: C.medio }}>{llTitular.llave}</span></p>
+              </div>
+              <div style={{ border: `1px solid ${C.borde}`, borderRadius: 12, overflow: 'hidden' }}>
+                {llTitular.banco && (
+                  <div className="flex items-center justify-between" style={{ gap: 12, padding: '12px 14px', fontSize: 13.5 }}>
+                    <span style={{ color: C.sub }}>Banco</span><b style={{ textAlign: 'right' }}>{llTitular.banco}</b>
+                  </div>
+                )}
+                <div style={{ padding: '12px 14px', borderTop: llTitular.banco ? `1px solid ${C.borde}` : 'none' }}>
+                  {llTitular.doc ? (
+                    <div className="flex items-center justify-between" style={{ gap: 12, fontSize: 13.5 }}>
+                      <span style={{ color: C.sub }}>Documento</span>
+                      <span className="flex items-center" style={{ gap: 8 }}>
+                        <select value={llDocTipo} onChange={e => setLlDocTipo(e.target.value)} aria-label="Tipo de documento" style={{ fontFamily: FONT, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 8, padding: '5px 6px', fontSize: 12.5, fontWeight: 700 }}>
+                          {TIPOS_DOC_TITULAR.map(([k]) => <option key={k} value={k} style={{ color: '#000' }}>{k}</option>)}
+                        </select>
+                        <b style={{ fontFamily: MONO }}>{ocultarDoc(llTitular.doc)}</b>
+                      </span>
+                    </div>
+                  ) : (<>
+                    <p style={{ fontSize: 13.5, color: C.medio, margin: '0 0 10px', lineHeight: 1.5 }}>Para enviarle necesitamos el documento del titular. Pídeselo a la persona.</p>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 8 }}>
+                      <Selector value={llDocTipo} onChange={e => setLlDocTipo(e.target.value)} aria-label="Tipo de documento">
+                        {TIPOS_DOC_TITULAR.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{n}</option>)}
+                      </Selector>
+                      <Campo value={llDocNum} onChange={e => { setLlDocNum(e.target.value.replace(/\D/g, '').slice(0, 15)); setLlError(null); }} inputMode="numeric" placeholder="Número, sin puntos" />
+                    </div>
+                  </>)}
+                </div>
+              </div>
+              <p style={{ fontSize: 12.5, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Revisa que sea la persona a la que le quieres enviar. Una transferencia Bre-B no se puede reversar.</p>
+              {llError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{llError}</p>}
+              <div className="flex" style={{ gap: 10 }}>
+                <BotonSecundario onClick={() => { llGen.current += 1; setLlPaso('llave'); setLlError(null); }} style={{ flex: 1 }}>Cambiar llave</BotonSecundario>
+                <BotonPrimario onClick={confirmarTitular} style={{ flex: 1.4 }}>Sí, continuar</BotonPrimario>
+              </div>
+            </div>
+          )}
+
+          {llPaso === 'verificando' && (
+            <div style={{ textAlign: 'center', padding: '34px 4px' }}>
+              <Loader2 size={34} color={C.verde} className="animate-spin" style={{ margin: '0 auto' }} />
+              <p style={{ fontSize: 18, fontWeight: 800, margin: '20px 0 0' }}>{llContacto ? `Revisando el envío a ${nombrePropio(llContacto.name).split(' ')[0]}` : 'Preparando el envío'}</p>
+              <p style={{ fontSize: 14, color: C.sub, margin: '8px auto 0', lineHeight: 1.55, maxWidth: 320 }}>Revisamos que el envío sea seguro. La primera vez suele tardar cerca de un minuto; no cierres esta ventana.</p>
+            </div>
+          )}
+
+          {(llPaso === 'bloqueado' || llPaso === 'espera') && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ background: llPaso === 'bloqueado' ? 'rgba(251,146,60,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${llPaso === 'bloqueado' ? 'rgba(251,146,60,0.35)' : C.borde}`, borderRadius: 12, padding: '16px' }}>
+                {llContacto && <p style={{ fontSize: 15, fontWeight: 800, margin: '0 0 6px' }}>{nombrePropio(llContacto.name)}</p>}
+                <p style={{ fontSize: 14, color: C.medio, margin: 0, lineHeight: 1.55 }}>{llMotivo}</p>
+              </div>
+              <div className="flex" style={{ gap: 10 }}>
+                {llPaso === 'espera' && llContacto
+                  ? <><BotonSecundario onClick={cerrarPanel} style={{ flex: 1 }}>Cerrar</BotonSecundario><BotonPrimario onClick={() => { llGen.current += 1; verificarYEnviar(llContacto); }} style={{ flex: 1.4 }}>Seguir esperando</BotonPrimario></>
+                  : llMotivo.includes('Beneficiarios')
+                    ? <><BotonSecundario onClick={cerrarPanel} style={{ flex: 1 }}>Cerrar</BotonSecundario><BotonPrimario onClick={() => { cerrarPanel(); setVista('beneficiarios'); }} style={{ flex: 1.4 }}>Ir a Beneficiarios</BotonPrimario></>
+                    : <BotonPrimario onClick={cerrarPanel} style={{ flex: 1 }}>Entendido</BotonPrimario>}
+              </div>
+            </div>
           )}
         </Drawer>
       )}
 
-      {panel === 'convertir' && (
-        <Drawer titulo="Convertir" sub="Entre tus billeteras. La tasa se refresca sola." onCerrar={() => setPanel(null)}>
-          {convPaso === 'listo' ? (
-            <div style={{ textAlign: 'center', padding: '30px 0' }}>
-              <span style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', display: 'grid', placeItems: 'center', margin: '0 auto' }}><Check size={28} color={C.verde} /></span>
-              <p style={{ fontSize: 20, fontWeight: 800, margin: '18px 0 0' }}>Convertido</p>
-              <p style={{ fontSize: 14, color: C.sub, margin: '6px 0 0' }}>{fmt(convMontoNum, wa.code)} {wa.code} → {fmt(convRecibe, convA)} {convA}</p>
-              <BotonPrimario onClick={() => setPanel(null)} style={{ marginTop: 24 }}>Listo</BotonPrimario>
+      {panel === 'recibir' && (
+        <Drawer titulo="Recibir" sub="Comparte tu ID Lincoin para que te envíen." onCerrar={cerrarPanel}>
+          <div style={{ background: NEGRO_LINCOIN, border: `1px solid ${C.borde}`, borderRadius: R, padding: '22px 18px', textAlign: 'center' }}>
+            <Rotulo>MI ID LINCOIN</Rotulo>
+            <p style={{ fontFamily: MONO, fontSize: 34, fontWeight: 700, letterSpacing: '5px', margin: '12px 0 0', lineHeight: 1 }}>{codigo}</p>
+            <BotonPrimario onClick={copiar} style={{ marginTop: 18, display: 'inline-flex', alignItems: 'center', gap: 8 }}>{copiado ? <><Check size={15} /> Copiado</> : <><Copy size={15} /> Copiar ID</>}</BotonPrimario>
+          </div>
+          <p style={{ fontSize: 14, color: C.medio, margin: '16px 0 0', lineHeight: 1.55 }}>Dáselo a la empresa que te carga saldo o a otra persona Lincoin. Te llega al instante y sin comisión.</p>
+          <div style={{ marginTop: 18, borderTop: `1px solid ${C.borde}` }}>
+            <Fila primera icono={Link2} titulo="Cobrar con un link de PSE" sub="Para que te pague alguien desde su banco" onClick={() => abrirDeposito('cobrar')} />
+            <Fila icono={KeyRound} titulo="Tus llaves Bre-B" sub="Recibe desde cualquier banco" onClick={() => setPanel('llaves')} derecha={<Pronto />} />
+          </div>
+        </Drawer>
+      )}
+
+      {panel === 'llaves' && (
+        <Drawer titulo="Tus llaves Bre-B" sub="Recibe desde cualquier banco, al instante." onCerrar={cerrarPanel}>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: `1px solid ${C.borde}`, borderRadius: R, padding: '18px 16px' }}>
+            <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Muy pronto</p><Pronto /></div>
+            <p style={{ fontSize: 14, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>Vas a poder registrar tus propias llaves para que te envíen desde cualquier banco con solo tu celular, tu correo o tu cédula.</p>
+          </div>
+          <div style={{ marginTop: 14 }}>
+            {(['celular', 'correo', 'cedula', 'alfanumerico'] as TipoLlave[]).map((t, i) => (
+              <div key={t} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 2px', borderTop: i ? `1px solid ${C.borde}` : 'none', color: C.sub }}>
+                <span className="flex items-center" style={{ gap: 12 }}><KeyRound size={16} /> <span style={{ fontSize: 14.5, fontWeight: 600 }}>{TIPO_LLAVE_TXT[t]}</span></span>
+                <span style={{ fontSize: 12.5 }}>Sin registrar</span>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 13.5, color: C.sub, margin: '16px 0 0', lineHeight: 1.55 }}>Mientras tanto, recibe con tu ID Lincoin o con un link de PSE.</p>
+          <BotonPrimario onClick={() => setPanel('recibir')} style={{ marginTop: 14, width: '100%' }}>Recibir con mi ID</BotonPrimario>
+        </Drawer>
+      )}
+
+      {panel === 'tarjetas' && (
+        <Drawer titulo="Mis tarjetas" sub="Paga en comercios y en internet con tu saldo." onCerrar={cerrarPanel}>
+          <TarjetaLincoin />
+          <div className="flex items-center justify-between" style={{ gap: 10, marginTop: 20 }}>
+            <div><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Tarjeta Lincoin</p><p style={{ fontSize: 13.5, color: C.sub, margin: '2px 0 0' }}>Mastercard con tu saldo en pesos</p></div>
+            <Pronto />
+          </div>
+          <p style={{ fontSize: 13.5, color: C.sub, margin: '14px 0 0', lineHeight: 1.55 }}>Todavía no está disponible. Te avisamos por correo cuando puedas pedirla.</p>
+        </Drawer>
+      )}
+
+      {panel === 'recargar' && (
+        <Drawer titulo="Depositar" sub="Desde tu banco, por PSE. Mínimo $ 20.000." onCerrar={cerrarPanel}>
+          <form onSubmit={irAPse} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div>
+              <Etiqueta>MONTO EN PESOS</Etiqueta>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: C.sub, fontWeight: 700 }}>$</span>
+                <Campo value={recMonto ? numero(recMonto).toLocaleString('es-CO') : ''} onChange={e => setRecMonto(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" autoFocus style={{ paddingLeft: 30, fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }} />
+              </div>
+              <p style={{ fontSize: 13, color: C.tenue, margin: '8px 0 0' }}>Pagas desde tu banco en PSE y el saldo te queda al confirmarse.</p>
             </div>
-          ) : (
-            <form onSubmit={convPaso === 'datos' ? revisarConversion : e => { e.preventDefault(); ejecutarConversion(); }} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '14px 16px' }}>
-                <Etiqueta>DE</Etiqueta>
-                <div className="flex items-center" style={{ gap: 10 }}>
-                  <Campo value={convMonto} onChange={e => { setConvMonto(e.target.value.replace(/[^\d.,]/g, '')); setConvPaso('datos'); }} inputMode="decimal" placeholder="0" disabled={convPaso === 'revisar'} style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums', background: 'transparent', border: 'none', padding: 0 }} />
-                  <span style={{ fontSize: 16, fontWeight: 800, whiteSpace: 'nowrap' }}>{wa.code}</span>
-                </div>
-                <p style={{ fontSize: 12.5, color: C.tenue, margin: '6px 0 0' }}>Disponible {fmt(saldo(wa.code), wa.code)}</p>
+            {recError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0, lineHeight: 1.5 }}>{recError}</p>}
+            {recLink && <p style={{ fontSize: 13.5, color: C.verde, margin: 0, lineHeight: 1.5 }}>Se abrió PSE en otra pestaña. Si no la ves, <a href={recLink} target="_blank" rel="noreferrer" style={{ color: C.verde, textDecoration: 'underline' }}>ábrela aquí</a>.</p>}
+            <BotonPrimario type="submit" disabled={recOcupado}>{recOcupado ? 'Preparando…' : 'Ir a PSE'}</BotonPrimario>
+          </form>
+        </Drawer>
+      )}
+
+      {panel === 'cobrar' && (
+        <Drawer titulo="Cobrar con link" sub="Un enlace de pago por PSE que te acredita en tu cuenta." onCerrar={cerrarPanel}>
+          <form onSubmit={irAPse} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div>
+              <Etiqueta>MONTO A COBRAR EN PESOS</Etiqueta>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: C.sub, fontWeight: 700 }}>$</span>
+                <Campo value={recMonto ? numero(recMonto).toLocaleString('es-CO') : ''} onChange={e => setRecMonto(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" autoFocus style={{ paddingLeft: 30, fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }} />
               </div>
-              <div style={{ textAlign: 'center', color: C.sub }}><ArrowLeftRight size={18} style={{ transform: 'rotate(90deg)' }} /></div>
-              <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '14px 16px' }}>
-                <Etiqueta>A</Etiqueta>
-                <div className="flex items-center justify-between" style={{ gap: 10 }}>
-                  <p style={{ fontSize: 22, fontWeight: 800, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{tasa ? fmt(convRecibe, convA) : '—'}</p>
-                  <select value={convA} onChange={e => { setConvA(e.target.value); setConvPaso('datos'); }} style={{ fontFamily: FONT, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 10, padding: '8px 12px', fontSize: 14, fontWeight: 800 }}>
-                    {convDestinos.map(b => <option key={b.code} value={b.code} style={{ color: '#000' }}>{b.code}</option>)}
-                  </select>
-                </div>
+              <p style={{ fontSize: 13, color: C.tenue, margin: '8px 0 0' }}>Mínimo $ 20.000. Compartes el enlace y quien te paga entra por PSE.</p>
+            </div>
+            {recError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0 }}>{recError}</p>}
+            {recLink && (
+              <div style={{ background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 12, padding: '12px 14px' }}>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: 0 }}>Tu enlace</p>
+                <p style={{ fontSize: 13, margin: '4px 0 0', wordBreak: 'break-all' }}>{recLink}</p>
+                <BotonSecundario type="button" onClick={async () => { try { await navigator.clipboard.writeText(recLink); avisar('Enlace copiado.'); } catch { /* */ } }} style={{ marginTop: 10, padding: '9px 14px', fontSize: 13 }}>Copiar enlace</BotonSecundario>
               </div>
-              <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '12px 16px', fontSize: 13.5 }}>
-                <div className="flex justify-between"><span style={{ color: C.sub }}>Tasa</span><b style={{ fontVariantNumeric: 'tabular-nums' }}>{tasa ? `1 ${wa.code} = ${tasa.toLocaleString('es-CO', { maximumFractionDigits: 4 })} ${convA}` : 'sin tasa'}</b></div>
-                <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Válida por</span><b style={{ color: C.verde, fontVariantNumeric: 'tabular-nums' }}>{convSeg} s</b></div>
-                <div className="flex justify-between" style={{ marginTop: 6 }}><span style={{ color: C.sub }}>Comisión</span><b>Incluida en la tasa</b></div>
-              </div>
-              {convError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0, lineHeight: 1.5 }}>{convError}</p>}
-              <BotonPrimario type="submit" disabled={convOcupado}>{convOcupado ? 'Convirtiendo…' : convPaso === 'revisar' ? `Confirmar: ${fmt(convMontoNum, wa.code)} → ${fmt(convRecibe, convA)}` : 'Revisar conversión'}</BotonPrimario>
-            </form>
-          )}
+            )}
+            <BotonPrimario type="submit" disabled={recOcupado}>{recOcupado ? 'Generando…' : 'Generar enlace'}</BotonPrimario>
+          </form>
         </Drawer>
       )}
 
       {panel === 'seguridad' && (
-        <Drawer titulo="Seguridad" sub="Verificación en dos pasos con tu app de autenticación." onCerrar={() => setPanel(null)}>
+        <Drawer titulo="Seguridad" sub="Verificación en dos pasos con tu app de autenticación." onCerrar={cerrarPanel}>
           {mfaRespaldo ? (
             <div>
               <p style={{ fontSize: 15, fontWeight: 700, margin: 0, color: C.verde }}>Dos pasos activados</p>
@@ -785,42 +1122,39 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         </Drawer>
       )}
 
-      {panel === 'tasas' && (
-        <Drawer titulo="Tasas de cambio" sub="Lo que recibes por cada unidad de tu billetera activa." onCerrar={() => setPanel(null)}>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            {BILLETERAS.filter(b => !b.pronto && b.code !== wa.code).map(b => { const r = getRate(wa.code, b.code) || 0; return (
-              <div key={b.code} className="flex items-center justify-between" style={{ padding: '14px 0', borderBottom: `1px solid ${C.borde}` }}>
-                <div><p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>{wa.code} → {b.code}</p><p style={{ fontSize: 12.5, color: C.sub, margin: '2px 0 0' }}>{b.nombre}</p></div>
-                <p style={{ fontSize: 15, fontWeight: 800, margin: 0, fontVariantNumeric: 'tabular-nums' }}>{r ? `${r.toLocaleString('es-CO', { maximumFractionDigits: 4 })}` : '—'}</p>
-              </div>); })}
-          </div>
-          <p style={{ fontSize: 12.5, color: C.tenue, margin: '14px 0 0', lineHeight: 1.5 }}>Tasa en vivo con la comisión incluida. Al convertir se fija por 30 segundos.</p>
-        </Drawer>
-      )}
-
       {panel === 'limites' && (
-        <Drawer titulo="Límites" sub="Lo que puedes retirar al mes a banco o Bre-B." onCerrar={() => setPanel(null)}>
+        <Drawer titulo="Tope mensual" sub="Lo que puedes enviar al mes a otros bancos." onCerrar={cerrarPanel}>
           <div style={{ background: autorizada ? 'rgba(74,222,128,0.06)' : 'rgba(251,146,60,0.06)', border: `1px solid ${autorizada ? 'rgba(74,222,128,0.3)' : 'rgba(251,146,60,0.35)'}`, borderRadius: 12, padding: '16px' }}>
             <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Tope mensual</p>{autorizada ? <Pill verde>ACTIVO</Pill> : <Pill naranja>PENDIENTE</Pill>}</div>
-            <p style={{ fontSize: 22, fontWeight: 800, margin: '10px 0 0', fontVariantNumeric: 'tabular-nums' }}>{autorizada ? (limiteMensual ? `${fmt(limiteMensual, 'COP')} COP` : 'Sin tope') : '—'}</p>
-            {autorizada && <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Usado este mes: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmt(retiradoMes, 'COP')} COP</b>{limiteMensual ? ` · te quedan ${fmt(Math.max(0, limiteMensual - retiradoMes), 'COP')}` : ''}</p>}
+            <p style={{ fontSize: 22, fontWeight: 800, margin: '10px 0 0', fontVariantNumeric: 'tabular-nums' }}>{autorizada ? (limiteMensual ? `${fmt(limiteMensual)} COP` : 'Sin tope') : '—'}</p>
+            {autorizada && (<>
+              <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Usado este mes: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmt(retiradoMes)} COP</b>{limiteMensual ? ` · te quedan ${fmt(Math.max(0, limiteMensual - retiradoMes))}` : ''}</p>
+              {limiteMensual ? (
+                <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', marginTop: 14, overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.min(100, Math.max(1.5, (retiradoMes / limiteMensual) * 100))}%`, height: '100%', background: retiradoMes >= limiteMensual ? NARANJA : C.verde, borderRadius: 999 }} />
+                </div>
+              ) : null}
+            </>)}
           </div>
           <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '16px 0 0' }}>
             {autorizada ? `El tope lo fija ${autorizada.nombre}, la empresa que te autoriza. Si necesitas uno más alto, pídeselo directamente: ella lo cambia desde su panel y aquí se actualiza solo.`
-              : 'El tope lo fija la empresa que te autorice. Mientras no tengas una empresa, no puedes recibir ni retirar dinero.'}
+              : 'El tope lo fija la empresa que te autorice. Mientras no tengas una empresa, no puedes recibir ni enviar dinero.'}
           </p>
-          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '10px 0 0' }}>El tope cuenta los retiros a banco y Bre-B del mes calendario. Enviar a otra persona Lincoin y convertir entre billeteras no lo consumen.</p>
+          <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55, margin: '10px 0 0' }}>Cuentan los envíos a llaves Bre-B y a cuentas de banco del mes calendario. Enviar a otra persona Lincoin no lo consume.</p>
           {!autorizada && !pendiente && <BotonPrimario onClick={abrirAutorizacion} style={{ marginTop: 16, width: '100%' }}>Pedir autorización</BotonPrimario>}
         </Drawer>
       )}
 
       {panel === 'perfil' && (
-        <Drawer titulo="Mi perfil" sub="Tus datos y la empresa que te autoriza." onCerrar={() => setPanel(null)}>
+        <Drawer titulo="Detalles de mi cuenta" sub="Tus datos, tu ID Lincoin y la empresa que te autoriza." onCerrar={cerrarPanel}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {([['Nombre', auth?.datos?.nombre || nombre], ['Correo', String(cu.email ?? '')], ['ID Lincoin', codigo], ['Documento', auth?.datos?.docType ? `${TIPOS_DOC.find(t => t[0] === auth?.datos?.docType)?.[1] ?? auth?.datos?.docType} ${auth?.datos?.docNumber ?? ''}` : 'Sin registrar']] as const).map(([k, v]) => (
+            {([['Nombre', auth?.datos?.nombre || nombre], ['Correo', String(cu.email ?? '')], ['ID Lincoin', codigo], ['Cuenta', 'Lincoin · pesos colombianos (COP)'], ['Documento', auth?.datos?.docType ? `${TIPOS_DOC.find(t => t[0] === auth?.datos?.docType)?.[1] ?? auth?.datos?.docType} ${auth?.datos?.docNumber ?? ''}` : 'Sin registrar']] as const).map(([k, v]) => (
               <div key={k} className="flex items-center justify-between" style={{ gap: 12, padding: '13px 0', borderBottom: `1px solid ${C.borde}` }}>
                 <span style={{ fontSize: 13.5, color: C.sub }}>{k}</span>
-                <span style={{ fontSize: 14, fontWeight: 700, textAlign: 'right', fontFamily: k === 'ID Lincoin' ? MONO : FONT, letterSpacing: k === 'ID Lincoin' ? '2px' : 0 }}>{v}</span>
+                <span className="flex items-center" style={{ gap: 8 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, textAlign: 'right', fontFamily: k === 'ID Lincoin' ? MONO : FONT, letterSpacing: k === 'ID Lincoin' ? '2px' : 0 }}>{v}</span>
+                  {k === 'ID Lincoin' && <button onClick={copiar} aria-label="Copiar ID" style={{ background: 'transparent', border: 'none', color: copiado ? C.verde : C.sub, cursor: 'pointer', padding: 2 }}>{copiado ? <Check size={15} /> : <Copy size={15} />}</button>}
+                </span>
               </div>
             ))}
           </div>
@@ -830,7 +1164,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
             <div style={{ background: autorizada ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.03)', border: `1px solid ${autorizada ? 'rgba(74,222,128,0.3)' : C.borde}`, borderRadius: 12, padding: '14px 16px' }}>
               {autorizada ? (<>
                 <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{autorizada.nombre}</p><Pill verde>AUTORIZADA</Pill></div>
-                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Tope mensual: <b style={{ color: C.text }}>{limiteMensual ? `${fmt(limiteMensual, 'COP')} COP` : 'sin tope'}</b> · usado {fmt(retiradoMes, 'COP')}</p>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0' }}>Tope mensual: <b style={{ color: C.text }}>{limiteMensual ? `${fmt(limiteMensual)} COP` : 'sin tope'}</b> · usado {fmt(retiradoMes)}</p>
                 {auth?.datos?.at && <p style={{ fontSize: 12.5, color: C.tenue, margin: '4px 0 0' }}>Desde {fecha(auth.datos.at)}</p>}
               </>) : pendiente ? (<>
                 <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{pendiente.nombre}</p><Pill>EN REVISIÓN</Pill></div>
@@ -856,11 +1190,13 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
             <div><p style={{ fontSize: 14, fontWeight: 700, margin: 0 }}>Verificación en dos pasos</p><p style={{ fontSize: 12.5, color: C.sub, margin: '2px 0 0' }}>{mfaActivo ? 'Activa' : 'Sin activar'}</p></div>
             {mfaActivo ? <Pill verde>ACTIVA</Pill> : <BotonSecundario onClick={abrirSeguridad} style={{ padding: '10px 16px', fontSize: 13 }}>Activar</BotonSecundario>}
           </div>
+
+          <BotonSecundario onClick={() => setConfirmarSalir(true)} style={{ width: '100%', marginTop: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}><LogOut size={15} /> Cerrar sesión</BotonSecundario>
         </Drawer>
       )}
 
       {panel === 'autorizacion' && (
-        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy te autoriza ${autorizada.nombre}. La nueva empresa la reemplaza cuando apruebe.` : 'La empresa revisa tus datos y tu foto, y te aprueba con un tope mensual.'} onCerrar={() => setPanel(null)}>
+        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy te autoriza ${autorizada.nombre}. La nueva empresa la reemplaza cuando apruebe.` : 'La empresa revisa tus datos y tu foto, y te aprueba con un tope mensual.'} onCerrar={cerrarPanel}>
           {solListo ? (
             <div style={{ textAlign: 'center', padding: '30px 0' }}>
               <span style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', display: 'grid', placeItems: 'center', margin: '0 auto' }}><Check size={28} color={C.verde} /></span>
@@ -882,9 +1218,9 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 10 }}>
                 <div>
                   <Etiqueta>DOCUMENTO</Etiqueta>
-                  <select value={solDocType} onChange={e => setSolDocType(e.target.value)} style={{ fontFamily: FONT, width: '100%', background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.bordeFuerte}`, color: C.text, borderRadius: 11, padding: '12px 12px', fontSize: 14, fontWeight: 700 }}>
+                  <Selector value={solDocType} onChange={e => setSolDocType(e.target.value)}>
                     {TIPOS_DOC.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{k} · {n}</option>)}
-                  </select>
+                  </Selector>
                 </div>
                 <div>
                   <Etiqueta>NÚMERO</Etiqueta>
@@ -912,8 +1248,8 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       )}
 
       {panel === 'notificaciones' && (
-        <Drawer titulo="Notificaciones" sub="Por dónde te avisamos de cada movimiento." onCerrar={() => setPanel(null)}>
-          {([['correo', 'Correo', 'Cada carga, envío y conversión'], ['whatsapp', 'WhatsApp', 'Avisos de saldo recibido'], ['alertas', 'Alertas de seguridad', 'Ingresos nuevos y cambios en la cuenta']] as const).map(([k, t, d]) => (
+        <Drawer titulo="Notificaciones" sub="Por dónde te avisamos de cada movimiento." onCerrar={cerrarPanel}>
+          {([['correo', 'Correo', 'Cada depósito y envío'], ['whatsapp', 'WhatsApp', 'Avisos de saldo recibido'], ['alertas', 'Alertas de seguridad', 'Ingresos nuevos y cambios en la cuenta']] as const).map(([k, t, d]) => (
             <button key={k} onClick={() => togglePref(k)} style={{ fontFamily: FONT, width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderBottom: `1px solid ${C.borde}`, padding: '14px 0', cursor: 'pointer', color: C.text, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <span><span style={{ display: 'block', fontSize: 15, fontWeight: 700 }}>{t}</span><span style={{ display: 'block', fontSize: 12.5, color: C.sub, marginTop: 2 }}>{d}</span></span>
               <span style={{ width: 40, height: 22, borderRadius: 999, background: prefs[k] ? C.verde : 'rgba(255,255,255,0.15)', position: 'relative', flexShrink: 0 }}><span style={{ position: 'absolute', top: 3, left: prefs[k] ? 21 : 3, width: 16, height: 16, borderRadius: '50%', background: '#0C0E0D', transition: 'left .15s' }} /></span>
@@ -923,7 +1259,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       )}
 
       {panel === 'invita' && (
-        <Drawer titulo="Invita y gana" sub="Comparte tu ID: es también tu código de invitación." onCerrar={() => setPanel(null)}>
+        <Drawer titulo="Invita y gana" sub="Comparte tu ID: es también tu código de invitación." onCerrar={cerrarPanel}>
           <div style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 12, padding: '18px', textAlign: 'center' }}>
             <p style={{ fontFamily: MONO, fontSize: 30, fontWeight: 700, letterSpacing: '4px', margin: 0 }}>{codigo}</p>
             <BotonPrimario onClick={copiar} style={{ marginTop: 14, display: 'inline-flex', alignItems: 'center', gap: 8 }}>{copiado ? <><Check size={15} /> Copiado</> : <><Copy size={15} /> Copiar código</>}</BotonPrimario>
@@ -932,65 +1268,49 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
         </Drawer>
       )}
 
-      {panel === 'cobrar' && (
-        <Drawer titulo="Cobrar con link" sub="Un enlace de pago por PSE que te acredita en tu billetera COP." onCerrar={() => setPanel(null)}>
-          <form onSubmit={irAPse} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-            <div>
-              <Etiqueta>MONTO A COBRAR EN COP</Etiqueta>
-              <div style={{ position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: C.sub, fontWeight: 700 }}>$</span>
-                <Campo value={recMonto ? Number(numero(recMonto)).toLocaleString('es-CO') : ''} onChange={e => setRecMonto(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="0" autoFocus style={{ paddingLeft: 30, fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }} />
-              </div>
-              <p style={{ fontSize: 13, color: C.tenue, margin: '8px 0 0' }}>Mínimo $ 20.000. Compartes el enlace y quien te paga entra por PSE.</p>
-            </div>
-            {recError && <p style={{ fontSize: 13.5, color: C.medio, margin: 0 }}>{recError}</p>}
-            {recLink && (
-              <div style={{ background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 12, padding: '12px 14px' }}>
-                <p style={{ fontSize: 12.5, color: C.sub, margin: 0 }}>Tu enlace</p>
-                <p style={{ fontSize: 13, margin: '4px 0 0', wordBreak: 'break-all' }}>{recLink}</p>
-                <BotonSecundario type="button" onClick={async () => { try { await navigator.clipboard.writeText(recLink); avisar('Enlace copiado.'); } catch { /* */ } }} style={{ marginTop: 10, padding: '9px 14px', fontSize: 13 }}>Copiar enlace</BotonSecundario>
-              </div>
-            )}
-            <BotonPrimario type="submit" disabled={recOcupado}>{recOcupado ? 'Generando…' : 'Generar enlace'}</BotonPrimario>
-          </form>
-        </Drawer>
-      )}
-
       {confirmarSalir && <ConfirmarModal titulo="¿Cerrar sesión?" texto="Para volver a entrar necesitarás tu correo y tu contraseña." confirmar="Cerrar sesión" onConfirmar={() => { setConfirmarSalir(false); onLogout(); }} onCancelar={() => setConfirmarSalir(false)} />}
     </div>
   );
 };
 
-// Lista de movimientos, compartida por Inicio y la pestaña Movimientos.
-const ListaMovimientos: React.FC<{ movs: any[]; contraparte: (t: any) => string; oculto: boolean; vacioAncho?: boolean }> = ({ movs, contraparte, oculto }) => {
+// Lista de movimientos, compartida por Inicio y Cuenta. En Cuenta va
+// agrupada por día, como un extracto.
+const ListaMovimientos: React.FC<{ movs: any[]; contraparte: (t: any) => string; oculto: boolean; agrupar?: boolean }> = ({ movs, contraparte, oculto, agrupar }) => {
   if (movs.length === 0) return (
-    <div style={{ textAlign: 'center', padding: '54px 8px 40px' }}>
-      <Clock size={40} color={C.sub} strokeWidth={1.5} style={{ margin: '0 auto 22px' }} />
-      <p style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: '-0.3px' }}>Todavía no tienes movimientos</p>
-      <p style={{ fontSize: 16, color: C.sub, margin: '10px auto 0', lineHeight: 1.5, maxWidth: 560 }}>Cuando una empresa te cargue saldo con tu ID, o envíes o retires plata, aparece aquí con el nombre y la fecha.</p>
+    <div style={{ textAlign: 'center', padding: '40px 8px 28px' }}>
+      <Clock size={34} color={C.sub} strokeWidth={1.5} style={{ margin: '0 auto 18px' }} />
+      <p style={{ fontSize: 18, fontWeight: 700, margin: 0, letterSpacing: '-0.3px' }}>Todavía no tienes movimientos</p>
+      <p style={{ fontSize: 14, color: C.sub, margin: '8px auto 0', lineHeight: 1.5, maxWidth: 440 }}>Cuando una empresa te cargue saldo con tu ID, deposites o envíes plata, aparece aquí con el nombre y la fecha.</p>
     </div>
   );
+  let diaPrevio = '';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', marginTop: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', marginTop: 10 }}>
       {movs.map((t: any) => {
         const entra = ENTRA.has(String(t.type));
         const conv = t.type === 'convert';
         const rech = t.status === 'Rechazado' || t.status === 'Fallido';
         const cur = String(t.currency ?? 'COP').split('_')[0];
         const cp = contraparte(t);
+        const dia = agrupar ? diaDe(t.createdAt) : '';
+        const cabecera = agrupar && dia !== diaPrevio;
+        diaPrevio = dia;
         return (
-          <div key={t.id} className="flex items-center" style={{ gap: 14, padding: '14px 0', borderTop: `1px solid ${C.borde}` }}>
-            <span style={{ width: 40, height: 40, borderRadius: '50%', background: entra ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-              {conv ? <ArrowLeftRight size={16} color={C.text} /> : entra ? <ArrowDownLeft size={16} color={C.verde} /> : <ArrowUpRight size={16} color={C.text} />}
-            </span>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <p style={{ fontSize: 15, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || ROTULO[t.type] || t.type}{cp && !String(t.title ?? '').includes(cp) ? ` · ${cp}` : ''}</p>
-              <p style={{ fontSize: 13, color: C.sub, margin: '2px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fecha(t.createdAt)}{t.note ? ` · ${t.note}` : ''}{t.status && t.status !== 'Completado' ? ` · ${t.status}` : ''}</p>
+          <React.Fragment key={t.id}>
+            {cabecera && <p style={{ fontSize: 12, fontWeight: 700, letterSpacing: '1px', color: C.sub, margin: '16px 0 2px', textTransform: 'uppercase' }}>{dia}</p>}
+            <div className="flex items-center" style={{ gap: 14, padding: '13px 0', borderTop: cabecera ? 'none' : `1px solid ${C.borde}` }}>
+              <span style={{ width: 40, height: 40, borderRadius: '50%', background: entra ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                {conv ? <ArrowLeftRight size={16} color={C.text} /> : entra ? <ArrowDownLeft size={16} color={C.verde} /> : <ArrowUpRight size={16} color={C.text} />}
+              </span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <p style={{ fontSize: 15, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title || ROTULO[t.type] || t.type}{cp && !String(t.title ?? '').includes(cp) ? ` · ${cp}` : ''}</p>
+                <p style={{ fontSize: 13, color: C.sub, margin: '2px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{agrupar ? hora(t.createdAt) : fecha(t.createdAt)}{t.note ? ` · ${t.note}` : ''}{t.status && t.status !== 'Completado' ? ` · ${t.status}` : ''}</p>
+              </div>
+              <p style={{ fontSize: 15, fontWeight: 800, margin: 0, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', color: rech ? C.tenue : entra ? C.verde : C.text, textDecoration: rech ? 'line-through' : 'none' }}>
+                {oculto ? '••••' : `${conv ? '' : entra ? '+' : '−'}${montoMov(Number(t.amount) || 0, cur)}`}
+              </p>
             </div>
-            <p style={{ fontSize: 15, fontWeight: 800, margin: 0, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', color: rech ? C.tenue : entra ? C.verde : C.text, textDecoration: rech ? 'line-through' : 'none' }}>
-              {oculto ? '••••' : `${conv ? '' : entra ? '+' : '−'}${fmt(Number(t.amount) || 0, cur)} ${cur}`}
-            </p>
-          </div>
+          </React.Fragment>
         );
       })}
     </div>

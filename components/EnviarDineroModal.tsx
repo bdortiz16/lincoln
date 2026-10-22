@@ -145,6 +145,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // saldo ACH. El beneficiario y la llave son los mismos; cambia de qué
   // saldo sale y por dónde viaja.
   const [brebCuenta, setBrebCuenta] = useState<1 | 2>(1);
+  const metodoFijoRef = useRef(false);
   const vigilarCuenta2 = useRef(false);
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
@@ -400,6 +401,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           }
           // USDT: único método es wallet — directo al destinatario.
           if (sendForm.destinationCurrency === 'USD') { setSendMode('wallet'); setSendStep(3); return; }
+          if (metodoFijoRef.current && sendMode) { setSendStep(3); return; }
           setSendStep(2); // → method selection
       } else if (sendStep === 3 && sendMode === 'bank') {
           if (!sendForm.beneficiaryName || !sendForm.documentNumber || !sendForm.accountNumber) {
@@ -599,7 +601,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : 2500;
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
-              showToast(`Saldo insuficiente en ${rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
+              showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
           // UNA SOLA FUENTE. Antes la llave salía de sendContact y el nombre y
@@ -782,9 +784,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       setBrebCuenta(1);
       idemRef.current = '';
       setPayUnknown(false);
+      metodoFijoRef.current = false;
   };
 
   const abrir = (p?: EnviarPrefill) => {
+    // Abierto con el método ya elegido (Personas elige antes "a una llave", "a
+    // un cliente Lincoin" o "a una cuenta de banco"): no se vuelve a preguntar.
+    metodoFijoRef.current = !!p?.mode && (!!p?.metodo || p.mode === 'pay');
     if (p?.form) setSendForm(prev => ({ ...prev, ...p.form }));
     if (p && 'contact' in p) setSendContact(p.contact ?? null);
     if (p && 'mode' in p) setSendMode(p.mode ?? null);
@@ -863,7 +869,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>
                                   {sendStep === 1 && (sendForm.destinationCurrency === 'USD' ? 'Desde tu billetera USDT' : 'Desde tu cuenta en pesos colombianos')}
                                   {sendStep === 2 && <>Enviando <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} {displayCurrency(sendForm.destinationCurrency)}</span> · <button onClick={() => setSendStep(1)} style={{ textDecoration: 'underline', color: '#F4F4F2' }}>cambiar</button></>}
-                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? 'Bre-B · Cuenta 2' : sendSourceRail === 'COP_ACH' ? 'ACH' : 'Bre-B'} · solo beneficiarios inscritos</>}
+                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? (saldoUnificado ? 'Bre-B' : 'Bre-B · Cuenta 2') : sendSourceRail === 'COP_ACH' ? 'ACH' : 'Bre-B'} · solo beneficiarios inscritos</>}
                                   {sendStep === 4 && sendMode !== 'pay' && 'Revisa los datos antes de confirmar'}
                               </p>
                           </div>
@@ -895,8 +901,17 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
                           return (
                           <div className="space-y-4">
-                              {/* DESDE — primero el PAÍS (activables desde admin), luego la
-                                  cuenta/riel dentro del país. Hoy: Colombia (COP) y USA (USDT). */}
+                              {/* Personas: una sola cuenta en pesos. El riel lo cubre
+                                  el servidor, así que no hay país ni cuenta que elegir. */}
+                              {saldoUnificado && !isUsdt ? (
+                                  <div style={{ border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)', borderRadius: 13, padding: '13px 15px' }} className="flex items-center justify-between gap-2">
+                                      <div>
+                                          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DESDE TU CUENTA LINCOIN</p>
+                                          <p style={{ fontSize: 12, color: '#878E88', marginTop: 3 }}>Saldo disponible</p>
+                                      </div>
+                                      <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>$ {Math.round(avail).toLocaleString('es-CO')}</p>
+                                  </div>
+                              ) : (
                               <div>
                                   <label style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88' }}>DESDE</label>
                                   {(() => {
@@ -976,6 +991,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       );
                                   })()}
                               </div>
+                              )}
                               {/* MONTO */}
                               <div>
                                   <div className="flex items-center justify-between">
@@ -1002,7 +1018,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               </div>
                               <div className="flex items-center" style={{ gap: 8 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ADE80', flexShrink: 0 }} />
-                                  <span style={{ fontSize: 12, color: '#878E88' }}>{isUsdt ? 'Comisión de red GasFree cotizada antes de confirmar.' : 'Sin comisión entre usuarios de Lincoin.'}</span>
+                                  <span style={{ fontSize: 12, color: '#878E88' }}>{isUsdt ? 'Comisión de red GasFree cotizada antes de confirmar.' : saldoUnificado && sendMode === 'bank' ? 'Ves la comisión del envío antes de confirmar.' : 'Sin comisión entre usuarios de Lincoin.'}</span>
                               </div>
                               <div className="flex" style={{ gap: 9, paddingTop: 4 }}>
                                   <button onClick={closeSendModal} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Cancelar</button>
@@ -1312,7 +1328,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       </button>
                                   </div>
                                   <div className="flex" style={{ gap: 9, paddingTop: 4 }}>
-                                      <button onClick={() => setSendStep(2)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
+                                      <button onClick={() => setSendStep(metodoFijoRef.current ? 1 : 2)} style={{ flex: 1, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 14, padding: '13px 0', borderRadius: 10 }} className="hover:bg-white/[0.09] transition-colors">Atrás</button>
                                       <button onClick={() => sendContact && setSendStep(4)} disabled={!sendContact}
                                           className="lincoin-btn-white transition-colors"
                                           style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: sendContact ? 1 : 0.45, cursor: sendContact ? 'pointer' : 'not-allowed' }}>
@@ -1408,7 +1424,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {/* STEP 3 PAY: Lincoin ID lookup */}
                       {sendStep === 3 && sendMode === 'pay' && (
                           <div className="space-y-5">
-                              <button onClick={() => { setSendStep(2); setPayRecipientCode(''); setPayRecipientUser(null); setPayLookupStatus('idle'); }} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 font-bold"><ArrowLeft size={12}/> Volver</button>
+                              <button onClick={() => { setSendStep(metodoFijoRef.current ? 1 : 2); setPayRecipientCode(''); setPayRecipientUser(null); setPayLookupStatus('idle'); }} className="text-xs text-slate-400 flex items-center gap-1 hover:text-slate-600 font-bold"><ArrowLeft size={12}/> Volver</button>
                               <div className="bg-green-50 border border-green-100 p-4 rounded-xl text-center">
                                   <p className="text-xs text-green-500 font-bold uppercase mb-0.5">Enviando</p>
                                   <p className="text-2xl font-extrabold text-green-700">{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} <span className="text-lg">{sendForm.destinationCurrency}</span></p>
@@ -1478,7 +1494,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {sendStep === 4 && sendMode === 'bank' && (() => {
                           const amt = getRawAmount(sendForm.amount);
                           const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
-                          const railLbl = isBrebM ? (brebCuenta === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B') : 'ACH';
+                          const railLbl = isBrebM ? (brebCuenta === 2 && !saldoUnificado ? 'Bre-B · Cuenta 2' : 'Bre-B') : 'ACH';
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           // Todo de `destinatario`: con un beneficiario inscrito, la
                           // pantalla no puede mostrar la llave de uno y el nombre de otro.
@@ -1531,7 +1547,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               {/* ENVIAR POR — Bre-B tiene dos cuentas: la 1 paga con
                                   el saldo Bre-B y la 2 con el saldo ACH. Mismo
                                   beneficiario, misma llave, mismos controles. */}
-                              {isBrebM && (
+                              {isBrebM && !saldoUnificado && (
                                   <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
                                       <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ENVIAR POR</span>
                                       <div className="grid grid-cols-2" style={{ gap: 8, marginTop: 8 }}>
@@ -1566,8 +1582,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               {/* Desglose — la comisión del proveedor se cobra al cliente */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
                                   {[
-                                      { l: 'Sale de', v: `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
-                                      { l: `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
+                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
+                                      { l: saldoUnificado ? 'Comisión del envío' : `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
                                           : payoutQuote?.error ? '—'
                                           : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
                                           : 'Precio fijo · al confirmar' },
@@ -1594,7 +1610,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       <option value="">Elige el motivo…</option>
                                       {MOTIVOS_ENVIO.map(m => <option key={m.v} value={m.v}>{m.l}</option>)}
                                   </select>
-                                  <p style={{ fontSize: 11, color: '#6b716c', marginTop: 6, lineHeight: 1.45 }}>Va con la orden al banco y define qué documento se emite en tu contabilidad.</p>
+                                  <p style={{ fontSize: 11, color: '#6b716c', marginTop: 6, lineHeight: 1.45 }}>{saldoUnificado ? 'Va con la orden al banco.' : 'Va con la orden al banco y define qué documento se emite en tu contabilidad.'}</p>
                               </div>
                               {/* ORDENANTE (modelo Comisión): por cuenta de quién
                                   se hace el pago. La comisión se le factura. */}
@@ -1820,7 +1836,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const last4 = acctRaw.slice(-4);
                           const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
                               : !isCop ? `Cuenta ···${last4}`
-                              : isBrebS ? `Llave ···${last4} · Bre-B${cuenta2S ? ' · Cuenta 2' : ''}`
+                              : isBrebS ? `Llave ···${last4} · Bre-B${cuenta2S && !saldoUnificado ? ' · Cuenta 2' : ''}`
                               : `${dR.bank ?? 'Banco'} ···${last4} · ACH`;
                           const subOk = isWalletSend
                               ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
