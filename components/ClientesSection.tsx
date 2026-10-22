@@ -3,9 +3,10 @@
 //
 //  Una cuenta Persona nace con "identificación pendiente" y solo puede
 //  recibir dinero de una empresa que la haya autorizado. La persona escribe
-//  el ID Lincoin de la empresa y manda su nombre, su documento y una foto
-//  sosteniendo el documento. Aquí la empresa ve esa solicitud con la foto,
-//  la aprueba (fijándole un tope mensual de retiro) o la rechaza, y después
+//  el ID Lincoin de la empresa y manda sus datos, sus documentos (foto con
+//  el documento, las dos caras, RUT…) y el origen de sus fondos. Aquí la
+//  empresa ve esa solicitud, la aprueba (fijándole un tope mensual de
+//  retiro) o la rechaza, y después
 //  puede cambiarle el tope, cargarle saldo o revocarla.
 //
 //  Los vínculos viven en raw_data.personasAutorizadas / personasSolicitudes
@@ -15,7 +16,7 @@
 //  cada lado. Mueve plata, así que exige lo mismo que Enviar: 2FA.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useState, useRef } from 'react';
-import { Trash2, X, Wallet, ArrowUpRight, Copy, Check, Clock, ShieldCheck, Image as ImageIcon, SlidersHorizontal } from 'lucide-react';
+import { Trash2, X, Wallet, ArrowUpRight, Copy, Check, Clock, ShieldCheck, Image as ImageIcon, SlidersHorizontal, FileText, ExternalLink } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
@@ -86,13 +87,22 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
     return true;
   };
 
-  // ── Ver foto ───────────────────────────────────────────────────────
+  // ── Ver documentos (foto, documento por las dos caras, RUT…) ───────
+  // Los adjuntos llegan con un enlace firmado que vence en una hora.
+  type Expediente = {
+    documentos: { tipo: string; nombreTipo: string; nombre: string; url: string | null; esPdf: boolean }[];
+    noAplica: string[];
+    origenFondos: { fuenteTexto: string; detalle: string; declaraLicitud: boolean } | null;
+    sinExpediente: boolean;
+  };
   const [fotoDe, setFotoDe] = useState<PersonaVinculo | null>(null);
   const [foto, setFoto] = useState<string | null | 'cargando'>(null);
+  const [expediente, setExpediente] = useState<Expediente | null>(null);
   const verFoto = async (p: PersonaVinculo) => {
-    setFotoDe(p); setFoto('cargando');
+    setFotoDe(p); setFoto('cargando'); setExpediente(null);
     const r = await llamarFuncion('autorizaciones', { action: 'ver_foto', personaId: p.id }, 30000);
     setFoto(r?.ok && r.foto ? String(r.foto) : null);
+    if (r?.ok) setExpediente({ documentos: Array.isArray(r.documentos) ? r.documentos : [], noAplica: Array.isArray(r.noAplica) ? r.noAplica : [], origenFondos: r.origenFondos ?? null, sinExpediente: !!r.sinExpediente });
   };
 
   // ── Aprobar (con tope) / cambiar tope ──────────────────────────────
@@ -194,7 +204,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
         <div>
           <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: C.text, margin: 0 }}>Personas autorizadas</h2>
           <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5, maxWidth: 680 }}>
-            Las personas que operan con tu empresa abren una cuenta <b style={{ color: C.text }}>Persona</b> en Lincoin, escriben tu ID y te mandan su nombre, su documento y una foto sosteniéndolo. Tú revisas, apruebas con un tope mensual de retiro, y desde aquí les cargas saldo en pesos. Solo una persona autorizada puede recibir dinero tuyo.
+            Las personas que operan con tu empresa abren una cuenta <b style={{ color: C.text }}>Persona</b> en Lincoin, escriben tu ID y te mandan sus datos, una foto sosteniendo su documento, el documento por las dos caras, el RUT, la cámara de comercio y la declaración de renta (si les aplican) y el origen de sus fondos. Tú revisas, apruebas con un tope mensual de retiro, y desde aquí les cargas saldo en pesos. Solo una persona autorizada puede recibir dinero tuyo.
           </p>
         </div>
         <div style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 12, padding: '10px 14px', minWidth: 200 }}>
@@ -225,7 +235,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
         {autorizadas == null ? (
           <p style={{ fontSize: 12.5, color: C.tenue, padding: '22px 18px', margin: 0 }}>Consultando…</p>
         ) : solicitudes.length === 0 ? (
-          <p style={{ fontSize: 12.5, color: C.tenue, padding: '22px 18px', margin: 0, lineHeight: 1.5 }}>Ninguna. Cuando una persona escriba tu ID desde su portal, aparece aquí con su documento y su foto para que la apruebes.</p>
+          <p style={{ fontSize: 12.5, color: C.tenue, padding: '22px 18px', margin: 0, lineHeight: 1.5 }}>Ninguna. Cuando una persona escriba tu ID desde su portal, aparece aquí con sus documentos para que la apruebes.</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {solicitudes.map(p => (
@@ -236,7 +246,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
                   <p style={{ fontSize: 11.5, color: C.tenue, margin: '2px 0 0' }}>ID <span style={{ fontFamily: MONO, letterSpacing: '1px', color: C.sub }}>{p.codigo || '—'}</span>{p.at ? ` · pidió el ${fecha(p.at)}` : ''}</p>
                 </div>
                 <div className="flex items-center flex-wrap" style={{ gap: 6 }}>
-                  <button onClick={() => verFoto(p)} style={botonSec}><ImageIcon size={13} /> Ver foto</button>
+                  <button onClick={() => verFoto(p)} style={botonSec}><ImageIcon size={13} /> Ver documentos</button>
                   <button onClick={() => setRechazarA(p)} disabled={ocupado === p.id} style={{ ...botonSec, color: C.sub }}>Rechazar</button>
                   <button onClick={() => abrirTope(p, 'aprobar')} disabled={ocupado === p.id} className="lincoin-btn-white" style={{ ...botonPri, opacity: ocupado === p.id ? 0.6 : 1 }}><Check size={13} /> {ocupado === p.id ? '…' : 'Aprobar'}</button>
                 </div>
@@ -284,7 +294,7 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
                       <td style={{ ...celda, fontSize: 12, color: C.sub, whiteSpace: 'nowrap' }}>{r.ultima ? fecha(r.ultima) : '—'}</td>
                       <td style={{ ...celda, whiteSpace: 'nowrap', textAlign: 'right' }}>
                         <div className="flex items-center justify-end" style={{ gap: 6 }}>
-                          <button onClick={() => verFoto(p)} title="Ver foto" style={{ ...botonSec, padding: '7px 9px', color: C.sub }}><ImageIcon size={13} /></button>
+                          <button onClick={() => verFoto(p)} title="Ver documentos" style={{ ...botonSec, padding: '7px 9px', color: C.sub }}><ImageIcon size={13} /></button>
                           <button onClick={() => abrirCarga(p)} className="lincoin-btn-white" style={{ ...botonPri, fontSize: 12, padding: '7px 12px' }}><Wallet size={12} /> Cargar saldo</button>
                           <button onClick={() => setRevocarA(p)} disabled={ocupado === p.id} title="Quitar autorización" style={{ ...botonSec, padding: '7px 9px', color: C.sub }}><Trash2 size={13} /></button>
                         </div>
@@ -328,9 +338,9 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
           onConfirmar={async () => { const p = revocarA; if (await accion('revocar', p)) { setRevocarA(null); showToast(`${p.nombre} ya no está autorizada.`, 3500); } }} onCancelar={() => setRevocarA(null)} />
       )}
 
-      {/* Foto sosteniendo el documento */}
+      {/* Foto sosteniendo el documento, adjuntos y origen de fondos */}
       {fotoDe && (
-        <Modal onCerrar={() => setFotoDe(null)} ancho={560}>
+        <Modal onCerrar={() => setFotoDe(null)} ancho={600}>
           <div className="flex items-start justify-between" style={{ gap: 12 }}>
             <div>
               <p style={{ fontSize: 17, fontWeight: 800, margin: 0, color: C.text, letterSpacing: '-0.3px' }}>{fotoDe.nombre}</p>
@@ -344,6 +354,42 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
               : <p style={{ fontSize: 12.5, color: C.tenue, padding: 20, textAlign: 'center' }}>No hay foto guardada para esta persona.</p>}
           </div>
           <p style={{ fontSize: 11.5, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>Revisa que el nombre y el número del documento coincidan con los que escribió, y que la cara de la foto sea la del documento.</p>
+
+          {expediente && (expediente.sinExpediente ? (
+            <p style={{ fontSize: 12, color: C.sub, margin: '16px 0 0', lineHeight: 1.5 }}>Esta solicitud es de antes de que se pidieran los documentos y el origen de fondos.</p>
+          ) : (<>
+            <div style={{ marginTop: 18 }}>
+              <Rotulo>DOCUMENTOS</Rotulo>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                {expediente.documentos.map(d => (
+                  <a key={d.tipo} href={d.url ?? undefined} target="_blank" rel="noreferrer" className="flex items-center" style={{ gap: 12, padding: '10px 12px', border: `1px solid ${C.borde}`, borderRadius: 10, background: 'rgba(255,255,255,0.02)', textDecoration: 'none', color: C.text, pointerEvents: d.url ? 'auto' : 'none' }}>
+                    <span style={{ width: 44, height: 44, borderRadius: 8, background: 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', overflow: 'hidden', flexShrink: 0 }}>
+                      {d.url && !d.esPdf ? <img src={d.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <FileText size={18} color={C.sub} />}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{d.nombreTipo.replace(/^Documento/, DOCS[fotoDe.docType] ?? 'Documento')}</span>
+                      <span style={{ display: 'block', fontSize: 11.5, color: C.tenue, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.nombre}</span>
+                    </span>
+                    <span className="flex items-center" style={{ fontSize: 12, fontWeight: 700, color: d.url ? C.verde : C.tenue, gap: 4, flexShrink: 0 }}>{d.url ? <>Abrir <ExternalLink size={12} /></> : 'No disponible'}</span>
+                  </a>
+                ))}
+                {expediente.noAplica.map(n => (
+                  <p key={n} style={{ fontSize: 12, color: C.sub, margin: 0, padding: '2px 2px' }}>{n}: <b style={{ color: C.text }}>declaró que no aplica</b></p>
+                ))}
+              </div>
+            </div>
+            {expediente.origenFondos && (
+              <div style={{ marginTop: 18 }}>
+                <Rotulo>ORIGEN DE LOS FONDOS</Rotulo>
+                <div style={{ marginTop: 10, padding: '12px 14px', border: `1px solid ${C.borde}`, borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                  <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0 }}>{expediente.origenFondos.fuenteTexto}</p>
+                  {expediente.origenFondos.detalle && <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>{expediente.origenFondos.detalle}</p>}
+                  {expediente.origenFondos.declaraLicitud && <p style={{ fontSize: 11.5, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Declaró que sus recursos provienen de actividades lícitas y que la información es verdadera.</p>}
+                </div>
+              </div>
+            )}
+            <p style={{ fontSize: 11.5, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>Los enlaces vencen en una hora; vuelve a abrir esta ventana para generarlos de nuevo.</p>
+          </>))}
         </Modal>
       )}
 

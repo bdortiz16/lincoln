@@ -166,14 +166,15 @@ type EstadoAuth = {
 const TIPOS_DOC: Array<[string, string]> = [['CC', 'Cédula de ciudadanía'], ['CE', 'Cédula de extranjería'], ['PAS', 'Pasaporte'], ['PPT', 'Permiso por protección temporal']];
 // El titular de una llave puede ser una empresa.
 const TIPOS_DOC_TITULAR: Array<[string, string]> = [['CC', 'Cédula'], ['CE', 'Cédula de extranjería'], ['NIT', 'NIT (empresa)'], ['PAS', 'Pasaporte'], ['PPT', 'PPT']];
-// La foto se reduce en el navegador (lado mayor 1280 px, JPEG) para que pese
-// poco y suba rápido; el servidor rechaza más de 2,5 MB.
-const comprimirFoto = (file: File): Promise<string> => new Promise((res, rej) => {
+// La foto se reduce en el navegador (JPEG) para que pese poco y suba rápido;
+// el servidor rechaza más de 2,5 MB la foto y 5 MB cada documento. Un
+// documento con letra pequeña (RUT, declaración) se deja más grande.
+const comprimirFoto = (file: File, lado = 1280): Promise<string> => new Promise((res, rej) => {
   const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
     try {
-      const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+      const k = Math.min(1, lado / Math.max(img.width, img.height));
       const c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
       c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
@@ -184,6 +185,60 @@ const comprimirFoto = (file: File): Promise<string> => new Promise((res, rej) =>
   img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('No se pudo leer la imagen')); };
   img.src = url;
 });
+const leerBase64 = (file: File): Promise<string> => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result ?? ''));
+  r.onerror = () => rej(new Error('No se pudo leer el archivo'));
+  r.readAsDataURL(file);
+});
+
+// ─── Expediente para la autorización ─────────────────────────────────
+// Lo mismo que valida el servidor (función `autorizaciones`).
+type TipoAdjunto = 'doc_frente' | 'doc_reverso' | 'rut' | 'camara_comercio' | 'declaracion_renta';
+const MIME_ADJUNTO = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+const NOMBRE_DOC: Record<string, string> = { CC: 'Cédula', CE: 'Cédula de extranjería', PAS: 'Pasaporte', PPT: 'PPT' };
+const FUENTES_FONDOS: Array<[string, string]> = [
+  ['salario', 'Salario'], ['honorarios', 'Honorarios o prestación de servicios'], ['negocio', 'Ventas de mi negocio'],
+  ['pension', 'Pensión'], ['inversiones', 'Rentas o inversiones'], ['familia', 'Ayuda de familiares o remesas'], ['otro', 'Otro'],
+];
+// La cámara de comercio y la declaración de renta no las tiene todo el mundo.
+type NoAplica = { camara_comercio: boolean; declaracion_renta: boolean };
+// Prepara un adjunto para subirlo: las fotos se reducen (JPEG) y los PDF
+// van tal cual. Una foto que el navegador no sabe abrir (HEIC) va tal cual.
+const prepararAdjunto = async (f: File): Promise<{ base64: string; mime: string; nombre: string }> => {
+  if (f.type.startsWith('image/')) {
+    try { return { base64: await comprimirFoto(f, 2000), mime: 'image/jpeg', nombre: f.name.replace(/\.\w+$/, '') + '.jpg' }; } catch { /* va tal cual */ }
+  }
+  return { base64: await leerBase64(f), mime: f.type, nombre: f.name };
+};
+
+// Un documento para adjuntar: foto o PDF, con vista previa y "cambiar".
+const Adjunto: React.FC<{ titulo: string; ayuda?: string; archivo?: File; onElegir: (f: File | null) => void; apagado?: boolean }> = ({ titulo, ayuda, archivo, onElegir, apagado }) => {
+  const vista = useMemo(() => (archivo && archivo.type.startsWith('image/') ? URL.createObjectURL(archivo) : null), [archivo]);
+  useEffect(() => () => { if (vista) URL.revokeObjectURL(vista); }, [vista]);
+  const kb = archivo ? archivo.size / 1024 : 0;
+  return (
+    <label className="persona-sec" style={{ display: 'flex', alignItems: 'center', gap: 12, border: `1px ${archivo ? 'solid' : 'dashed'} ${archivo ? 'rgba(74,222,128,0.35)' : C.bordeFuerte}`, borderRadius: 12, padding: '11px 12px', cursor: apagado ? 'default' : 'pointer', background: 'rgba(255,255,255,0.03)', opacity: apagado ? 0.45 : 1, minWidth: 0 }}>
+      <input type="file" accept="image/*,application/pdf" disabled={apagado} onChange={e => { onElegir(e.target.files?.[0] ?? null); e.target.value = ''; }} style={{ display: 'none' }} />
+      <span style={{ width: 40, height: 40, borderRadius: 9, background: 'rgba(255,255,255,0.06)', display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden' }}>
+        {vista ? <img src={vista} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : archivo ? <FileText size={18} color={C.verde} /> : <Plus size={18} color={C.sub} />}
+      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: C.text }}>{titulo}</span>
+        <span style={{ display: 'block', fontSize: 12, color: archivo ? C.verde : C.sub, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {archivo ? `${archivo.name} · ${kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(kb))} KB`}` : (ayuda ?? 'Foto o PDF')}
+        </span>
+      </span>
+      {archivo && !apagado && <span style={{ fontSize: 12, fontWeight: 700, color: C.sub, flexShrink: 0 }}>Cambiar</span>}
+    </label>
+  );
+};
+const Casilla: React.FC<{ marcada: boolean; onCambiar: (v: boolean) => void; children: React.ReactNode }> = ({ marcada, onCambiar, children }) => (
+  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13, color: C.medio, lineHeight: 1.45 }}>
+    <input type="checkbox" checked={marcada} onChange={e => onCambiar(e.target.checked)} style={{ width: 17, height: 17, marginTop: 1, accentColor: C.verde, flexShrink: 0 }} />
+    <span>{children}</span>
+  </label>
+);
 
 // ─── Piezas ──────────────────────────────────────────────────────────
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
@@ -376,10 +431,26 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
   const [solOcupado, setSolOcupado] = useState(false);
   const [solError, setSolError] = useState<string | null>(null);
   const [solListo, setSolListo] = useState<string | null>(null);
+  const [solArchivos, setSolArchivos] = useState<Partial<Record<TipoAdjunto, File>>>({});
+  const [solNoAplica, setSolNoAplica] = useState<NoAplica>({ camara_comercio: false, declaracion_renta: false });
+  const [solFuente, setSolFuente] = useState('');
+  const [solDetalle, setSolDetalle] = useState('');
+  const [solLicito, setSolLicito] = useState(false);
+  const [solProgreso, setSolProgreso] = useState<string | null>(null);
+  const docNombre = NOMBRE_DOC[solDocType] ?? 'Documento';
+  const esPasaporte = solDocType === 'PAS';
   const abrirAutorizacion = () => {
     const d = auth?.datos;
     setSolEmpresa(''); setSolNombre(d?.nombre || String(cu.name || cu.fullName || '')); setSolDocType(d?.docType || 'CC'); setSolDocNumber(d?.docNumber || '');
-    setSolFoto(null); setSolError(null); setSolListo(null); setPanel('autorizacion');
+    setSolFoto(null); setSolError(null); setSolListo(null);
+    setSolArchivos({}); setSolNoAplica({ camara_comercio: false, declaracion_renta: false }); setSolFuente(''); setSolDetalle(''); setSolLicito(false); setSolProgreso(null);
+    setPanel('autorizacion');
+  };
+  const elegirAdjunto = (t: TipoAdjunto, f: File | null) => {
+    setSolError(null);
+    if (f && !MIME_ADJUNTO.includes(f.type) && !f.type.startsWith('image/')) { setSolError('Adjunta una foto o un PDF.'); return; }
+    if (f && f.type === 'application/pdf' && f.size > 5 * 1024 * 1024) { setSolError('Cada PDF puede pesar hasta 5 MB.'); return; }
+    setSolArchivos(a => { const n = { ...a }; if (f) n[t] = f; else delete n[t]; return n; });
   };
   const elegirFoto = async (f?: File | null) => {
     if (!f) return;
@@ -395,13 +466,46 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     if (solNombre.trim().length < 5 || !solNombre.trim().includes(' ')) { setSolError('Escribe tu nombre completo, como aparece en el documento.'); return; }
     if (solDocNumber.replace(/[^0-9A-Za-z]/g, '').length < 5) { setSolError('Escribe el número de tu documento.'); return; }
     if (!solFoto) { setSolError('Falta la foto sosteniendo tu documento.'); return; }
+    const pedidos: Array<[TipoAdjunto, string]> = [
+      ['doc_frente', `${docNombre}: ${esPasaporte ? 'la página de la foto' : 'el frente'}`],
+      ...(esPasaporte ? [] : [['doc_reverso', `${docNombre}: el reverso`] as [TipoAdjunto, string]]),
+      ['rut', 'el RUT'],
+      ...(solNoAplica.camara_comercio ? [] : [['camara_comercio', 'la cámara de comercio (o marca que no tienes)'] as [TipoAdjunto, string]]),
+      ...(solNoAplica.declaracion_renta ? [] : [['declaracion_renta', 'la declaración de renta (o marca que no declaras)'] as [TipoAdjunto, string]]),
+    ];
+    const faltan = pedidos.filter(([t]) => !solArchivos[t]).map(([, n]) => n);
+    if (faltan.length) { setSolError(`Falta adjuntar ${faltan.join(', ')}.`); return; }
+    if (!solFuente) { setSolError('Cuéntanos de dónde vienen tus fondos.'); return; }
+    if (solFuente === 'otro' && solDetalle.trim().length < 5) { setSolError('Describe de dónde vienen tus fondos.'); return; }
+    if (!solLicito) { setSolError('Falta tu declaración de que tus fondos vienen de actividades lícitas.'); return; }
     setSolOcupado(true);
-    const r = await llamarFuncion('autorizaciones', { action: 'solicitar', codigoEmpresa: id, nombre: solNombre.trim(), docType: solDocType, docNumber: solDocNumber, foto: solFoto }, 90000);
-    setSolOcupado(false);
-    if (!r?.ok) { setSolError(r?.error ?? 'No se pudo enviar la solicitud. Intenta de nuevo.'); return; }
-    setSolListo(String(r.empresa?.nombre ?? id));
-    await cargarEstado();
-    refreshData().catch(() => {});
+    try {
+      // Uno por uno: cada documento puede pesar hasta 5 MB.
+      const documentos: { tipo: TipoAdjunto; path: string; nombre: string }[] = [];
+      const enviar = (Object.keys(solArchivos) as TipoAdjunto[]).filter(t => !(esPasaporte && t === 'doc_reverso'));
+      for (const [i, t] of enviar.entries()) {
+        const f = solArchivos[t]!;
+        setSolProgreso(`Subiendo documentos (${i + 1} de ${enviar.length})…`);
+        const a = await prepararAdjunto(f);
+        if (a.base64.length > 7_000_000) { setSolError(`${f.name} pesa más de 5 MB. Adjunta uno más liviano.`); return; }
+        const u = await llamarFuncion('autorizaciones', { action: 'subir_doc', tipo: t, nombre: a.nombre, mime: a.mime, base64: a.base64 }, 90000);
+        if (!u?.ok) { setSolError(u?.error ?? `No se pudo subir ${f.name}. Intenta de nuevo.`); return; }
+        documentos.push({ tipo: t, path: String(u.path), nombre: String(u.nombre ?? f.name) });
+      }
+      setSolProgreso('Enviando la solicitud…');
+      const r = await llamarFuncion('autorizaciones', {
+        action: 'solicitar', codigoEmpresa: id, nombre: solNombre.trim(), docType: solDocType, docNumber: solDocNumber, foto: solFoto,
+        documentos, noAplica: solNoAplica, origenFondos: { fuente: solFuente, detalle: solDetalle.trim(), declaraLicitud: solLicito },
+      }, 90000);
+      if (!r?.ok) { setSolError(r?.error ?? 'No se pudo enviar la solicitud. Intenta de nuevo.'); return; }
+      setSolListo(String(r.empresa?.nombre ?? id));
+      await cargarEstado();
+      refreshData().catch(() => {});
+    } catch {
+      setSolError('No se pudo leer uno de los archivos. Intenta con otro.');
+    } finally {
+      setSolOcupado(false); setSolProgreso(null);
+    }
   };
 
   // ── Seguridad (2FA) ────────────────────────────────────────────────
@@ -733,7 +837,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 <p style={{ fontSize: 15.5, fontWeight: 700, margin: 0 }}>{pendiente ? `${pendiente.nombre} está revisando tu solicitud` : 'Pide la autorización de tu empresa'}</p>
                 <p style={{ fontSize: 13.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
                   {pendiente ? 'Cuando la apruebe, tu cuenta queda activa y ves aquí tu tope mensual. Esta pantalla se actualiza sola.'
-                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, tu nombre y tu documento, y toma una foto sosteniéndolo.'}
+                    : 'Solo puedes recibir dinero de una empresa registrada en Lincoin. Escribe su ID, adjunta tu documento y tu RUT, y cuéntanos de dónde vienen tus fondos.'}
                 </p>
               </div>
               {pendiente ? <Pill onClick={() => setPanel('perfil')}>VER DATOS</Pill> : <BotonPrimario onClick={abrirAutorizacion} style={{ padding: '12px 20px' }}>Pedir autorización</BotonPrimario>}
@@ -1168,7 +1272,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 {auth?.datos?.at && <p style={{ fontSize: 12.5, color: C.tenue, margin: '4px 0 0' }}>Desde {fecha(auth.datos.at)}</p>}
               </>) : pendiente ? (<>
                 <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>{pendiente.nombre}</p><Pill>EN REVISIÓN</Pill></div>
-                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>La empresa está revisando tu nombre, tu documento y tu foto. Cuando apruebe, aquí aparece tu tope.</p>
+                <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>La empresa está revisando tus datos y tus documentos. Cuando apruebe, aquí aparece tu tope.</p>
               </>) : (<>
                 <div className="flex items-center justify-between" style={{ gap: 10 }}><p style={{ fontSize: 16, fontWeight: 800, margin: 0 }}>Ninguna todavía</p><Pill naranja>PENDIENTE</Pill></div>
                 <p style={{ fontSize: 13.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>{auth?.datos?.estado === 'rechazada' ? `${auth.datos.empresaNombre ?? 'La empresa'} rechazó tu solicitud. Revisa tus datos y vuelve a pedirla.` : auth?.datos?.estado === 'revocada' ? `${auth.datos.empresaNombre ?? 'La empresa'} retiró tu autorización. Puedes pedirla a otra empresa.` : 'Solo puedes recibir dinero de una empresa registrada que te haya autorizado.'}</p>
@@ -1196,7 +1300,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
       )}
 
       {panel === 'autorizacion' && (
-        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy te autoriza ${autorizada.nombre}. La nueva empresa la reemplaza cuando apruebe.` : 'La empresa revisa tus datos y tu foto, y te aprueba con un tope mensual.'} onCerrar={cerrarPanel}>
+        <Drawer titulo={autorizada ? 'Cambiar de empresa' : 'Pedir autorización'} sub={autorizada ? `Hoy te autoriza ${autorizada.nombre}. La nueva empresa la reemplaza cuando apruebe.` : 'La empresa revisa tus datos y tus documentos, y te aprueba con un tope mensual.'} onCerrar={cerrarPanel}>
           {solListo ? (
             <div style={{ textAlign: 'center', padding: '30px 0' }}>
               <span style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(74,222,128,0.12)', display: 'grid', placeItems: 'center', margin: '0 auto' }}><Check size={28} color={C.verde} /></span>
@@ -1239,9 +1343,36 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
                 </label>
                 {solFoto && <button type="button" onClick={() => setSolFoto(null)} style={{ fontFamily: FONT, fontSize: 13, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', padding: 0, marginTop: 8, cursor: 'pointer' }}>Tomar otra</button>}
               </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <Etiqueta>{esPasaporte ? 'TU PASAPORTE' : `TU ${docNombre.toUpperCase()} POR LAS DOS CARAS`}</Etiqueta>
+                <Adjunto titulo={esPasaporte ? 'Página de la foto' : 'Frente'} ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_frente} onElegir={f => elegirAdjunto('doc_frente', f)} apagado={solOcupado} />
+                {!esPasaporte && <Adjunto titulo="Reverso" ayuda="Foto nítida, sin reflejos, o PDF" archivo={solArchivos.doc_reverso} onElegir={f => elegirAdjunto('doc_reverso', f)} apagado={solOcupado} />}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <Etiqueta>DOCUMENTOS TRIBUTARIOS</Etiqueta>
+                <Adjunto titulo="RUT" ayuda="PDF de la DIAN o foto, actualizado" archivo={solArchivos.rut} onElegir={f => elegirAdjunto('rut', f)} apagado={solOcupado} />
+                <Adjunto titulo="Cámara de comercio" ayuda="Certificado de matrícula mercantil, de menos de 30 días" archivo={solArchivos.camara_comercio} onElegir={f => elegirAdjunto('camara_comercio', f)} apagado={solOcupado || solNoAplica.camara_comercio} />
+                <Casilla marcada={solNoAplica.camara_comercio} onCambiar={v => { setSolNoAplica(n => ({ ...n, camara_comercio: v })); if (v) elegirAdjunto('camara_comercio', null); }}>No tengo negocio inscrito en Cámara de Comercio.</Casilla>
+                <Adjunto titulo="Declaración de renta" ayuda="La del último año gravable" archivo={solArchivos.declaracion_renta} onElegir={f => elegirAdjunto('declaracion_renta', f)} apagado={solOcupado || solNoAplica.declaracion_renta} />
+                <Casilla marcada={solNoAplica.declaracion_renta} onCambiar={v => { setSolNoAplica(n => ({ ...n, declaracion_renta: v })); if (v) elegirAdjunto('declaracion_renta', null); }}>No estoy obligado a declarar renta.</Casilla>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <Etiqueta>ORIGEN DE TUS FONDOS</Etiqueta>
+                <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: '-2px 0 0' }}>¿De dónde viene el dinero que vas a manejar en Lincoin?</p>
+                <Selector value={solFuente} onChange={e => { setSolFuente(e.target.value); setSolError(null); }} style={{ color: solFuente ? C.text : C.sub }}>
+                  <option value="" style={{ color: '#000' }}>Elige una opción…</option>
+                  {FUENTES_FONDOS.map(([k, n]) => <option key={k} value={k} style={{ color: '#000' }}>{n}</option>)}
+                </Selector>
+                <Campo value={solDetalle} onChange={e => setSolDetalle(e.target.value.slice(0, 300))} placeholder={solFuente === 'otro' ? 'Cuéntanos de dónde viene' : 'Detalle (opcional): empresa, actividad o negocio'} />
+                <Casilla marcada={solLicito} onCambiar={v => { setSolLicito(v); setSolError(null); }}>Declaro que mis recursos provienen de actividades lícitas y que la información y los documentos que entrego son verdaderos.</Casilla>
+              </div>
+
               {solError && <p style={{ fontSize: 13.5, color: NARANJA, margin: 0, lineHeight: 1.5 }}>{solError}</p>}
-              <BotonPrimario type="submit" disabled={solOcupado}>{solOcupado ? 'Enviando…' : 'Enviar solicitud'}</BotonPrimario>
-              <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Tu foto solo la ve la empresa a la que le pides autorización.</p>
+              <BotonPrimario type="submit" disabled={solOcupado}>{solOcupado ? (solProgreso ?? 'Enviando…') : 'Enviar solicitud'}</BotonPrimario>
+              <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.5 }}>Tus documentos solo los ven la empresa a la que le pides autorización y el equipo de cumplimiento de Lincoin.</p>
             </form>
           )}
         </Drawer>
