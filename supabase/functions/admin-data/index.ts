@@ -2433,9 +2433,15 @@ Deno.serve(async (req: Request) => {
         // repetido responde lo mismo que el original. Un código capturado y
         // usado desde OTRA sesión sigue rechazado: su sesión no está
         // verificada.
+        //
+        // Lo mismo vale para la confirmación de un ENVÍO en la misma sesión:
+        // quien acaba de entrar con un código y enseguida envía ve el MISMO
+        // código en su app, y se le rechazaba como "ya usado" (se mostraba
+        // "Código incorrecto"). Desde la misma sesión ya verificada se acepta;
+        // desde otra, sigue rechazado.
         const sidV = sessionIdOf(req)
         const mismaSesionYaVerificada = async (): Promise<boolean> => {
-          if (!sidV || !etapaLogin) return false
+          if (!sidV) return false
           // El original puede estar terminando en paralelo: se espera un poco
           // (hasta ~2 s) a que anote la sesión antes de decidir. Solo se
           // llega acá con el MISMO contador del último código aceptado.
@@ -2452,7 +2458,7 @@ Deno.serve(async (req: Request) => {
         const lastCounter = Number(raw.mfaLastCounter ?? -1)
         if (Number.isFinite(lastCounter) && counter <= lastCounter) {
           if (counter === lastCounter && await mismaSesionYaVerificada()) {
-            await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV })
+            await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV, operacion: !etapaLogin })
             return json({ ok: true, repetido: true })
           }
           // No es un repetido de la misma sesión: es un código ya gastado
