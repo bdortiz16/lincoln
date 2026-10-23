@@ -61,7 +61,7 @@ type Props = {
 };
 
 export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestricted, mfaEnrolled, irAjustes, onVerMovimiento }) => {
-  const { currentUser, transactions, refreshData, verifyMfaCode } = useDatabase();
+  const { currentUser, transactions, refreshData, verificarCodigo2fa } = useDatabase();
   const cu: any = currentUser ?? {};
   const disponibleCop = ['COP', 'COP_BREB', 'COP_ACH'].reduce((s, k) => s + (Number(cu.balances?.[k]) || 0), 0);
 
@@ -166,8 +166,8 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
     if (!cargaPara || enviando || codigo2fa.length !== 6) return;
     setEnviando(true); setErrorCarga(null);
     try {
-      const ok = await verifyMfaCode(codigo2fa);
-      if (!ok) { setErrorCarga('Código incorrecto. Intenta de nuevo.'); setCodigo2fa(''); return; }
+      const v = await verificarCodigo2fa(codigo2fa);
+      if (!v.ok) { setErrorCarga(v.motivo ?? 'Código incorrecto. Intenta de nuevo.'); setCodigo2fa(''); return; }
       const { data, error } = await supabase.rpc('lincoin_cargar_cliente', { p_codigo: cargaPara.codigo, p_monto: montoNum, p_nota: nota.trim() || null });
       if (error) {
         // "does not exist" no alcanza para decir que falta la función: la

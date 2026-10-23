@@ -84,7 +84,7 @@ export const prefillDeContacto = (c: any): EnviarPrefill => {
 
 export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function EnviarDineroModal(props, ref) {
   const { showToast, mfaEnrolled, displayBalance, callGasfree, refreshGasfreeBal, movements, onIrA, onVerMovimiento, saldoUnificado = false, mfaFactorId, mfaTotpSecret, onMoverEntreCuentas, metodos } = props;
-  const { currentUser, getBalance: getBalanceCtx, requestWithdrawal, sendCuypayPayment, getAllUsers, verifyMfaCode, refreshData } = useDatabase();
+  const { currentUser, getBalance: getBalanceCtx, requestWithdrawal, sendCuypayPayment, getAllUsers, verificarCodigo2fa, refreshData } = useDatabase();
   // Modelo Comisión de facturación: cada envío pide el ordenante.
   const cuE: any = currentUser ?? {};
   const pideOrdenante = (cuE?.raw_data?.facturacionModelo ?? cuE?.facturacionModelo) === 'comision';
@@ -499,10 +499,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       if (payVerifyLoading || payVerifyCode.length !== 6 || !payRecipientUser) return;
       setPayVerifyLoading(true);
       setPayVerifyError('');
-      const ok = await verifyMfaCode(payVerifyCode);   // local o server (secreto cifrado)
-      if (!ok) {
+      const v = await verificarCodigo2fa(payVerifyCode);
+      if (!v.ok) {
           setPayVerifyLoading(false);
-          setPayVerifyError('Código incorrecto. Intenta nuevamente.');
+          setPayVerifyError(v.motivo ?? 'Código incorrecto. Intenta nuevamente.');
           setPayVerifyCode('');
           return;
       }
@@ -547,7 +547,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // de ejecutar el movimiento. Solo tras validarlo se corre handleSendSubmit.
   const requestSendConfirm = () => {
       if (isSending || sendingRef.current || mouvUnknown) return;
-      // Basta con que tenga 2FA: verifyMfaCode valida contra el servidor si
+      // Basta con que tenga 2FA: verificarCodigo2fa valida contra el servidor si
       // la pantalla no tiene el secreto. Antes se exigía que el portal pasara
       // el secreto o el factor, y el de Personas no los pasa: el código nunca
       // se pedía, el envío salía sin él y el servidor lo rechazaba siempre.
@@ -564,8 +564,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       if (sendOtpLoading || sendOtpCode.length !== 6) return;
       setSendOtpLoading(true); setSendOtpError('');
       try {
-          const ok = await verifyMfaCode(sendOtpCode);   // local o server (secreto cifrado)
-          if (!ok) { setSendOtpError('Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
+          const v = await verificarCodigo2fa(sendOtpCode);
+          if (!v.ok) { setSendOtpError(v.motivo ?? 'Código incorrecto. Intenta nuevamente.'); setSendOtpCode(''); return; }
           sentOtpRef.current = sendOtpCode; // el servidor lo re-valida al mover el dinero
           setSendOtpOpen(false); setSendOtpCode('');
           handleSendSubmit();

@@ -150,6 +150,8 @@ interface DatabaseContextType {
   unenrollMFA: (factorId: string) => Promise<boolean>;
   getMFAStatus: () => Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }>;
   verifyMfaCode: (code: string) => Promise<boolean>;
+  /** Como verifyMfaCode, pero con el motivo del rechazo para mostrarlo. */
+  verificarCodigo2fa: (code: string) => Promise<{ ok: boolean; motivo?: string }>;
 }
 
 // --- LOCALSTORAGE HELPERS (fallback sin Supabase) ---
@@ -2150,21 +2152,38 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Verifica un código 2FA. Si el secreto está en memoria (recién activado o
   // legacy en claro) valida local; si no (secreto cifrado en la base), lo
   // valida el SERVIDOR con mfa_verify. Devuelve true/false.
-  const verifyMfaCode = async (code: string): Promise<boolean> => {
+  // Verifica el código 2FA de una operación y dice POR QUÉ se rechazó.
+  // Antes toda negativa se mostraba como "Código incorrecto": también "ese
+  // código ya se usó" (el mismo con el que se acababa de entrar) y "demasiados
+  // intentos, espera unos minutos", que rechaza incluso el código bueno.
+  // Con Supabase se verifica SIEMPRE en el servidor, con su reloj: el camino
+  // local usaba el reloj del equipo y fallaba si estaba corrido.
+  const verificarCodigo2fa = async (code: string): Promise<{ ok: boolean; motivo?: string }> => {
+    const malo = 'Código incorrecto. Usa el código de tu cuenta Lincoin en la app y revisa que la hora del celular esté en automático.';
     const cu = currentUser as any;
     const localSecret = (cu?.totpSecret ?? cu?.raw_data?.totpSecret) as string | undefined;
-    if (localSecret) { try { return verifyTOTP(localSecret, code); } catch { return false; } }
-    if (!currentUser) return false;
+    if (!isSupabaseConfigured && localSecret) {
+      try { return verifyTOTP(localSecret, code) ? { ok: true } : { ok: false, motivo: malo }; } catch { return { ok: false, motivo: malo }; }
+    }
+    if (!currentUser) return { ok: false, motivo: 'Tu sesión se cerró. Ingresa de nuevo.' };
     try {
       const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
-      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+      const res = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_verify', userId: currentUser.id, code }),
-      }).then(x => x.json()).catch(() => null);
-      return !!r?.ok;
-    } catch { return false; }
+      }).catch(() => null);
+      if (!res) return { ok: false, motivo: 'No se pudo verificar el código. Revisa tu conexión e intenta de nuevo.' };
+      const r: any = await res.json().catch(() => null);
+      if (r?.ok) return { ok: true };
+      if (r?.message) return { ok: false, motivo: String(r.message) };
+      if (res.status === 401 || r?.error === 'No autorizado') return { ok: false, motivo: 'Tu sesión venció. Sal y vuelve a ingresar.' };
+      if (r?.error === 'no_secret') return { ok: false, motivo: 'Tu verificación en dos pasos no tiene un código guardado. Desactívala y actívala de nuevo en Seguridad.' };
+      if (r?.error === 'secret_unreadable') return { ok: false, motivo: 'No pudimos leer tu verificación en dos pasos. Usa un código de respaldo o escríbenos a soporte.' };
+      return { ok: false, motivo: malo };
+    } catch { return { ok: false, motivo: 'No se pudo verificar el código. Intenta de nuevo.' }; }
   };
+  const verifyMfaCode = async (code: string): Promise<boolean> => (await verificarCodigo2fa(code)).ok;
 
   const unenrollMFA = async (factorId: string): Promise<boolean> => {
     // Local TOTP factors don't exist in Supabase Auth — just succeed
@@ -2987,7 +3006,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
       passkeyPending, mfaPasos, loginConPasskey,
-      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
+      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode, verificarCodigo2fa,
     }}>
       {children}
     </DatabaseContext.Provider>
