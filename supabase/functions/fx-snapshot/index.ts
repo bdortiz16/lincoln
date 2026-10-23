@@ -132,12 +132,33 @@ async function ratesForBase(base: string): Promise<Record<string, number>> {
 // ─────────────────────────────────────────────
 // Handler
 // ─────────────────────────────────────────────
+function igualTexto(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false
+  let d = 0
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return d === 0
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
   try {
-    // mode=ping → solo verifica conectividad y credenciales sin insertar
     const url = new URL(req.url)
+    // Esta función NO tenía ninguna autenticación, y se despliega con el JWT
+    // de la plataforma desactivado: cualquiera en internet podía dispararla y
+    // escribir en fx_rate_snapshots con service role. Esa tabla es la fuente
+    // de la tasa que se usa para validar conversiones, así que envenenarla
+    // vale dinero. Falla CERRADO si no hay secreto configurado.
+    const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+    if (!CRON_SECRET) {
+      return new Response(JSON.stringify({ error: 'not_configured', message: 'Falta CRON_SECRET.' }), { status: 503, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    }
+    // Comparación en tiempo constante (no filtra el secreto por lo que tarda).
+    // El secreto va en la URL porque así lo manda el cron de pg_net.
+    if (!igualTexto(url.searchParams.get('key') ?? '', CRON_SECRET)) {
+      return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } })
+    }
+    // mode=ping → solo verifica conectividad y credenciales sin insertar
     const mode = url.searchParams.get('mode')
     if (mode === 'ping') {
       try {

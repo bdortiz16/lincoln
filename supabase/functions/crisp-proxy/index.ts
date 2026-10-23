@@ -68,22 +68,15 @@ Deno.serve(async (req) => {
     const url = new URL(req.url)
     const action = url.searchParams.get('action') ?? ''
 
-    if (action === 'ping') {
-      return json({
-        ok: true,
-        secrets: {
-          CRISP_IDENTIFIER: !!CRISP_IDENTIFIER,
-          CRISP_KEY:        !!CRISP_KEY,
-          CRISP_WEBSITE_ID: CRISP_WEBSITE_ID,
-        },
-      })
-    }
+    // Sin sesión solo se dice que la función está viva: qué secretos hay
+    // configurados y el id del sitio no son para cualquiera.
+    if (action === 'ping') return json({ ok: true })
 
     // ── Auth: JWT del admin ──
     const authHeader = req.headers.get('authorization')
     if (!authHeader) return json({ error: 'No auth' }, 401)
     const sb = createClient(SUPABASE_URL, SERVICE_KEY)
-    const token = authHeader.replace('Bearer ', '')
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim()
     const { data: { user }, error: authErr } = await sb.auth.getUser(token)
     if (authErr || !user) return json({ error: 'Unauthorized' }, 401)
     const { data: caller } = await sb.from('users').select('role, admin_role').eq('id', user.id).single()
@@ -100,7 +93,7 @@ Deno.serve(async (req) => {
 
     // ── Listar conversaciones ──
     if (action === 'conversations') {
-      const page = url.searchParams.get('page') ?? '1'
+      const page = String(Math.max(1, Math.min(500, parseInt(url.searchParams.get('page') ?? '1', 10) || 1)))
       const r = await crispFetch(`/conversations/${page}`)
       if (!r.ok) return json({ error: `Crisp ${r.status}`, detail: r.body?.reason ?? r.body }, 502)
       // Normalizamos lo mínimo que el front necesita
@@ -121,7 +114,7 @@ Deno.serve(async (req) => {
     if (action === 'messages') {
       const sid = url.searchParams.get('session_id') ?? ''
       if (!sid) return json({ error: 'session_id required' }, 400)
-      const r = await crispFetch(`/conversation/${sid}/messages`)
+      const r = await crispFetch(`/conversation/${encodeURIComponent(sid)}/messages`)
       if (!r.ok) return json({ error: `Crisp ${r.status}`, detail: r.body?.reason ?? r.body }, 502)
       const items = (r.body?.data ?? []).map((m: any) => ({
         fingerprint: m.fingerprint,
@@ -143,7 +136,7 @@ Deno.serve(async (req) => {
       const content = String(body?.content ?? '').trim()
       if (!sid)     return json({ error: 'session_id required' }, 400)
       if (!content) return json({ error: 'content required' }, 400)
-      const r = await crispFetch(`/conversation/${sid}/message`, {
+      const r = await crispFetch(`/conversation/${encodeURIComponent(String(sid))}/message`, {
         method: 'POST',
         body: JSON.stringify({
           type:    'text',
@@ -162,7 +155,7 @@ Deno.serve(async (req) => {
       const body = await req.json().catch(() => ({}))
       const sid = body?.session_id ?? ''
       if (!sid) return json({ error: 'session_id required' }, 400)
-      const r = await crispFetch(`/conversation/${sid}/state`, {
+      const r = await crispFetch(`/conversation/${encodeURIComponent(String(sid))}/state`, {
         method: 'PATCH',
         body: JSON.stringify({ state: 'resolved' }),
       })
@@ -173,6 +166,6 @@ Deno.serve(async (req) => {
     return json({ error: 'Unknown action. Use: ping, conversations, messages, send, resolve' }, 400)
   } catch (e: any) {
     console.error('[crisp-proxy] fatal:', e)
-    return json({ error: e?.message ?? 'internal' }, 500)
+    return json({ error: 'internal' }, 500)
   }
 })

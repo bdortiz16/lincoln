@@ -2,6 +2,8 @@ import React, { createContext, useState, useContext, ReactNode, useEffect, useCa
 import { useSystemConfig } from './SystemConfigContext';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
+import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
+import { llamarFuncion } from '../lib/edge';
 
 // --- TYPES ---
 
@@ -68,13 +70,22 @@ interface DatabaseContextType {
   currentUser: User | null;
   isAuthLoading: boolean;
   users: User[];
+  // Cuándo falló la última actualización del panel. null = los datos en
+  // pantalla vienen del servidor; con valor, vienen del caché del navegador.
+  syncError: { at: number; motivo: string } | null;
   transactions: Transaction[];
   registerUser: (data: any) => Promise<{ error?: string }>;
   updateUserProfile: (id: string, data: any) => Promise<void>;
   updateUserRawData: (id: string, patch: Record<string, any>) => Promise<boolean>;
-  loginUser: (email: string, pass?: string, captchaToken?: string) => Promise<User | null | 'MFA_REQUIRED'>;
-  loginWithGoogle: (role?: 'personal' | 'business') => Promise<void>;
-  logoutUser: () => void;
+  /** Cambia UNA lista de raw_data (p. ej. mouvContacts) sobre la versión
+   *  FRESCA de la base: `cambio` recibe la lista recién leída y devuelve la
+   *  nueva. Así un proceso con una copia vieja (la sincronización cada 15 s)
+   *  no borra lo que otro agregó entretanto. Sin lectura fresca usa
+   *  `respaldo` si se da; si no, no escribe. */
+  actualizarListaRaw: (id: string, clave: string, cambio: (lista: any[]) => any[], respaldo?: any[] | null) => Promise<boolean>;
+  loginUser: (email: string, pass?: string, captchaToken?: string, portal?: 'personal' | 'business') => Promise<User | null | 'MFA_REQUIRED'>;
+  loginWithGoogle: (role?: 'personal' | 'business' | 'contador') => Promise<void>;
+  logoutUser: (motivo?: string) => Promise<void>;
   getBalance: (curr: string) => number;
   bumpLocalBalance: (currency: string, delta: number) => void;
   addLocalTx: (tx: Record<string, any>) => void;
@@ -85,13 +96,13 @@ interface DatabaseContextType {
   deleteNotification: (id: string | number) => void;
   clearNotifications: () => void;
   requestDeposit: (amount: number, curr: string, method: string, proof?: string) => Promise<void>;
-  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => Promise<void>;
+  requestWithdrawal: (amount: number, curr: string, bank: string, acc: string, ben: string, reason: string, docType?: string, docNumber?: string, debitKey?: string, extra?: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
   performConversion: (src: string, tgt: string, amtS: number, amtT: number, fee: number, coup?: string) => Promise<{ error?: string }>;
-  approveDeposit: (id: number) => Promise<void>;
-  rejectDeposit: (id: number) => Promise<void>;
-  completeWithdrawal: (id: number) => Promise<void>;
-  rejectWithdrawal: (id: number, reason: string) => Promise<void>;
-  verifyUser: (id: string, status: string) => Promise<void>;
+  approveDeposit: (id: any) => Promise<{ ok: boolean; error?: string }>;
+  rejectDeposit: (id: any) => Promise<{ ok: boolean; error?: string }>;
+  completeWithdrawal: (id: any) => Promise<{ ok: boolean; error?: string }>;
+  rejectWithdrawal: (id: any, reason: string) => Promise<{ ok: boolean; error?: string }>;
+  verifyUser: (id: string, status: string) => Promise<string | null>;
   toggleUserBlock: (id: string, blocked: boolean, reason?: string) => Promise<void>;
   isOnline: boolean;
   dataReady: boolean;
@@ -115,15 +126,32 @@ interface DatabaseContextType {
   sendPasswordReset: (email: string, captchaToken?: string) => Promise<void>;
   isPasswordRecovery: boolean;
   setNewPassword: (newPassword: string) => Promise<string | null>;
-  sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string }>;
+  sendCuypayPayment: (recipientCode: string, amount: number, currency: string) => Promise<{ error?: string; desconocido?: boolean }>;
   mfaPending: boolean;
+  mfaErrorDetail: string | null;
+  loginErrorDetail: string | null;
+  getLoginError: () => string | null;
+  getMfaError: () => string | null;
   completeMFALogin: (code: string) => Promise<User | null>;
+  emailStepPending: boolean;
+  accountLocked: boolean;
+  passkeyPending: boolean;
+  /** 2 pasos, o 3 si la cuenta tiene una llave registrada. */
+  mfaPasos: number;
+  loginConPasskey: () => Promise<User | null>;
+  completeEmailLogin: (code: string) => Promise<User | null>;
+  resendEmailCode: () => Promise<boolean>;
+  startEmailStep: (userId: string) => Promise<boolean>;
   cancelMFALogin: () => void;
+  /** Motivo del último cierre de sesión (últimos 15 s), para explicarlo en el Login. */
+  ultimoCierre: () => string | null;
   enrollMFA: () => Promise<{ qrCode: string; secret: string; factorId: string } | null>;
-  verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string }>;
+  verifyMFAEnrollment: (factorId: string, code: string, secret?: string) => Promise<{ ok: boolean; error?: string; backupCodes?: string[] }>;
   unenrollMFA: (factorId: string) => Promise<boolean>;
   getMFAStatus: () => Promise<{ enrolled: boolean; factorId?: string; totpSecret?: string }>;
   verifyMfaCode: (code: string) => Promise<boolean>;
+  /** Como verifyMfaCode, pero con el motivo del rechazo para mostrarlo. */
+  verificarCodigo2fa: (code: string) => Promise<{ ok: boolean; motivo?: string }>;
 }
 
 // --- LOCALSTORAGE HELPERS (fallback sin Supabase) ---
@@ -245,22 +273,35 @@ const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined
 export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { config, updateConfig } = useSystemConfig();
   const [users, setUsers] = useState<User[]>([]);
+  // Cuándo falló la última actualización del panel admin, y por qué.
+  //
+  // Existe porque el panel hidrata desde un caché del navegador para no
+  // quedarse en cero mientras la edge function arranca en frío. Eso está bien
+  // como PUENTE -- pero si el refresco falla, el puente se vuelve permanente y
+  // la pantalla muestra datos viejos sin decirlo. Pasó: el admin mostraba un
+  // envío en "Procesando" que el cliente ya veía "Completado".
+  const [syncError, setSyncError] = useState<{ at: number; motivo: string } | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    // Restaurar la sesión de admin (bypass) de forma SÍNCRONA: así el panel
-    // de Empresas NO parpadea "Verificando sesión…" en cada recarga (antes
-    // se restauraba dentro de un useEffect, después del primer render, y se
-    // veía un frame del loader aunque ya había sesión).
-    try {
-      const saved = sessionStorage.getItem('cuypay_admin_session');
-      if (saved) return JSON.parse(saved);
-    } catch { /* sessionStorage no disponible */ }
-    return null;
-  });
+  // ⚠️ SEGURIDAD: NO se restaura ninguna sesión desde sessionStorage.
+  // Antes se leía 'cuypay_admin_session' y se confiaba en ese JSON tal cual,
+  // rol incluido. Cualquiera que pudiera escribir en sessionStorage (un XSS,
+  // una extensión, o la propia consola del navegador) se volvía admin en la
+  // interfaz sin contraseña, sin 2FA y sin CAPTCHA. El bypass que lo escribía
+  // ya estaba desactivado, así que esto era superficie de ataque muerta.
+  // La identidad SIEMPRE sale del JWT de Supabase.
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   // Recuperación de contraseña: cuando el usuario abre el enlace del correo
   // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
   // muestra una pantalla para fijar la nueva clave.
-  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(() => {
+    // Se detecta desde la URL, no solo desde el evento: el orden en que
+    // Supabase dispara PASSWORD_RECOVERY y SIGNED_IN no está garantizado, y si
+    // llega primero el segundo la sesión de recuperación entraba al panel.
+    try { return /type=recovery/.test(window.location.hash || window.location.search); } catch { return false; }
+  });
+  // Ref para poder consultarlo dentro del listener sin depender del render.
+  const recoveryRef = useRef<boolean>(false);
+  useEffect(() => { recoveryRef.current = isPasswordRecovery; }, [isPasswordRecovery]);
   // Start online immediately if Supabase is configured — avoids a flash of "Modo Offline"
   // while the first fetchData() is still in flight.
   const [isOnline, setIsOnline] = useState(isSupabaseConfigured);
@@ -286,11 +327,37 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   })();
   const [isAuthLoading, setIsAuthLoading] = useState(hasStoredSession);
   const [mfaPending, setMfaPending] = useState(false);
+  // Paso 2 del ingreso: código enviado al correo del titular.
+  const [emailStepPending, setEmailStepPending] = useState(false);
+  // Cuenta bloqueada: la pantalla deja de pedir códigos. Seguir mostrando la
+  // casilla invita a insistir sobre algo que ya no puede funcionar.
+  const [accountLocked, setAccountLocked] = useState(false);
+  // Paso de la llave física. Solo aparece si la cuenta tiene alguna registrada;
+  // si no, el ingreso sigue con el código de la app, como siempre.
+  const [passkeyPending, setPasskeyPending] = useState(false);
+  // Cuántos pasos tiene este ingreso. Lo dice el servidor al mandar el código
+  // del correo: decir "2 de 2" cuando todavía falta la llave es mentirle al
+  // titular sobre dónde está parado.
+  const [mfaPasos, setMfaPasos] = useState(2);
   const [pendingMFAProfile, setPendingMFAProfile] = useState<User | null>(null);
   // 'custom' = TOTP nuestro (raw_data.mfaEnabled, verifica vía mfa_verify);
   // 'native' = MFA de Supabase Auth (challenge/verify). Decide cómo verificar
   // el código en completeMFALogin.
   const [pendingMFAMode, setPendingMFAMode] = useState<'custom' | 'native'>('native');
+  // Motivo real del fallo de verificación 2FA (para no mostrar siempre
+  // "código incorrecto" cuando en realidad falló otra cosa).
+  const [mfaErrorDetail, setMfaErrorDetail] = useState<string | null>(null);
+  // Motivo REAL del fallo de ingreso. "Credenciales incorrectas" se mostraba
+  // para todo — CAPTCHA rechazado, cuenta sin confirmar, red caída — y no
+  // había forma de saber qué arreglar.
+  const [loginErrorDetail, setLoginErrorDetail] = useState<string | null>(null);
+  // El ref se lee AL INSTANTE. Con solo estado, quien llama leía el valor del
+  // render anterior y el motivo salía un intento tarde — o no salía.
+  const loginErrorRef = useRef<string | null>(null);
+  const mfaErrorRef = useRef<string | null>(null);
+  const setLoginError = (v: string | null) => { loginErrorRef.current = v; setLoginErrorDetail(v); };
+  const setLoginError2 = (wrap: (t: string) => string, v: string) => setLoginError(wrap(v));
+  const setMfaError2 = (v: string | null) => { mfaErrorRef.current = v; setMfaErrorDetail(v); };
   // Tracks when a local write is in progress so fetchData doesn't overwrite optimistic state
   const pendingWriteUntilRef = useRef<number>(0);
   // Ids de usuario que comparten el correo del usuario actual (por si hay
@@ -307,6 +374,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Unique per-session channel name avoids StrictMode double-invoke conflicts where
   // React tears down and re-creates the effect before Supabase finishes closing the channel.
   const channelNameRef = useRef(`db_sync_${Math.random().toString(36).slice(2, 8)}`);
+  const lecturaEnCursoRef = useRef<Promise<void> | null>(null);
+  const lecturaEnColaRef = useRef<Promise<void> | null>(null);
+  const ultimaLecturaRef = useRef(0);
+  const ultimaEdgeRef = useRef(0);
 
   // Seed admin on first run (offline mode)
   useEffect(() => {
@@ -317,13 +388,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   useEffect(() => {
     if (!isSupabaseConfigured) return;
 
-    // Restore admin bypass session on page load (sessionStorage — expires when tab closes)
-    const savedAdmin = sessionStorage.getItem('cuypay_admin_session');
-    if (savedAdmin) {
-      try { setCurrentUser(JSON.parse(savedAdmin)); } catch {}
-      setIsAuthLoading(false);
-      // Still set up listener so Supabase regular users work on same browser
-    }
+    // Se retiró la restauración de 'cuypay_admin_session' (ver arriba): la
+    // sesión de admin sale del JWT, nunca de un JSON del navegador. Por si
+    // quedó escrita de una versión anterior, se borra.
+    try { sessionStorage.removeItem('cuypay_admin_session'); } catch { /* */ }
 
     // Safety net: never stay stuck on loading screen more than 5 seconds
     const timeout = setTimeout(() => setIsAuthLoading(false), 5000);
@@ -335,7 +403,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       try {
         // Enlace de recuperación de contraseña abierto → mostrar la pantalla
         // para fijar la nueva clave (no entrar directo al dashboard).
-        if (event === 'PASSWORD_RECOVERY') { setIsPasswordRecovery(true); return; }
+        if (event === 'PASSWORD_RECOVERY') { recoveryRef.current = true; setIsPasswordRecovery(true); return; }
+        // ⚠️ SEGURIDAD: el enlace de "recuperar contraseña" crea una sesión
+        // válida. Sin este corte, esa sesión entraba DIRECTO al panel — sin
+        // contraseña, sin 2FA y sin código de correo. Quien tuviera acceso al
+        // buzón entraba como admin. Una sesión de recuperación solo sirve para
+        // fijar la clave nueva; después hay que iniciar sesión de verdad.
+        if (recoveryRef.current && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+          setIsPasswordRecovery(true);
+          return;
+        }
         if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Cancel any pending sign-out
           if (signOutTimer) { clearTimeout(signOutTimer); signOutTimer = null; }
@@ -370,14 +447,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // a role/kyc_status desde el cliente. Si el seed admin perdió su
             // rol, se restaura desde Supabase Dashboard, no desde el frontend.
             //
-            // Si user_metadata.role viene del signUp y difiere, sincronizamos
-            // SOLO si es business/personal (NO admin — admin solo por seed).
-            const metaRoleOnFound = session.user.user_metadata?.role as string | undefined;
-            if ((metaRoleOnFound === 'business' || metaRoleOnFound === 'personal') && metaRoleOnFound !== profile.role) {
-              await supabase.from('users').update({ role: metaRoleOnFound }).eq('id', profile.id);
-              if (logoutCounterRef.current !== snapshotLogoutCount) return;
-              profile = { ...profile, role: metaRoleOnFound };
-            }
+            // El rol es el de la fila en `users`, y solo ese. Antes, si
+            // user_metadata.role (lo que se pidió al registrarse, quizá hace
+            // años por otro flujo) no coincidía, el cliente intentaba cambiar
+            // la fila —el guardia de la base lo revierte en silencio— y aun
+            // así se quedaba con el rol de los metadatos EN LA SESIÓN. Una
+            // empresa verificada con metadatos 'personal' entraba al portal
+            // de Personas (veía "identificación pendiente" y podía activar
+            // cosas ahí) y la guarda de portal la echaba de Empresas. Los
+            // metadatos de Auth no deciden nada: se ignoran.
             // GATE 2FA: si la cuenta tiene 2FA custom activo y aún no se verificó
             // el código EN ESTA sesión, NO se entra — se deja pendiente el código.
             // (Antes este listener seteaba currentUser directo y saltaba el 2FA.)
@@ -385,10 +463,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // pestaña pero NO una pestaña/navegador nuevo → ahí sí re-pide 2FA.
             const mfaOn2 = !!(profile as any)?.raw_data?.mfaEnabled;
             let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+            // La marca local no basta: la confirma el servidor contra la
+            // sesión del JWT. Si dice que no, se vuelve a pedir el código.
+            const habiaMarca2 = mfaOn2 && mfaOk;
+            if (mfaOn2 && mfaOk) mfaOk = await serverSaysMfaVerified((profile as any).id);
             if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
-              setPendingMFAProfile(mapSupabaseUser(profile));
-              setPendingMFAMode('custom');
-              setMfaPending(true);
+              beginMfaFlow(mapSupabaseUser(profile), 'custom');
+              if (habiaMarca2) avisarReapertura();
               return;
             }
             setCurrentUser(mapSupabaseUser(profile));
@@ -417,10 +498,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // por SQL; el trigger guard_users_sensitive_cols bloquea el cambio.
               const mfaOnE = !!(existingByEmail as any)?.raw_data?.mfaEnabled;
               let mfaOkE = false; try { mfaOkE = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
+              const habiaMarcaE = mfaOnE && mfaOkE;
+              if (mfaOnE && mfaOkE) mfaOkE = await serverSaysMfaVerified((existingByEmail as any).id);
               if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
-                setPendingMFAProfile(mapSupabaseUser(existingByEmail));
-                setPendingMFAMode('custom');
-                setMfaPending(true);
+                beginMfaFlow(mapSupabaseUser(existingByEmail), 'custom');
+                if (habiaMarcaE) avisarReapertura();
                 return;
               }
               setCurrentUser(mapSupabaseUser(existingByEmail));
@@ -433,10 +515,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             } else {
               // Truly new user — create profile
               const id = session.user.id;
-              const isAdminOAuth = session.user.email === SEED_ADMIN_EMAIL;
               // Esta web es EXCLUSIVAMENTE el producto EMPRESAS (el personal
               // vive en la app móvil, en otra base). Toda cuenta nueva que se
-              // cree aquí es business — salvo el admin semilla.
+              // cree aquí es business. Nunca admin: ese rol no lo decide el
+              // cliente por un correo, lo pone el servidor o la base.
               //
               // Antes se deducía el rol de user_metadata y de "pistas" en
               // localStorage (cuypay_oauth_role / cuypay_register_role). Con
@@ -446,7 +528,21 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               // 'personal' aunque el registro fuera por Empresas — luego no
               // salía en el admin y mostraba KYC. Se ignoran esas pistas y se
               // fuerza business para que no vuelva a pasar.
-              const pendingRole = isAdminOAuth ? 'admin' : 'business';
+              //
+              // Desde que Personas entra por la web, la pista de Google SÍ
+              // se lee, pero solo si se puso para ESTE intento (menos de 15
+              // minutos) y solo para 'personal'. Una pista vieja no cuenta.
+              let pendingRole: 'business' | 'personal' = 'business';
+              try {
+                const pista = JSON.parse(localStorage.getItem('cuypay_oauth_role') || 'null');
+                // Contabilidad crea la cuenta del contador como Persona, igual que
+                // su registro por correo: no es una empresa ni tiene saldo propio.
+                if ((pista?.role === 'personal' || pista?.role === 'contador') && Date.now() - Number(pista.at || 0) < 15 * 60_000) pendingRole = 'personal';
+                // Registro por correo desde Personas: la marca la pone
+                // registerUser justo antes del signUp y la quita al insertar
+                // la fila. Si este listener llega primero, respeta el portal.
+                if (localStorage.getItem('cuypay_register_role') === 'personal') pendingRole = 'personal';
+              } catch { /* pista ilegible: business */ }
               localStorage.removeItem('cuypay_oauth_role');
               localStorage.removeItem('cuypay_register_role');
               const newProfile = {
@@ -456,7 +552,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                   || session.user.email!.split('@')[0],
                 role: pendingRole,
                 balances: { USD: 0, COP: 0, CLP: 0, MXN: 0, PEN: 0 },
-                kyc_status: isAdminOAuth ? 'approved' : 'pending',
+                kyc_status: 'pending',
                 raw_data: { notifications: [], ownReferralCode: id.slice(-6).toUpperCase() },
               };
               await supabase.from('users').insert(newProfile);
@@ -468,6 +564,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // Debounce: wait before logging out — token refresh fires SIGNED_OUT then SIGNED_IN
           signOutTimer = setTimeout(() => {
             sessionStorage.removeItem('cuypay_admin_session');
+            if (currentUserRef.current) anotarCierre('Supabase avisó SIGNED_OUT (la sesión de acceso se cerró o venció)');
             setCurrentUser(null);
           }, 500);
         }
@@ -486,7 +583,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     };
   }, []);
 
-  const fetchData = useCallback(async () => {
+  const fetchDataReal = useCallback(async () => {
     if (!isSupabaseConfigured) {
       const localUsers = lsGetUsers();
       const localTxs = lsGetTransactions();
@@ -503,6 +600,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     setIsOnline(true);
     try {
       const cu = currentUserRef.current;
+      // Sin sesión no hay nada propio que leer. Antes se consultaba igual
+      // —users y transactions con un id VACÍO— en cada vuelta del refresco:
+      // la página de inicio de un visitante hacía peticiones inútiles.
+      if (!cu?.id) return;
 
       // Admin path: call the 'admin-data' edge function which uses the service-role key
       // server-side — this bypasses RLS without any SQL migration required.
@@ -511,10 +612,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         try {
           const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
           const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-          const isAdminBypass = cu.id === 'admin-bypass';
-          const authHeader = isAdminBypass
-            ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
-            : `Bearer ${getStoredToken() ?? SKEY}`;
+          const authHeader = `Bearer ${getStoredToken() ?? SKEY}`;
           const abortCtl = new AbortController();
           const abortTimer = setTimeout(() => abortCtl.abort(), 20000);
           const fnResult = await fetch(`${SURL}/functions/v1/admin-data`, {
@@ -564,8 +662,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // quedaba en 0 ("no carga nada") hasta que respondía. Con esto se
             // muestran los últimos datos conocidos y se refresca en segundo
             // plano. Escrituras protegidas por si se pasa la cuota.
-            try { localStorage.setItem('cuypay_admin_users', JSON.stringify(mappedUsers)); } catch { /* quota */ }
+            // Los USUARIOS ya no se guardan en el navegador: es la lista
+            // completa de clientes con sus datos personales, y quedaba en el
+            // equipo del admin aunque cerrara sesión mal o se lo robaran. Se
+            // borra la copia vieja si existe. Los movimientos sí (puente).
+            try { localStorage.removeItem('cuypay_admin_users'); } catch { /* sin almacenamiento */ }
             try { if (mappedTxForCache) localStorage.setItem('cuypay_admin_tx', JSON.stringify(mappedTxForCache.slice(0, 200))); } catch { /* quota */ }
+            setSyncError(null);
             return; // Edge function succeeded — no need for fallback
           }
           if (fnErr) console.warn('[fetchData] admin-data edge fn error:', fnErr);
@@ -584,8 +687,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const isAdminCaller = (cu as any)?.role === 'admin';
       let directUsers: any, directTx: any;
       if (isAdminCaller) {
-        directUsers = await supabase.from('users').select('*');
-        directTx = await supabase.from('transactions').select('*');
+        // NO se consulta directo. Este respaldo existía para que el panel no
+        // quedara vacío cuando la edge function arranca en frío, pero traía
+        // TODO sin filtrar: un miembro con acceso a un solo país podía hacer
+        // fallar la función (la pestaña de red del navegador alcanza) y
+        // quedarse con la base entera. Un filtro que se esquiva apagando algo
+        // no es un filtro.
+        //
+        // Sin respaldo, lo que pasa es que el panel muestra lo último en caché
+        // y avisa. Es peor de usar y es lo correcto: entre mostrar de menos y
+        // mostrar lo que no corresponde, se muestra de menos.
+        console.warn('[fetchData] admin-data no respondió; no se consulta directo para no saltear el filtro por país');
+        // Se DICE que los datos estan viejos. Mostrarlos en silencio es lo que
+        // hizo que el panel y el cliente afirmaran cosas distintas del mismo
+        // movimiento durante horas.
+        setSyncError({ at: Date.now(), motivo: 'El servicio de datos del panel no respondió.' });
+        return;
       } else {
         directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
         directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '');
@@ -635,16 +752,45 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       //    Se REINTENTA hasta 3 veces con timeout: en 4G la petición a veces
       //    no conecta y sin reintento los movimientos quedaban vacíos aunque
       //    existan. ────────────────────────────────────────────────────────
+      // ── SE PINTA LO QUE YA HAY, Y LA EDGE SE SUMA DESPUÉS ────────────────
+      // Antes esto era secuencial y bloqueante: el SELECT directo ya tenía los
+      // movimientos, pero no se mostraba NADA hasta que terminara también la
+      // lectura por la edge — hasta 3 intentos de 12 s con esperas en medio,
+      // casi 38 segundos en el peor caso. En una red mala la cuenta se veía
+      // vacía todo ese rato con los datos ya en memoria. Eso era la demora.
+      const rpcTxs = txData?.length ? mapTx(txData) : [];
+      const pintar = (lista: any[]) => {
+        if (!lista.length) return;
+        const orden = lista.slice().sort((a: any, b: any) => txTime(b) - txTime(a));
+        setTransactions(orden);
+        // Caché local por usuario: la próxima vez los movimientos se ven al
+        // instante aunque la red falle (se refrescan en segundo plano).
+        if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(orden.slice(0, 200))); } catch { /* quota */ } }
+      };
+      pintar(rpcTxs);
+
       let edgeTxs: any[] = [];
       let edgeDebug: any = null;
-      if (cu?.id) {
+      // La lectura por la edge (ids hermanos, estado más fresco) es una
+      // función del servidor: en cada vuelta de 10 s era una invocación por
+      // cliente conectado. Se pide como mucho una vez por minuto, salvo que el
+      // SELECT directo no haya traído nada.
+      const tocaEdge = !rpcTxs.length || Date.now() - ultimaEdgeRef.current > 60_000;
+      if (cu?.id && tocaEdge) {
+        ultimaEdgeRef.current = Date.now();
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
         const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
         const tok = getStoredToken();
-        for (let attempt = 0; attempt < 3 && edgeTxs.length === 0; attempt++) {
+        // Si ya hay movimientos en pantalla, se intenta UNA vez y con menos
+        // espera: la edge aporta los ids hermanos y el estado más fresco, no lo
+        // básico. Los reintentos largos solo valen cuando no hay nada que
+        // mostrar — ahí sí conviene insistir antes que dejar la cuenta vacía.
+        const intentos = rpcTxs.length ? 1 : 3;
+        const msLimite = rpcTxs.length ? 6000 : 12000;
+        for (let attempt = 0; attempt < intentos && edgeTxs.length === 0; attempt++) {
           try {
             const ctl = new AbortController();
-            const t = setTimeout(() => ctl.abort(), 12000);
+            const t = setTimeout(() => ctl.abort(), msLimite);
             const r = await fetch(`${SURL}/functions/v1/gasfree`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok ?? SKEY}` },
@@ -656,24 +802,34 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             if (Array.isArray(r?.ids) && r.ids.length) emailUserIdsRef.current = r.ids;
             if (Array.isArray(r?.transactions) && r.transactions.length) { edgeTxs = mapTx(r.transactions); break; }
           } catch { /* reintenta */ }
-          if (edgeTxs.length === 0 && attempt < 2) await new Promise(res => setTimeout(res, 800));
+          if (edgeTxs.length === 0 && attempt < intentos - 1) await new Promise(res => setTimeout(res, 800));
         }
       }
 
       // Se usa la fuente que SÍ trajo datos (edge preferida, si no el RPC/SELECT).
       // Solo se escribe si hay algo — así una lectura vacía nunca borra la lista.
-      const rpcTxs = txData?.length ? mapTx(txData) : [];
       // Orden por FECHA (desc), no por id: los ids son uuid aleatorios, así que
       // sin esto "Movimientos recientes" mostraba cualquier orden y un depósito
       // nuevo podía no salir arriba (o parecer que "no está").
-      const finalTxs = (edgeTxs.length ? edgeTxs : rpcTxs)
-        .slice()
+      // ⚠️ Las dos fuentes se UNEN, no se eligen. Antes era `edgeTxs.length ?
+      // edgeTxs : rpcTxs`: la que trajera algo TAPABA por completo a la otra,
+      // y las dos ven cosas distintas —
+      //   · el SELECT directo trae solo user_id = el id del perfil;
+      //   · la edge resuelve además los ids HERMANOS (una misma persona puede
+      //     tener el perfil bajo un id y la sesión bajo otro), pero corta en
+      //     500 y depende de una petición que en 4G a veces no conecta.
+      // Con el o-uno-o-el-otro, un movimiento que solo veía una de las dos
+      // simplemente no existía para el cliente. Eso es lo que hacía que a unos
+      // usuarios "no se les actualizaran los movimientos" y a otros sí.
+      const porId = new Map<string, any>();
+      for (const t of rpcTxs) porId.set(String(t.id), t);
+      for (const t of edgeTxs) porId.set(String(t.id), t);   // la edge pisa: trae el estado más fresco
+      const finalTxs = Array.from(porId.values())
         .sort((a: any, b: any) => txTime(b) - txTime(a));
       if (finalTxs.length) {
-        setTransactions(finalTxs);
-        // Caché local por usuario: la próxima vez los movimientos se ven al
-        // instante aunque la red falle (se refrescan en segundo plano).
-        if (cu?.id) { try { localStorage.setItem(`cuypay_tx_${cu.id}`, JSON.stringify(finalTxs.slice(0, 200))); } catch { /* quota */ } }
+        // Segundo pintado: ahora con lo que aportó la edge unido a lo del
+        // SELECT. Si la edge no trajo nada, esto repinta lo mismo y no se nota.
+        pintar(finalTxs);
       } else if (cu?.id) {
         // Diagnóstico visible: si TODAS las fuentes vinieron vacías, guardar
         // el porqué para mostrarlo en la pantalla de Movimientos (en móvil no
@@ -683,7 +839,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           localStorage.setItem('lincoin_tx_debug', JSON.stringify({
             at: new Date().toISOString(), userId: cu.id,
             edge: edgeDebug,
-            rpcErr: txRpc.error?.message ?? null, rpcCount: Array.isArray(txRpc.data) ? txRpc.data.length : null,
+            // 'txRpc' ya no existe (esa vía se reemplazó por el SELECT directo);
+            // referenciarlo lanzaba un ReferenceError que el catch de abajo se
+            // tragaba, así que el diagnóstico NUNCA se guardaba.
             directErr: directTx.error?.message ?? null, directCount: Array.isArray(directTx.data) ? directTx.data.length : null,
           }));
         } catch { /* quota */ }
@@ -691,6 +849,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch (e) { console.error('DB Fetch Error', e); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // UNA lectura a la vez. En una red lenta cada vuelta tardaba más de 10 s y
+  // se encimaban: tres, cuatro lecturas completas en paralelo peleándose por
+  // la misma conexión — eso es lo que se sentía como "todo lento". Si llega
+  // un pedido mientras otra corre, se encola UNO solo y corre al terminar;
+  // así lo que se pide después de una operación siempre trae lo nuevo.
+  const fetchData = useCallback((): Promise<void> => {
+    if (!lecturaEnCursoRef.current) {
+      const p: Promise<void> = fetchDataReal().finally(() => {
+        if (lecturaEnCursoRef.current === p) lecturaEnCursoRef.current = null;
+        ultimaLecturaRef.current = Date.now();
+      });
+      lecturaEnCursoRef.current = p;
+      return p;
+    }
+    if (!lecturaEnColaRef.current) {
+      lecturaEnColaRef.current = lecturaEnCursoRef.current.catch(() => {}).then(() => {
+        lecturaEnColaRef.current = null;
+        return fetchData();
+      });
+    }
+    return lecturaEnColaRef.current;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchDataReal]);
 
   // Apenas se identifica el usuario (o cambia): (1) hidratar movimientos del
   // caché local para que se vean AL INSTANTE aunque la red falle, y (2)
@@ -702,8 +884,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // Admin: hidratar usuarios + movimientos desde el caché para que el
         // panel NO se quede en 0 mientras la edge function (fría tras deploy)
         // responde. Solo se usa como puente: el fetchData de abajo lo refresca.
-        const cu = localStorage.getItem('cuypay_admin_users');
-        if (cu) { const arr = JSON.parse(cu); if (Array.isArray(arr) && arr.length) setUsers(prev => prev.length ? prev : arr); }
+        try { localStorage.removeItem('cuypay_admin_users'); } catch { /* sin almacenamiento */ }
         const ct = localStorage.getItem('cuypay_admin_tx');
         if (ct) { const arr = JSON.parse(ct); if (Array.isArray(arr) && arr.length) setTransactions(prev => prev.length ? prev : arr); }
       } else {
@@ -727,10 +908,27 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // A los 9 s se libera la UI igual (mostrará lo que haya cargado y seguirá
     // reintentando con el poll/realtime).
     const readyGuard = setTimeout(() => setDataReady(true), 9000);
-    if (!isSupabaseConfigured) { clearTimeout(readyGuard); return; }
+    return () => clearTimeout(readyGuard);
+  }, [fetchData]);
 
-    // Realtime handles live updates; poll as a fallback for missed events (10s)
-    const interval = setInterval(fetchData, 10000);
+  // Refresco y tiempo real: SOLO con alguien adentro y con la pestaña a la
+  // vista. Antes corría también para el visitante de la página de inicio y
+  // con la pestaña en segundo plano. Al volver a la pestaña se refresca ya.
+  const hayUsuario = !!currentUser?.id;
+  const esAdminUsuario = currentUser?.role === 'admin';
+  useEffect(() => {
+    if (!isSupabaseConfigured || !hayUsuario) return;
+    const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
+    // Admin trae la base entera en cada lectura: cada 30 s basta, el tiempo
+    // real avisa lo urgente. Un cliente lee solo lo suyo: cada 10 s.
+    const cada = esAdminUsuario ? 30000 : 10000;
+    const interval = setInterval(() => {
+      if (!visible() || lecturaEnCursoRef.current) return;
+      if (Date.now() - ultimaLecturaRef.current < cada - 1000) return;
+      fetchData();
+    }, 5000);
+    const alVolver = () => { if (visible() && Date.now() - ultimaLecturaRef.current > 3000) fetchData(); };
+    document.addEventListener('visibilitychange', alVolver);
     // Debounce realtime: coalesce rapid-fire events into a single fetchData call (500ms)
     // This prevents web+mobile sessions from conflicting when both receive the same event burst
     let realtimeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -743,8 +941,35 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, debouncedFetch)
       .subscribe();
 
-    return () => { clearTimeout(readyGuard); clearInterval(interval); if (realtimeTimer) clearTimeout(realtimeTimer); supabase.removeChannel(channel); };
-  }, [fetchData]);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', alVolver); if (realtimeTimer) clearTimeout(realtimeTimer); supabase.removeChannel(channel); };
+  }, [fetchData, hayUsuario, esAdminUsuario]);
+
+  // Facturas al día: con la cuenta de una EMPRESA abierta (cualquier
+  // pantalla), se le pide a facturación que emita lo que quedó atrasado —
+  // operaciones sin comprobante o comprobantes sin factura. Al entrar y cada
+  // 10 min con la pestaña a la vista. Si la empresa no tiene la facturación
+  // activa, el servidor responde al instante y no hace nada.
+  const esEmpresaUsuario = currentUser?.role === 'business';
+  useEffect(() => {
+    if (!isSupabaseConfigured || !hayUsuario || !esEmpresaUsuario) return;
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const pedir = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const tok = getStoredToken();
+      if (!tok) return;
+      fetch(`${SURL}/functions/v1/facturacion`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ action: 'al_dia' }),
+        signal: AbortSignal.timeout(20000),
+      }).catch(() => { /* lo retoma la próxima vuelta */ });
+    };
+    const primera = setTimeout(pedir, 8000);   // después de la carga, no compitiendo con ella
+    const cada = setInterval(pedir, 10 * 60_000);
+    return () => { clearTimeout(primera); clearInterval(cada); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hayUsuario, esEmpresaUsuario]);
 
   // --- STORAGE HELPERS ---
 
@@ -772,6 +997,98 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { /* nunca rompe el login */ }
   };
 
+  // ── Aviso de ingreso, para TODAS las cuentas ───────────────────────────
+  // Apenas la sesión queda abierta de verdad —cliente o admin—, se le avisa
+  // al titular por correo desde dónde se abrió. No impide nada por sí solo;
+  // lo que hace es que un ingreso ajeno se note el mismo día, en vez de
+  // descubrirse semanas después revisando movimientos.
+  //
+  // Va en un efecto sobre currentUser y no repartido por cada camino de
+  // ingreso (contraseña, Google, 2FA, admin) porque esos son cinco sitios y
+  // ya me pasó olvidarme de dos. El servidor manda UNO POR SESIÓN, así que
+  // restaurar la sesión al recargar no vuelve a avisar: el id de sesión es
+  // el mismo. Entrar desde otro dispositivo sí genera aviso.
+  const avisoIngresoRef = useRef<string | null>(null);
+  useEffect(() => {
+    const uid = currentUser?.id;
+    if (!uid || !SUPABASE_URL_FOR_FN) return;
+    if (avisoIngresoRef.current === uid) return;
+    const token = getStoredToken();
+    if (!token) return;            // sin JWT el servidor no puede identificar la sesión
+    avisoIngresoRef.current = uid;
+    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'notify_login', userId: uid }),
+    }).catch(() => { /* el aviso nunca puede estorbar el ingreso */ });
+
+    // ── Alta en Kumplo + consulta AML ────────────────────────────────────
+    // Va acá y no en el registro porque al inscribirse todavía no siempre hay
+    // sesión abierta, y sin sesión el servidor no puede saber de quién se
+    // trata. Además así quedan cubiertas las cuentas que ya existían antes de
+    // la integración. El servidor decide: si está apagada, o si esta cuenta no
+    // entra en la prueba, no hace nada. Y si ya tiene id, no repite el alta.
+    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/kumplo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'inscribir', userId: uid }),
+    }).catch(() => { /* una prueba de cumplimiento no puede romper el ingreso */ });
+  }, [currentUser?.id]);
+
+  // ¿El SERVIDOR reconoce esta sesión como verificada con 2FA? La marca
+  // 'mfa_ok' de sessionStorage se puede escribir a mano desde la consola del
+  // navegador, así que sirve para evitar un parpadeo, no para decidir. Ante
+  // la duda (red caída, respuesta rara) se responde NO: se vuelve a pedir el
+  // código, que es el lado seguro del error.
+  // Por qué el servidor dijo que esta sesión NO pasó el 2FA (si lo dijo). Lo
+  // usa el gate del listener para explicarlo en pantalla al volver a pedir el
+  // código, en vez de reabrirla en silencio.
+  const motivoMfaRef = useRef<string | null>(null);
+  const serverSaysMfaVerified = async (userId: string): Promise<boolean> => {
+    motivoMfaRef.current = null;
+    try {
+      if (!SUPABASE_URL_FOR_FN) { motivoMfaRef.current = 'sin servidor'; return false; }
+      const token = getStoredToken();
+      if (!token) { motivoMfaRef.current = 'la sesión no tiene token'; return false; }
+      const r = await Promise.race([
+        fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'mfa_session_ok', userId }),
+        }).then(x => x.json()),
+        new Promise<any>(resolve => setTimeout(() => resolve(null), 5000)),
+      ]);
+      const ok = r?.ok === true && r?.verified === true;
+      if (!ok) motivoMfaRef.current = r == null ? 'el servidor no respondió a tiempo' : String(r?.motivo ?? r?.error ?? 'sin motivo');
+      return ok;
+    } catch { motivoMfaRef.current = 'no se pudo consultar'; return false; }
+  };
+  // La pestaña ya había pasado el 2FA (marca 'mfa_ok') y aun así el servidor
+  // dice que ESTA sesión no: se vuelve a pedir el código, pero diciéndolo.
+  // Antes se reabría en silencio con el código anterior todavía escrito, que
+  // se reenviaba solo y volvía "código ya utilizado": la persona veía "código
+  // incorrecto" justo después de haberlo puesto bien.
+  // El motivo técnico va a la consola (y el servidor lo deja en su
+  // auditoría); al cliente se le dice qué hacer, no el error interno.
+  const avisarReapertura = () => {
+    try { console.warn('[lincoin] 2FA reabierto:', motivoMfaRef.current ?? 'la sesión cambió'); } catch { /* */ }
+    setMfaError2('Por seguridad, confirma otra vez: espera un código NUEVO en tu app e ingrésalo.');
+  };
+
+  // Deja constancia de un intento de ingreso FALLIDO. El servidor le pone la
+  // IP y la ubicación aproximada, cuenta los fallos de esa IP y la bloquea al
+  // tercero en una hora. Nunca rompe ni demora el login: es fire-and-forget.
+  const logFailedLogin = (email: string, reason: string) => {
+    try {
+      if (!SUPABASE_URL_FOR_FN) return;
+      fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${SUPABASE_ANON_FOR_FN}` },
+        body: JSON.stringify({ action: 'log_failed_login', email, reason }),
+      }).catch(() => {});
+    } catch { /* nunca rompe el login */ }
+  };
+
   // PBKDF2 password hash using Web Crypto — fallback when Supabase Auth is misconfigured
   const hashPassword = async (password: string, salt: string): Promise<string> => {
     try {
@@ -785,10 +1102,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return ''; }
   };
 
-  const saveUser = async (u: User) => {
+  // `conRol`: solo cuando quien guarda pidió EXPLÍCITAMENTE cambiar el rol
+  // (la edición de cliente del admin). En cualquier otro guardado el rol NO
+  // viaja: la sesión puede tenerlo mal en memoria (una empresa que entró con
+  // el rol equivocado) y mandarlo la convertía en Persona en la base.
+  // `conSaldos`: el saldo SOLO viaja cuando este guardado es para cambiarlo a
+  // propósito. Antes viajaba SIEMPRE: aprobar el KYC de un cliente, bloquearlo
+  // o cambiarle el nombre desde el admin reescribía su saldo con la copia que
+  // el panel tenía en memoria — si al cliente le habían debitado un envío
+  // después del último refresco, el envío volvía a su saldo.
+  const saveUser = async (u: User, conRol = false, conSaldos = false) => {
     if (!isSupabaseConfigured) { lsUpsertUser(u); fetchData(); return; }
     const {
-      id, email, role, name, balances, kycStatus, password: _pw,
+      id, email, role: rolMemoria, name, balances, kycStatus, password: _pw,
       firstName, lastName, birthDate, nationality, profession,
       docType, docNumber, countryOfIssue,
       country, city, address, zipCode,
@@ -799,32 +1125,36 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       documents,
       ...rest
     } = u;
+    const rolCampo = conRol ? { role: rolMemoria } : {};
 
     // Keepalive PATCH — fires immediately and survives page reload / tab close on mobile
     // Uses token from localStorage (synchronous) so it never hangs
     const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
     const token = getStoredToken();
-    fetch(`${SURL}/rest/v1/users?id=eq.${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      keepalive: true,
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SKEY,
-        // Only send Authorization if we have a real JWT; anon key is NOT a valid Bearer token
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ balances }),
-    }).catch(() => {});
+    if (conSaldos) {
+      fetch(`${SURL}/rest/v1/users?id=eq.${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        keepalive: true,
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SKEY,
+          // Only send Authorization if we have a real JWT; anon key is NOT a valid Bearer token
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify({ balances }),
+      }).catch(() => {});
+    }
 
     // Split balances into fiat (balances col) and crypto (crypto_balances col)
     const fiatBalances: Record<string, number> = {};
     const cryptoBalances: Record<string, number> = {};
-    for (const [k, v] of Object.entries(balances)) {
+    for (const [k, v] of Object.entries(balances ?? {})) {
       if (CRYPTO_CURRENCIES.has(k)) cryptoBalances[k] = v as number;
       else fiatBalances[k] = v as number;
     }
+    const saldosCampo = conSaldos ? { balances: fiatBalances, crypto_balances: cryptoBalances } : {};
 
     const timeout = new Promise<{ data: null; error: Error }>((_, reject) =>
       setTimeout(() => reject(new Error('Supabase timeout after 8s')), 8000)
@@ -854,7 +1184,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // BORRABA/CAMBIABA (la wallet "cambiaba sola", el 2FA "se deshabilitaba").
       // Siempre se dejan como están en la BASE; y si no pudimos leer la base,
       // se OMITE raw_data por completo para no pisar nada.
-      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets'];
+      const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets',
+        // 'kumplo' guarda el resultado AML. Si el cliente pudiera escribirlo,
+        // se pondría riesgo "bajo" a sí mismo y el control de lavado dejaría
+        // de existir: es un veredicto, no una preferencia.
+        'kumplo',
+        // 'tusdatos' es la consulta de antecedentes que hacemos nosotros y el
+        // veredicto de cada beneficiario. Es lo que decide si una
+        // transferencia sale: por eso lo escribe solo el servidor.
+        'tusdatos'];
       // COLECCIONES del cliente que tienen su PROPIO escritor seguro
       // (updateUserRawData, merge dirigido): contactos, wallets inscritas,
       // notificaciones. saveUser NUNCA debe reescribirlas desde memoria — una
@@ -888,10 +1226,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const rawDataField = haveDbRaw ? { raw_data: safeRest } : {};
       const result = await Promise.race([
         supabase.from('users').upsert({
-          id, email, role,
+          id, email, ...rolCampo,
           full_name: name,
-          balances: fiatBalances,
-          crypto_balances: cryptoBalances,
+          ...saldosCampo,
           kyc_status: kycStatus,
           // Personal KYC
           first_name: firstName,
@@ -944,16 +1281,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         try {
           const SURL2 = (import.meta.env.VITE_SUPABASE_URL as string) || '';
           const SKEY2 = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-          const isBypass = currentUserRef.current?.id === 'admin-bypass';
-          const authHeader = isBypass ? `AdminBypass ${SEED_ADMIN_PASSWORD}` : `Bearer ${token ?? SKEY2}`;
+          const authHeader = `Bearer ${token ?? SKEY2}`;
           const r = await fetch(`${SURL2}/functions/v1/admin-data`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: authHeader },
             body: JSON.stringify({
               action: 'save_user',
               user: {
-                id, email, role, full_name: name,
-                balances: fiatBalances, crypto_balances: cryptoBalances,
+                id, email, ...rolCampo, full_name: name,
+                ...saldosCampo,
                 kyc_status: kycStatus,
                 first_name: firstName, last_name: lastName, birth_date: birthDate,
                 nationality, profession, doc_type: docType, doc_number: docNumber,
@@ -998,6 +1334,24 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       return true;
     }
     try {
+      // Primero, ATÓMICO en la base (migración 2026_raw_data_atomico.sql):
+      // solo las claves del parche, bajo bloqueo de fila. Leer el blob,
+      // mezclar y guardarlo entero pisaba lo que el servidor escribía en el
+      // medio (antecedentes, avisos) y viceversa: así se perdían beneficiarios.
+      // Solo para la PROPIA fila: la función escribe en la cuenta de quien
+      // llama. Un admin que edita a otro cliente sigue por el camino de abajo.
+      if (currentUser?.id === id) try {
+        const { data: okRpc, error: errRpc } = await Promise.race([
+          supabase.rpc('raw_data_merge_self', { p_patch: patch }),
+          new Promise<{ data: null; error: any }>(resolve => setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 8000)),
+        ]) as any;
+        if (!errRpc && okRpc === true) {
+          pendingWriteUntilRef.current = Date.now() + 10000;
+          setUsers(prev => prev.map(x => x.id === id ? { ...x, ...patch } as any : x));
+          if (currentUser?.id === id) setCurrentUser(prev => prev ? { ...prev, ...patch } as any : prev);
+          return true;
+        }
+      } catch { /* sin la función todavía: sigue el camino de siempre */ }
       // Merge contra la fila REAL para no pisar campos de otros flujos.
       const { data: cur } = await Promise.race([
         supabase.from('users').select('raw_data').eq('id', id).single(),
@@ -1044,6 +1398,35 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   };
 
+  const actualizarListaRaw = async (id: string, clave: string, cambio: (lista: any[]) => any[], respaldo: any[] | null = null): Promise<boolean> => {
+    let fresca: any[] | null = null;
+    if (isSupabaseConfigured) {
+      try {
+        const { data } = await Promise.race([
+          supabase.from('users').select('raw_data').eq('id', id).single(),
+          new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 6000)),
+        ]) as any;
+        if (data && data.raw_data && typeof data.raw_data === 'object') fresca = Array.isArray(data.raw_data[clave]) ? data.raw_data[clave] : [];
+      } catch { /* sin lectura fresca */ }
+    } else {
+      const u: any = users.find(x => x.id === id);
+      fresca = Array.isArray(u?.raw_data?.[clave]) ? u.raw_data[clave] : Array.isArray(u?.[clave]) ? u[clave] : [];
+    }
+    const base = fresca ?? respaldo;
+    if (!base) return false;
+    return updateUserRawData(id, { [clave]: cambio(base) });
+  };
+
+  // ID Lincoin: toda cuenta tiene uno (los 6 últimos caracteres de su id).
+  // Algunas filas viejas no lo traen en raw_data y la pantalla decía
+  // "GENERANDO…" para siempre, y nadie podía encontrarlas por ID. Apenas
+  // entra una cuenta sin código, se lo guarda.
+  useEffect(() => {
+    const cu: any = currentUser;
+    if (!cu?.id || cu.ownReferralCode || cu.role === 'admin' || !isSupabaseConfigured) return;
+    updateUserRawData(cu.id, { ownReferralCode: String(cu.id).slice(-6).toUpperCase() }).catch(() => { /* se reintenta en la próxima entrada */ });
+  }, [currentUser?.id, (currentUser as any)?.ownReferralCode]);
+
   const saveTx = async (tx: any) => {
     const { userId, type, amount, currency, status, ...rest } = tx;
 
@@ -1077,7 +1460,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         .single();
       if (inserted?.id) {
         setTransactions(prev => prev.map(t => t.id === tempId ? { ...t, id: inserted.id } : t));
-        return;
+        return true;
       }
       // ⚠️ La RLS de public.transactions solo dejaba insertar a admins — un
       // cliente normal (con JWT real o no) nunca podía crear su propio
@@ -1096,14 +1479,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         }).then(r2 => r2.json()).catch((e2: any) => ({ error: String(e2?.message ?? e2) }));
         if (r?.id != null) {
           setTransactions(prev => prev.map(t => t.id === tempId ? { ...t, id: r.id } : t));
-        } else {
-          console.error('[saveTx] fallback admin-data también falló:', r?.error);
+          return true;
         }
+        console.error('[saveTx] fallback admin-data también falló:', r?.error);
       }
     } catch (e) {
       console.error('[saveTx] threw:', e);
       /* optimistic row stays visible locally even though nothing landed in DB */
     }
+    // La fila no llegó a la base: quien llama tiene que poder decirlo.
+    return false;
   };
 
   const updateTxStatus = async (id: number, updates: Partial<Transaction>) => {
@@ -1115,12 +1500,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // --- AUTH ---
 
-  const loginUser = async (email: string, pass?: string, captchaToken?: string): Promise<User | null | 'MFA_REQUIRED'> => {
+  // `portal`: por dónde está entrando (Personas o Empresas). Solo se usa si
+  // la cuenta de acceso no tiene fila de perfil y hay que crearla.
+  const loginUser = async (email: string, pass?: string, captchaToken?: string, portal: 'personal' | 'business' = 'business'): Promise<User | null | 'MFA_REQUIRED'> => {
     const isSeedAdminEmail = !!SEED_ADMIN_EMAIL && email === SEED_ADMIN_EMAIL;
     // Cada login EXPLÍCITO vuelve a exigir 2FA: se borra la marca 'mfa_ok' (que
     // solo debe durar mientras la sesión ya verificada se refresca). Sin esto,
     // un logout+login en la MISMA pestaña se saltaba el 2FA.
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
+    setLoginError(null);
+    setAccountLocked(false);
     // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
     const authOpts = captchaToken ? { captchaToken } : undefined;
 
@@ -1144,9 +1533,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // 2FA en el login del admin: si tiene el 2FA custom activo, NO se
             // entra directo — se pide el código de 6 dígitos antes de dar acceso.
             if ((u as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-              setPendingMFAProfile(u);
-              setPendingMFAMode('custom');
-              setMfaPending(true);
+              beginMfaFlow(u, 'custom');
               return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
@@ -1160,23 +1547,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       } catch { /* cae al AdminBypass local */ }
     }
 
-    // Admin bypass (RED DE SEGURIDAD): authenticate via env vars, skip Supabase.
-    // Requires VITE_ADMIN_PASSWORD to be explicitly set — empty string disables it.
-    if (SEED_ADMIN_PASSWORD && isSeedAdminEmail && pass === SEED_ADMIN_PASSWORD) {
-      const adminUser: User = {
-        id: 'admin-bypass',
-        email: SEED_ADMIN_EMAIL,
-        role: 'admin',
-        name: 'Administrador',
-        balances: {},
-        kycStatus: 'approved',
-        notifications: [],
-      };
-      // sessionStorage expires when the tab is closed, reducing XSS session-theft window
-      sessionStorage.setItem('cuypay_admin_session', JSON.stringify(adminUser));
-      setCurrentUser(adminUser);
-      return adminUser;
-    }
+    // (Se eliminó el "admin bypass" por contraseña de entorno: fabricaba una
+    //  sesión de admin sin JWT, sin 2FA y sin registro. El admin entra con su
+    //  cuenta real de Supabase.)
 
     if (!isSupabaseConfigured) {
       const user = users.find(u => u.email === email && u.password === pass);
@@ -1191,6 +1564,31 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       authTimeout,
     ]);
     if (error) {
+      // Traducir el motivo REAL antes de caer a los respaldos. Un CAPTCHA
+      // rechazado y una contraseña mala no se arreglan igual, y hasta ahora
+      // los dos decían lo mismo.
+      {
+        const cruda = String((error as any)?.message ?? 'sin mensaje');
+        const m = cruda.toLowerCase();
+        // Se ADJUNTA el error crudo de Supabase entre corchetes. Traducirlo a
+        // un texto amable ayuda a quien lo lee, pero esconder el original hace
+        // imposible diagnosticar: llevamos varias rondas sin poder distinguir
+        // "clave mala" de "cuenta inexistente" de "CAPTCHA rechazado".
+        const conCruda = (txt: string) => `${txt} [${cruda}]`;
+        setLoginError2(conCruda,
+          m.includes('captcha')
+            ? 'La verificación anti-bot (CAPTCHA) rechazó el intento. Recarga la página y vuelve a marcarla — el código del CAPTCHA sirve una sola vez.'
+          : m.includes('email not confirmed') || m.includes('not confirmed')
+            ? 'La cuenta existe pero el correo no está confirmado. Confírmalo en Authentication → Users.'
+          : m.includes('invalid login credentials')
+            ? 'Correo o contraseña incorrectos.'
+          : m.includes('timeout') || m.includes('fetch')
+            ? 'No hubo respuesta del servidor de autenticación. Revisa tu conexión.'
+          : m.includes('rate') || m.includes('too many')
+            ? 'Demasiados intentos. Espera unos minutos.'
+          : 'No se pudo iniciar sesión.'
+        );
+      }
       // Any Supabase Auth error → fall back to DB lookup (covers 400 invalid creds, 500 server, timeout, site URL issues)
       {
         console.warn('[loginUser] Supabase Auth error, trying DB fallback:', error.message);
@@ -1214,6 +1612,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               const { user: fnUser, authSynced } = await fnRes.json();
               if (fnUser) {
                 const mapped = mapSupabaseUser(fnUser);
+                // ⚠️ SEGURIDAD: este camino de respaldo NO puede saltarse el
+                // 2FA. Si la cuenta lo tiene activo se exige el código igual
+                // que en el login normal. Primero se ESPERA la sesión real
+                // (el fn de servicio ya sincronizó la contraseña) para que la
+                // verificación del código tenga un JWT con el cual
+                // autorizarse; sin sesión, se deniega — nunca se entra.
+                if ((mapped as any)?.mfaEnabled || (fnUser as any)?.raw_data?.mfaEnabled) {
+                  if (authSynced) {
+                    try { await supabase.auth.signInWithPassword({ email, password: pass! }); } catch { /* */ }
+                  }
+                  beginMfaFlow(mapped, 'custom');
+                  return 'MFA_REQUIRED';
+                }
                 setCurrentUser(mapped);
                 // user-login (service-role) acaba de sincronizar/crear el
                 // usuario de Auth con esta contraseña — reintentar el login
@@ -1235,67 +1646,88 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }
         }
 
-        // Fallback: direct DB query (works if RLS allows anon reads)
-        const dbTimeout = new Promise<{ data: null; error: any }>(resolve =>
-          setTimeout(() => resolve({ data: null, error: 'db_timeout' }), 5000)
-        );
-        const { data: fbProfile } = await Promise.race([
-          supabase.from('users').select('*').eq('email', email).single(),
-          dbTimeout,
-        ]) as any;
-        if (fbProfile) {
-          const storedHash = fbProfile.raw_data?.passwordHash as string | undefined;
-          if (storedHash) {
-            const inputHash = await hashPassword(pass!, email);
-            if (!inputHash || inputHash !== storedHash) return null;
-          } else {
-            // First fallback login — store hash for future use
-            const hash = await hashPassword(pass!, email);
-            if (hash) {
-              try {
-                await supabase.from('users').update({
-                  raw_data: { ...(fbProfile.raw_data || {}), passwordHash: hash },
-                }).eq('id', fbProfile.id);
-              } catch {}
-            }
-          }
-          const user = mapSupabaseUser(fbProfile);
-          setCurrentUser(user);
-          return user;
-        }
-        // Not found in Supabase DB — user may have been created in offline/localStorage mode
-        const localUsers = lsGetUsers();
-        const localMatch = localUsers.find(u => u.email === email && u.password === pass);
-        if (localMatch) {
-          setCurrentUser(localMatch);
-          return localMatch;
-        }
+        // Acá había un CAMINO DE RESPALDO que autenticaba en el NAVEGADOR:
+        // leía la fila del usuario por correo, sacaba raw_data.passwordHash,
+        // calculaba el hash de lo tecleado y, si coincidía, hacía
+        // setCurrentUser SIN sesión de Auth. Tres problemas, cada uno grave:
+        //
+        //   · La decisión de "esta contraseña es correcta" vivía en el
+        //     cliente. Quien controla el navegador controla esa comparación.
+        //   · Para funcionar necesitaba que la base dejara leer la fila de
+        //     cualquier correo — es decir, repartía hashes de contraseña.
+        //   · Si no había hash guardado, lo ESCRIBÍA. El respaldo se
+        //     alimentaba solo.
+        //
+        // Si el servidor de login no contesta, no se entra. Es lo correcto:
+        // un fallo de autenticación no puede tener una puerta de atrás.
+        // (Antes había un respaldo que aceptaba un usuario guardado en
+        // localStorage, con el rol que trajera —incluido admin—. Se quitó:
+        // una lista en el navegador no autentica a nadie.)
       }
+      // Ninguna vía reconoció las credenciales → queda registrado con IP.
+      if (!loginErrorRef.current) setLoginError('Correo o contraseña incorrectos. [ninguna vía reconoció las credenciales]');
+      logFailedLogin(email, 'credenciales incorrectas');
       return null;
     }
-    if (!data.user) return null;
+    if (!data.user) { setLoginError('El servidor aceptó la petición pero no devolvió la cuenta. Reintenta.'); return null; }
 
-    const profileTimeout = new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 6000));
-    let { data: profile } = await Promise.race([
+    // "No hubo respuesta" NO es "no existe". Antes un timeout (red lenta) se
+    // trataba como perfil inexistente y se inventaba uno con rol 'personal'
+    // EN MEMORIA: una empresa entraba al portal de Personas y, al guardar
+    // cualquier cosa, ese rol inventado llegaba a la base. Ahora, sin
+    // respuesta, no se entra: se pide reintentar.
+    const profileTimeout = new Promise<'__timeout__'>(resolve => setTimeout(() => resolve('__timeout__'), 8000));
+    const perfilRes = await Promise.race([
       supabase.from('users').select('*').eq('id', data.user.id).single(),
       profileTimeout,
     ]) as any;
+    if (perfilRes === '__timeout__') {
+      setLoginError('El servidor tardó demasiado en responder. Revisa tu conexión e intenta de nuevo.');
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+      return null;
+    }
+    let profile = perfilRes?.data ?? null;
 
-    const isAdminEmail = data.user.email === SEED_ADMIN_EMAIL;
-
+    // El rol de admin NUNCA se decide por el correo desde el cliente: un
+    // perfil que se crea al entrar es de cliente, y punto. Si hace falta un
+    // admin, se pone el rol en la base.
     if (!profile) {
+      // ⚠️ Antes se creaba un perfil NUEVO de una vez. Si ya existía una fila
+      // con ese correo pero con OTRO id (pasa al recrear la cuenta de acceso),
+      // quedaban DOS filas para la misma persona: el login leía una y el panel
+      // otra, y arreglarlo después chocaba contra la clave primaria. Primero se
+      // busca por CORREO y, si aparece, se reusa esa fila en vez de duplicarla.
+      try {
+        const { data: porCorreo } = await Promise.race([
+          supabase.from('users').select('*').eq('email', data.user.email!).maybeSingle(),
+          new Promise<{ data: null }>(resolve => setTimeout(() => resolve({ data: null }), 5000)),
+        ]) as any;
+        if (porCorreo) {
+          setLoginError(`Tu cuenta de acceso es nueva y todavía no está unida a tu perfil. Un administrador debe igualar el id del perfil (${String(porCorreo.id).slice(0, 8)}…) al de la cuenta (${String(data.user.id).slice(0, 8)}…).`);
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+          return null;
+        }
+      } catch { /* si la consulta falla, se sigue al alta normal */ }
+      // Cuenta de acceso sin fila de perfil: se crea con el rol del portal
+      // por el que está entrando (antes era 'personal' a ciegas), y solo
+      // cuenta si la inserción realmente quedó en la base.
       const id = data.user.id;
       const newProfile = {
         id,
         email: data.user.email!,
         full_name: data.user.email!.split('@')[0],
-        role: isAdminEmail ? 'admin' : 'personal',
+        role: portal === 'personal' ? 'personal' : 'business',
         balances: { USD: 0, COP: 0, CLP: 0, MXN: 0, PEN: 0 },
-        kyc_status: isAdminEmail ? 'approved' : 'pending',
+        kyc_status: 'pending',
         raw_data: { notifications: [], ownReferralCode: id.slice(-6).toUpperCase() },
       };
-      supabase.from('users').insert(newProfile);
-      profile = newProfile;
+      const { data: insertada, error: errIns } = await supabase.from('users').insert(newProfile).select('*').maybeSingle();
+      if (errIns || !insertada) {
+        setLoginError('Tu cuenta de acceso existe pero no tiene perfil y no se pudo crear. Escríbenos a soporte.');
+        await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+        return null;
+      }
+      profile = insertada;
     }
     // ⚠️ SECURITY: removido el auto-promote a admin desde el cliente.
     // El trigger guard_users_sensitive_cols en DB ahora bloquea estos
@@ -1307,9 +1739,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // 2FA custom (TOTP nuestro): si la cuenta lo tiene activo, se pide el código
     // en el login antes de dar acceso. Cubre admin y clientes por igual.
     if ((user as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-      setPendingMFAProfile(user);
-      setPendingMFAMode('custom');
-      setMfaPending(true);
+      beginMfaFlow(user, 'custom');
       return 'MFA_REQUIRED';
     }
 
@@ -1320,9 +1750,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         mfaTimeout,
       ]) as any;
       if (aalData?.nextLevel === 'aal2' && aalData?.currentLevel !== 'aal2') {
-        setPendingMFAProfile(user);
-        setPendingMFAMode('native');
-        setMfaPending(true);
+        beginMfaFlow(user, 'native');
         return 'MFA_REQUIRED';
       }
     } catch { /* MFA not available, continue normally */ }
@@ -1331,8 +1759,203 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return user;
   };
 
+  // Segundo paso del ingreso: el código que llega al correo.
+  // Arranca el ingreso mandando el código al correo. Es el PRIMER paso.
+  // Un mismo ingreso puede pasar por más de un camino —el resultado del login
+  // y el aviso de sesión iniciada llegan por separado— y cada uno arrancaba su
+  // propio envío. Llegaban DOS códigos con segundos de diferencia y solo servía
+  // el último, así que el titular probaba el primero y le decía "incorrecto".
+  // Acá se recuerda a quién se le acaba de pedir: el segundo intento en menos
+  // de 25 s no vuelve a pedir nada.
+  const ultimoEnvioRef = useRef<{ uid: string; at: number } | null>(null);
+
+  const startEmailStep = async (userId: string): Promise<boolean> => {
+    const ya = ultimoEnvioRef.current;
+    if (ya && ya.uid === userId && Date.now() - ya.at < 25_000) return true;
+    ultimoEnvioRef.current = { uid: userId, at: Date.now() };
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_start_login', userId }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.');
+        return false;
+      }
+      setMfaPasos(Number(r.pasos) === 3 ? 3 : 2);
+      return true;
+    } catch { setMfaError2('No se pudo iniciar la verificación.'); return false; }
+  };
+
+  // Intenta capturar una imagen de la cámara para adjuntarla a la alerta de
+  // bloqueo. LIMITACIÓN IMPORTANTE: el navegador SIEMPRE pide permiso y lo
+  // muestra en pantalla — no existe la captura silenciosa. Quien no quiera
+  // ser fotografiado simplemente dice que no, así que esto sirve para
+  // reconocer un error propio, no para identificar a un atacante decidido.
+  // Devuelve el JPEG en base64 (sin cabecera) o null.
+  //
+  // ⚠️ SOLO para la cuenta del panel. La foto existe para la alerta de bloqueo
+  // del admin. Pedírsela a un CLIENTE le abría el permiso de cámara en mitad
+  // del ingreso y lo dejaba esperando hasta 6 segundos con una ventana que no
+  // esperaba — se veía exactamente como "el 2FA no me funciona".
+  const tryCapturePhoto = async (esAdmin: boolean): Promise<string | null> => {
+    if (!esAdmin) return null;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return null;
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } }),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 6000)),
+      ]);
+      if (!stream) return null;
+      const video = document.createElement('video');
+      video.srcObject = stream as MediaStream;
+      video.muted = true;
+      await video.play().catch(() => {});
+      await new Promise(r => setTimeout(r, 700));   // dejar que enfoque
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      (stream as MediaStream).getTracks().forEach(t => t.stop());
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      return dataUrl.split(',')[1] ?? null;
+    } catch { return null; }   // permiso denegado, sin cámara, o navegador que no deja
+  };
+
+  // Punto ÚNICO por el que pasa cualquier ingreso que exija segundo factor.
+  // Existe porque el arranque estaba repetido en cinco sitios y en dos se
+  // olvidó: la pantalla saltaba al código de la app sin haber mandado el del
+  // correo, y el servidor —con razón— lo rechazaba.
+  const beginMfaFlow = (profile: any, mode: 'custom' | 'native') => {
+    setPendingMFAProfile(profile);
+    setPendingMFAMode(mode);
+    setMfaPending(true);
+    setPasskeyPending(false);        // cada ingreso empieza en el primer paso
+    passkeyOptionsRef.current = null;
+    setMfaError2(null);
+    // El paso extra por correo es SOLO del panel de administración. Un cliente
+    // con 2FA entra con el código de su app, como siempre: mostrarle un paso
+    // que su pantalla no tiene lo dejaba encerrado.
+    if (mode === 'custom' && profile?.role === 'admin') {
+      setEmailStepPending(true);      // PRIMER paso del admin
+      startEmailStep(profile.id);
+    }
+  };
+
+  const completeEmailLogin = async (code: string): Promise<User | null> => {
+    if (!pendingMFAProfile) return null;
+    const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_verify_email', userId: pendingMFAProfile.id, code, foto: fotoIntento }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        fallosLocalRef.current += 1;
+        setMfaError2(r?.message ?? 'Código incorrecto o vencido.');
+        return null;
+      }
+      // Correo validado. NO se entra todavía: sigue el código de la app, y
+      // después la llave si la cuenta tiene una. Ninguno reemplaza al otro.
+      // El paso de la llave se apaga explícitamente: si quedó encendido de un
+      // intento anterior, la pantalla saltaría a la llave sin haber pedido el
+      // código de la app, y el servidor —con razón— la rechazaría.
+      setEmailStepPending(false);
+      setPasskeyPending(false);
+      setMfaError2(null);
+      return null;
+    } catch { setMfaError2('No se pudo verificar el código.'); return null; }
+  };
+
+  // Las opciones que ya pidió el servidor. Se guardan porque el desafío es de
+  // un solo uso: volver a pedirlas invalidaría el que se acaba de entregar.
+  const passkeyOptionsRef = useRef<any>(null);
+
+  // Entrar con la llave. Tiene que salir de un clic del usuario: los
+  // navegadores no dejan abrir el lector de huella sin que alguien lo pida.
+  const loginConPasskey = async (): Promise<User | null> => {
+    if (!pendingMFAProfile) return null;
+    setMfaError2(null);
+    try {
+      const SURL2 = SUPABASE_URL_FOR_FN, SKEY2 = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      let options = passkeyOptionsRef.current;
+      if (!options) {
+        const o = await fetch(`${SURL2}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY2}` },
+          body: JSON.stringify({ action: 'passkey_auth_options', userId: pendingMFAProfile.id }),
+        }).then(x => x.json()).catch(() => null);
+        if (!o?.ok) { setMfaError2(o?.message ?? 'No hay ninguna llave registrada en esta cuenta.'); return null; }
+        options = o.options;
+      }
+      passkeyOptionsRef.current = null;   // el desafío se consume aquí
+      const credential = await firmarConPasskey(options);
+      const r = await fetch(`${SURL2}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY2, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY2}` },
+        body: JSON.stringify({ action: 'passkey_auth_verify', userId: pendingMFAProfile.id, credential, stage: 'login' }),
+      }).then(x => x.json()).catch(() => null);
+      if (!r?.ok) {
+        if (r?.error === 'account_locked') setAccountLocked(true);
+        // El servidor dice que falta un paso anterior: la pantalla se
+        // devuelve sola al código de la app en vez de dejar al titular
+        // atascado en una llave que nunca va a servir todavía.
+        if (r?.error === 'email_step_missing') {
+          setPasskeyPending(false);
+          setMfaError2('Falta el código de tu app. Ingrésalo y después confirma con la llave.');
+          return null;
+        }
+        setMfaError2(r?.message ?? 'La llave no se pudo verificar.');
+        logFailedLogin(pendingMFAProfile.email ?? '', 'llave rechazada');
+        return null;
+      }
+      const user = pendingMFAProfile;
+      try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
+      setCurrentUser(user);
+      setPasskeyPending(false);
+      setMfaPending(false);
+      setPendingMFAProfile(null);
+      logAdminLogin(user);
+      return user;
+    } catch (e) {
+      setMfaError2(explicarErrorPasskey(e));
+      return null;
+    }
+  };
+
+
+  const resendEmailCode = async (): Promise<boolean> => {
+    if (!pendingMFAProfile) return false;
+    try {
+      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
+      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action: 'mfa_resend_email', userId: pendingMFAProfile.id }),
+      }).then(x => x.json()).catch(() => null);
+      return !!r?.ok;
+    } catch { return false; }
+  };
+
+  // Cuenta los fallos de ESTA pantalla para saber cuándo intentar la foto.
+  const fallosLocalRef = useRef(0);
+
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    // Cada intento empieza sin motivo: la pantalla muestra getMfaError() y
+    // no debe arrastrar el del intento anterior (p. ej. el del límite de
+    // intentos ya vencido) a un fallo de red o del 2FA nativo.
+    setMfaError2(null);
+    // Se intenta en CADA envío, no solo a partir del segundo: el conteo que
+    // dispara el bloqueo vive en el servidor e incluye intentos anteriores,
+    // así que el bloqueo puede saltar ya en el primero de esta pantalla.
+    const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
     // 2FA CUSTOM: verifica el código contra el secreto CIFRADO en el servidor
     // (mfa_verify en admin-data descifra y valida). Es el esquema que activa la
     // tarjeta de Seguridad del admin y protege el cambio de proveedor.
@@ -1342,9 +1965,61 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         const r = await fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code }),
+          body: JSON.stringify({ action: 'mfa_verify', userId: pendingMFAProfile.id, code, stage: 'login', foto: fotoIntento }),
         }).then(x => x.json()).catch(() => null);
-        if (!r?.ok) return null;
+        if (!r?.ok) {
+          // Diagnóstico: sin esto, un fallo de AUTORIZACIÓN o un secreto que no
+          // se pudo leer se mostraban igual que "código incorrecto", y no había
+          // forma de saber por qué no entra con un código válido.
+          // El servidor manda un mensaje YA redactado para los casos que el
+          // usuario puede resolver (límite de intentos, código repetido). Se
+          // usa tal cual: mostrar el código interno ("too_many_attempts") no
+          // le dice nada a quien está tratando de entrar.
+          const why = r?.message ? String(r.message)
+            : r?.error === 'code_reused'
+            ? 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+            : r?.error === 'secret_unreadable'
+            ? (r?.hasBackupCodes
+                ? 'El 2FA está activo pero su secreto quedó ilegible para el servidor. Usa uno de tus códigos de respaldo para entrar.'
+                : 'El 2FA está activo pero su secreto quedó ilegible para el servidor (se guardó con otra llave). Hay que desactivar y volver a activar el 2FA.')
+            : r?.error === 'backup_invalid'
+            ? 'Ese código de respaldo no es válido o ya se usó. Cada código sirve una sola vez.'
+            : r?.error === 'no_secret'
+            ? 'La cuenta tiene el 2FA activo pero no hay ningún secreto guardado. Hay que reactivar el 2FA.'
+            : r?.error === 'No autorizado'
+              ? 'La sesión no autorizó la verificación. Vuelve a intentar el inicio de sesión.'
+              : r?.error ? `Verificación rechazada: ${r.error}` : null;
+          if (r?.error === 'account_locked') setAccountLocked(true);
+          fallosLocalRef.current += 1;
+          // SIEMPRE queda un mensaje escrito, aunque el servidor no mande
+          // ninguno (un código simplemente equivocado responde {ok:false} y
+          // nada más). Así la pantalla puede confiar en que "sin mensaje"
+          // significa "no hubo error", en vez de inventarse uno: por eso el
+          // paso de la llave mostraba "código incorrecto" después de un
+          // código que en realidad era correcto.
+          setMfaError2(why ?? 'Código incorrecto o vencido. Ingresa el código actual de tu app.');
+          // Un código de 2FA rechazado también es un intento fallido: es la
+          // señal más clara de que alguien ya tiene la contraseña. PERO un
+          // rechazo por límite de intentos NO es un código malo — contarlo
+          // otra vez inflaba el conteo que bloquea la IP y castigaba dos
+          // veces por lo mismo.
+          // Tampoco un código YA USADO: era válido y llegó dos veces. Contarlo
+          // como ingreso fallido bloqueaba la IP (3 en una hora contra una
+          // cuenta de admin) por un reenvío de la propia pantalla.
+          if (r?.error !== 'too_many_attempts' && r?.error !== 'code_reused') {
+            logFailedLogin(pendingMFAProfile.email ?? '', r?.error === 'backup_invalid' ? 'código de respaldo inválido' : 'código 2FA incorrecto');
+          }
+          return null;
+        }
+        // ── Falta la llave ──────────────────────────────────────────────
+        // El código de la app NO termina el ingreso si la cuenta tiene una
+        // llave registrada. El servidor deja la sesión a medio abrir y la
+        // pantalla pasa al último paso. No se entra todavía.
+        if (r.needsPasskey) {
+          setMfaError2(null);
+          setPasskeyPending(true);
+          return null;
+        }
         const user = pendingMFAProfile;
         try { sessionStorage.setItem('mfa_ok', '1'); } catch { /* */ }
         setCurrentUser(user);
@@ -1352,30 +2027,37 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         setPendingMFAProfile(null);
         logAdminLogin(user);
         return user;
-      } catch { return null; }
+      } catch { setMfaError2('No se pudo verificar el código. Revisa tu conexión e intenta de nuevo.'); return null; }
     }
-    // 2FA NATIVO de Supabase Auth.
+    // 2FA NATIVO de Supabase Auth. Todo fallo deja un motivo escrito: la
+    // pantalla entiende "sin motivo" como "no hubo error" (paso de la llave).
     if (!isSupabaseConfigured) return null;
+    const fallo = (m: string) => { setMfaError2(m); return null; };
     try {
       const { data: factors } = await supabase.auth.mfa.listFactors();
       const factorId = factors?.totp?.[0]?.id;
-      if (!factorId) return null;
+      if (!factorId) return fallo('La cuenta no tiene una app autenticadora registrada. Escríbenos a soporte.');
       const { data: challenge, error: challengeErr } = await supabase.auth.mfa.challenge({ factorId });
-      if (challengeErr || !challenge) return null;
+      if (challengeErr || !challenge) return fallo('No se pudo iniciar la verificación. Intenta de nuevo.');
       const { error: verifyErr } = await supabase.auth.mfa.verify({ factorId, challengeId: challenge.id, code });
-      if (verifyErr) return null;
+      if (verifyErr) return fallo('Código incorrecto o vencido. Ingresa el código actual de tu app.');
       const user = pendingMFAProfile;
       setCurrentUser(user);
       setMfaPending(false);
       setPendingMFAProfile(null);
       return user;
-    } catch { return null; }
+    } catch { return fallo('No se pudo verificar el código. Revisa tu conexión e intenta de nuevo.'); }
   };
 
   const cancelMFALogin = () => {
     if (isSupabaseConfigured) supabase.auth.signOut();
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setMfaPending(false);
+    setEmailStepPending(false);
+    setPasskeyPending(false);
+    passkeyOptionsRef.current = null;
+    setMfaPasos(2);
+    setAccountLocked(false);
     setPendingMFAProfile(null);
   };
 
@@ -1401,7 +2083,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return null; }
   };
 
-  const verifyMFAEnrollment = async (factorId: string, code: string, secret?: string): Promise<{ ok: boolean; error?: string }> => {
+  const verifyMFAEnrollment = async (factorId: string, code: string, secret?: string): Promise<{ ok: boolean; error?: string; backupCodes?: string[] }> => {
     // If secret is provided, verify locally (no Supabase Auth required)
     if (secret) {
       const ok = verifyTOTP(secret, code);
@@ -1425,11 +2107,22 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
             body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId }),
           }).then(x => x.json()).catch(() => null);
-          if (r?.success) return { ok: true };
-        } catch { /* cae al legacy */ }
-        // LEGACY: guardar en texto plano (compat si mfa_set no existe aún).
-        const persisted = await updateUserRawData(currentUser.id, { mfaEnabled: true, mfaFactorId: factorId, totpSecret: secret });
-        if (!persisted) return { ok: false, error: 'No pudimos guardar la verificación en dos pasos. Reintenta.' };
+          // Los códigos de respaldo se devuelven UNA sola vez: aquí. La tarjeta
+          // de Seguridad los muestra para que el titular los guarde. Después ya
+          // no se pueden volver a leer (en la base solo queda su hash).
+          if (r?.success) return { ok: true, backupCodes: r.backupCodes as string[] | undefined };
+          // Se ELIMINÓ el guardado "legacy" que caía aquí y escribía el
+          // secreto en TEXTO PLANO desde el navegador. Hacía dos daños: dejaba
+          // la llave del 2FA legible en la fila, y como la base ahora blinda
+          // esas claves contra escrituras del navegador, el guardado se
+          // descartaba en silencio y la pantalla decía "activado" con el 2FA
+          // apagado. Si el servidor no pudo guardarlo, se dice y no se activa.
+          setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: false, mfaFactorId: undefined } : prev);
+          return { ok: false, error: r?.error ? String(r.error) : 'No pudimos guardar la verificación en dos pasos. No quedó activada — reintenta.' };
+        } catch {
+          setCurrentUser((prev: any) => prev ? { ...prev, mfaEnabled: false, mfaFactorId: undefined } : prev);
+          return { ok: false, error: 'No pudimos contactar al servidor para guardar el 2FA. No quedó activada — reintenta.' };
+        }
       }
       return { ok: true };
     }
@@ -1459,21 +2152,38 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Verifica un código 2FA. Si el secreto está en memoria (recién activado o
   // legacy en claro) valida local; si no (secreto cifrado en la base), lo
   // valida el SERVIDOR con mfa_verify. Devuelve true/false.
-  const verifyMfaCode = async (code: string): Promise<boolean> => {
+  // Verifica el código 2FA de una operación y dice POR QUÉ se rechazó.
+  // Antes toda negativa se mostraba como "Código incorrecto": también "ese
+  // código ya se usó" (el mismo con el que se acababa de entrar) y "demasiados
+  // intentos, espera unos minutos", que rechaza incluso el código bueno.
+  // Con Supabase se verifica SIEMPRE en el servidor, con su reloj: el camino
+  // local usaba el reloj del equipo y fallaba si estaba corrido.
+  const verificarCodigo2fa = async (code: string): Promise<{ ok: boolean; motivo?: string }> => {
+    const malo = 'Código incorrecto. Usa el código de tu cuenta Lincoin en la app y revisa que la hora del celular esté en automático.';
     const cu = currentUser as any;
     const localSecret = (cu?.totpSecret ?? cu?.raw_data?.totpSecret) as string | undefined;
-    if (localSecret) { try { return verifyTOTP(localSecret, code); } catch { return false; } }
-    if (!currentUser) return false;
+    if (!isSupabaseConfigured && localSecret) {
+      try { return verifyTOTP(localSecret, code) ? { ok: true } : { ok: false, motivo: malo }; } catch { return { ok: false, motivo: malo }; }
+    }
+    if (!currentUser) return { ok: false, motivo: 'Tu sesión se cerró. Ingresa de nuevo.' };
     try {
       const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
-      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+      const res = await fetch(`${SURL}/functions/v1/admin-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
         body: JSON.stringify({ action: 'mfa_verify', userId: currentUser.id, code }),
-      }).then(x => x.json()).catch(() => null);
-      return !!r?.ok;
-    } catch { return false; }
+      }).catch(() => null);
+      if (!res) return { ok: false, motivo: 'No se pudo verificar el código. Revisa tu conexión e intenta de nuevo.' };
+      const r: any = await res.json().catch(() => null);
+      if (r?.ok) return { ok: true };
+      if (r?.message) return { ok: false, motivo: String(r.message) };
+      if (res.status === 401 || r?.error === 'No autorizado') return { ok: false, motivo: 'Tu sesión venció. Sal y vuelve a ingresar.' };
+      if (r?.error === 'no_secret') return { ok: false, motivo: 'Tu verificación en dos pasos no tiene un código guardado. Desactívala y actívala de nuevo en Seguridad.' };
+      if (r?.error === 'secret_unreadable') return { ok: false, motivo: 'No pudimos leer tu verificación en dos pasos. Usa un código de respaldo o escríbenos a soporte.' };
+      return { ok: false, motivo: malo };
+    } catch { return { ok: false, motivo: 'No se pudo verificar el código. Intenta de nuevo.' }; }
   };
+  const verifyMfaCode = async (code: string): Promise<boolean> => (await verificarCodigo2fa(code)).ok;
 
   const unenrollMFA = async (factorId: string): Promise<boolean> => {
     // Local TOTP factors don't exist in Supabase Auth — just succeed
@@ -1514,17 +2224,26 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     return { enrolled: false };
   };
 
-  const loginWithGoogle = async (role: 'personal' | 'business' = 'business') => {
+  const loginWithGoogle = async (role: 'personal' | 'business' | 'contador' = 'business') => {
     if (!isSupabaseConfigured) return;
-    // Persist role so it survives the OAuth redirect
-    localStorage.setItem('cuypay_oauth_role', role);
+    // Persist role so it survives the OAuth redirect. Con fecha: solo vale
+    // para este intento, así una pista vieja no decide el rol de otro registro.
+    localStorage.setItem('cuypay_oauth_role', JSON.stringify({ role, at: Date.now() }));
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: window.location.origin },
     });
   };
 
-  const logoutUser = async () => {
+  // Por qué se cerró la última sesión. Lo lee App cuando una sesión
+  // desaparece estando en un panel, para decirlo en vez de mandar al inicio
+  // sin explicación ("coloco el código y me manda al inicio").
+  const ultimoCierreRef = useRef<{ motivo: string; at: number } | null>(null);
+  const anotarCierre = (motivo: string) => { ultimoCierreRef.current = { motivo, at: Date.now() }; try { console.warn('[lincoin] sesión cerrada:', motivo); } catch { /* */ } };
+  const ultimoCierre = (): string | null => { const c = ultimoCierreRef.current; return c && Date.now() - c.at < 15_000 ? c.motivo : null; };
+
+  const logoutUser = async (motivo = 'cierre de sesión') => {
+    anotarCierre(motivo);
     // Increment before any await so in-flight SIGNED_IN handlers abort instead of re-setting the user
     logoutCounterRef.current++;
     sessionStorage.removeItem('cuypay_admin_session');
@@ -1538,6 +2257,27 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         .filter(k => k.startsWith('sb-') && k.endsWith('-auth-token'))
         .forEach(k => localStorage.removeItem(k));
     } catch { /* localStorage no disponible */ }
+    // Cachés con DATOS DE PERSONAS: listas de clientes, movimientos,
+    // documentos. Sobrevivían al cierre de sesión, así que quedaban en el
+    // navegador de un equipo compartido para el siguiente que entrara. Se
+    // borran acá, junto con el token.
+    try {
+      Object.keys(localStorage)
+        // OJO con lo que se borra acá. 'lincoin_otp_ok_<uid>' NO va en esta
+        // lista: es "confiar en este dispositivo por 30 días", y su razón de
+        // ser es justamente sobrevivir al cierre de sesión. Al meterlo en la
+        // purga, cada salida —incluidas las automáticas por inactividad, que
+        // ahora sí ocurren— borraba la confianza y el código por correo se
+        // pedía en cada ingreso. No es una credencial: sin el JWT no abre
+        // nada, solo evita repetir el segundo paso en un aparato conocido.
+        .filter(k =>
+          k === 'cuypay_admin_users' || k === 'cuypay_admin_tx' || k === 'lincoin_tx_debug'
+          || k.startsWith('cuypay_tx_')
+          || k.startsWith('cuypay.admin.'))
+        .forEach(k => localStorage.removeItem(k));
+      localStorage.removeItem('lincoin_visto');
+      localStorage.removeItem('lincoin_admin_visto');
+    } catch { /* localStorage no disponible */ }
     setCurrentUser(null);
     setIsAuthLoading(false);
     // NO bloquear la UI esperando la red: el cierre local ya ocurrió arriba
@@ -1546,7 +2286,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // no se quede "Cerrando…" cuando la red está lenta.
     if (isSupabaseConfigured) {
       Promise.race([
-        supabase.auth.signOut({ scope: 'local' }),
+        // 'global', no 'local'. Con 'local' solo se borraba el navegador: el
+        // access token y el refresh token seguían VÁLIDOS hasta vencer, así
+        // que un token robado servía igual después de "cerrar sesión" — y el
+        // cierre por inactividad tampoco acortaba esa ventana. 'global'
+        // invalida la sesión en el servidor, que es lo que la gente cree que
+        // pasa al salir.
+        supabase.auth.signOut({ scope: 'global' }),
         new Promise<void>(res => setTimeout(res, 1500)),
       ]).catch(() => { /* señal de red flaky: el estado local ya está limpio */ });
     }
@@ -1569,14 +2315,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Embed role in user_metadata so onAuthStateChange can read it reliably without
     // relying on localStorage (which is prone to race conditions with hashPassword async gap).
     // Keep localStorage as a secondary fallback for email-confirmation redirects.
-    localStorage.setItem('cuypay_register_role', data.role || 'business');
+    // El rol que se pide desde el cliente SOLO puede ser personal o business.
+    // 'admin' nunca sale de acá: el rol de admin lo pone el servidor (o la
+    // base, por un admin), y el guardia de la base lo rechaza igual.
+    const rolPedido: 'personal' | 'business' = data.role === 'personal' ? 'personal' : 'business';
+    localStorage.setItem('cuypay_register_role', rolPedido);
 
     const { data: authData, error } = await supabase.auth.signUp({
       email: data.email,
       password: data.password,
       options: {
         data: {
-          role: data.role || 'business',
+          role: rolPedido,
           full_name: data.name || 'Usuario',
         },
         ...(data.captchaToken ? { captchaToken: data.captchaToken } : {}),
@@ -1586,7 +2336,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (!authData.user) return { error: 'No se pudo crear la cuenta.' };
 
     const id = authData.user.id;
-    const intendedRole = data.role || 'business';
+    const intendedRole = rolPedido;
 
     // Build profile WITHOUT hash first — insert IMMEDIATELY before hashPassword's async gap
     // so onAuthStateChange's profile fetch finds our row with the correct role.
@@ -1601,6 +2351,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         notifications: [],
         ownReferralCode: id.slice(-6).toUpperCase(),
         referralCode: data.referralCode,
+        // Operadores: persona natural o empresa (lo eligen al registrarse).
+        ...(data.tipoOperador ? { tipoOperador: data.tipoOperador } : {}),
       },
     };
 
@@ -1681,7 +2433,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (id === currentUser.id) setCurrentUser(updated);
     setUsers(prev => prev.map(u => u.id === id ? updated : u));
     try {
-      await saveUser(updated);
+      // El rol solo viaja si este guardado lo pidió a propósito (admin).
+      // El saldo solo viaja si ESTE cambio es de saldo (data.balances).
+      await saveUser(updated, Object.prototype.hasOwnProperty.call(data ?? {}, 'role') && currentUser.role === 'admin', !!data?.balances);
     } catch (e) {
       console.error('saveUser failed, in-memory state is updated:', e);
     }
@@ -1701,29 +2455,49 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }).catch(() => {});
   };
 
-  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string, debitKey?: string) => {
+  // Devuelve si la solicitud QUEDÓ registrada. Antes devolvía nada: sin saldo
+  // salía en silencio, un error de guardado se tragaba, y la pantalla decía
+  // "¡Retiro solicitado!" en todos los casos.
+  const requestWithdrawal = async (amount: number, currency: string, bank: string, account: string, beneficiary: string, reason: string, docType?: string, docNumber?: string, debitKey?: string, extra?: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
     // El saldo puede salir de un riel distinto al de la moneda mostrada:
     // COP tiene 3 billeteras separadas (COP / COP_BREB / COP_ACH). `debitKey`
     // dice de cuál se debita; el registro guarda `currency` para el display.
     const key = debitKey || currency;
-    if (!currentUser || getBalance(key) < amount) return;
-    const newBal = { ...currentUser.balances, [key]: getBalance(key) - amount };
+    if (!currentUser) return { ok: false, error: 'Tu sesión expiró. Vuelve a iniciar sesión.' };
+    if (getBalance(key) < amount) return { ok: false, error: 'Saldo insuficiente en la cuenta de la que sale el retiro.' };
+    // El DÉBITO y la SOLICITUD los hace el servidor en un solo paso
+    // (admin-data solicitar_retiro). Antes el navegador se descontaba con un
+    // guardado que no esperaba y después insertaba él mismo la fila: si el
+    // guardado fallaba la solicitud quedaba sin débito, y una fila insertada a
+    // mano sin débito se "devolvía" al rechazarla.
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const token = getStoredToken();
+    if (!token) return { ok: false, error: 'Tu sesión expiró. Vuelve a iniciar sesión.' };
+    const idemKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    let r: any = null;
+    try {
+      r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          action: 'solicitar_retiro', userId: currentUser.id, amount, currency, debitKey: key,
+          bank, account, beneficiary, reason, idemKey,
+          ...(docType ? { documentType: docType } : {}),
+          ...(docNumber ? { documentNumber: docNumber } : {}),
+          ...(extra ? { extra } : {}),
+        }),
+      }).then(x => x.json()).catch(() => null);
+    } catch { r = null; }
+    if (!r?.ok) return { ok: false, error: r?.error ?? 'No pudimos registrar la solicitud. Revisa tus movimientos antes de repetirla.' };
+    // Solo con la solicitud confirmada se refleja el saldo (el que devolvió la
+    // base, o el descuento local si no vino).
+    const newBal = r.balances && typeof r.balances === 'object' ? { ...currentUser.balances, ...r.balances } : { ...currentUser.balances, [key]: getBalance(key) - amount };
     pendingWriteUntilRef.current = Date.now() + 10000;
     setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: newBal } : u));
-    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
-    saveTx({
-      userId: currentUser.id,
-      userName: currentUser.name,
-      userRole: currentUser.role,
-      type: 'send',
-      initials: 'EN',
-      title: `Envío ${currency}`,
-      date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(),
-      amount, currency, status: 'Pendiente', bank, account, beneficiary, reason,
-      ...(docType ? { documentType: docType } : {}),
-      ...(docNumber ? { documentNumber: docNumber } : {}),
-    }).catch(() => {});
+    fetchData();
+    return { ok: true };
   };
 
   const performConversion = async (src: string, tgt: string, amtS: number, amtT: number, fee: number, coupon?: string): Promise<{ error?: string }> => {
@@ -1738,15 +2512,6 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
     const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    const creditFee = () => {
-      if (fee > 0 && isSupabaseConfigured && SURL) {
-        fetch(`${SURL}/functions/v1/admin-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'credit_conversion_fee', currency: src, amount: fee, fromUserId: currentUser.id, note: `Comisión conversión ${src}→${tgt}` }),
-        }).catch(() => {});
-      }
-    };
 
     // ── Vía SEGURA: el SERVIDOR valida saldo y que el monto recibido cuadre
     //    con la tasa real, y aplica los deltas (no acepta saldos absolutos del
@@ -1760,7 +2525,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'apply_conversion', userId: currentUser.id, src, tgt, amtS, amtT, fee, coupon }),
         }).then(x => x.json()).catch(() => null);
-        if (r?.success) { creditFee(); return {}; }
+        // La parte de Lincoin queda registrada en la propia conversión (servidor).
+        if (r?.success) return {};
         // Rechazo de negocio del servidor (tasa/saldo/parámetros) → revertir y avisar.
         const HARD = ['Saldo insuficiente', 'El monto de la conversión no coincide con la tasa vigente.', 'Parámetros de conversión inválidos'];
         if (r?.error && HARD.includes(String(r.error))) {
@@ -1773,27 +2539,61 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
 
     // ── LEGACY (respaldo si apply_conversion no está desplegado) ──
-    saveUser({ ...currentUser, balances: newBal }).catch(() => {});
+    saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
     saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
-    creditFee();
     return {};
   };
 
-  const approveDeposit = async (txId: number) => {
-    // Vía preferida: RPC SECURITY DEFINER (2026_admin_treasury_rpcs.sql) —
-    // los updates directos a filas de OTROS usuarios los bloquea RLS en
-    // silencio. Si el RPC no está deployado, cae al camino directo viejo.
-    if (isSupabaseConfigured) {
-      try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_approve_deposit', { p_tx_id: txId });
-        if (!rpcErr && (rpc as any)?.ok) { await fetchData(); return; }
-        if (!rpcErr && (rpc as any)?.error) console.error('[approveDeposit] RPC error:', (rpc as any).error);
-      } catch { /* fallback directo */ }
+  // ¿El RPC NO existe (falta su migración)? Solo en ese caso se usa el camino
+  // directo viejo. Si el RPC respondió —aunque sea con un error de negocio
+  // como "ya completado"— manda él: antes un doble clic hacía que el segundo
+  // pedido recibiera "already_completed", cayera al camino directo y volviera
+  // a acreditar el saldo desde el navegador.
+  const rpcNoExiste = (e: any) => !!e && /42883|PGRST202|could not find the function|function .* does not exist/i.test(`${e?.code ?? ''} ${e?.message ?? ''}`);
+
+  // ── Tesorería: aprobar / rechazar depósitos y retiros ──────────────────
+  // Devuelven el RESULTADO para que la pantalla diga la verdad. Antes la
+  // pantalla mostraba "aprobado" siempre: las funciones de la base pedían un
+  // id numérico, los movimientos tienen UUID, el error no era "función no
+  // existe" y se tomaba como éxito — no se aprobaba ni se devolvía nada.
+  type ResTesoreria = { ok: boolean; error?: string };
+  const textoTesoreria = (code: unknown): string => {
+    const c = String(code ?? '');
+    if (c === 'no_pendiente') return 'Ese movimiento ya no está pendiente: alguien más lo resolvió o cambió de estado.';
+    if (c === 'forbidden') return 'Tu cuenta no tiene permiso para esta acción.';
+    if (c === 'tx_not_found') return 'No se encontró el movimiento.';
+    return c || 'No se pudo completar.';
+  };
+  // null = la función no existe en la base: se usa el camino viejo.
+  const llamarTesoreria = async (fn: string, args: Record<string, unknown>): Promise<ResTesoreria | null> => {
+    try {
+      const { data, error } = await supabase.rpc(fn, args);
+      if (rpcNoExiste(error)) return null;
+      if (error) {
+        const viejo = /22P02|bigint/i.test(`${error.code ?? ''} ${error.message ?? ''}`);
+        return { ok: false, error: viejo ? 'La base tiene la versión vieja de esta función. Hay que correr el SQL de Tesorería (2026_zz8_tesoreria_uuid).' : (error.message || 'No se pudo completar.') };
+      }
+      if ((data as any)?.error) return { ok: false, error: textoTesoreria((data as any).error) };
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Sin respuesta del servidor. Revisa el estado del movimiento antes de repetir.' };
+    } finally {
+      fetchData();
     }
-    const tx = transactions.find(t => t.id === txId);
-    if (!tx) return;
+  };
+
+  const approveDeposit = async (txId: any): Promise<ResTesoreria> => {
+    // Vía preferida: RPC SECURITY DEFINER — los updates directos a filas de
+    // OTROS usuarios los bloquea RLS en silencio. Si el RPC no está
+    // deployado, cae al camino directo viejo.
+    if (isSupabaseConfigured) {
+      const r = await llamarTesoreria('admin_approve_deposit', { p_tx_id: txId });
+      if (r) return r;
+    }
+    const tx = transactions.find(t => String(t.id) === String(txId));
+    if (!tx || tx.status !== 'Pendiente') return { ok: false, error: textoTesoreria('no_pendiente') };
     const user = users.find(u => u.id === tx.userId);
-    if (!user) return;
+    if (!user) return { ok: false, error: 'No se encontró el cliente.' };
     const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
     if (isSupabaseConfigured) {
       // Route balance update to the correct DB column to avoid fiat/crypto conflict
@@ -1807,14 +2607,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       const { error } = await supabase.from('users').update(colUpdate).eq('id', user.id);
       if (error) {
         console.error('[approveDeposit] Balance update failed:', error.message, error.hint, error.code, { userId: user.id, newBal });
-      } else {
-        setUsers(prev => prev.map(u => u.id === user.id ? { ...u, balances: newBal } : u));
-        if (currentUser?.id === user.id) setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
+        return { ok: false, error: `No se pudo acreditar el saldo: ${error.message}` };
       }
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, balances: newBal } : u));
+      if (currentUser?.id === user.id) setCurrentUser(prev => prev ? { ...prev, balances: newBal } : prev);
     } else {
       lsUpsertUser({ ...user, balances: newBal });
     }
-    await updateTxStatus(txId, { status: 'Completado' });
+    await updateTxStatus(tx.id, { status: 'Completado' });
     // Auto-credit the matching treasury account so the balance stays in sync
     const currentTreasury: TreasuryAccount[] = config.treasuryAccounts || [];
     const matchingAcc = currentTreasury.find((a: any) => a.currency === tx.currency);
@@ -1825,67 +2625,64 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       updateConfig({ treasuryAccounts: updatedTreasury });
     }
     fetchData();
+    return { ok: true };
   };
 
-  const rejectDeposit = async (id: number) => {
+  const rejectDeposit = async (id: any): Promise<ResTesoreria> => {
     if (isSupabaseConfigured) {
-      try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_reject_deposit', { p_tx_id: id });
-        if (!rpcErr && (rpc as any)?.ok) { await fetchData(); return; }
-      } catch { /* fallback directo */ }
+      const r = await llamarTesoreria('admin_reject_deposit', { p_tx_id: id });
+      if (r) return r;
     }
     await updateTxStatus(id, { status: 'Rechazado' });
+    return { ok: true };
   };
 
-  const completeWithdrawal = async (id: number) => {
-    const tx = transactions.find(t => t.id === id);
+  const completeWithdrawal = async (id: any): Promise<ResTesoreria> => {
+    const tx = transactions.find(t => String(t.id) === String(id));
+    const sincronizarTesoreria = () => {
+      if (!tx) return;
+      const t0: TreasuryAccount[] = config.treasuryAccounts || [];
+      const acc = t0.find((a: any) => a.currency === tx.currency);
+      if (acc) updateConfig({ treasuryAccounts: t0.map((a: any) => a.id === acc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a) });
+    };
     if (isSupabaseConfigured) {
-      try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_complete_withdrawal', { p_tx_id: id });
-        if (!rpcErr && (rpc as any)?.ok) {
-          await fetchData();
-          // Sync de la cuenta de tesorería (igual que el camino directo)
-          if (tx) {
-            const t0: TreasuryAccount[] = config.treasuryAccounts || [];
-            const acc = t0.find((a: any) => a.currency === tx.currency);
-            if (acc) updateConfig({ treasuryAccounts: t0.map((a: any) => a.id === acc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a) });
-          }
-          return;
-        }
-      } catch { /* fallback directo */ }
+      const r = await llamarTesoreria('admin_complete_withdrawal', { p_tx_id: id });
+      if (r) { if (r.ok) sincronizarTesoreria(); return r; }
     }
+    if (!tx || tx.status !== 'Pendiente') return { ok: false, error: textoTesoreria('no_pendiente') };
     await updateTxStatus(id, { status: 'Completado' });
-    // Auto-debit the matching treasury account so the balance stays in sync
-    if (tx) {
-      const currentTreasury: TreasuryAccount[] = config.treasuryAccounts || [];
-      const matchingAcc = currentTreasury.find((a: any) => a.currency === tx.currency);
-      if (matchingAcc) {
-        const updatedTreasury = currentTreasury.map((a: any) =>
-          a.id === matchingAcc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a
-        );
-        updateConfig({ treasuryAccounts: updatedTreasury });
-      }
-    }
+    sincronizarTesoreria();
+    return { ok: true };
   };
 
-  const rejectWithdrawal = async (id: number, reason: string) => {
+  const rejectWithdrawal = async (id: any, reason: string): Promise<ResTesoreria> => {
     if (isSupabaseConfigured) {
-      try {
-        const { data: rpc, error: rpcErr } = await supabase.rpc('admin_reject_withdrawal', { p_tx_id: id, p_reason: reason || null });
-        if (!rpcErr && (rpc as any)?.ok) { await fetchData(); return; }
-      } catch { /* fallback directo */ }
+      const r = await llamarTesoreria('admin_reject_withdrawal', { p_tx_id: id, p_reason: reason || null });
+      if (r) return r;
     }
-    const tx = transactions.find(t => t.id === id);
-    if (!tx) return;
+    const tx = transactions.find(t => String(t.id) === String(id));
+    if (!tx || tx.status !== 'Pendiente') return { ok: false, error: textoTesoreria('no_pendiente') };
     const user = users.find(u => u.id === tx.userId);
-    if (user) {
-      const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
-      await saveUser({ ...user, balances: newBal });
-      await updateTxStatus(id, { status: 'Rechazado', reason } as any);
-    }
+    if (!user) return { ok: false, error: 'No se encontró el cliente.' };
+    const newBal = { ...user.balances, [tx.currency]: (user.balances[tx.currency] || 0) + tx.amount };
+    await saveUser({ ...user, balances: newBal }, false, true);
+    await updateTxStatus(id, { status: 'Rechazado', reason } as any);
+    return { ok: true };
   };
 
-  const verifyUser = async (id: string, s: string) => { await updateUserProfile(id, { kycStatus: s }); };
+  // El KYC lo cambia SOLO el servidor (exige el permiso de cumplimiento y el
+  // 2FA de la sesión). Antes se escribía directo en la base con la sesión del
+  // admin: cualquier rol "aprobaba" y la regla del servidor no contaba.
+  // Devuelve el motivo si no se aplicó.
+  const verifyUser = async (id: string, s: string): Promise<string | null> => {
+    try {
+      const r: any = await llamarFuncion('admin-data', { action: 'set_kyc_status', userId: id, kycStatus: s });
+      if (r?.success) { fetchData(); return null; }
+      return String(r?.error || r?.message || 'El servidor no aplicó el cambio de KYC.');
+    } catch {
+      return 'No se pudo contactar el servidor. No se cambió el KYC.';
+    }
+  };
   const toggleUserBlock = async (id: string, b: boolean, r?: string) => { await updateUserProfile(id, { isBlocked: b, blockReason: r }); };
 
   // --- ADMIN ---
@@ -1925,7 +2722,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     } catch { return false; }
   };
 
-  const sendCuypayPayment = async (recipientCode: string, amount: number, currency: string): Promise<{ error?: string }> => {
+  const sendCuypayPayment = async (recipientCode: string, amount: number, currency: string): Promise<{ error?: string; desconocido?: boolean }> => {
     if (!currentUser) return { error: 'No autenticado' };
     if (!amount || !isFinite(amount) || amount <= 0) return { error: 'Monto inválido' };
     if (!recipientCode || typeof recipientCode !== 'string') return { error: 'Código de destinatario inválido' };
@@ -2036,7 +2833,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           p_amount: amount,
           p_currency: currency,
         }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('rpc_timeout')), 10000)),
+        // 25 s: con 10 s, en una red lenta se cortaba un pago que el servidor
+        // sí estaba haciendo, y la pantalla invitaba a repetirlo.
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('rpc_timeout')), 25000)),
       ]);
       const { data: rpcData, error: rpcError } = rpcResult as any;
       if (rpcError) {
@@ -2059,30 +2858,27 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       }
     } catch (e: any) {
       const msg = (e?.message || '') as string;
-      if (msg !== 'rpc_timeout') {
-        console.warn('[pay] RPC exception, falling back to direct writes:', msg);
-        // Don't return error — fall through to direct writes
+      if (msg === 'rpc_timeout') {
+        // SIN RESPUESTA NO ES "NO SALIÓ". El pago se hace en el servidor y la
+        // respuesta pudo perderse con el pago ya hecho. Antes se decía "tu
+        // saldo no se movió, reintenta", y el reintento lo duplicaba.
+        refreshAll().catch(() => {});
+        return { desconocido: true, error: 'No pudimos confirmar el pago a tiempo. Puede que sí haya salido: revisa tus Movimientos antes de repetirlo.' };
       }
+      console.warn('[pay] RPC exception:', msg);
     }
 
-    // RPC timed out or not deployed — fallback: direct writes for sender only.
-    // Recipient cannot receive without the SECURITY DEFINER function.
-    const withWriteTimeout = (p: Promise<any>) =>
-      Promise.race([p, new Promise<{ data: null; error: Error }>((_, rej) => setTimeout(() => rej(new Error('write_timeout')), 8000))]);
-    const [balRes, txRes] = await Promise.allSettled([
-      withWriteTimeout(supabase.from('users').update({ balances: senderNewBal }).eq('id', snapSenderId)),
-      withWriteTimeout(supabase.from('transactions').insert({
-        user_id: snapSenderId,
-        type: 'pay_sent', amount, currency, status: 'Completado',
-        raw_data: { initials: 'PA', title: `PAY a ${snapRecipientName}`, recipientName: snapRecipientName, date: now, createdAt: new Date().toISOString(), userName: snapSenderName },
-      })),
-    ]);
-    const balErr = balRes.status === 'fulfilled' ? (balRes.value as any)?.error : balRes.reason;
-    const txErr = txRes.status === 'fulfilled' ? (txRes.value as any)?.error : txRes.reason;
-    if (balErr) console.error('[pay] balance update failed:', balErr?.message || balErr);
-    if (txErr) console.error('[pay] tx insert failed:', txErr?.message || txErr);
-    try { await Promise.race([refreshAll(), new Promise<void>((_, rej) => setTimeout(() => rej(), 5000))]); } catch { /* ignore refresh timeout */ }
-    return {};
+    // Acá había un respaldo que, si el RPC daba timeout o no estaba
+    // desplegado, ESCRIBÍA LOS SALDOS DIRECTO desde el navegador:
+    // supabase.from('users').update({ balances: ... }). Con importes
+    // calculados en el cliente y la validación de fondos también en el
+    // cliente. Quien controla el navegador controla las dos cosas.
+    //
+    // Mover dinero es exclusivamente del servidor. Si el RPC no responde, el
+    // pago no ocurre y se dice: es mejor que el usuario reintente a que el
+    // saldo lo escriba la pantalla.
+    refreshAll().catch(() => {});
+    return { error: 'No pudimos completar el pago en este momento. Revisa tus Movimientos antes de repetirlo.' };
   };
 
   const deleteUser = async (id: string): Promise<{ error?: string }> => {
@@ -2102,15 +2898,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const action = isSelf ? 'delete_self' : 'delete_user';
     const body = isSelf ? { action } : { action, userId: id };
 
-    // Use direct fetch so we can pass the bypass token for admin-bypass sessions.
+    // Fetch directo para poder mandar el JWT del admin en el header.
     let edgeFnOk = false;
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const cu2 = currentUserRef.current;
-      const authHeader2 = cu2?.id === 'admin-bypass'
-        ? `AdminBypass ${SEED_ADMIN_PASSWORD}`
-        : `Bearer ${getStoredToken() ?? SKEY}`;
+      const authHeader2 = `Bearer ${getStoredToken() ?? SKEY}`;
       const result = await safe(
         fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
@@ -2148,6 +2941,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const { error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) return error.message;
     setIsPasswordRecovery(false);
+    recoveryRef.current = false;
+    // Se CIERRA la sesión de recuperación: obliga a iniciar sesión de verdad,
+    // con contraseña + 2FA + código de correo. Si se dejara abierta, el enlace
+    // del correo seguiría siendo una entrada al panel sin segundo factor.
+    try { await supabase.auth.signOut(); } catch { /* */ }
+    setCurrentUser(null);
     return null;
   };
 
@@ -2195,7 +2994,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   return (
     <DatabaseContext.Provider value={{
-      currentUser, isAuthLoading, users, transactions, registerUser, updateUserProfile, updateUserRawData, loginUser, loginWithGoogle, logoutUser,
+      currentUser, isAuthLoading, users, transactions, syncError, registerUser, updateUserProfile, updateUserRawData, actualizarListaRaw, loginUser, loginWithGoogle, logoutUser,
       getBalance, bumpLocalBalance, addLocalTx, getPersonalMovements, getUserNotifications, markNotificationsRead,
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,
@@ -2203,8 +3002,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
-      mfaPending, completeMFALogin, cancelMFALogin,
-      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode,
+      mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin, ultimoCierre,
+      getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
+      emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
+      passkeyPending, mfaPasos, loginConPasskey,
+      enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode, verificarCodigo2fa,
     }}>
       {children}
     </DatabaseContext.Provider>

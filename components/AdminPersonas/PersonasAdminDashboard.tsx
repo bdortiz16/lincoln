@@ -52,7 +52,7 @@ export const PersonasAdminDashboard: React.FC<PersonasAdminDashboardProps> = ({ 
     const navItems: Array<{ id: Section; icon: any; label: string }> = [
         { id: 'overview',      icon: TrendingUp,    label: 'Resumen' },
         { id: 'users',         icon: Users,         label: 'Usuarios' },
-        { id: 'compliance',    icon: ShieldCheck,   label: 'Compliance' },
+        { id: 'compliance',    icon: ShieldCheck,   label: 'Cumplimiento' },
         { id: 'accounting',    icon: BookOpen,      label: 'Contabilidad' },
         { id: 'treasury',      icon: Banknote,      label: 'Tesorería' },
         { id: 'fx',            icon: ArrowRightLeft,label: 'Tasas FX' },
@@ -85,7 +85,7 @@ export const PersonasAdminDashboard: React.FC<PersonasAdminDashboardProps> = ({ 
                 </button>
                 <LincoinIcon size={32} className="rounded-lg shrink-0" />
                 <div className="flex-1 min-w-0">
-                    <p className="font-bold text-xs leading-tight" style={{ color: NAVY }}>LINCOIN · Admin</p>
+                    <p className="font-bold text-xs leading-tight" style={{ color: NAVY }}>Lincoin · Admin</p>
                     <p className="text-xs text-slate-500 truncate">{currentLabel}</p>
                 </div>
                 <span
@@ -117,7 +117,7 @@ export const PersonasAdminDashboard: React.FC<PersonasAdminDashboardProps> = ({ 
                     <div className="flex items-center gap-3 min-w-0">
                         <LincoinIcon size={40} className="rounded-xl shrink-0" />
                         <div className="min-w-0">
-                            <p className="font-bold text-sm" style={{ color: NAVY }}>LINCOIN</p>
+                            <p className="font-bold text-sm" style={{ color: NAVY }}>Lincoin</p>
                             <p className="text-xs text-slate-500 uppercase tracking-wider truncate">Admin Personas</p>
                         </div>
                     </div>
