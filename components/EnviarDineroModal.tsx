@@ -811,8 +811,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   return (
     <>
       {sendOtpOpen && (
-          <div className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ background: 'rgba(4,5,5,0.72)', backdropFilter: 'blur(4px)' }}>
-              <div style={{ width: '100%', maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '26px 24px', fontFamily: "'Archivo', system-ui, sans-serif" }} className="rounded-t-3xl sm:rounded-[18px]">
+          // Centrado también en el celular (antes era una hoja pegada abajo).
+          <div className="fixed inset-0 z-[80] p-4 overflow-y-auto" style={{ background: 'rgba(4,5,5,0.72)', backdropFilter: 'blur(4px)', display: 'grid', placeItems: 'center' }}>
+              <div style={{ width: '100%', maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, padding: '26px 24px', fontFamily: "'Archivo', system-ui, sans-serif" }}>
                   <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
                       <div style={{ width: 42, height: 42, borderRadius: '50%', border: '1.5px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.08)', display: 'grid', placeItems: 'center' }}>
                           <ShieldCheck size={20} color="#4ADE80" />
