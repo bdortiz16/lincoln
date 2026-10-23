@@ -1,8 +1,9 @@
 # Webhooks: por qué van bajo nuestro dominio
 
 Las URLs que se le dan a un socio (un banco, un proveedor de correo) apuntan a
-`lincoin.me/webhooks/...`, no a la URL cruda de Supabase. El reenvío está en
-`vercel.json`.
+`lincoin.me/webhooks/...`, no a la URL cruda de Supabase. El reenvío lo hace el
+worker de Cloudflare (`cloudflare/worker.js`), que es quien sirve lincoin.me; en
+`vercel.json` está la misma regla para la copia que todavía publica Vercel.
 
 > Esta explicación vivía dentro de `vercel.json` como una clave `_comment_rewrites`.
 > **Vercel rechaza las propiedades que no están en su esquema**, así que el deploy

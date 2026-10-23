@@ -8,11 +8,11 @@ que aparece en el selector del dashboard.
 
 El proyecto correcto es el que tiene configurado el secreto
 `SUPABASE_PROJECT_REF` del workflow `.github/workflows/deploy-edge-functions.yml`
-— el mismo al que apunta `VITE_SUPABASE_URL` en Vercel.
+— el mismo al que apunta `VITE_SUPABASE_URL` en Cloudflare (variables del Worker lincoln).
 
 Tres formas de comprobarlo, de la más rápida a la más lenta:
 
-1. **Vercel → Settings → Environment Variables → `VITE_SUPABASE_URL`.** El
+1. **Cloudflare → Workers & Pages → lincoln → Settings → Build → Variables → `VITE_SUPABASE_URL`.** El
    subdominio de esa URL es el proyecto.
 2. **Admin → Cumplimiento → Lincoin Risk.** Si el padrón falla, el panel dice
    las cuatro primeras letras de la base a la que le preguntó el servidor.

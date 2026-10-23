@@ -12,7 +12,7 @@ const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 // Remitente: idealmente no-reply@lincoin.me (dominio verificado en Resend).
 const FROM_EMAIL   = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
-const APP_URL      = (Deno.env.get('APP_BASE_URL') || 'https://lincoln-psi.vercel.app').replace(/\/+$/, '')
+const APP_URL      = (Deno.env.get('APP_BASE_URL') || 'https://lincoin.me').replace(/\/+$/, '')
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
 const CORS = {

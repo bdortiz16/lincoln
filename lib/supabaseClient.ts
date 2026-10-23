@@ -54,7 +54,7 @@ const isPersonasKeyConfigured = !!SUPABASE_PERSONAS_ANON_KEY;
 export const isSupabasePersonasConfigured = isPersonasUrlConfigured && isPersonasKeyConfigured;
 
 if (!isSupabasePersonasConfigured) {
-    console.warn('Supabase Personas no está configurado. Agrega VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY a Vercel.');
+    console.warn('Supabase Personas no está configurado. Agrega VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY en las variables de compilación del hosting (Cloudflare → Worker lincoln).');
 }
 
 const validPersonasUrl = isSupabasePersonasConfigured ? SUPABASE_PERSONAS_URL : 'https://placeholder-personas.supabase.co';

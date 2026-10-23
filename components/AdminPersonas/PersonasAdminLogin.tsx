@@ -31,7 +31,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
     const handleLogin = async () => {
         setError(null);
         if (!isSupabasePersonasConfigured) {
-            setError('Supabase Personas no está configurado. Revisa VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY en Vercel.');
+            setError('Supabase Personas no está configurado. Revisa VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY en las variables de compilación del hosting (Cloudflare → Worker lincoln).');
             return;
         }
         if (!email.trim() || !password) {

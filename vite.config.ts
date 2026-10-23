@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
         // Acá se horneaban GEMINI_API_KEY y API_KEY en el bundle del
         // navegador. Hoy no las lee nadie —quedaron del andamiaje inicial—
         // así que compilaban a undefined; pero el día que alguien definiera
-        // esa variable en Vercel, la llave quedaría publicada en el JS que
+        // esa variable en el hosting, la llave quedaría publicada en el JS que
         // descarga cualquiera. Una llave de servidor no se inyecta al cliente.
         // Sello de versión visible en la UI — para saber al instante si el
         // navegador tiene el bundle nuevo o uno cacheado.

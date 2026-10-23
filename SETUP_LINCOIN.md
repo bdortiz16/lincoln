@@ -45,13 +45,14 @@ GASFREE_NET           = nile      # testnet — sin USDT real
 ```
 > La mnemónica de arriba es SOLO para testnet (apareció en chat). Para mainnet, genera una nueva de forma segura.
 
-## 5. Frontend (local + Vercel)
+## 5. Frontend (local + Cloudflare)
 `.env` local (gitignored):
 ```
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
 ```
-En Vercel: Project → Settings → Environment Variables (las mismas).
+En Cloudflare: Workers & Pages → lincoln → Settings → Build → Variables and secrets (las mismas).
+Al agregar o cambiar una, hay que volver a compilar (Retry build) para que entre en la página.
 
 ## 6. Probar GasFree
 ```bash
