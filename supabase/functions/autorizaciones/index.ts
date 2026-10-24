@@ -568,7 +568,18 @@ Deno.serve(async (req) => {
       for (const f of (filas ?? []) as any[]) codigo[String(f.id)] = codigoDe(f)
       // El origen de fondos es para Cumplimiento: a la empresa no se le manda.
       const sinOrigen = <T extends Solicitud>(x: T) => { const { origenFondos: _o, ...r } = x; return r }
-      return json({ ok: true, miId: codigoDe(emp), autorizadas: autorizadas.map(a => ({ ...sinOrigen(a), codigo: codigo[a.id] ?? '' })), solicitudes: solicitudes.map(s => ({ ...sinOrigen(s), estado: etapa(s), codigo: codigo[s.id] ?? '' })) })
+      // Cuánto lleva cada aprobado contra su tope este mes: la misma cuenta
+      // que ve el operador en su portal (retiros a banco/Bre-B en curso o hechos).
+      const usado: Record<string, number> = {}
+      if (autorizadas.length) {
+        const ini = new Date(); ini.setDate(1); ini.setHours(0, 0, 0, 0)
+        const { data: tx } = await db.from('transactions').select('user_id, amount, status').in('user_id', autorizadas.map(a => a.id)).eq('type', 'dispersion').gte('created_at', ini.toISOString())
+        for (const t of (tx ?? []) as any[]) {
+          if (!['Completado', 'Procesando', 'Pendiente'].includes(String(t.status))) continue
+          usado[String(t.user_id)] = (usado[String(t.user_id)] ?? 0) + (Number(t.amount) || 0)
+        }
+      }
+      return json({ ok: true, miId: codigoDe(emp), autorizadas: autorizadas.map(a => ({ ...sinOrigen(a), codigo: codigo[a.id] ?? '', usadoMes: usado[a.id] ?? 0 })), solicitudes: solicitudes.map(s => ({ ...sinOrigen(s), estado: etapa(s), codigo: codigo[s.id] ?? '' })) })
     }
 
     // La empresa ve la foto del operador sosteniendo su documento, para saber
