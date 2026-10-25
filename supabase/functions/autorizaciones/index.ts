@@ -43,6 +43,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
+import { leerPorPaginas } from '../_shared/paginas.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -562,24 +563,35 @@ Deno.serve(async (req) => {
 
     if (accion === 'listar') {
       // Códigos ID de cada operador, para cargarles saldo o enviarles.
+      // De a 150 ids y solo el código: con miles de clientes, un .in() con
+      // todos armaba una URL que el servidor rechaza, y raw_data entero de
+      // cada uno pesaba megas.
       const ids = [...autorizadas, ...solicitudes].map(x => x.id)
-      const { data: filas } = ids.length ? await db.from('users').select('id, raw_data, kyc_status').in('id', ids) : { data: [] as any[] }
       const codigo: Record<string, string> = {}
-      for (const f of (filas ?? []) as any[]) codigo[String(f.id)] = codigoDe(f)
+      for (let i = 0; i < ids.length; i += 150) {
+        const { data: filas } = await db.from('users').select('id, ref:raw_data->>ownReferralCode').in('id', ids.slice(i, i + 150))
+        for (const f of (filas ?? []) as any[]) codigo[String(f.id)] = codigoDe({ id: f.id, raw_data: { ownReferralCode: f.ref } })
+      }
       // El origen de fondos es para Cumplimiento: a la empresa no se le manda.
       const sinOrigen = <T extends Solicitud>(x: T) => { const { origenFondos: _o, ...r } = x; return r }
       // Cuánto lleva cada aprobado contra su tope este mes: la misma cuenta
       // que ve el operador en su portal (retiros a banco/Bre-B en curso o hechos).
+      // De a 150 clientes y por páginas: con muchos, los movimientos del mes
+      // pasan de las 1.000 filas que PostgREST devuelve de una vez.
       const usado: Record<string, number> = {}
-      if (autorizadas.length) {
+      if (autorizadas.length && body.sinUso !== true) {
         const ini = new Date(); ini.setDate(1); ini.setHours(0, 0, 0, 0)
-        const { data: tx } = await db.from('transactions').select('user_id, amount, status').in('user_id', autorizadas.map(a => a.id)).eq('type', 'dispersion').gte('created_at', ini.toISOString())
-        for (const t of (tx ?? []) as any[]) {
-          if (!['Completado', 'Procesando', 'Pendiente'].includes(String(t.status))) continue
-          usado[String(t.user_id)] = (usado[String(t.user_id)] ?? 0) + (Number(t.amount) || 0)
+        const idsA = autorizadas.map(a => a.id)
+        for (let i = 0; i < idsA.length; i += 150) {
+          await leerPorPaginas(() => db.from('transactions').select('id, user_id, amount, status').in('user_id', idsA.slice(i, i + 150)).eq('type', 'dispersion').gte('created_at', ini.toISOString()), { alLote: (lote) => {
+            for (const t of lote) {
+              if (!['Completado', 'Procesando', 'Pendiente'].includes(String(t.status))) continue
+              usado[String(t.user_id)] = (usado[String(t.user_id)] ?? 0) + (Number(t.amount) || 0)
+            }
+          } })
         }
       }
-      return json({ ok: true, miId: codigoDe(emp), autorizadas: autorizadas.map(a => ({ ...sinOrigen(a), codigo: codigo[a.id] ?? '', usadoMes: usado[a.id] ?? 0 })), solicitudes: solicitudes.map(s => ({ ...sinOrigen(s), estado: etapa(s), codigo: codigo[s.id] ?? '' })) })
+      return json({ ok: true, miId: codigoDe(emp), autorizadas: autorizadas.map(a => ({ ...sinOrigen(a), codigo: codigo[a.id] ?? '', ...(body.sinUso === true ? {} : { usadoMes: usado[a.id] ?? 0 }) })), solicitudes: solicitudes.map(s => ({ ...sinOrigen(s), estado: etapa(s), codigo: codigo[s.id] ?? '' })) })
     }
 
     // La empresa ve la foto del operador sosteniendo su documento, para saber

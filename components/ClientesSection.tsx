@@ -259,8 +259,13 @@ export const ClientesSection: React.FC<Props> = ({ showToast, handleActionRestri
     setSolicitudes(prev => (r.solicitudes ?? []).map((s: PersonaVinculo) => ({ ...s, codigo: s.codigo || prev.find(p => p.id === s.id)?.codigo || '' })));
     if (r.miId) setMiId(String(r.miId));
   };
+  // El uso del tope de cada cliente es lo más pesado de calcular: va al
+  // entrar y en una de cada seis vueltas (cada 2 min); las demás solo traen
+  // las listas, que es lo que tiene que aparecer rápido.
+  const vueltaRef = useRef(0);
   const cargar = async (silencioso = false) => {
-    const r = await llamarFuncion('autorizaciones', { action: 'listar' }, 30000);
+    const conUso = !silencioso || ++vueltaRef.current % 6 === 0;
+    const r = await llamarFuncion('autorizaciones', { action: 'listar', ...(conUso ? {} : { sinUso: true }) }, 30000);
     if (!r?.ok) { if (!silencioso) { setError(r?.error ?? 'No se pudo consultar.'); setAutorizadas([]); } return; }
     setError(null); aplicar(r);
   };

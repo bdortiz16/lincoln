@@ -66,6 +66,24 @@ export interface User {
   [key: string]: any;
 }
 
+// Conteos de TODA la base para el panel: la lista `users` del admin ya no es
+// la base entera (con 100.000 clientes no puede serlo), así que lo que se
+// cuenta se pide al servidor.
+export interface ResumenUsuarios {
+  clientes: number | null; empresas: number | null; pendientes: number | null;
+  verificados: number | null; bloqueados: number | null;
+  /** Cuántos clientes vinieron en la lista del panel. */
+  cargados: number;
+  /** true = hay más clientes que los de la lista: lo demás se busca. */
+  parcial: boolean;
+}
+export interface BusquedaUsuarios { q?: string; tipo?: 'todos' | 'empresas' | 'personas' | 'contadores' | 'pendientes'; pagina?: number; porPagina?: number }
+export interface ResultadoBusquedaUsuarios {
+  ok: boolean; usuarios: User[]; total: number;
+  conteos: { todos: number; empresas: number; personas: number; contadores: number; pendientes: number; verificadas: number } | null;
+  error?: string; sinFuncionBase?: boolean;
+}
+
 interface DatabaseContextType {
   currentUser: User | null;
   isAuthLoading: boolean;
@@ -110,6 +128,14 @@ interface DatabaseContextType {
   bankingOptions: Record<string, BankDetail[]>;
   treasuryAccounts: TreasuryAccount[];
   getAllUsers: () => User[];
+  /** Admin: conteos de toda la base (null hasta la primera lectura). */
+  resumenUsuarios: ResumenUsuarios | null;
+  /** Admin: lo que Lincoin les debe a los clientes por moneda, sumado en el servidor sobre toda la base. */
+  obligaciones: { valor: Record<string, number>; parcial: boolean } | null;
+  /** Admin: busca clientes en el servidor, por páginas; los encontrados quedan también en `users`. */
+  buscarUsuarios: (p: BusquedaUsuarios) => Promise<ResultadoBusquedaUsuarios>;
+  /** Admin: trae del servidor los usuarios de esos ids que no estén en `users`. */
+  asegurarUsuarios: (ids: string[]) => Promise<void>;
   getAllTransactions: () => Transaction[];
   updateTxStatus: (id: number, updates: Partial<Transaction>) => Promise<void>;
   getAllPendingDeposits: () => Transaction[];
@@ -282,6 +308,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // envío en "Procesando" que el cliente ya veía "Completado".
   const [syncError, setSyncError] = useState<{ at: number; motivo: string } | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [resumenUsuarios, setResumenUsuarios] = useState<ResumenUsuarios | null>(null);
+  const [obligaciones, setObligaciones] = useState<{ valor: Record<string, number>; parcial: boolean } | null>(null);
+  // Admin: los clientes que el panel trajo por búsqueda o por id y no vienen
+  // en la lectura general. Se conservan entre lecturas (si no, el cliente
+  // abierto desaparecería cada 30 s) y se piden frescos en cada lectura
+  // (?incluir=), para que su saldo no quede viejo. Los más recientes al final.
+  const extrasRef = useRef<Map<string, User>>(new Map());
   // ⚠️ SEGURIDAD: NO se restaura ninguna sesión desde sessionStorage.
   // Antes se leía 'cuypay_admin_session' y se confiaba en ese JSON tal cual,
   // rol incluido. Cualquiera que pudiera escribir en sessionStorage (un XSS,
@@ -615,7 +648,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           const authHeader = `Bearer ${getStoredToken() ?? SKEY}`;
           const abortCtl = new AbortController();
           const abortTimer = setTimeout(() => abortCtl.abort(), 20000);
-          const fnResult = await fetch(`${SURL}/functions/v1/admin-data`, {
+          const incluir = Array.from(extrasRef.current.keys()).slice(-150).join(',');
+          const fnResult = await fetch(`${SURL}/functions/v1/admin-data${incluir ? `?incluir=${encodeURIComponent(incluir)}` : ''}`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': authHeader },
             signal: abortCtl.signal,
@@ -626,7 +660,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           }).finally(() => clearTimeout(abortTimer)) as any;
           const { data: fnData, error: fnErr } = fnResult;
           if (!fnErr && Array.isArray(fnData?.users)) {
-            const mappedUsers = (fnData.users as any[]).map(mapSupabaseUser);
+            const delServidor = (fnData.users as any[]).map(mapSupabaseUser);
+            // Los que el panel tiene abiertos vinieron frescos (?incluir=):
+            // se actualizan; los que no vinieron se conservan como estaban.
+            const vinieron = new Set(delServidor.map((u: any) => u.id));
+            for (const u of delServidor) if (extrasRef.current.has(u.id)) extrasRef.current.set(u.id, u);
+            const mappedUsers = [...delServidor, ...(Array.from(extrasRef.current.values()) as User[]).filter(u => !vinieron.has(u.id))];
+            if (fnData.resumenUsuarios && typeof fnData.resumenUsuarios === 'object') setResumenUsuarios(fnData.resumenUsuarios as ResumenUsuarios);
+            if (fnData.obligaciones && typeof fnData.obligaciones === 'object') setObligaciones({ valor: fnData.obligaciones, parcial: fnData.obligacionesParciales === true });
             // Si hay un guardado optimista reciente (ej. admin activando OTC de OTRO
             // cliente vía updateUserProfile), este poll puede llegar ANTES de que ese
             // guardado se refleje en la DB y pisarlo con el valor viejo — el toggle
@@ -705,7 +746,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         return;
       } else {
         directUsers = await supabase.from('users').select('*').eq('id', cu?.id ?? '');
-        directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '');
+        // Los 1.000 más NUEVOS, en orden. Sin orden ni tope, PostgREST corta en
+        // 1.000 filas cualesquiera: a una empresa con más movimientos se le
+        // podían quedar afuera justo los de hoy.
+        directTx = await supabase.from('transactions').select('*').eq('user_id', cu?.id ?? '').order('created_at', { ascending: false }).limit(1000);
       }
       if (directUsers.error) console.warn('[fetchData] direct users SELECT error:', directUsers.error.code, directUsers.error.message);
       if (directTx.error) console.warn('[fetchData] direct tx SELECT error:', directTx.error.code, directTx.error.message);
@@ -772,10 +816,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       let edgeTxs: any[] = [];
       let edgeDebug: any = null;
       // La lectura por la edge (ids hermanos, estado más fresco) es una
-      // función del servidor: en cada vuelta de 10 s era una invocación por
-      // cliente conectado. Se pide como mucho una vez por minuto, salvo que el
-      // SELECT directo no haya traído nada.
-      const tocaEdge = !rpcTxs.length || Date.now() - ultimaEdgeRef.current > 60_000;
+      // función del servidor: en cada vuelta era una invocación por cliente
+      // conectado, y con miles conectados eso se cobra. Se pide al entrar y
+      // después cada 5 minutos, salvo que el SELECT directo no haya traído
+      // nada (lo nuevo ya lo avisa el tiempo real).
+      const tocaEdge = !rpcTxs.length || Date.now() - ultimaEdgeRef.current > 300_000;
       if (cu?.id && tocaEdge) {
         ultimaEdgeRef.current = Date.now();
         const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -919,9 +964,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   useEffect(() => {
     if (!isSupabaseConfigured || !hayUsuario) return;
     const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden';
-    // Admin trae la base entera en cada lectura: cada 30 s basta, el tiempo
-    // real avisa lo urgente. Un cliente lee solo lo suyo: cada 10 s.
-    const cada = esAdminUsuario ? 30000 : 10000;
+    // Admin: cada 30 s, y el tiempo real avisa lo urgente. Un cliente lee
+    // solo lo suyo y el tiempo real (filtrado a SUS filas, abajo) le avisa
+    // al instante de lo que le llega: la vuelta periódica es solo la red de
+    // seguridad, cada 30 s. Cada 10 s eran, con miles de clientes
+    // conectados, cientos de lecturas por segundo contra la base.
+    const cada = 30000;
     const interval = setInterval(() => {
       if (!visible() || lecturaEnCursoRef.current) return;
       if (Date.now() - ultimaLecturaRef.current < cada - 1000) return;
@@ -931,18 +979,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     document.addEventListener('visibilitychange', alVolver);
     // Debounce realtime: coalesce rapid-fire events into a single fetchData call (500ms)
     // This prevents web+mobile sessions from conflicting when both receive the same event burst
+    //
+    // El admin recibe los cambios de TODA la plataforma: con muchos clientes
+    // eso es un evento cada pocos segundos, y releer el panel con cada uno lo
+    // dejaba leyendo sin parar. Se relee como mucho cada 10 s.
     let realtimeTimer: ReturnType<typeof setTimeout> | null = null;
     const debouncedFetch = () => {
       if (realtimeTimer) clearTimeout(realtimeTimer);
-      realtimeTimer = setTimeout(() => { realtimeTimer = null; fetchData(); }, 500);
+      const espera = esAdminUsuario ? Math.max(500, 10000 - (Date.now() - ultimaLecturaRef.current)) : 500;
+      realtimeTimer = setTimeout(() => { realtimeTimer = null; fetchData(); }, espera);
     };
+    // Un cliente se suscribe SOLO a sus filas. Sin filtro, el servidor de
+    // tiempo real evalúa cada cambio de la plataforma contra cada cliente
+    // conectado (su RLS, uno por uno): con miles conectados, cada movimiento
+    // de cualquiera costaba miles de chequeos.
+    const miId = currentUserRef.current?.id ?? '';
+    const filtroUsuarios = esAdminUsuario ? {} : { filter: `id=eq.${miId}` };
+    const filtroMovs = esAdminUsuario ? {} : { filter: `user_id=eq.${miId}` };
     const channel = supabase.channel(channelNameRef.current)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, debouncedFetch)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, debouncedFetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users', ...filtroUsuarios }, debouncedFetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions', ...filtroMovs }, debouncedFetch)
       .subscribe();
 
     return () => { clearInterval(interval); document.removeEventListener('visibilitychange', alVolver); if (realtimeTimer) clearTimeout(realtimeTimer); supabase.removeChannel(channel); };
-  }, [fetchData, hayUsuario, esAdminUsuario]);
+  }, [fetchData, hayUsuario, esAdminUsuario, currentUser?.id]);
 
   // Facturas al día: con la cuenta de una EMPRESA abierta (cualquier
   // pantalla), se le pide a facturación que emita lo que quedó atrasado —
@@ -2689,6 +2749,53 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const bankingOptions = config.bankingOptions || {};
   const treasuryAccounts = config.treasuryAccounts || [];
   const getAllUsers = () => users;
+
+  // ── Admin: clientes bajo demanda ─────────────────────────────────────
+  // La lectura general trae el conjunto de trabajo (equipo, pendientes, OTC,
+  // recientes, dueños de los movimientos). Lo demás se pide aquí y queda en
+  // `users`, así cualquier pantalla que busque por id lo encuentra.
+  const postAdminData = async (body: Record<string, unknown>, ms = 20000): Promise<any> => {
+    if (!SUPABASE_URL_FOR_FN) return { ok: false, error: 'Sin servidor configurado.' };
+    const token = getStoredToken();
+    try {
+      const r = await fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token ?? SUPABASE_ANON_FOR_FN}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(ms),
+      });
+      const d = await r.json().catch(() => ({}));
+      return r.ok ? d : { ok: false, ...(d && typeof d === 'object' ? d : {}), error: d?.error ?? `El servidor respondió ${r.status}.` };
+    } catch (e: any) { return { ok: false, error: /timeout|abort/i.test(String(e?.message)) ? 'El servidor tardó demasiado.' : String(e?.message ?? e) }; }
+  };
+  const sumarAExtras = (lista: User[]) => {
+    if (!lista.length) return;
+    for (const u of lista) { extrasRef.current.delete(u.id); extrasRef.current.set(u.id, u); }
+    // Tope: los 400 más recientes. Los demás se vuelven a buscar si hacen falta.
+    while (extrasRef.current.size > 400) extrasRef.current.delete(extrasRef.current.keys().next().value as string);
+    const guardando = Date.now() < pendingWriteUntilRef.current;
+    setUsers(prev => {
+      const m = new Map(prev.map(u => [u.id, u]));
+      for (const u of lista) if (!(guardando && m.has(u.id))) m.set(u.id, u);
+      return Array.from(m.values());
+    });
+  };
+  const buscarUsuarios = async (p: BusquedaUsuarios): Promise<ResultadoBusquedaUsuarios> => {
+    const d = await postAdminData({ action: 'usuarios_buscar', q: p.q ?? '', tipo: p.tipo ?? 'todos', pagina: p.pagina ?? 0, porPagina: p.porPagina ?? 50 });
+    if (!d?.ok) return { ok: false, usuarios: [], total: 0, conteos: null, error: d?.error ?? 'No se pudo buscar.' };
+    // _tipo: empresa / persona / contador, según el servidor (que ve los
+    // contadores de todas las empresas, no solo las cargadas).
+    const usuarios = (Array.isArray(d.usuarios) ? d.usuarios : []).map((u: any) => ({ ...mapSupabaseUser(u), ...(u?._tipo ? { tipoCuenta: u._tipo } : {}) } as User));
+    sumarAExtras(usuarios);
+    return { ok: true, usuarios, total: Number(d.total) || 0, conteos: d.conteos ?? null, sinFuncionBase: d.sinFuncionBase === true };
+  };
+  const asegurarUsuarios = async (ids: string[]): Promise<void> => {
+    const tengo = new Set(users.map(u => u.id));
+    const faltan = Array.from(new Set(ids.filter(id => id && !tengo.has(id)))).slice(0, 200);
+    if (!faltan.length) return;
+    const d = await postAdminData({ action: 'usuarios_por_id', ids: faltan });
+    if (d?.ok && Array.isArray(d.usuarios)) sumarAExtras(d.usuarios.map(mapSupabaseUser));
+  };
   const getAllTransactions = () => transactions;
   const getAllPendingDeposits = () => transactions.filter(t => t.type === 'load' && t.status === 'Pendiente');
   const getAllPendingWithdrawals = () => transactions.filter(t => t.type === 'send' && t.status === 'Pendiente');
@@ -2999,7 +3106,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       mergeNotifications, deleteNotification, clearNotifications,
       requestDeposit, requestWithdrawal, performConversion, approveDeposit, rejectDeposit,
       completeWithdrawal, rejectWithdrawal, verifyUser, toggleUserBlock, isOnline, dataReady, refreshData: fetchData,
-      bankingOptions, treasuryAccounts, getAllUsers, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
+      bankingOptions, treasuryAccounts, getAllUsers, resumenUsuarios, obligaciones, buscarUsuarios, asegurarUsuarios, getAllTransactions, updateTxStatus, getAllPendingDeposits, getAllPendingWithdrawals,
       getTransactionHistory, getAdminTeam, addAdminUser, updateAdminUser, deleteAdminUser, deleteUser, registerInternalMovement,
       updateBankList, restoreDatabase, sendPasswordReset, isPasswordRecovery, setNewPassword, sendCuypayPayment,
       mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin, ultimoCierre,

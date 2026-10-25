@@ -115,6 +115,7 @@ import { PaletteChooser } from './PaletteChooser';
 import { useExchangeRates } from '../context/ExchangeRateContext'; 
 import { useSystemConfig, Coupon } from '../context/SystemConfigContext'; 
 import { useDatabase, AdminUser, BankDetail, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
+import { useBusquedaClientes, conLocales } from './useBusquedaClientes';
 
 const SURL_ADMIN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY_ADMIN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -1225,6 +1226,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       enrollMFA,
       verifyMFAEnrollment,
     syncError,
+      buscarUsuarios,
+      obligaciones,
+      resumenUsuarios,
   } = useDatabase();
 
   // ── 2FA del propio admin (protege el cambio de proveedor de tesorería) ──
@@ -1312,6 +1316,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // Historial COMPLETO del cliente elegido (la carga general trae solo los
   // 200 movimientos más recientes de toda la plataforma).
   const histCargues = useMovimientosCliente(carguesClient?.id ?? null, getTransactionHistory() as any[]);
+  // El buscador de Cargues pregunta al servidor: el panel no tiene a todos
+  // los clientes cargados (con miles no puede). Lo encontrado queda en la
+  // lista del panel, así el cliente elegido se lee igual que siempre.
+  const [carguesRemotos, setCarguesRemotos] = useState<{ q: string; ids: string[] } | null>(null);
+  useEffect(() => {
+    const q = carguesSearch.trim();
+    if (q.length < 2) { setCarguesRemotos(null); return; }
+    let vigente = true;
+    const t = setTimeout(async () => {
+      const r = await buscarUsuarios({ q, porPagina: 40 });
+      if (vigente && r.ok) setCarguesRemotos({ q, ids: r.usuarios.map(u => u.id) });
+    }, 300);
+    return () => { vigente = false; clearTimeout(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carguesSearch]);
+  // Y para el de Seguridad.
+  const idsSeguridad = useBusquedaClientes(securitySearch, 50);
+  // Lo mismo para el buscador de Reportes → Usuarios.
+  const [reportRemotos, setReportRemotos] = useState<{ q: string; ids: string[] } | null>(null);
+  useEffect(() => {
+    const q = reportUserSearch.trim();
+    if (q.length < 2) { setReportRemotos(null); return; }
+    let vigente = true;
+    const t = setTimeout(async () => {
+      const r = await buscarUsuarios({ q, porPagina: 100 });
+      if (vigente && r.ok) setReportRemotos({ q, ids: r.usuarios.map(u => u.id) });
+    }, 300);
+    return () => { vigente = false; clearTimeout(t); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportUserSearch]);
   const [carguesVer, setCarguesVer] = useState(60);
   useEffect(() => { setCarguesVer(60); }, [carguesClientId]);
   const adminTeam = getAdminTeam();
@@ -1766,6 +1800,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const downloadDatabase = () => {
       const data = {
           generatedAt: new Date().toISOString(),
+          aviso: 'Contiene solo lo cargado en el panel al descargar, no la base completa.',
+          totalClientesEnLaBase: resumenUsuarios?.clientes ?? null,
           users: allUsers,
           transactions: historyTransactions,
           pending: [...pendingDeposits, ...pendingWithdrawals],
@@ -1782,7 +1818,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       a.download = `LINCOIN_BACKUP_${new Date().toISOString().split('T')[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showToast("Backup completo descargado correctamente");
+      showToast("Descargado lo que el panel tiene cargado.");
   };
 
   const handleRestoreDatabase = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2053,9 +2089,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   const renderCargues = () => {
       const q = carguesSearch.trim().toLowerCase();
-      const list = allUsers
+      // Primero lo que encontró el servidor (toda la base); después, lo que
+      // ya estaba cargado y coincide. Sin texto, los cargados.
+      const remotos = carguesRemotos && carguesRemotos.q.toLowerCase() === q
+        ? carguesRemotos.ids.map(id => allUsers.find(u => u.id === id)).filter(Boolean) as User[]
+        : [];
+      const locales = allUsers.filter(u => !q || (u.name ?? '').toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q));
+      const vistos = new Set<string>();
+      const list = [...remotos, ...locales]
+        .filter(u => { if (vistos.has(u.id)) return false; vistos.add(u.id); return true; })
         .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
-        .filter(u => !q || (u.name ?? '').toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q))
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
       const railMeta: Record<string, { label: string; sub: string; icon: React.ElementType }> = {
@@ -2068,7 +2111,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       // Lo que Lincoin YA le debe a los clientes en cada riel (suma de sus
       // saldos). La bolsa del proveedor (Mouv=Bre-B, Finity=ACH) debe cubrir
       // eso; lo que sobra es la UTILIDAD que va quedando en pesos.
-      const obligOf = (code: string) => allUsers.reduce((s, u) => s + Number((u.balances as any)?.[code] ?? 0), 0);
+      //
+      // La suma es de TODA la base y la hace el servidor: sumada aquí con la
+      // lista del panel (que ya no trae a todos los clientes) daba de menos,
+      // y el "disponible para cargar" salía de más. Sin el dato del servidor
+      // se suma lo cargado y se avisa abajo.
+      const obligServidor = !!obligaciones && !obligaciones.parcial;
+      const obligOf = (code: string) => obligaciones && typeof obligaciones.valor?.[code] === 'number'
+        ? obligaciones.valor[code]
+        : allUsers.reduce((s, u) => s + Number((u.balances as any)?.[code] ?? 0), 0);
       const obligBreb = obligOf('COP_BREB');
       const obligAch  = obligOf('COP_ACH');
       const brebPool  = Number(mouvPool?.breb ?? mouvPool?.total ?? 0);
@@ -2185,6 +2236,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       <span style={{ fontSize: 12.5, color: '#878E88' }}>Comprometido con clientes</span>
                       <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>− {Math.round(c.oblig).toLocaleString('es-CO')} COP</span>
                     </div>
+                    {!obligServidor && (
+                      <p style={{ fontSize: 11.5, color: '#FB923C', margin: '2px 0 4px', lineHeight: 1.45 }}>
+                        {obligaciones?.parcial
+                          ? 'Suma parcial: falta correr la migración 2026_zz12_escala_100k.sql para sumar todos los saldos en la base.'
+                          : resumenUsuarios?.parcial
+                            ? 'Suma solo de los clientes cargados en el panel: puede faltar. No cargues contra este disponible hasta que se actualice.'
+                            : 'Suma de los clientes cargados en el panel.'}
+                      </p>
+                    )}
                     <div className="flex items-center justify-between" style={{ padding: '9px 0 2px', borderTop: '1px solid rgba(255,255,255,0.10)', marginTop: 4 }}>
                       <span style={{ fontSize: 12.5, fontWeight: 700, color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
                         {c.free < 0 ? '⚠ Faltante (sobre-cargado)' : 'Disponible · utilidad'}
@@ -3269,11 +3329,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
 
   const renderReports = () => {
       // Filter logic for User Reports
-      const filteredReportUsers = allUsers.filter(u => 
-          (u.name ?? '').toLowerCase().includes(reportUserSearch.toLowerCase()) || 
-          (u.email ?? '').toLowerCase().includes(reportUserSearch.toLowerCase()) ||
+      // Lo que encontró el servidor en toda la base, más lo cargado que
+      // coincide. Se dibujan hasta 200: el resto se encuentra buscando.
+      const qRep = reportUserSearch.trim().toLowerCase();
+      const remotosRep = reportRemotos && reportRemotos.q.toLowerCase() === qRep
+        ? reportRemotos.ids.map(id => allUsers.find(u => u.id === id)).filter(Boolean) as User[]
+        : [];
+      const vistosRep = new Set<string>();
+      const filteredReportUsers = [...remotosRep, ...allUsers.filter(u =>
+          (u.name ?? '').toLowerCase().includes(qRep) ||
+          (u.email ?? '').toLowerCase().includes(qRep) ||
           u.id.includes(reportUserSearch)
-      );
+      )].filter(u => { if (vistosRep.has(u.id)) return false; vistosRep.add(u.id); return true; }).slice(0, 200);
 
       // Logic for Audit Tab (Transaction Log)
       const auditTransactions = historyTransactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -3521,10 +3588,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                               </div>
                               <h3 className="text-xl font-bold text-slate-800 mb-2">Copia de Seguridad (Backup)</h3>
                               <p className="text-slate-500 text-sm mb-8 px-4">
-                                  Descarga un archivo JSON encriptado con toda la información de usuarios, historial, configuración y tesorería.
+                                  Descarga un archivo JSON con lo que el panel tiene cargado: los clientes en pantalla, los movimientos recientes, la configuración y la tesorería. No es la base completa ni va cifrado: la copia de la base entera la hace Supabase.
                               </p>
                               <button onClick={downloadDatabase} className="w-full bg-[#0C0E0D] py-3 rounded-xl font-bold hover:bg-[#161A17] transition-colors flex items-center justify-center gap-2">
-                                  <Download size={18}/> Descargar Base de Datos
+                                  <Download size={18}/> Descargar lo cargado
                               </button>
                           </div>
 
@@ -4107,11 +4174,13 @@ const renderDesign = () => (
       const baseUsers = businessOtcOnly
         ? allUsers.filter((u: any) => (u.otcEnabled || u.raw_data?.otcEnabled))
         : allUsers;
-      const filteredUsers = baseUsers.filter(u =>
+      // Lo cargado que coincide, más lo que encontró el servidor en toda la
+      // base (respetando el filtro de OTC).
+      const filteredUsers = conLocales<User>(idsSeguridad, allUsers, baseUsers.filter(u =>
           (u.name ?? '').toLowerCase().includes(securitySearch.toLowerCase()) ||
           (u.email ?? '').toLowerCase().includes(securitySearch.toLowerCase()) ||
           u.id.includes(securitySearch)
-      );
+      )).filter((u: any) => !businessOtcOnly || u.otcEnabled || u.raw_data?.otcEnabled);
 
       const userTransactions = selectedSecurityUser ? historyTransactions.filter(tx => tx.userId === selectedSecurityUser.id).sort((a,b) => b.id - a.id) : [];
 

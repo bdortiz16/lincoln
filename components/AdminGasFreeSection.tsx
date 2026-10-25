@@ -3,6 +3,7 @@ import { Zap, RefreshCw, Copy, Search, Landmark, Activity, Send, X, Settings, Pi
 import { useDatabase } from '../context/DatabaseContext';
 import { RecaudadoraRotativaCard } from './RecaudadoraRotativaCard';
 import { AdminCustodyPanel, maskAddr, type AuditEntry } from './AdminCustodyPanel';
+import { useBusquedaClientes, conLocales } from './useBusquedaClientes';
 
 // ─────────────────────────────────────────────
 // AdminGasFreeSection — Panel "GasFree USDT" del admin de Empresas.
@@ -329,11 +330,14 @@ export const AdminGasFreeSection: React.FC = () => {
     // visibles en Clientes para poder revertir el bloqueo.
     const outOfOp = (u: any) => u.blacklisted === true || u.raw_data?.blacklisted === true || u.isBlocked === true || u.raw_data?.isBlocked === true;
     const businesses = allUsers.filter((u: any) => u.role !== 'admin' && !outOfOp(u));
-    const filtered = businesses.filter((u: any) => {
+    // Lo cargado que coincide, más lo que encuentra el servidor en toda la
+    // base (el panel no tiene a todos los clientes en memoria).
+    const idsBuscados = useBusquedaClientes(q, 40);
+    const filtered = conLocales(idsBuscados, allUsers, businesses.filter((u: any) => {
         if (!q) return true;
         const s = q.toLowerCase();
         return (u.name ?? '').toLowerCase().includes(s) || (u.email ?? '').toLowerCase().includes(s) || (u.id ?? '').toLowerCase().includes(s);
-    });
+    })).filter((u: any) => u.role !== 'admin' && !outOfOp(u));
 
     const copy = (t: string) => { navigator.clipboard?.writeText(t); setCopied(t); setTimeout(() => setCopied(null), 1500); };
 
@@ -417,11 +421,23 @@ export const AdminGasFreeSection: React.FC = () => {
         if (!window.confirm('¿Barrer el USDT de todas las wallets GasFree de clientes hacia la recaudadora? (comisión en USDT por cada barrido)')) return;
         setSweepingAll(true); setSweepMsg(null);
         try {
-            const r = await callGasfree({ action: 'sweep_all' });
-            if (r?.error) setSweepMsg(`❌ ${r.error}`);
+            // El servidor barre por tandas y devuelve `siguiente` mientras
+            // queden cuentas: se repite hasta terminar.
+            let r: any = null;
+            const resultados: any[] = [];
+            let desde: string | null = null;
+            for (let vuelta = 0; vuelta < 500; vuelta++) {
+                r = await callGasfree({ action: 'sweep_all', ...(desde ? { desde } : {}) });
+                if (r?.error) break;
+                resultados.push(...(r.results ?? []));
+                if (!r.siguiente) break;
+                desde = r.siguiente;
+                setSweepMsg(`Barriendo… ${resultados.filter((x: any) => x.ok).length} cuentas barridas hasta ahora.`);
+            }
+            if (r?.error) setSweepMsg(`❌ ${r.error}${resultados.length ? ` (alcanzó a procesar ${resultados.length} cuentas)` : ''}`);
             else {
-                const done = (r.results ?? []).filter((x: any) => x.ok);
-                const failed = (r.results ?? []).filter((x: any) => x.error);
+                const done = resultados.filter((x: any) => x.ok);
+                const failed = resultados.filter((x: any) => x.error);
                 const total = done.reduce((a: number, x: any) => a + (x.swept ?? 0), 0);
                 const errs = failed.length ? '\n\n' + failed.map((x: any) => `• ${x.userId}: ${x.error}`).join('\n') : '';
                 setSweepMsg(`✅ Barridos ${done.length} (${fmt(total)} USDT) a la recaudadora. ${failed.length} con error/sin saldo.${errs}`);

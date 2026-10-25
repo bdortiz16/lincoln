@@ -4,6 +4,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { callFinity, extractRate } from './FinitySection';
 import { llamarFuncion } from '../lib/edge';
 import { descargarXlsx } from '../lib/xlsx';
+import { useBusquedaClientes, conLocales } from './useBusquedaClientes';
 
 // ─────────────────────────────────────────────
 // AdminOtcSection — Panel "Contabilidad OTC" del admin de Empresas.
@@ -205,11 +206,14 @@ export const AdminOtcSection: React.FC = () => {
     // clientes son cuentas personales; el filtro viejo de "solo empresas"
     // dejaba la tabla vacía.
     const businesses = allUsers.filter((u: any) => u.role !== 'admin');
-    const filtered = businesses.filter((u: any) => {
+    // Lo cargado que coincide, más lo que encuentra el servidor en toda la
+    // base (el panel no tiene a todos los clientes en memoria).
+    const idsBuscados = useBusquedaClientes(q, 40);
+    const filtered = conLocales(idsBuscados, allUsers, businesses.filter((u: any) => {
         if (!q) return true;
         const s = q.toLowerCase();
         return (u.name ?? '').toLowerCase().includes(s) || (u.email ?? '').toLowerCase().includes(s) || (u.id ?? '').toLowerCase().includes(s);
-    });
+    })).filter((u: any) => u.role !== 'admin');
 
     const [manualEdit, setManualEdit] = useState<{ userId: string; value: string } | null>(null);
 

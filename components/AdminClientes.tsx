@@ -128,6 +128,7 @@ export const AdminClientes: React.FC<{
   const {
     getAllUsers, getTransactionHistory, refreshData,
     verifyUser, toggleUserBlock, updateUserProfile, updateUserRawData, deleteUser,
+    buscarUsuarios, asegurarUsuarios, resumenUsuarios,
   } = useDatabase() as any;
 
   const todos = (getAllUsers() ?? []).filter((u: any) => u.role !== 'admin');
@@ -152,7 +153,10 @@ export const AdminClientes: React.FC<{
     return set;
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [todos.length, todos]);
-  const tipoDe = (u: any): 'empresa' | 'contador' | 'persona' => u?.role === 'business' ? 'empresa' : idsContadores.has(String(u?.id)) ? 'contador' : 'persona';
+  // El tipo lo dice el servidor cuando la cuenta vino de una búsqueda (sabe
+  // de los contadores de TODAS las empresas); si no, se deduce de lo cargado.
+  const tipoDe = (u: any): 'empresa' | 'contador' | 'persona' => u?.tipoCuenta === 'empresa' || u?.tipoCuenta === 'contador' || u?.tipoCuenta === 'persona' ? u.tipoCuenta
+    : u?.role === 'business' ? 'empresa' : idsContadores.has(String(u?.id)) ? 'contador' : 'persona';
   const ROT_TIPO = { empresa: 'EMPRESA', contador: 'CONTADOR', persona: 'PERSONA' } as const;
   const [selId, setSelId] = useState<string | null>(null);
   const [tab, setTab] = useState<'resumen' | 'movimientos' | 'envios' | 'kyc' | 'brasil' | 'limites' | 'auditoria'>('resumen');
@@ -225,7 +229,36 @@ export const AdminClientes: React.FC<{
   const pendiente = (u: any) => u?.kycStatus === 'pending' || u?.kycStatus === 'in_review';
   const verificado = (u: any) => u?.kycStatus === 'verified' || u?.kycStatus === 'approved';
 
-  const lista = useMemo(() => {
+  // ── La lista la arma el servidor, por páginas ─────────────────────────
+  // Con decenas de miles de cuentas no se puede tener la base entera en el
+  // navegador, ni dibujarla: se busca en el servidor (nombre, correo, razón
+  // social, NIT, documento, ID Lincoin o id) y llega de a 50. Cada fila se
+  // pinta con la versión más fresca que tenga el panel.
+  const POR_PAGINA = 50;
+  type Resultado = { ids: string[]; filas: Record<string, any>; total: number; conteos: any; cargando: boolean; error: string | null; pagina: number; sinFuncionBase: boolean };
+  const [res, setRes] = useState<Resultado>({ ids: [], filas: {}, total: 0, conteos: null, cargando: true, error: null, pagina: 0, sinFuncionBase: false });
+  const pedidoRef = useRef(0);
+  const cargarPagina = async (pagina: number, reemplazar: boolean) => {
+    if (typeof buscarUsuarios !== 'function') return;
+    const n = ++pedidoRef.current;
+    setRes(r => ({ ...r, cargando: true, error: null }));
+    const r = await buscarUsuarios({ q: busquedaViva.trim(), tipo: chip, pagina, porPagina: POR_PAGINA });
+    if (n !== pedidoRef.current) return;   // llegó tarde: ya se pidió otra cosa
+    // Servidor sin la búsqueda (versión vieja todavía desplegada): se filtra
+    // lo que ya está cargado, como antes, y se dice.
+    if (!r?.ok) { setRes(x => ({ ...x, cargando: false, error: `${r?.error ?? 'No se pudo buscar.'} Se muestra solo lo cargado en el panel.`, ids: [], filas: {}, total: 0 })); return; }
+    setRes(x => {
+      const filas = reemplazar ? {} : { ...x.filas };
+      for (const u of r.usuarios) filas[u.id] = u;
+      const nuevos = r.usuarios.map((u: any) => u.id);
+      const ids = reemplazar ? nuevos : [...x.ids, ...nuevos.filter((id: string) => !x.ids.includes(id))];
+      return { ids, filas, total: r.total, conteos: r.conteos ?? (reemplazar ? null : x.conteos), cargando: false, error: null, pagina, sinFuncionBase: !!r.sinFuncionBase };
+    });
+  };
+  useEffect(() => { cargarPagina(0, true); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [busquedaViva, chip]);
+  const porId = useMemo(() => new Map<string, any>(todos.map((u: any) => [u.id, u])), [todos]);
+  const listaLocal = useMemo(() => {
+    if (!res.error) return [];
     const q = busquedaViva.trim().toLowerCase();
     return todos.filter((u: any) => {
       if (chip === 'empresas' && tipoDe(u) !== 'empresa') return false;
@@ -234,15 +267,20 @@ export const AdminClientes: React.FC<{
       if (chip === 'pendientes' && !pendiente(u)) return false;
       if (!q) return true;
       const raw = u.raw_data ?? {};
-      return [u.name, u.email, u.id, raw.nit, raw.documentNumber, u.document_number]
-        .some(x => String(x ?? '').toLowerCase().includes(q));
-    });
+      return [u.name, u.email, u.id, raw.nit, raw.documentNumber, u.document_number].some(x => String(x ?? '').toLowerCase().includes(q));
+    }).slice(0, 300);
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [todos, busquedaViva, chip, idsContadores]);
+  }, [res.error, todos, busquedaViva, chip, idsContadores]);
+  const lista = res.error ? listaLocal : res.ids.map(id => porId.get(id) ?? res.filas[id]).filter(Boolean);
 
   // El seleccionado se lee SIEMPRE de la lista viva: cualquier refresco se
-  // refleja al instante en los saldos que se están mirando.
-  const sel: any = selId ? todos.find((u: any) => u.id === selId) ?? null : null;
+  // refleja al instante en los saldos que se están mirando. Si llegó por
+  // enlace y no está cargado, se pide al servidor.
+  const sel: any = selId ? porId.get(selId) ?? res.filas[selId] ?? null : null;
+  useEffect(() => {
+    if (selId && !sel && typeof asegurarUsuarios === 'function') asegurarUsuarios([selId]);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [selId, !!sel]);
 
   const saldo = (u: any, cur: string) => Number(u?.balances?.[cur] ?? 0);
   const totalUsd = (u: any) => {
@@ -339,8 +377,11 @@ export const AdminClientes: React.FC<{
     borderRadius: 999, padding: '6px 12px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap',
   });
 
-  const nVerificadas = todos.filter(verificado).length;
-  const nPendientes = todos.filter(pendiente).length;
+  // Conteos de TODA la base (los manda el servidor); sin ellos, lo cargado.
+  const nCuentas = resumenUsuarios?.clientes ?? todos.length;
+  const nVerificadas = resumenUsuarios?.verificados ?? todos.filter(verificado).length;
+  const nPendientes = resumenUsuarios?.pendientes ?? todos.filter(pendiente).length;
+  const conteo = (k: string) => res.conteos && typeof res.conteos[k] === 'number' ? ` · ${Number(res.conteos[k]).toLocaleString('es-CO')}` : '';
 
   return (
     <div style={{ fontFamily: FONT, color: C.text }}>
@@ -349,7 +390,7 @@ export const AdminClientes: React.FC<{
         <div>
           <h2 style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.4px', margin: 0 }}>Clientes</h2>
           <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0' }}>
-            {todos.length} cuenta{todos.length === 1 ? '' : 's'} · {nVerificadas} verificada{nVerificadas === 1 ? '' : 's'} · {nPendientes} pendiente{nPendientes === 1 ? '' : 's'}
+            {nCuentas.toLocaleString('es-CO')} cuenta{nCuentas === 1 ? '' : 's'} · {nVerificadas.toLocaleString('es-CO')} verificada{nVerificadas === 1 ? '' : 's'} · {nPendientes.toLocaleString('es-CO')} pendiente{nPendientes === 1 ? '' : 's'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -392,20 +433,22 @@ export const AdminClientes: React.FC<{
             </div>
 
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 11 }}>
-              <button onClick={() => setChip('todos')} style={chipStyle(chip === 'todos')}>Todos · {todos.length}</button>
-              <button onClick={() => setChip('empresas')} style={chipStyle(chip === 'empresas')}>Empresas · {todos.filter((u: any) => tipoDe(u) === 'empresa').length}</button>
-              <button onClick={() => setChip('personas')} style={chipStyle(chip === 'personas')}>Personas · {todos.filter((u: any) => tipoDe(u) === 'persona').length}</button>
-              <button onClick={() => setChip('contadores')} style={chipStyle(chip === 'contadores')}>Contadores · {todos.filter((u: any) => tipoDe(u) === 'contador').length}</button>
-              <button onClick={() => setChip('pendientes')} style={chipStyle(chip === 'pendientes')}>Pendientes · {nPendientes}</button>
+              <button onClick={() => setChip('todos')} style={chipStyle(chip === 'todos')}>Todos{conteo('todos')}</button>
+              <button onClick={() => setChip('empresas')} style={chipStyle(chip === 'empresas')}>Empresas{conteo('empresas')}</button>
+              <button onClick={() => setChip('personas')} style={chipStyle(chip === 'personas')}>Personas{conteo('personas')}</button>
+              {!res.sinFuncionBase && <button onClick={() => setChip('contadores')} style={chipStyle(chip === 'contadores')}>Contadores{conteo('contadores')}</button>}
+              <button onClick={() => setChip('pendientes')} style={chipStyle(chip === 'pendientes')}>Pendientes{conteo('pendientes')}</button>
             </div>
 
-            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: angosta ? 420 : 'calc(100vh - 260px)', overflowY: 'auto' }}>
+            {res.error && <p style={{ fontSize: 12, color: '#F87171', margin: '10px 2px 0', lineHeight: 1.45 }}>{res.error}</p>}
+            {res.sinFuncionBase && <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 2px 0', lineHeight: 1.45 }}>Búsqueda simple: falta correr la migración 2026_zz12_escala_100k.sql para buscar también por documento, NIT e ID Lincoin.</p>}
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: angosta ? 420 : 'calc(100vh - 260px)', overflowY: 'auto', opacity: res.cargando && lista.length ? 0.55 : 1 }}>
               {lista.length === 0 ? (
                 <div style={{ padding: '32px 8px', textAlign: 'center' }}>
-                  <p style={{ fontSize: 13, color: C.text, fontWeight: 600, margin: 0 }}>Sin resultados</p>
-                  <p style={{ fontSize: 12, color: C.sub, margin: '4px 0 0' }}>
-                    {todos.length === 0 ? 'Todavía no hay clientes.' : 'Ninguna cuenta coincide con la búsqueda.'}
-                  </p>
+                  <p style={{ fontSize: 13, color: C.text, fontWeight: 600, margin: 0 }}>{res.cargando ? 'Buscando…' : 'Sin resultados'}</p>
+                  {!res.cargando && <p style={{ fontSize: 12, color: C.sub, margin: '4px 0 0' }}>
+                    {!busquedaViva.trim() && chip === 'todos' ? 'Todavía no hay clientes.' : 'Ninguna cuenta coincide con la búsqueda.'}
+                  </p>}
                 </div>
               ) : lista.map((u: any) => {
                 const activo = u.id === selId;
@@ -436,6 +479,16 @@ export const AdminClientes: React.FC<{
                   </button>
                 );
               })}
+              {lista.length > 0 && (
+                <div style={{ padding: '10px 8px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 11.5, color: C.sub }}>{lista.length.toLocaleString('es-CO')} de {(res.error ? lista.length : res.total).toLocaleString('es-CO')}</span>
+                  {!res.error && res.ids.length < res.total && (
+                    <button onClick={() => cargarPagina(res.pagina + 1, false)} disabled={res.cargando} style={{ ...btnSec, padding: '6px 12px', fontSize: 12, opacity: res.cargando ? 0.6 : 1 }}>
+                      {res.cargando ? 'Cargando…' : `Ver ${Math.min(POR_PAGINA, res.total - res.ids.length)} más`}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}

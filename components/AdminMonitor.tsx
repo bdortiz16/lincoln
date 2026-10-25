@@ -62,7 +62,7 @@ const Spark: React.FC<{ data: number[]; color: string }> = ({ data, color }) => 
 };
 
 export const AdminMonitor: React.FC = () => {
-  const { transactions, getAllUsers, currentUser } = useDatabase() as any;
+  const { transactions, getAllUsers, currentUser, resumenUsuarios } = useDatabase() as any;
   const users: any[] = (getAllUsers?.() ?? []);
   const txs: any[] = Array.isArray(transactions) ? transactions : [];
 
@@ -293,7 +293,9 @@ export const AdminMonitor: React.FC = () => {
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14, marginBottom: 16 }}>
         {[
-          { l: 'Clientes por aprobar', v: pendingKyc.length, sub: 'KYC en revisión', color: pendingKyc.length ? C.amber : C.green },
+          // El panel trae hasta 500 pendientes; si están todos, el conteo real
+          // lo da el servidor.
+          { l: 'Clientes por aprobar', v: pendingKyc.length >= 500 && resumenUsuarios?.pendientes ? resumenUsuarios.pendientes : pendingKyc.length, sub: 'KYC en revisión', color: pendingKyc.length ? C.amber : C.green },
           { l: 'Cargas por acreditar', v: 0, sub: 'Sin pendientes', color: C.green },
           { l: 'Retiros por aprobar', v: 0, sub: 'Sin pendientes', color: C.green },
           { l: 'Volumen del mes', v: fmtMoney(monthVol.sum), sub: `${monthVol.count} operaciones`, color: C.text, money: true },

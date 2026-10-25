@@ -26,6 +26,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { reclamarCandado } from '../_shared/candado.ts'
+import { leerPorPaginas } from '../_shared/paginas.ts'
 import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -1050,7 +1051,10 @@ async function mergeUserRaw(userId: string, patch: Record<string, any>) {
 // mismo correo (perfiles duplicados) compartiendo índice NO cuentan como
 // colisión — es el mismo usuario.
 async function auditIndexes() {
-  const { data: users } = await db.from('users').select('id, email, role, raw_data').limit(3000)
+  // Por páginas y solo el índice (no raw_data entero): con más de 1.000
+  // cuentas, las colisiones fuera de las primeras no se veían.
+  const { filas } = await leerPorPaginas(() => db.from('users').select('id, email, role, gasfreeIndex:raw_data->gasfreeIndex'))
+  const users = filas.map((u: any) => ({ ...u, raw_data: { gasfreeIndex: u.gasfreeIndex } }))
   const byIndex: Record<string, Set<string>> = {}
   let noIndex = 0, considered = 0
   for (const u of (users as any[]) ?? []) {
@@ -3352,15 +3356,32 @@ Deno.serve(async (req) => {
       return ok(await sweepUser(userId))
     }
     if (action === 'sweep_all') {
-      const { data: users } = await db.from('users').select('id, role').limit(1000)
+      // Se barren las cuentas que TIENEN wallet GasFree (su índice durable en
+      // system_config), no "todos los usuarios": con miles de clientes, la
+      // mayoría sin wallet, la lista entera no cabía en una llamada y además
+      // PostgREST la cortaba en 1.000. Va por tandas: cada llamada barre hasta
+      // 60 cuentas o ~100 s, y devuelve `siguiente` para seguir desde ahí; el
+      // panel repite hasta que no haya siguiente.
+      const prefijo = idxKeyForUser('')
+      const desde = String(body.desde ?? '')
+      let q = db.from('system_config').select('key').like('key', `${prefijo}%`).order('key', { ascending: true }).limit(60)
+      if (desde) q = q.gt('key', idxKeyForUser(desde))
+      const { data: claves, error: eClaves } = await q
+      if (eClaves) return err(eClaves.message, 500)
+      const ids = ((claves ?? []) as any[]).map(c => String(c.key).slice(prefijo.length)).filter(Boolean)
+      const { data: roles } = ids.length ? await db.from('users').select('id, role').in('id', ids) : { data: [] as any[] }
+      const rol = new Map(((roles ?? []) as any[]).map(r => [String(r.id), String(r.role ?? '')]))
       const out: any[] = []
-      // Se barre a TODOS los clientes (en Lincoin son cuentas personales) —
-      // el filtro viejo de "solo empresas" dejaba el barrido sin efecto.
-      for (const u of (users as any[]) ?? []) {
-        if (u.role === 'admin') continue
-        try { out.push(await sweepUser(u.id)) } catch (e) { out.push({ userId: u.id, error: (e as Error)?.message }) }
+      const t0 = Date.now()
+      let ultimo: string | null = null
+      for (const id of ids) {
+        if (Date.now() - t0 > 100_000) break
+        ultimo = id
+        if (!rol.has(id) || rol.get(id) === 'admin') continue
+        try { out.push(await sweepUser(id)) } catch (e) { out.push({ userId: id, error: (e as Error)?.message }) }
       }
-      return ok({ ok: true, results: out })
+      const quedan = ids.length === 60 || (ultimo !== null && ultimo !== ids[ids.length - 1])
+      return ok({ ok: true, results: out, siguiente: quedan ? ultimo : null })
     }
     if (action === 'send') {
       if (!toAddress || !amount) return err('Faltan toAddress o amount', 400)
@@ -3501,7 +3522,9 @@ Deno.serve(async (req) => {
     // cuenta cambios y marca los "manual_regen" (regeneraciones).
     if (action === 'wallet_forensics') {
       const log = await getWalletLog()
-      const { data: users } = await db.from('users').select('id, email')
+      // Todos los correos e ids, por páginas: de una vez PostgREST devolvía
+      // 1.000 y el resto de los clientes aparecía como "fantasma".
+      const { filas: users } = await leerPorPaginas(() => db.from('users').select('id, email'))
       const emailSet = new Set((users ?? []).map((u: any) => String(u.email ?? '').toLowerCase()).filter(Boolean))
       const idSet = new Set((users ?? []).map((u: any) => String(u.id)))
       const byEmail: Record<string, { email: string; changes: number; regens: number; isClient: boolean; hasUserId: boolean; lastAt: string | null; addresses: string[] }> = {}

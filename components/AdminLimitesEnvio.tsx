@@ -85,7 +85,7 @@ const CampoPesos: React.FC<{ label: string; hint: string; value: string; onChang
 );
 
 export const AdminLimitesEnvio: React.FC = () => {
-    const { getAllUsers } = useDatabase() as any;
+    const { getAllUsers, buscarUsuarios } = useDatabase() as any;
     const [cargando, setCargando] = useState(true);
     const [empresa, setEmpresa] = useState('');
     const [persona, setPersona] = useState('');
@@ -185,11 +185,28 @@ export const AdminLimitesEnvio: React.FC = () => {
     };
 
     const usuarios: any[] = useMemo(() => (typeof getAllUsers === 'function' ? getAllUsers() : []).filter((u: any) => u.role !== 'admin'), [getAllUsers]);
+    // El panel no tiene a todos los clientes cargados: se pregunta también al
+    // servidor, y lo que encuentra va primero.
+    const [remotos, setRemotos] = useState<{ q: string; ids: string[] } | null>(null);
+    useEffect(() => {
+        const s = q.trim();
+        if (s.length < 2 || typeof buscarUsuarios !== 'function') { setRemotos(null); return; }
+        let vigente = true;
+        const t = setTimeout(async () => {
+            const r = await buscarUsuarios({ q: s, porPagina: 8 });
+            if (vigente && r?.ok) setRemotos({ q: s, ids: r.usuarios.map((u: any) => u.id) });
+        }, 300);
+        return () => { vigente = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [q]);
     const resultados = useMemo(() => {
         const s = q.trim().toLowerCase();
         if (s.length < 2) return [];
-        return usuarios.filter((u: any) => [u.name, u.companyName, u.company_name, u.email, u.id].some((x: any) => String(x ?? '').toLowerCase().includes(s))).slice(0, 8);
-    }, [q, usuarios]);
+        const deServidor = remotos && remotos.q.toLowerCase() === s ? remotos.ids.map(id => usuarios.find((u: any) => u.id === id)).filter(Boolean) : [];
+        const locales = usuarios.filter((u: any) => [u.name, u.companyName, u.company_name, u.email, u.id].some((x: any) => String(x ?? '').toLowerCase().includes(s)));
+        const vistos = new Set<string>();
+        return [...deServidor, ...locales].filter((u: any) => { if (vistos.has(u.id)) return false; vistos.add(u.id); return true; }).slice(0, 8);
+    }, [q, usuarios, remotos]);
     const esEmpresa = (u: any) => u?.role === 'business';
     const generalDe = (u: any) => (esEmpresa(u) ? Number(empresa) : Number(persona));
 

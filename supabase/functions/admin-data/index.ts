@@ -4,6 +4,7 @@ import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
+import { leerPorPaginas } from '../_shared/paginas.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
 // un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
@@ -61,6 +62,61 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
     out[k] = (typeof v === 'string' && (v.startsWith('data:') || v.length > limit)) ? PROOF_MARKER : v
   }
   return out
+}
+
+// ── Usuarios para el panel ────────────────────────────────────────────────
+// Lo que viaja al navegador del admin: sin los hashes de clave/PIN ni el
+// secreto 2FA de columna, y sin los blobs gigantes de raw_data.
+const COLUMNAS_QUE_NO_VIAJAN = ['password_hash', 'pin_hash', 'two_factor_secret']
+function usuarioParaPanel(u: Record<string, unknown>): Record<string, unknown> {
+  const o: Record<string, unknown> = { ...u, raw_data: sinCredenciales(slimRawData(u.raw_data, 20000)) }
+  for (const k of COLUMNAS_QUE_NO_VIAJAN) delete o[k]
+  return o
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const idsValidos = (v: unknown, tope: number): string[] =>
+  Array.from(new Set((Array.isArray(v) ? v : String(v ?? '').split(',')).map(x => String(x).trim()).filter(x => UUID_RE.test(x)))).slice(0, tope)
+
+// Usuarios por id, en tandas: un .in() con cientos de ids arma una URL que
+// PostgREST rechaza.
+async function usuariosPorId(ids: string[]): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = []
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data } = await db.from('users').select('*').in('id', ids.slice(i, i + 150))
+    out.push(...((data ?? []) as Record<string, unknown>[]))
+  }
+  return out
+}
+
+// Lo que Lincoin les debe a los clientes en cada moneda (suma de saldos de
+// todos menos el equipo). Lo suma la base (admin_obligaciones); si esa
+// función todavía no existe se suma aquí por páginas, con tope, y se avisa
+// que es parcial. Sumarlo en el navegador con la lista del panel daba de
+// menos en silencio apenas había más de 1.000 cuentas.
+let obligacionesRespaldo: { at: number; valor: Record<string, number>; parcial: boolean } | null = null
+async function obligacionesTodas(): Promise<{ valor: Record<string, number>; parcial: boolean } | null> {
+  const { data, error } = await db.rpc('admin_obligaciones')
+  if (!error && data && typeof data === 'object') {
+    const valor: Record<string, number> = {}
+    for (const [k, v] of Object.entries(data as Record<string, unknown>)) valor[k] = Number(v) || 0
+    return { valor, parcial: false }
+  }
+  if (obligacionesRespaldo && Date.now() - obligacionesRespaldo.at < 120_000) return obligacionesRespaldo
+  const valor: Record<string, number> = {}
+  let parcial = false
+  for (let off = 0; ; off += 1000) {
+    if (off >= 30000) { parcial = true; break }
+    const { data: filas, error: e2 } = await db.from('users').select('id, role, balances, crypto_balances').order('id').range(off, off + 999)
+    if (e2) return null
+    for (const f of (filas ?? []) as any[]) {
+      if (f.role === 'admin') continue
+      const b = { ...(f.balances && typeof f.balances === 'object' ? f.balances : {}), ...(f.crypto_balances && typeof f.crypto_balances === 'object' ? f.crypto_balances : {}) }
+      for (const [k, v] of Object.entries(b)) { const n = Number(v); if (isFinite(n)) valor[k] = (valor[k] ?? 0) + n }
+    }
+    if (!filas || filas.length < 1000) break
+  }
+  obligacionesRespaldo = { at: Date.now(), valor, parcial }
+  return obligacionesRespaldo
 }
 
 // Cifrado de campos sensibles: la implementación vive en _shared para que
@@ -1271,6 +1327,9 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   otc_ajuste_get: 'plata.ver',
   limites_envio_get: 'plata.ver',
   movimientos_cliente: 'clientes.ver',
+  // Clientes por páginas: el panel ya no baja la base entera.
+  usuarios_buscar: 'clientes.ver',
+  usuarios_por_id: 'clientes.ver',
   // Contabilidad: el tablero y la facturación de Lincoin. Configurar Siigo
   // (credenciales) queda para el dueño: fact_lincoin_set no figura acá.
   contabilidad_resumen: 'plata.ver',
@@ -2770,7 +2829,14 @@ Deno.serve(async (req: Request) => {
         // Lista correos de todas las cuentas con 2FA: con el permiso de
         // cumplimiento y los candados del panel, no con solo role='admin'.
         { const g = await adminSobreOtro(req, ['cumplimiento'], 'mfa_health'); if ('res' in g) return g.res }
-        const { data: rows } = await db.from('users').select('id, email, raw_data')
+        // Solo las cuentas con 2FA, por páginas: con la base entera de una vez
+        // PostgREST devolvía las primeras 1.000 y el resto no se revisaba.
+        // Solo las claves que se miran: raw_data entero (contactos, avisos…)
+        // de miles de cuentas no entra en la memoria de la función.
+        const { filas: rows } = await leerPorPaginas(() => db.from('users')
+          .select('id, email, enc:raw_data->>totpSecretEnc, plano:raw_data->>totpSecret, resp:raw_data->mfaBackupHashes')
+          .eq('raw_data->>mfaEnabled', 'true'))
+        for (const r of rows) r.raw_data = { mfaEnabled: true, totpSecretEnc: r.enc ?? undefined, totpSecret: r.plano ?? undefined, mfaBackupHashes: r.resp ?? undefined }
         let total = 0, unreadable = 0, keyMismatch = 0, noBackup = 0, legacyPlain = 0
         const affected: Array<{ email: string; motivo: string }> = []
         for (const r of (rows ?? []) as any[]) {
@@ -3464,8 +3530,12 @@ Deno.serve(async (req: Request) => {
 
         // 3) Cuentas: admins sin 2FA, secretos ilegibles, correos duplicados,
         //    filas de admin sin cuenta de acceso real.
-        const { data: allUsers } = await db.from('users').select('id, email, role, raw_data')
-        const rows = (allUsers ?? []) as any[]
+        // Solo lo que se revisa (el equipo, las cuentas con 2FA y los secretos
+        // viejos en claro), por páginas y con las claves justas de raw_data.
+        const { filas: rows } = await leerPorPaginas(() => db.from('users')
+          .select('id, email, role, raw_data:raw_data->>mfaEnabled, enc:raw_data->>totpSecretEnc, plano:raw_data->>totpSecret, resp:raw_data->mfaBackupHashes')
+          .or('role.eq.admin,raw_data->>mfaEnabled.eq.true,raw_data->>totpSecret.not.is.null'))
+        for (const u of rows) u.raw_data = { mfaEnabled: u.raw_data === 'true', totpSecretEnc: u.enc ?? undefined, totpSecret: u.plano ?? undefined, mfaBackupHashes: u.resp ?? undefined }
         const admins = rows.filter(u => u.role === 'admin')
         const adminsNo2fa = admins.filter(u => !u?.raw_data?.mfaEnabled)
         if (adminsNo2fa.length) add('admin_no_2fa', 'critica', `${adminsNo2fa.length} admin(s) sin 2FA`,
@@ -3488,19 +3558,35 @@ Deno.serve(async (req: Request) => {
           'Si pierden el teléfono o el secreto queda ilegible, no tienen forma de entrar sin tocar la base a mano.',
           'Que desactiven y reactiven el 2FA: al activarlo se entregan 8 códigos.', sinRespaldo.length)
 
-        const porCorreo: Record<string, number> = {}
-        for (const u of rows) { const e = String(u.email ?? '').toLowerCase(); if (e) porCorreo[e] = (porCorreo[e] ?? 0) + 1 }
-        const dupes = Object.entries(porCorreo).filter(([, n]) => n > 1)
+        // Correos repetidos: los cuenta la base (admin_correos_duplicados); sin
+        // esa función, se leen solo los correos, por páginas.
+        let dupes: [string, number][] = []
+        {
+          const { data: dup, error: eDup } = await db.rpc('admin_correos_duplicados')
+          if (!eDup && Array.isArray(dup)) dupes = (dup as any[]).map(d => [String(d.email), Number(d.n)] as [string, number])
+          else {
+            const { filas: correos } = await leerPorPaginas(() => db.from('users').select('id, email'))
+            const porCorreo: Record<string, number> = {}
+            for (const u of correos) { const e = String(u.email ?? '').toLowerCase(); if (e) porCorreo[e] = (porCorreo[e] ?? 0) + 1 }
+            dupes = Object.entries(porCorreo).filter(([, n]) => n > 1)
+          }
+        }
         if (dupes.length) add('dup_emails', 'alta', `${dupes.length} correo(s) con más de una cuenta`,
           `Filas duplicadas hacen que el login lea una y el panel otra: ${dupes.map(([e, n]) => `${e} (${n})`).join(', ')}.`,
           'Deja solo la fila que tiene cuenta de acceso real y borra la sobrante.', dupes.length)
 
         // Filas con rol admin que NO tienen usuario de Auth: no pueden iniciar
         // sesión, pero cuentan como admin en cualquier consulta por rol.
+        // Se pregunta por cada admin (son pocos): la primera página de 200
+        // cuentas de acceso dejaba fuera a casi todos cuando hay miles, y los
+        // marcaba huérfanos sin serlo.
         try {
-          const { data: list } = await db.auth.admin.listUsers({ page: 1, perPage: 200 })
-          const authIds = new Set((list?.users ?? []).map((u: any) => u.id))
-          const huerfanos = admins.filter(a => !authIds.has(a.id))
+          const huerfanos: any[] = []
+          for (const a of admins) {
+            const { data: au, error: eAu } = await db.auth.admin.getUserById(String(a.id))
+            if (eAu && !/not.?found|no.*encontr/i.test(String(eAu.message ?? ''))) throw eAu
+            if (!au?.user) huerfanos.push(a)
+          }
           if (huerfanos.length) add('admin_orphan', 'alta', `${huerfanos.length} fila(s) de admin sin cuenta de acceso`,
             `No pueden iniciar sesión pero pesan como admin en la base: ${huerfanos.map(a => a.email).join(', ')}. Suelen ser semillas de instalación que quedaron olvidadas.`,
             'Bórralas si no operan, después de comprobar que no tienen movimientos.', huerfanos.length)
@@ -4655,6 +4741,42 @@ Deno.serve(async (req: Request) => {
         return json({ raw_data: tx?.raw_data ?? {} })
       }
 
+      // ── CLIENTES POR PÁGINAS ────────────────────────────────────────────
+      // Búsqueda en el servidor: nombre, correo, razón social, documento, NIT,
+      // ID Lincoin o id. Devuelve una página y los conteos por tipo de cuenta.
+      // La hace la base (admin_buscar_usuarios); si esa función todavía no
+      // existe, una consulta más simple sin conteos por tipo.
+      if (body.action === 'usuarios_buscar') {
+        const q = String(body.q ?? '').trim().slice(0, 80)
+        const tipo = ['todos', 'empresas', 'personas', 'contadores', 'pendientes'].includes(String(body.tipo)) ? String(body.tipo) : 'todos'
+        const porPagina = Math.min(100, Math.max(1, Math.floor(Number(body.porPagina) || 50)))
+        const pagina = Math.max(0, Math.floor(Number(body.pagina) || 0))
+        const { data, error } = await db.rpc('admin_buscar_usuarios', { p_q: q || null, p_tipo: tipo, p_limit: porPagina, p_offset: pagina * porPagina })
+        if (!error && data && typeof data === 'object') {
+          const d = data as { total?: number; conteos?: Record<string, number>; usuarios?: Record<string, unknown>[] }
+          return json({ ok: true, total: Number(d.total) || 0, conteos: d.conteos ?? null, pagina, porPagina, usuarios: (d.usuarios ?? []).map(usuarioParaPanel) })
+        }
+        // Respaldo sin la función de la base: filtra por texto y por tipo
+        // simple; "contadores" no se puede saber sin ella.
+        const limpio = q.replace(/[,()"\\%*]/g, ' ').trim()
+        let consulta = db.from('users').select('*', { count: 'exact' })
+        if (limpio) consulta = consulta.or(['email', 'full_name', 'company_name'].map(c => `${c}.ilike.*${limpio}*`).join(','))
+        if (tipo === 'empresas') consulta = consulta.eq('role', 'business')
+        if (tipo === 'pendientes') consulta = consulta.in('kyc_status', ['pending', 'in_review'])
+        const { data: filas, count, error: e2 } = await consulta.order('created_at', { ascending: false, nullsFirst: false }).range(pagina * porPagina, pagina * porPagina + porPagina - 1)
+        if (e2) return json({ ok: false, error: e2.message }, 500)
+        const sinEquipo = ((filas ?? []) as Record<string, unknown>[]).filter(u => u.role !== 'admin')
+        return json({ ok: true, total: Math.max(0, (count ?? 0) - (((filas ?? []) as any[]).length - sinEquipo.length)), conteos: null, pagina, porPagina, usuarios: sinEquipo.map(usuarioParaPanel), sinFuncionBase: true })
+      }
+
+      // Usuarios puntuales (los que el panel tiene abiertos o necesita para
+      // nombrar un movimiento), hasta 200 por llamada.
+      if (body.action === 'usuarios_por_id') {
+        const ids = idsValidos(body.ids, 200)
+        if (!ids.length) return json({ ok: true, usuarios: [] })
+        return json({ ok: true, usuarios: (await usuariosPorId(ids)).map(usuarioParaPanel) })
+      }
+
       // Un POST con una acción que no existe ya NO cae a la descarga general
       // (antes devolvía todos los usuarios y movimientos). Sin acción, sí:
       // es lo mismo que el GET.
@@ -4675,11 +4797,36 @@ Deno.serve(async (req: Request) => {
     // ACH, cargas, retiros) tenían solo ~200/N de chance de venir → "no llegaban"
     // a Tesorería para aprobar. Ahora se ordena por created_at (columna indexada)
     // Y ADEMÁS se traen SIEMPRE todas las pendientes, sin que el tope las tape.
-    const [usersRes, txRes, pendingRes] = await Promise.all([
-      db.from('users').select('*'),
+    //
+    // USUARIOS: el conjunto de trabajo, no la base entera. Con 100.000
+    // clientes el panel no puede bajarlos todos cada 30 s, y PostgREST corta
+    // en 1.000 filas sin avisar: el resto desaparecía del panel en silencio.
+    // Viaja lo que el panel tiene a la vista: el equipo, los pendientes de
+    // revisión, los de OTC, los últimos registrados, los dueños de los
+    // movimientos cargados y los que el panel pidió por id (?incluir=). Lo
+    // demás se busca en el servidor (usuarios_buscar).
+    const incluir = idsValidos(new URL(req.url).searchParams.get('incluir'), 200)
+    const conteo = (f: (q: any) => any) => f(db.from('users').select('id', { count: 'exact', head: true })).then((r: any) => r.count ?? null)
+    const [txRes, pendingRes, equipoRes, pendKycRes, otcRes, recientesRes, pedidos, nTotal, nEquipo, nEmpresas, nPendientes, nVerificados, nBloqueados, obligaciones] = await Promise.all([
       db.from('transactions').select('*').order('created_at', { ascending: false }).limit(200),
       db.from('transactions').select('*').eq('status', 'Pendiente').order('created_at', { ascending: false }).limit(500),
+      db.from('users').select('*').eq('role', 'admin').limit(500),
+      db.from('users').select('*').in('kyc_status', ['pending', 'in_review']).order('created_at', { ascending: false, nullsFirst: false }).limit(500),
+      db.from('users').select('*').eq('raw_data->>otcEnabled', 'true').limit(1000),
+      db.from('users').select('*').order('created_at', { ascending: false, nullsFirst: false }).limit(300),
+      incluir.length ? usuariosPorId(incluir) : Promise.resolve([] as Record<string, unknown>[]),
+      conteo(q => q),
+      conteo(q => q.eq('role', 'admin')),
+      conteo(q => q.eq('role', 'business')),
+      conteo(q => q.in('kyc_status', ['pending', 'in_review'])),
+      conteo(q => q.in('kyc_status', ['verified', 'approved'])),
+      conteo(q => q.eq('is_blocked', true)),
+      obligacionesTodas().catch(() => null),
     ])
+    const usuariosPorIdMap = new Map<string, Record<string, unknown>>()
+    for (const r of [equipoRes.data, pendKycRes.data, otcRes.data, recientesRes.data, pedidos]) {
+      for (const u of (r ?? []) as Record<string, unknown>[]) usuariosPorIdMap.set(String(u.id), u)
+    }
 
     // Une recientes + pendientes, deduplicando por id (una pendiente reciente
     // aparece en ambas — se conserva una sola vez).
@@ -4687,6 +4834,11 @@ Deno.serve(async (req: Request) => {
     for (const t of (txRes.data ?? [])) txById.set(String((t as any).id), t)
     for (const t of (pendingRes.data ?? [])) txById.set(String((t as any).id), t)
     const allTx = Array.from(txById.values())
+
+    // Los dueños de los movimientos cargados, para que cada fila tenga nombre.
+    const faltan = Array.from(new Set(allTx.map(t => String((t as any).user_id ?? '')).filter(id => UUID_RE.test(id) && !usuariosPorIdMap.has(id))))
+    for (const u of await usuariosPorId(faltan)) usuariosPorIdMap.set(String(u.id), u)
+    const usersRes = { data: Array.from(usuariosPorIdMap.values()) }
 
     // ── FILTRO POR PAÍS ────────────────────────────────────────────────
     // Esta es LA vía por la que el panel trae clientes y movimientos, así que
@@ -4716,10 +4868,17 @@ Deno.serve(async (req: Request) => {
       acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc),
     )
 
+    const clientesTotal = nTotal != null && nEquipo != null ? nTotal - nEquipo : null
+    const clientesCargados = usuariosVisibles.filter((u: Record<string, unknown>) => u.role !== 'admin').length
     const payload = {
       // Usuarios: solo se quitan blobs base64 gigantes (>20 KB) — los campos
       // normales (contactos, wallets, notificaciones) pasan intactos.
-      users:        usuariosVisibles.map((u: Record<string, unknown>) => ({ ...u, raw_data: sinCredenciales(slimRawData(u.raw_data, 20000)) })),
+      users:        usuariosVisibles.map(usuarioParaPanel),
+      // Conteos de TODA la base, para que los tableros no cuenten solo los
+      // que vinieron en la lista.
+      resumenUsuarios: { clientes: clientesTotal, empresas: nEmpresas, pendientes: nPendientes, verificados: nVerificados, bloqueados: nBloqueados, cargados: clientesCargados, parcial: clientesTotal != null && clientesTotal > clientesCargados },
+      obligaciones: obligaciones ? obligaciones.valor : null,
+      obligacionesParciales: obligaciones ? obligaciones.parcial : null,
       transactions: movimientosVisibles.map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
       // Para que el panel pueda decir "estás viendo solo Colombia" en vez de
       // dejar creer que eso es todo lo que hay.

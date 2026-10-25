@@ -27,6 +27,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
+import { leerPorPaginas } from '../_shared/paginas.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -852,9 +853,11 @@ Deno.serve(async (req: Request) => {
     // ── Listado para el panel ────────────────────────────────────────────
     if (accion === 'listado') {
       { const no = await exigirAdmin(req, yo); if (no) return no }
-      const { data } = await db.from('users').select('id, name, email, raw_data').limit(500)
-      const filas = ((data ?? []) as any[])
-        .map(u => ({ id: u.id, nombre: u.name, correo: u.email, kumplo: u.raw_data?.kumplo ?? null }))
+      // Solo las cuentas con ficha de Kumplo, todas, por páginas (antes eran
+      // las primeras 500 cuentas de la base, tuvieran o no ficha).
+      const { filas: data } = await leerPorPaginas(() => db.from('users').select('id, name, email, kumplo:raw_data->kumplo').not('raw_data->kumplo', 'is', null), { tope: 20000 })
+      const filas = (data as any[])
+        .map(u => ({ id: u.id, nombre: u.name, correo: u.email, kumplo: u.kumplo ?? null }))
         .filter(f => f.kumplo && (f.kumplo.empresaId || f.kumplo.riesgo))
       return json({ ok: true, filas })
     }

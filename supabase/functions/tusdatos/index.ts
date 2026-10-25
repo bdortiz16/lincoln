@@ -44,6 +44,7 @@ import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { esNitEmpresa } from '../_shared/cupos.ts'
+import { leerPorPaginas } from '../_shared/paginas.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -835,13 +836,13 @@ async function riskPropagar(tipoDoc: string, documento: string, cambios: Partial
       fuente: 'monitoreo',
     }).eq('doc_type', RISK_TIPO(tipoDoc)).eq('doc_number', doc)
 
-    // A todas las cuentas que lo tengan inscrito.
-    const { data: filas } = await db.from('users')
-      .select('id, raw_data').not('raw_data->tusdatos->beneficiarios', 'is', null).limit(2000)
-    for (const u of (filas ?? []) as any[]) {
-      const benefs = u.raw_data?.tusdatos?.beneficiarios ?? {}
-      const f = benefs[doc]
-      if (!f) continue
+    // A todas las cuentas que lo tengan inscrito: se le pregunta a la base
+    // quién tiene ESE documento en sus beneficiarios (contención), en vez de
+    // leer las primeras 1.000 cuentas y buscarlo ahí — con más cuentas, las
+    // demás se quedaban con el veredicto viejo.
+    const { filas } = await leerPorPaginas(() => db.from('users')
+      .select('id').contains('raw_data', { tusdatos: { beneficiarios: { [doc]: {} } } }))
+    for (const u of filas) {
       // Solo la ficha de ese documento: la lectura de arriba puede tener
       // minutos (son muchas cuentas) y guardar el blob pisaba lo nuevo.
       await setRawPath(db, u.id, ['tusdatos', 'beneficiarios', doc], { ...cambios, fuente: 'monitoreo', at: new Date().toISOString() }, true)
@@ -1965,14 +1966,56 @@ Deno.serve(async (req: Request) => {
       // Se traen los datos que IDENTIFICAN a la empresa que consultó, no solo
       // su nombre: un reporte a la UIAF necesita la razón social, el NIT y el
       // tipo de cuenta de quien reporta, no un id interno.
-      const { data: filas } = await db
+      //
+      // Se leen TODAS las cuentas con consultas, por páginas (antes eran las
+      // primeras 1.000 y el resto de la bandeja no existía), y cada página se
+      // pliega en los contadores y se suelta: con decenas de miles de
+      // consultas no caben todas a la vez en la memoria de la función.
+      const peso: Record<string, number> = {
+        nombre_no_coincide: 0, documento_no_vigente: 1, riesgo_alto: 2, riesgo_medio: 3,
+        sin_validar: 4, consulta_fallida: 5, sin_autorizacion: 6, en_curso: 7, aprobado_manual: 8,
+      }
+      const ordenAlerta = (a: any, b: any) => (peso[a.alerta] ?? 9) - (peso[b.alerta] ?? 9) || String(b.at ?? '').localeCompare(String(a.at ?? ''))
+      let conAlerta: any[] = []
+      const enOrden: any[] = []
+      const resumen = { total: 0, bloqueados: 0, nombreNoCoincide: 0, documentoNoVigente: 0, alto: 0, medio: 0, aprobados: 0, enCurso: 0, enOrden: 0 }
+      const porClienteTop: any[] = []
+      let casos: any[] = []
+      const plegar = () => {
+        const porCli = new Map<string, any>()
+        for (const c of casos) {
+          resumen.total++
+          const vigente = c.alerta !== 'aprobado_manual'
+          if (vigente && c.operable === false) resumen.bloqueados++
+          if (vigente && c.nombreCoincide === false) resumen.nombreNoCoincide++
+          if (vigente && c.documentoVigente === false) resumen.documentoNoVigente++
+          if (vigente && c.categoria === 'alto') resumen.alto++
+          if (vigente && c.categoria === 'medio') resumen.medio++
+          if (c.alerta === 'aprobado_manual') resumen.aprobados++
+          if (c.estado === 'procesando') resumen.enCurso++
+          if (c.alerta) conAlerta.push(c)
+          else { resumen.enOrden++; if (enOrden.length < 120) enOrden.push(c) }
+          const k = c.cliente.id
+          const e = porCli.get(k) ?? { ...c.cliente, inscritos: 0, altos: 0, bloqueados: 0, nombreNoCoincide: 0 }
+          e.inscritos++
+          if (c.categoria === 'alto') e.altos++
+          if (c.operable === false) e.bloqueados++
+          if (c.nombreCoincide === false) e.nombreNoCoincide++
+          porCli.set(k, e)
+        }
+        for (const e of porCli.values()) if (e.altos > 0 || e.bloqueados > 0) porClienteTop.push(e)
+        // Solo se devuelven las 300 primeras: alcanza con guardar las 3.000
+        // mejores en el mismo orden.
+        if (conAlerta.length > 6000) conAlerta = conAlerta.sort(ordenAlerta).slice(0, 3000)
+        if (porClienteTop.length > 2000) { porClienteTop.sort((a, b) => (b.altos - a.altos) || (b.bloqueados - a.bloqueados)); porClienteTop.length = 500 }
+        casos = []
+      }
+      const { truncado } = await leerPorPaginas(() => db
         .from('users')
-        .select('id, name, email, company_name, role, country, created_at, raw_data')
-        .not('raw_data->tusdatos', 'is', null)
-        .limit(2000)
-
-      const casos: any[] = []
-      for (const u of (filas ?? []) as any[]) {
+        .select('id, name, email, company_name, role, country, created_at, documentNumber:raw_data->documentNumber, nit:raw_data->nit, taxId:raw_data->taxId, documentType:raw_data->documentType, paisRaw:raw_data->country, tusdatos:raw_data->tusdatos')
+        .not('raw_data->tusdatos', 'is', null), { alLote: (lote) => {
+      for (const u0 of lote) {
+        const u = { ...u0, raw_data: { documentNumber: u0.documentNumber, nit: u0.nit, taxId: u0.taxId, documentType: u0.documentType, country: u0.paisRaw, tusdatos: u0.tusdatos } }
         const td = u.raw_data?.tusdatos ?? {}
         const benefs: Record<string, any> = td.beneficiarios ?? {}
         // El titular también se revisa: no solo a quien recibe.
@@ -2029,14 +2072,9 @@ Deno.serve(async (req: Request) => {
           })
         }
       }
-
-      const peso: Record<string, number> = {
-        nombre_no_coincide: 0, documento_no_vigente: 1, riesgo_alto: 2, riesgo_medio: 3,
-        sin_validar: 4, consulta_fallida: 5, sin_autorizacion: 6, en_curso: 7, aprobado_manual: 8,
-      }
-      const conAlerta = casos.filter(x => x.alerta).sort((a, b) =>
-        (peso[a.alerta] ?? 9) - (peso[b.alerta] ?? 9) || String(b.at ?? '').localeCompare(String(a.at ?? '')))
-      const enOrden = casos.filter(x => !x.alerta)
+      plegar()
+      } })
+      conAlerta.sort(ordenAlerta)
 
       const cfgReglas = await leerConfig()
       return json({
@@ -2048,18 +2086,9 @@ Deno.serve(async (req: Request) => {
           activo: cfgReglas.activo, bloquear: cfgReglas.bloquear,
           soloBloquearAlto: cfgReglas.soloBloquearAlto,
         },
-        resumen: {
-          total: casos.length,
-          // Los aprobados por cumplimiento ya no cuentan como pendientes.
-          bloqueados: casos.filter(x => x.alerta !== 'aprobado_manual' && x.operable === false).length,
-          nombreNoCoincide: casos.filter(x => x.alerta !== 'aprobado_manual' && x.nombreCoincide === false).length,
-          documentoNoVigente: casos.filter(x => x.alerta !== 'aprobado_manual' && x.documentoVigente === false).length,
-          alto: casos.filter(x => x.alerta !== 'aprobado_manual' && x.categoria === 'alto').length,
-          medio: casos.filter(x => x.alerta !== 'aprobado_manual' && x.categoria === 'medio').length,
-          aprobados: casos.filter(x => x.alerta === 'aprobado_manual').length,
-          enCurso: casos.filter(x => x.estado === 'procesando').length,
-          enOrden: enOrden.length,
-        },
+        // Los aprobados por cumplimiento ya no cuentan como pendientes.
+        resumen,
+        truncado,
         casos: conAlerta.slice(0, 300),
         // Los que están en orden van aparte y recortados: la bandeja es para
         // lo que hay que mirar, no para el archivo.
@@ -2067,22 +2096,9 @@ Deno.serve(async (req: Request) => {
         // Concentración por cliente. Una empresa que inscribe a varias
         // personas de riesgo alto no es mala suerte: es el patrón que se
         // reporta. Se cuenta sobre TODOS los casos, no sobre la página.
-        porCliente: (() => {
-          const m = new Map<string, any>()
-          for (const c of casos) {
-            const k = c.cliente.id
-            const e = m.get(k) ?? { ...c.cliente, inscritos: 0, altos: 0, bloqueados: 0, nombreNoCoincide: 0 }
-            e.inscritos++
-            if (c.categoria === 'alto') e.altos++
-            if (c.operable === false) e.bloqueados++
-            if (c.nombreCoincide === false) e.nombreNoCoincide++
-            m.set(k, e)
-          }
-          return [...m.values()]
-            .filter(e => e.altos > 0 || e.bloqueados > 0)
-            .sort((a, b) => (b.altos - a.altos) || (b.bloqueados - a.bloqueados))
-            .slice(0, 50)
-        })(),
+        porCliente: porClienteTop
+          .sort((a, b) => (b.altos - a.altos) || (b.bloqueados - a.bloqueados))
+          .slice(0, 50),
       })
     }
 
@@ -2113,13 +2129,41 @@ Deno.serve(async (req: Request) => {
 
       // Las consultas guardadas, de todas las cuentas. Es la materia prima de
       // la cola, del historial y de las cifras del mes.
-      const { data: filas } = await db
-        .from('users').select('id, name, email, raw_data')
-        .not('raw_data->tusdatos', 'is', null).limit(2000)
-
-      const consultas: any[] = []
-      for (const u of (filas ?? []) as any[]) {
-        const td = u.raw_data?.tusdatos ?? {}
+      // TODAS las cuentas, por páginas, y cada página se pliega en la cola,
+      // las últimas y las cifras: de una vez eran las primeras 1.000 cuentas
+      // y con miles de consultas no caben juntas en memoria.
+      const hoy = new Date(); hoy.setHours(0, 0, 0, 0)
+      const desde30 = Date.now() - 30 * 24 * 3600_000
+      const porFecha = (a: any, b: any) => String(b.at ?? '').localeCompare(String(a.at ?? ''))
+      let cola: any[] = []
+      let ultimas: any[] = []
+      const cifras = { deHoy: 0, delMes: 0, finalizadas30: 0, bajo30: 0, enRevision: 0, bloqueadas: 0 }
+      let consultas: any[] = []
+      const plegar = () => {
+        for (const x of consultas) {
+          const t = x.at ? new Date(x.at).getTime() : NaN
+          if (x.estado === 'procesando' || (x.estado === 'finalizado' && x.fuentesConError.length > 0)) cola.push(x)
+          ultimas.push(x)
+          if (t >= hoy.getTime()) cifras.deHoy++
+          if (t >= desde30) {
+            cifras.delMes++
+            if (x.estado === 'finalizado') {
+              cifras.finalizadas30++
+              if (x.categoria === 'bajo' || x.categoria === 'ninguno' || x.categoria === 'informativo') cifras.bajo30++
+            }
+            if (x.categoria === 'medio' || x.nombreCoincide === false) cifras.enRevision++
+            if (x.operable === false) cifras.bloqueadas++
+          }
+        }
+        if (cola.length > 400) cola = cola.sort(porFecha).slice(0, 200)
+        if (ultimas.length > 200) ultimas = ultimas.sort(porFecha).slice(0, 50)
+        consultas = []
+      }
+      await leerPorPaginas(() => db
+        .from('users').select('id, name, email, tusdatos:raw_data->tusdatos')
+        .not('raw_data->tusdatos', 'is', null), { alLote: (lote) => {
+      for (const u of lote) {
+        const td = u.tusdatos ?? {}
         const benefs: Record<string, any> = td.beneficiarios ?? {}
         const entradas: [string, any][] = [
           ...(td.documento ? [[String(td.documento), { ...td, beneficiarios: undefined, esTitular: true }] as [string, any]] : []),
@@ -2141,21 +2185,14 @@ Deno.serve(async (req: Request) => {
           })
         }
       }
-      consultas.sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
-
+      plegar()
+      } })
       // La cola: lo que está esperando. Dos casos distintos y ambos cuentan —
       // la consulta que sigue corriendo, y la que terminó pero con fuentes
       // caídas, o sea con el resultado incompleto. Aprobar o rechazar con
       // datos parciales es peor que esperar.
-      const cola = consultas.filter(x =>
-        x.estado === 'procesando' || (x.estado === 'finalizado' && x.fuentesConError.length > 0))
-
-      const hoy = new Date(); hoy.setHours(0, 0, 0, 0)
-      const desde30 = Date.now() - 30 * 24 * 3600_000
-      const delMes = consultas.filter(x => x.at && new Date(x.at).getTime() >= desde30)
-      const deHoy = consultas.filter(x => x.at && new Date(x.at).getTime() >= hoy.getTime())
-      const finalizadas30 = delMes.filter(x => x.estado === 'finalizado')
-      const bajo30 = finalizadas30.filter(x => x.categoria === 'bajo' || x.categoria === 'ninguno' || x.categoria === 'informativo').length
+      cola.sort(porFecha)
+      ultimas.sort(porFecha)
 
       return json({
         ok: true,
@@ -2165,15 +2202,15 @@ Deno.serve(async (req: Request) => {
         entorno: String(c.baseUrl ?? '').includes('docs.tusdatos') ? 'pruebas' : 'produccion',
         config: c,
         proveedor,
-        consultasHoy: deHoy.length,
+        consultasHoy: cifras.deHoy,
         cupo: typeof conexion?.plan?.amount === 'number' ? conexion.plan.amount : null,
         cola: cola.slice(0, 40),
-        ultimas: consultas.slice(0, 12),
+        ultimas: ultimas.slice(0, 12),
         mes: {
-          consultas: delMes.length,
-          bajoPct: finalizadas30.length ? Math.round((bajo30 / finalizadas30.length) * 1000) / 10 : null,
-          enRevision: delMes.filter(x => x.categoria === 'medio' || x.nombreCoincide === false).length,
-          bloqueadas: delMes.filter(x => x.operable === false).length,
+          consultas: cifras.delMes,
+          bajoPct: cifras.finalizadas30 ? Math.round((cifras.bajo30 / cifras.finalizadas30) * 1000) / 10 : null,
+          enRevision: cifras.enRevision,
+          bloqueadas: cifras.bloqueadas,
         },
       })
     }
@@ -2190,13 +2227,13 @@ Deno.serve(async (req: Request) => {
     if (accion === 'recalcular_nombres') {
       { const no = await exigirAdmin(req, yo); if (no) return no }
       const c = await leerConfig()
-      const { data: filas } = await db
-        .from('users').select('id, raw_data').not('raw_data->tusdatos', 'is', null).limit(2000)
-
+      // Todas las cuentas con consultas, por páginas (antes, las primeras
+      // 1.000), leyendo solo la ficha de TusDatos.
       let revisados = 0, liberados = 0
-      for (const u of (filas ?? []) as any[]) {
-        const raw = { ...(u.raw_data ?? {}) }
-        const td = { ...(raw.tusdatos ?? {}) }
+      await leerPorPaginas(() => db
+        .from('users').select('id, tusdatos:raw_data->tusdatos').not('raw_data->tusdatos', 'is', null), { alLote: async (lote) => {
+      for (const u of lote) {
+        const td = { ...(u.tusdatos ?? {}) }
         const benefs = { ...(td.beneficiarios ?? {}) }
         let cambio = false
 
@@ -2219,6 +2256,7 @@ Deno.serve(async (req: Request) => {
           await setRawPath(db, u.id, ['tusdatos'], { ...titular, beneficiarios: benefs }, true)
         }
       }
+      } })
       await auditar('tusdatos.recalculo_nombres', { por: yo.userId, revisados, liberados })
       return json({ ok: true, revisados, liberados })
     }

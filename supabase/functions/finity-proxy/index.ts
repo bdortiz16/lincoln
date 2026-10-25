@@ -933,20 +933,30 @@ Deno.serve(async (req) => {
       try {
         // Lincoin guarda los contactos en raw_data.mouvContacts (nombre
         // histórico); se revisa también la clave vieja finityContacts.
-        const { data: rows } = await db.from('users').select('contacts:raw_data->mouvContacts, legacy:raw_data->finityContacts')
-        for (const r of (rows ?? []) as any[]) {
-          const list = [
+        //
+        // Se pregunta a la base por contención (¿alguna cuenta tiene un
+        // contacto con este finityId / este número?), no leyendo todas las
+        // cuentas: esa lectura volvía solo las primeras 1.000 y, con más
+        // clientes, se borraba en Finity una cuenta que otro todavía usaba.
+        const preguntas: Record<string, unknown>[] = []
+        for (const k of ['mouvContacts', 'finityContacts']) {
+          if (eaId) preguntas.push({ [k]: [{ finityId: eaId }] })
+          if (accDigits) preguntas.push({ [k]: [{ accountNumber: accDigits }] })
+          // El número se guarda como lo escribió el cliente (puede traer
+          // guiones o espacios): también se pregunta tal cual llegó.
+          const tal = String(payload.accountNumber ?? '').trim()
+          if (tal && tal !== accDigits) preguntas.push({ [k]: [{ accountNumber: tal }] })
+        }
+        const conteos = await Promise.all(preguntas.map(async (contiene) => {
+          const { data, error } = await db.from('users').select('id, contacts:raw_data->mouvContacts, legacy:raw_data->finityContacts').contains('raw_data', contiene).limit(50)
+          if (error) throw error
+          // Mismo criterio que antes: una billetera cripto no cuenta.
+          return ((data ?? []) as any[]).filter(r => [
             ...(Array.isArray(r?.contacts) ? r.contacts : []),
             ...(Array.isArray(r?.legacy) ? r.legacy : []),
-          ]
-          const used = list.some((c: any) => {
-            if (c?.accountKind === 'wallet') return false
-            const fid = String(c?.finityId ?? '')
-            const cd = String(c?.accountNumber ?? '').replace(/\D/g, '')
-            return (eaId && fid === eaId) || (accDigits && cd && cd === accDigits)
-          })
-          if (used) stillUsed++
-        }
+          ].some((c: any) => c?.accountKind !== 'wallet' && ((eaId && String(c?.finityId ?? '') === eaId) || (accDigits && String(c?.accountNumber ?? '').replace(/\D/g, '') === accDigits)))).map(r => String(r.id))
+        }))
+        stillUsed = new Set(conteos.flat()).size
       } catch { stillUsed = 1 /* si la consulta falla, por seguridad NO borramos en Finity */ }
 
       if (stillUsed > 0) {
