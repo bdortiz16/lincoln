@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send } from 'lucide-react';
+import { BookUser, Plus, X, Trash2, CheckCircle, AlertTriangle, Landmark, Wallet, Search, SlidersHorizontal, Zap, Copy, Send, ShieldCheck } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
@@ -11,6 +11,7 @@ import { callFinity } from './FinitySection';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
 import { ComplianceDashboard } from './ComplianceDashboard';
 import { CupoBeneficiario } from './CupoBeneficiario';
+import { KycBeneficiarioModal, agruparHallazgos } from './KycBeneficiarioModal';
 
 declare const __BUILD_TS__: string;
 
@@ -840,6 +841,10 @@ export const ContactsSection: React.FC<{
     // de la ficha fuera de la pantalla y esconden lo que de verdad importa:
     // el veredicto y los botones.
     const [verHallazgos, setVerHallazgos] = useState(false);
+    // Ficha KYC abierta encima del detalle. Se cierra al cambiar de
+    // beneficiario o al cerrar el detalle.
+    const [kycAbierto, setKycAbierto] = useState(false);
+    useEffect(() => { setKycAbierto(false); }, [detail?.id]);
 
     // Al abrir la ficha, si la consulta ya terminó pero el detalle de los
     // hallazgos no quedó guardado —consultas anteriores a que se empezara a
@@ -2815,16 +2820,7 @@ export const ContactsSection: React.FC<{
                                             // hallazgo numerado. Listarlos uno por uno
                                             // llena la pantalla sin decir nada nuevo, así
                                             // que se agrupan y se cuenta cuántos hay.
-                                            const limpiar = (t: string) => String(t).replace(/\s*\d{1,3}\s*$/, '').trim();
-                                            const grupos: any[] = [];
-                                            const porClave = new Map<string, any>();
-                                            for (const h of k.hallazgos) {
-                                                const texto = limpiar(h.texto || h.codigo);
-                                                const c = `${h.nivel}|${texto}`;
-                                                if (porClave.has(c)) { porClave.get(c).n += 1; continue; }
-                                                const g = { ...h, texto, n: 1 };
-                                                porClave.set(c, g); grupos.push(g);
-                                            }
+                                            const grupos = agruparHallazgos(k.hallazgos);
                                             const altos = grupos.filter(g => g.nivel === 'alto');
                                             const total = (k.altos ?? 0) + (k.medios ?? 0);
                                             // Plegado se muestran solo los ALTOS: son la
@@ -2929,6 +2925,23 @@ export const ContactsSection: React.FC<{
                                     </div>
                                 );
                             })()}
+                            {/* KYC: la ficha completa de TusDatos en su propia
+                                ventana. Solo con una consulta que ya volvió:
+                                mientras está en curso no hay qué mostrar. */}
+                            {(() => {
+                                const k = amlDe(detail);
+                                if (!k || String(k.estado ?? 'procesando') === 'procesando') return null;
+                                return (
+                                    <button onClick={() => setKycAbierto(true)}
+                                        className="inline-flex items-center gap-1.5 hover:bg-white/[0.06] transition-colors"
+                                        style={{
+                                            marginTop: 16, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+                                            color: '#F4F4F2', borderRadius: 999, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                                        }}>
+                                        <ShieldCheck size={13} /> KYC
+                                    </button>
+                                );
+                            })()}
                             {/* ACTIVIDAD */}
                             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', marginTop: 14 }}>ACTIVIDAD</p>
                             <div>
@@ -2994,6 +3007,24 @@ export const ContactsSection: React.FC<{
                         </div>
                     </div>
                 </div>
+                );
+            })()}
+
+            {/* Ficha KYC del beneficiario, encima del detalle. */}
+            {detail && kycAbierto && amlDe(detail) && (() => {
+                const m = rowMeta(detail);
+                const isBreb = detail.destKind === 'breb';
+                return (
+                    <KycBeneficiarioModal
+                        ficha={amlDe(detail)}
+                        nombre={prettyName(detail.name)}
+                        iniciales={initialsOf(detail.name)}
+                        subtitulo={`${m.country} · ${isBreb ? 'Bre-B' : 'ACH'} · ${detail.kind === 'empresa' ? 'Empresa' : 'Persona'}`}
+                        docType={detail.docType}
+                        docNumber={detail.docNumber && detail.docNumber !== '—' ? String(detail.docNumber) : undefined}
+                        insignia={kumploPill(detail)}
+                        onCerrar={() => setKycAbierto(false)}
+                    />
                 );
             })()}
 
