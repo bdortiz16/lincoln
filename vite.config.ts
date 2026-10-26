@@ -33,11 +33,18 @@ export default defineConfig(({ mode }) => {
         rollupOptions: {
           output: {
             manualChunks(id: string) {
+              // El ayudante de import() dinámico de Vite lo usa la app entera.
+              // Sin esto Rollup lo dejaba dentro de 'vendor-pdf' y la página
+              // precargaba los 800 kB del PDF en cada visita.
+              if (id.includes('vite/preload-helper')) return 'vendor';
               if (!id.includes('node_modules')) return undefined;
               if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'vendor-react';
               if (id.includes('@supabase')) return 'vendor-supabase';
               if (/node_modules\/(d3-|topojson)/.test(id)) return 'vendor-mapa';
               if (id.includes('lucide-react')) return 'vendor-iconos';
+              // El PDF de la ficha KYC: se baja solo al tocar "Descargar PDF".
+              // Si cayera en 'vendor' lo descargaría todo el que abre la app.
+              if (/node_modules\/(jspdf|html-to-image|html2canvas|dompurify|canvg|fflate|fast-png|iobuffer|pako|stackblur-canvas|rgbcolor|raf|svg-pathdata|performance-now|core-js|@babel\/runtime)\//.test(id)) return 'vendor-pdf';
               return 'vendor';
             },
           },

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { X, Download, AlertTriangle } from 'lucide-react';
 
 // Ficha KYC de un beneficiario: lo que TusDatos respondió sobre la persona
@@ -24,6 +24,25 @@ export const agruparHallazgos = (hallazgos: any[]) => {
     return grupos;
 };
 
+// Archivo viene de Google Fonts, y el navegador no deja leer las reglas de
+// una hoja de otro dominio: la captura salía con la letra del sistema. Se
+// baja el CSS de la fuente, cada archivo se vuelve data: y se le pasa a la
+// captura ya armado. Una vez por sesión.
+const ARCHIVO_CSS = 'https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap';
+let fuenteEmbebida: Promise<string> | null = null;
+const cssDeLaFuente = () => {
+    fuenteEmbebida ??= (async () => {
+        const css = await (await fetch(ARCHIVO_CSS)).text();
+        const urls = [...new Set([...css.matchAll(/url\((https:[^)]+)\)/g)].map(m => m[1]))];
+        const datos = await Promise.all(urls.map(async u => {
+            const b = await (await fetch(u)).blob();
+            return new Promise<string>((ok, mal) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result)); fr.onerror = mal; fr.readAsDataURL(b); });
+        }));
+        return urls.reduce((acc, u, i) => acc.split(u).join(datos[i]), css);
+    })().catch(e => { fuenteEmbebida = null; throw e; });
+    return fuenteEmbebida;
+};
+
 const CATEGORIA: Record<string, string> = {
     alto: 'Riesgo alto', medio: 'Riesgo medio', bajo: 'Riesgo bajo',
     ninguno: 'Sin antecedentes', informativo: 'Sin antecedentes', sin_validar: 'Documento sin validar',
@@ -35,7 +54,10 @@ const FUENTE: Record<string, string> = { registraduria: 'Registraduría' };
 
 const fmtFecha = (d?: string, conHora = false) => {
     if (!d) return null;
-    const t = new Date(d);
+    // Una fecha sola ("2008-03-14") se lee como medianoche UTC, que en
+    // Colombia es el día anterior. Se arma en hora local.
+    const solo = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d));
+    const t = solo ? new Date(+solo[1], +solo[2] - 1, +solo[3]) : new Date(d);
     if (isNaN(t.getTime())) return String(d);
     return conHora
         ? t.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })
@@ -63,8 +85,49 @@ export const KycBeneficiarioModal: React.FC<{
     insignia: React.ReactNode;
     onCerrar: () => void;
 }> = ({ ficha: k, nombre, iniciales, subtitulo, docType, docNumber, insignia, onCerrar }) => {
-    // El PDF todavía no se ofrece: el botón queda a la vista y avisa.
-    const [avisoPdf, setAvisoPdf] = useState(false);
+    const cajaRef = useRef<HTMLDivElement>(null);
+    const [generando, setGenerando] = useState(false);
+    const [errorPdf, setErrorPdf] = useState<string | null>(null);
+
+    // El PDF es una FOTO de esta misma ventana: mismos colores, misma fuente,
+    // mismas filas. Se copia la caja fuera de pantalla, sin el alto máximo
+    // (que en pantalla corta el cuerpo y lo pone a desplazar) y sin los
+    // botones, se captura entera y va a una sola página del tamaño exacto.
+    // Las librerías se bajan solo al tocar el botón.
+    const descargarPdf = async () => {
+        const caja = cajaRef.current;
+        if (!caja || generando) return;
+        setGenerando(true); setErrorPdf(null);
+        const fuera = document.createElement('div');
+        try {
+            const [{ toJpeg }, { jsPDF }, fontEmbedCSS] = await Promise.all([import('html-to-image'), import('jspdf'), cssDeLaFuente()]);
+            const ancho = caja.offsetWidth;
+            const copia = caja.cloneNode(true) as HTMLDivElement;
+            copia.querySelectorAll('[data-sin-pdf]').forEach(n => n.remove());
+            copia.classList.remove('animate-in', 'zoom-in-95', 'duration-300');
+            Object.assign(copia.style, { maxHeight: 'none', width: `${ancho}px`, maxWidth: 'none' });
+            const cuerpo = copia.querySelector<HTMLElement>('[data-cuerpo]');
+            if (cuerpo) Object.assign(cuerpo.style, { overflowY: 'visible', flex: 'none' });
+            Object.assign(fuera.style, { position: 'fixed', left: '-10000px', top: '0', pointerEvents: 'none' });
+            fuera.appendChild(copia);
+            document.body.appendChild(fuera);
+            await document.fonts.ready;
+            const alto = copia.offsetHeight;
+            // JPEG y no PNG: en PNG la página pesaba 8 MB; sobre fondo
+            // oscuro el JPEG no deja marcas que se noten.
+            const img = await toJpeg(copia, { quality: 0.92, pixelRatio: 2, backgroundColor: '#0C0E0D', width: ancho, height: alto, fontEmbedCSS });
+            const pdf = new jsPDF({ unit: 'px', format: [ancho, alto], orientation: alto >= ancho ? 'portrait' : 'landscape', hotfixes: ['px_scaling'], compress: true });
+            pdf.addImage(img, 'JPEG', 0, 0, ancho, alto);
+            const doc = String(docNumber ?? '').replace(/\D/g, '');
+            pdf.save(`kyc-${doc || nombre.replace(/[^\w]+/g, '-').toLowerCase()}.pdf`);
+        } catch (e) {
+            console.warn('[kyc] pdf', e);
+            setErrorPdf('No se pudo generar el PDF. Vuelve a intentarlo.');
+        } finally {
+            fuera.remove();
+            setGenerando(false);
+        }
+    };
 
     const est = String(k?.estado ?? '');
     const cat = String(k?.categoria ?? '');
@@ -76,7 +139,7 @@ export const KycBeneficiarioModal: React.FC<{
     return (
         // Un nivel por encima del detalle (z-50): al cerrar se vuelve a él.
         <div className="fixed inset-0 z-[60] p-3 sm:p-4" style={{ background: 'rgba(4,5,4,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }} onClick={onCerrar}>
-            <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
+            <div ref={cajaRef} onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" className="w-full animate-in zoom-in-95 duration-300"
                 style={{
                     maxWidth: 640, maxHeight: 'calc(100dvh - 24px)', display: 'flex', flexDirection: 'column',
                     background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18,
@@ -93,7 +156,7 @@ export const KycBeneficiarioModal: React.FC<{
                             <p style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: '-0.3px', color: '#F4F4F2', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{nombre}</p>
                             <p style={{ fontSize: 12, color: '#878E88', marginTop: 2 }}>{subtitulo}</p>
                         </div>
-                        <button onClick={onCerrar} aria-label="Cerrar" style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                        <button data-sin-pdf onClick={onCerrar} aria-label="Cerrar" style={{ width: 34, height: 34, borderRadius: 9, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                             <X size={14} style={{ color: '#878E88' }} strokeWidth={1.7} />
                         </button>
                     </div>
@@ -101,7 +164,7 @@ export const KycBeneficiarioModal: React.FC<{
                 </div>
 
                 {/* Cuerpo */}
-                <div style={{ padding: '16px 24px 14px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
+                <div data-cuerpo style={{ padding: '16px 24px 14px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
                     <Rotulo t="IDENTIDAD" primero />
                     <div>
                         <Fila l="Nombre inscrito" v={String(k?.nombreInscrito ?? nombre)} />
@@ -182,12 +245,12 @@ export const KycBeneficiarioModal: React.FC<{
                 </div>
 
                 {/* Botonera */}
-                <div style={{ padding: '14px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', flexShrink: 0, background: '#0C0E0D' }}>
-                    {avisoPdf && (
+                <div data-sin-pdf style={{ padding: '14px 24px 22px', borderTop: '1px solid rgba(255,255,255,0.08)', flexShrink: 0, background: '#0C0E0D' }}>
+                    {errorPdf && (
                         <div role="alert" style={{ display: 'flex', alignItems: 'flex-start', gap: 9, marginBottom: 12, background: '#121413', border: '1px solid rgba(251,191,36,0.26)', borderRadius: 10, padding: '10px 13px' }}>
                             <AlertTriangle size={14} color="#FBBF24" style={{ flexShrink: 0, marginTop: 1 }} />
                             <p style={{ fontSize: 12, color: '#878E88', margin: 0, lineHeight: 1.5 }}>
-                                <b style={{ color: '#FBBF24' }}>Descarga en mantenimiento.</b> El PDF de esta ficha todavía no está disponible. Vuelve a intentarlo más adelante.
+                                {errorPdf}
                             </p>
                         </div>
                     )}
@@ -196,9 +259,9 @@ export const KycBeneficiarioModal: React.FC<{
                             style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13.5, fontWeight: 600 }}>
                             Cerrar
                         </button>
-                        <button onClick={() => setAvisoPdf(true)} className="lincoin-btn-white flex items-center justify-center gap-2 transition-colors"
-                            style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none' }}>
-                            <Download size={14} /> Descargar PDF
+                        <button onClick={descargarPdf} disabled={generando} className="lincoin-btn-white flex items-center justify-center gap-2 transition-colors"
+                            style={{ flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: generando ? 0.55 : 1, cursor: generando ? 'default' : 'pointer' }}>
+                            <Download size={14} /> {generando ? 'Generando…' : 'Descargar PDF'}
                         </button>
                     </div>
                 </div>
