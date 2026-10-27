@@ -54,3 +54,7 @@ skills-lock.json
 .claude/
 .agents/
 skills-lock.json
+
+# Carpeta de pruebas locales de Sarblock: se borra al terminar la
+# transición. Guarda respuestas con datos personales reales; no se sube.
+pruebas/

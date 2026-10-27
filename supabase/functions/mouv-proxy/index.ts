@@ -1597,6 +1597,29 @@ async function logAudit(userId: string | null, action: string, metadata: Record<
   } catch { /* la tabla puede no existir en este proyecto — no romper */ }
 }
 
+// ── Qué configuración de antecedentes gobierna a esta cuenta ─────────────
+// Transición de TusDatos a Sarblock: las dos escriben la ficha en el mismo
+// lugar (raw_data.tusdatos.beneficiarios), así que el control de abajo es el
+// mismo. Lo único que cambia es de dónde salen las perillas (activo, cuentas
+// en la prueba, si el riesgo medio bloquea).
+//
+// Si Sarblock está activo y cubre esta cuenta, manda su configuración. Si
+// no —o si sarblock_config no existe—, se lee tusdatos_config como siempre.
+// Sin esto, el día que se apagara TusDatos para pasar a Sarblock el control
+// leería "apagado" y la plata saldría sin verificación de antecedentes.
+async function configAntecedentes(userId: string): Promise<any> {
+  const leer = async (key: string) => {
+    const { data } = await db.from('system_config').select('value').eq('key', key).maybeSingle()
+    return (data as any)?.value ? JSON.parse((data as any).value) : null
+  }
+  try {
+    const sb = await leer('sarblock_config')
+    const soloSb: string[] = Array.isArray(sb?.soloEstosUsuarios) ? sb.soloEstosUsuarios : []
+    if (sb?.activo && (soloSb.length === 0 || soloSb.includes(userId))) return sb
+  } catch { /* sin configuración de Sarblock legible: se usa la de TusDatos */ }
+  return await leer('tusdatos_config')
+}
+
 // Valida quién llama: admin-bypass (header compartido) o un usuario real con
 // JWT válido. Balance y payouts son sensibles → siempre requieren caller.
 // ── TOPE POR ENVÍO ACH ────────────────────────────────────────────
@@ -3576,8 +3599,7 @@ serve(async (req: Request) => {
       // sale plata" vale también cuando ni siquiera hay a quién consultar.
       if (!docDest && rail === 'BREB') {
         try {
-          const { data: tdRow0 } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
-          const tdCfg0 = (tdRow0 as any)?.value ? JSON.parse((tdRow0 as any).value) : null
+          const tdCfg0 = await configAntecedentes(userId)
           const soloEstos0: string[] = Array.isArray(tdCfg0?.soloEstosUsuarios) ? tdCfg0.soloEstosUsuarios : []
           if (tdCfg0?.activo && (soloEstos0.length === 0 || soloEstos0.includes(userId))) {
             await logAudit(userId, 'tusdatos.envio_sin_documento', { rail, llave: String((payload.recipient as any)?.key ?? '').slice(-4) })
@@ -3590,8 +3612,7 @@ serve(async (req: Request) => {
       }
       if (docDest) {
         try {
-          const { data: tdRow } = await db.from('system_config').select('value').eq('key', 'tusdatos_config').maybeSingle()
-          const tdCfg = (tdRow as any)?.value ? JSON.parse((tdRow as any).value) : null
+          const tdCfg = await configAntecedentes(userId)
           if (tdCfg?.activo) {
             const f = (rawU?.tusdatos?.beneficiarios ?? {})[docDest]
             if (f?.nombreReal) nombresTitular.push(String(f.nombreReal))

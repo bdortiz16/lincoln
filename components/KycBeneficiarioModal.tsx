@@ -94,9 +94,25 @@ export const KycBeneficiarioModal: React.FC<{
     // (que en pantalla corta el cuerpo y lo pone a desplazar) y sin los
     // botones, se captura entera y va a una sola página del tamaño exacto.
     // Las librerías se bajan solo al tocar el botón.
+    //
+    // Una ficha de Sarblock trae el catálogo completo de la consulta: con eso
+    // se arma el reporte de verificación con marca Lincoin (varias hojas A4,
+    // todas las fuentes y el porqué del veredicto) en vez de la foto.
     const descargarPdf = async () => {
+        if (generando) return;
+        if (k?.proveedor === 'sarblock' && Array.isArray(k?.sarblock?.catalog)) {
+            setGenerando(true); setErrorPdf(null);
+            try {
+                const { descargarReporteLincoin } = await import('./reporte/ReporteLincoin');
+                await descargarReporteLincoin({ ...k, documento: k.documento ?? docNumber, tipoDocumento: k.tipoDocumento ?? docType });
+            } catch (e) {
+                console.warn('[kyc] reporte', e);
+                setErrorPdf('No se pudo generar el reporte. Vuelve a intentarlo.');
+            } finally { setGenerando(false); }
+            return;
+        }
         const caja = cajaRef.current;
-        if (!caja || generando) return;
+        if (!caja) return;
         setGenerando(true); setErrorPdf(null);
         const fuera = document.createElement('div');
         try {

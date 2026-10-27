@@ -50,9 +50,26 @@ async function callMouvProxy(action: string, userId: string, extra: Record<strin
     } catch (e: any) { return { ok: false, error: String(e?.message ?? e) }; }
 }
 
-// Llamador a la función de cumplimiento (Kumplo).
+// Verificación de antecedentes: TusDatos o Sarblock, según cuál esté activo
+// para esta cuenta (transición progresiva). Se le pregunta UNA vez por sesión
+// a la función sarblock; si está apagada, no cubre la cuenta o todavía no
+// está desplegada, todo sigue yendo a tusdatos como siempre. Las dos
+// responden las mismas acciones y escriben la ficha en el mismo lugar.
+//
+// El PDF oficial (acción 'pdf') es de TusDatos y va siempre allá: el reporte
+// de una ficha de Sarblock lo arma el navegador (ReporteLincoin).
+let proveedorAntecedentes: Promise<'sarblock' | 'tusdatos'> | null = null;
+let proveedorDe: string | null = null;
 async function callTusdatos(cuerpo: Record<string, unknown>): Promise<any> {
-    return llamarFuncion('tusdatos', cuerpo);
+    const uid = String(cuerpo.userId ?? '');
+    if (cuerpo.action === 'pdf' || !uid) return llamarFuncion('tusdatos', cuerpo);
+    if (!proveedorAntecedentes || proveedorDe !== uid) {
+        proveedorDe = uid;
+        proveedorAntecedentes = llamarFuncion('sarblock', { action: 'estado', userId: uid }, 15000)
+            .then((r: any) => (r?.ok && r.activo && r.enLaPrueba ? 'sarblock' : 'tusdatos'))
+            .catch(() => 'tusdatos' as const);
+    }
+    return llamarFuncion(await proveedorAntecedentes, cuerpo);
 }
 async function callKumplo(cuerpo: Record<string, unknown>): Promise<any> {
     return llamarFuncion('kumplo', cuerpo);
