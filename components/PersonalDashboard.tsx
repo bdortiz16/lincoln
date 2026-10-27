@@ -85,6 +85,7 @@ import { ClientesSection } from './ClientesSection';
 import { EnviarDineroModal, EnviarHandle, EnviarPrefill, prefillDeContacto } from './EnviarDineroModal';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { KytSection } from './KytSection';
+import { LincoinRisk } from './LincoinRisk';
 import { OtcManual } from './OtcManual';
 import { CodeInput } from './CodeInput';
 import { ServiciosSection } from './ServiciosSection';
@@ -288,6 +289,7 @@ const VIEW_PATHS: Record<string, string> = {
   clientes: '/empresas_clientes',
   contabilidad: '/empresas_contabilidad',
   compliance: '/empresas_compliance',
+  risk: '/empresas_lincoin-risk',
   walletsGasfree: '/empresas_wallets',
 };
 const RUTAS_VIEJAS: Record<string, string> = {
@@ -335,7 +337,7 @@ const PATH_VIEWS: Record<string, string> = {
 };
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'clientes' | 'contabilidad' | 'compliance' | 'walletsGasfree' | 'kyt'>(() => {
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'clientes' | 'contabilidad' | 'compliance' | 'risk' | 'walletsGasfree' | 'kyt'>(() => {
     // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
     // /billetera necesita una billetera seleccionada, que NO sobrevive a la
     // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
@@ -4590,6 +4592,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {activeView === 'settings' && renderSettings()}
       {activeView === 'servicios' && renderServicios()}
       {activeView === 'kyt' && <KytSection onBack={() => setActiveView('servicios')} />}
+      {activeView === 'risk' && <LincoinRisk />}
       {activeView === 'walletsGasfree' && currentUser?.id && (
           <WalletsGasfreeSection
               userId={currentUser.id}

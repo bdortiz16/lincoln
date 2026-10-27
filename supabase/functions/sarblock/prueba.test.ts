@@ -370,3 +370,34 @@ Deno.test('PEP → medio con el motivo escrito', () => {
   const m = reglasLincoin([pepMatch]);
   assertEquals(m, [{ nivel: 'medio', regla: 'pep', fuente: 'PEP Colombia — Función Pública', texto: 'Persona expuesta políticamente: PEP Colombia — Función Pública' }]);
 });
+
+// ── Lincoin Risk (padrón) ───────────────────────────────────────────────
+import { docPadron, tipoPadron, nombreCoincide, fichaParaCuenta } from './padron.ts';
+
+Deno.test('padrón: un NIT con o sin DV es el mismo documento', () => {
+  assertEquals(docPadron('901799579-1', 'NIT'), '901799579');
+  assertEquals(docPadron('901799579-5', 'NIT'), '9017995795');   // DV que no cuadra: se deja tal cual
+  assertEquals(docPadron('901799579', 'nit'), '901799579');
+  assertEquals(docPadron('1.020.304.050', 'CC'), '1020304050');
+  assertEquals(tipoPadron('cc'), 'CC');
+});
+
+Deno.test('padrón: el nombre escrito se compara contra el oficial', () => {
+  assertEquals(nombreCoincide('Juan Perez', 'JUAN PÉREZ GÓMEZ'), true);
+  assertEquals(nombreCoincide('Kevin Fernando Echeverri R', 'KEVIN FERNANDO ECHEVERRI RODRIGUEZ'), true);
+  assertEquals(nombreCoincide('María Ospina', 'JUAN PÉREZ GÓMEZ'), false);
+  assertEquals(nombreCoincide('Xatech Services SAS', 'XATECH SERVICES S.A.S'), true);
+  assertEquals(nombreCoincide('', 'JUAN'), undefined);
+});
+
+Deno.test('padrón: reutilizar con otro nombre que no corresponde bloquea', () => {
+  const base = traducir(check({}), benef);   // ADA LOVELACE, limpio
+  const ok = fichaParaCuenta(base, 'Ada Lovelace');
+  assertEquals(ok.operable, true);
+  assertEquals(ok.nombreCoincide, true);
+  const malo = fichaParaCuenta(base, 'Pedro Pérez');
+  assertEquals(malo.operable, false);
+  assertEquals(malo.nombreCoincide, false);
+  assert(String(malo.bloqueo).includes('ADA LOVELACE'));
+  assertEquals(fichaParaCuenta(base, undefined).operable, true);   // sin nombre no se juzga
+});

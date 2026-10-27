@@ -36,6 +36,7 @@ import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia } from './cliente.ts'
 import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha } from './traductor.ts'
+import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta } from './padron.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -155,6 +156,8 @@ async function topeAgotado(uid: string, c: Config): Promise<boolean> {
   } catch { return false }
 }
 
+const TOPE_MANUAL_DIA = 20
+
 function cliente(): ClienteSarblock {
   if (!SB_KEY) throw new Error('Falta SARBLOCK_ORG_API_KEY en los secrets.')
   return new ClienteSarblock(SB_KEY)
@@ -170,6 +173,17 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   // Ya consultado (por Sarblock o por TusDatos) y no archivado: no se paga
   // otra vez.
   if (previa && previa.estado !== 'error' && previa.estado !== 'archivado') return { ok: true, documento: doc, yaExistia: true }
+  // Lincoin Risk: otra cuenta ya consultó a esta persona en los últimos 90
+  // días. Se reutiliza sin costo (y no cuenta para el tope); el nombre se
+  // compara contra el oficial con lo que escribió ESTA cuenta.
+  const enPadron = await padronBuscar(db, d.tipoDocumento, doc)
+  if (enPadron) {
+    const ficha = fichaParaCuenta(enPadron.ficha, d.nombre, { documento: doc, tipoDocumento: d.tipoDocumento, dePadron: true, padronAt: enPadron.consultado_at })
+    await guardarFicha(uid, doc, conDecision(ficha, previa))
+    await anotarUso(db, d.tipoDocumento, doc, uid)
+    await auditar('sarblock.reutilizado', { userId: uid, documento: doc, categoria: ficha.categoria })
+    return { ok: true, documento: doc, reutilizado: true }
+  }
   if (!esAdmin && await topeAgotado(uid, c)) return { ok: false, tope: true, motivo: 'Llegaste al máximo de verificaciones por hoy. Las que faltan se completan mañana.' }
   try {
     const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: claveIdempotencia(uid, doc) })
@@ -211,6 +225,8 @@ async function recoger(uid: string) {
       if (enCursoAun && check.aggregateOutcome === f.sarblock?.aggregateOutcome && JSON.stringify(check.catalog) === JSON.stringify(f.sarblock?.catalog)) continue
       const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}) }
       await guardarFicha(uid, doc, conDecision(nueva, f))
+      // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
+      await padronGuardar(db, f.tipoDocumento, doc, nueva, uid, 'sarblock')
       await auditar('sarblock.consulta', { userId: uid, documento: doc, checkId: f.jobid, categoria: nueva.categoria, operable: nueva.operable, criterio: nueva.criterio })
       cerrados++
     } catch (e) {
@@ -305,6 +321,63 @@ Deno.serve(async (req) => {
       const f = (await leerRaw(uid))?.tusdatos?.beneficiarios?.[doc]
       if (f) await guardarFicha(uid, doc, { ...f, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: String(body.motivo ?? '').slice(0, 300) || null })
       return json({ ok: true })
+    }
+
+    // ── Lincoin Risk: consulta manual ────────────────────────────────────
+    // La empresa consulta a una persona o empresa sin inscribirla. Primero el
+    // padrón (sin costo); si no está, Sarblock, y el resultado queda en el
+    // padrón. El cliente no tiene historial: no hay acción para listar lo
+    // que consultó. Cada consulta queda en la auditoría (la ve el admin).
+    if (accion === 'risk_consultar') {
+      if (!yo.userId && !yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const quien = String(yo.userId ?? uid)
+      const c = await leerConfig()
+      if (!c.activo) return json({ ok: false, motivo: 'La consulta de antecedentes no está disponible en este momento.' })
+      if (body.autorizado !== true) return json({ ok: false, motivo: 'Confirma que tienes autorización o una finalidad legítima para consultar estos datos.' })
+      const juridica = body.tipoPersona === 'juridica'
+      const tipo = juridica ? 'NIT' : String(body.tipoDocumento ?? 'CC').toUpperCase()
+      const nombre = String(body.nombre ?? '').trim() || undefined
+      const sujeto = sujetoDe(tipo, String(body.documento ?? ''), nombre)
+      if (!sujeto) return json({ ok: false, motivo: juridica ? 'Escribe el NIT y la razón social.' : 'Revisa el tipo y el número de documento.' })
+      const doc = sujeto.idNumber
+      const enPadron = await padronBuscar(db, tipo, doc)
+      if (enPadron) {
+        await anotarUso(db, tipo, doc, quien)
+        await auditar('sarblock.risk_manual', { userId: quien, tipo, documento: doc, deCache: true })
+        return json({ ok: true, deCache: true, consultadoAt: enPadron.consultado_at, ficha: fichaParaCuenta(enPadron.ficha, nombre, { documento: doc, tipoDocumento: tipo }) })
+      }
+      // Tope de consultas PAGADAS por cuenta y por día (las del padrón no cuentan).
+      if (!yo.esAdmin) {
+        const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
+        const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+          .eq('action', 'sarblock.risk_lanzado').eq('metadata->>userId', quien).gte('created_at', desde)
+        if ((count ?? 0) >= TOPE_MANUAL_DIA) return json({ ok: false, motivo: `Llegaste al máximo de ${TOPE_MANUAL_DIA} consultas por hoy.` })
+      }
+      try {
+        const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `risk-${quien}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` })
+        await auditar('sarblock.risk_lanzado', { userId: quien, tipo, documento: doc, checkId: r.id })
+        return json({ ok: true, enCurso: true, checkId: r.id, tipo, documento: doc })
+      } catch (e) {
+        return json({ ok: false, motivo: e instanceof ErrorSarblock ? 'No se pudo consultar en este momento. Intenta de nuevo en unos minutos.' : String((e as Error)?.message ?? e) })
+      }
+    }
+    if (accion === 'risk_resultado') {
+      if (!yo.userId && !yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const quien = String(yo.userId ?? uid)
+      const checkId = String(body.checkId ?? '')
+      // Solo quien lanzó la consulta puede leer su resultado.
+      const { data: suya } = await db.from('audit_log').select('metadata').eq('action', 'sarblock.risk_lanzado')
+        .eq('metadata->>checkId', checkId).eq('metadata->>userId', quien).limit(1)
+      const m = (suya as any[])?.[0]?.metadata
+      if (!m && !yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+      const tipo = String(m?.tipo ?? body.tipo ?? 'CC'), doc = String(m?.documento ?? body.documento ?? '')
+      const check = await cliente().leerCheck(checkId)
+      if (!terminado(check)) return json({ ok: true, enCurso: true, checkId })
+      const nombre = String(body.nombre ?? '').trim() || undefined
+      const ficha = traducir(check, { documento: doc, tipoDocumento: tipo, nombre })
+      await padronGuardar(db, tipo, doc, ficha, quien, 'manual')
+      await auditar('sarblock.risk_manual', { userId: quien, tipo, documento: doc, deCache: false, categoria: ficha.categoria })
+      return json({ ok: true, consultadoAt: ficha.at, ficha: fichaParaCuenta(ficha, nombre) })
     }
 
     // ── Administración ───────────────────────────────────────────────────

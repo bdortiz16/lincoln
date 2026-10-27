@@ -53,6 +53,8 @@ const I = {
   libro: 'M4 3.5h9.5a1.5 1.5 0 011.5 1.5v11.5H5.5A1.5 1.5 0 014 15zM4 15a1.5 1.5 0 011.5-1.5H15M7 7h5M7 10h5',
   // Escudo con visto: el cumplimiento.
   escudo: 'M10 2.5l6 2.2v4.5c0 3.6-2.4 6.4-6 8.3-3.6-1.9-6-4.7-6-8.3V4.7l6-2.2zM7.5 10l1.8 1.8 3.2-3.6',
+  // Escudo con lupa: consultar antecedentes (Lincoin Risk).
+  riesgo: 'M10 2.5l6 2.2v4.5c0 3.6-2.4 6.4-6 8.3-3.6-1.9-6-4.7-6-8.3V4.7l6-2.2zM9.6 7.4a2.1 2.1 0 1 0 0 4.2 2.1 2.1 0 0 0 0-4.2zM11.1 11.1l1.7 1.7',
 };
 
 type Item = {
@@ -133,6 +135,8 @@ export const SidebarEmpresas: React.FC<Props> = ({
     // — cuánta plata se le movió a cada quien, y quién puede recibirla.
     { clave: 'contabilidad', etiqueta: 'Contabilidad', icono: I.libro, activo: activeView === 'contabilidad', onClick: ir('contabilidad') },
     { clave: 'compliance', etiqueta: 'Compliance', icono: I.escudo, activo: activeView === 'compliance', onClick: ir('compliance') },
+    // Consultar a una persona o empresa antes de operar, sin inscribirla.
+    { clave: 'risk', etiqueta: 'Lincoin Risk', icono: I.riesgo, activo: activeView === 'risk', onClick: ir('risk') },
     // Las tarjetas son parte del producto pero todavía no tienen pantalla.
     // Se muestra marcada como PRONTO en vez de llevar a ningún lado: un
     // enlace que no abre nada es peor que decir que aún no está.
