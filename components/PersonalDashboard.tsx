@@ -770,13 +770,27 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       } catch { /* sin storage */ }
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
+  // Eventos ya avisados EN ESTA SESIÓN. Es el freno de último recurso: si por
+  // cualquier motivo un evento volviera a parecer nuevo, no se vuelve a
+  // escribir. Sin esto, cada escritura disparaba el tiempo real, que releía
+  // la cuenta y volvía a correr este efecto: un bucle de varias escrituras
+  // por segundo que saturó la base (cuenta con ~390 beneficiarios).
+  const avisadosSesionRef = useRef<Set<string>>(new Set());
   useEffect(() => {
       if (!currentUser?.id) return;
       const cuAny: any = currentUser;
       const candidates: Array<{ id: string; type?: string; title: string; message: string }> = [];
+      // Solo lo reciente cuenta como novedad: el histórico entero de envíos
+      // hacía crecer sin límite la lista de "ya avisados".
+      const DIAS_NOVEDAD = 30;
+      const reciente = (m: any) => {
+          const ts = Date.parse(String(m?.createdAt ?? m?.date ?? ''));
+          return !isFinite(ts) || Date.now() - ts < DIAS_NOVEDAD * 86400_000;
+      };
 
       // Pago completado + USDT recibido (desde los movimientos)
       for (const m of movements as any[]) {
+          if (!reciente(m)) continue;
           const cur = String(m.currency ?? '');
           const isUsdt = /USDT|USD/i.test(cur);
           if (m.status === 'Completado' && m.type === 'send') {
@@ -815,25 +829,43 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const existingNotifs = (Array.isArray(cuAny.notifications) ? cuAny.notifications : []) as any[];
       const notifiedEvents: string[] = Array.isArray(cuAny.notifiedEvents) ? cuAny.notifiedEvents : [];
       const seedDone = Array.isArray(cuAny.notifiedEvents);
-      // "Ya avisado" = lo persistido + lo que aún está en la lista visible.
-      const seen = new Set<string>([...notifiedEvents, ...existingNotifs.map((n: any) => String(n.id))]);
+      // "Ya avisado" = lo persistido + lo que aún está en la lista visible
+      // + lo avisado en esta sesión.
+      const seen = new Set<string>([...notifiedEvents, ...existingNotifs.map((n: any) => String(n.id)), ...avisadosSesionRef.current]);
+
+      // La lista de avisados guarda PRIMERO los eventos que existen hoy y
+      // después los anteriores, con tope. Antes guardaba "los últimos 400":
+      // una cuenta con más de 400 eventos (cientos de beneficiarios
+      // aprobados) perdía siempre algunos, que volvían a parecer nuevos en
+      // cada vuelta. Así ningún evento vigente se cae del recorte.
+      const TOPE_AVISADOS = 3000;
+      const avisadosConActuales = (extra: string[] = []) =>
+          Array.from(new Set([...candidates.map(c => c.id), ...extra, ...notifiedEvents])).slice(0, TOPE_AVISADOS);
 
       // Primera vez (nunca sembrado): marcar TODO lo actual como ya avisado,
       // sin sonar ni mostrar nada — para no repetir el histórico ni revivir
       // lo que el usuario ya vio/borró.
       if (!seedDone) {
-          const seedIds = Array.from(new Set([...seen, ...candidates.map(c => c.id)])).slice(-400);
+          candidates.forEach(c => avisadosSesionRef.current.add(c.id));
           // raw_data-only write: no lo rechaza el candado de columnas sensibles.
-          updateUserRawData(currentUser.id, { notifiedEvents: seedIds }).catch(() => {});
+          updateUserRawData(currentUser.id, { notifiedEvents: avisadosConActuales([...seen]) }).catch(() => {});
           return;
       }
 
       const fresh = candidates.filter(c => !seen.has(c.id));
       if (!fresh.length) return;
+      fresh.forEach(c => avisadosSesionRef.current.add(c.id));
+      // Muchos "nuevos" de una vez no son novedades: es un atraso (p. ej. los
+      // que el recorte viejo había perdido). Se marcan vistos sin avisar, para
+      // no llenar la pantalla de notificaciones viejas.
+      if (fresh.length > 20) {
+          updateUserRawData(currentUser.id, { notifiedEvents: avisadosConActuales() }).catch(() => {});
+          return;
+      }
 
       const stamped = fresh.map(c => ({ type: 'success', read: false, date: new Date().toLocaleDateString('es-CO'), ...c }));
       const newNotifs = [...stamped, ...existingNotifs].slice(0, 50);
-      const newSeen = Array.from(new Set([...notifiedEvents, ...fresh.map(c => c.id)])).slice(-400);
+      const newSeen = avisadosConActuales();
       // Una sola escritura (notificaciones + eventos avisados) para no pisar
       // una con la otra. raw_data-only → sobrevive el candado de saldos.
       updateUserRawData(currentUser.id, { notifications: newNotifs, notifiedEvents: newSeen }).catch(() => {});

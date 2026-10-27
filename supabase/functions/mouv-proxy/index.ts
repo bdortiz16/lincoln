@@ -3426,36 +3426,61 @@ serve(async (req: Request) => {
     const userId = requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida. Vuelve a iniciar sesión.' })
 
+    // ── Seguridad de la cuenta: bloqueo y 2FA ────────────────────────────────
+    // Se leen SOLO las claves que hacen falta, no el raw_data entero: en una
+    // cuenta con cientos de beneficiarios ese blob pesa cientos de KB, y con
+    // la base cargada la lectura completa se cortaba por timeout.
+    //
+    // Y si la lectura falla, NO se sigue: antes, una lectura caída dejaba la
+    // cuenta "sin 2FA y sin bloqueo" y el envío pasaba sin verificar el
+    // código. Ahora se reintenta una vez y, si sigue sin poder leerse, el
+    // envío espera (503) — nunca sale plata sin haber mirado la cuenta.
+    const leerSeguridad = async () => {
+      for (let intento = 0; intento < 2; intento++) {
+        const { data, error } = await db.from('users')
+          .select('is_blocked, bl:raw_data->blacklisted, ib:raw_data->isBlocked, mfa:raw_data->mfaEnabled, enc:raw_data->>totpSecretEnc, plano:raw_data->>totpSecret')
+          .eq('id', userId).maybeSingle()
+        if (!error && data) return data as any
+        if (intento === 0) await new Promise(r => setTimeout(r, 400))
+      }
+      return null
+    }
+    let seg = await leerSeguridad()
+    if (!seg) {
+      await logAudit(userId, 'mouv.envio_sin_lectura_seguridad', { action })
+      return json(503, { error: 'cuenta_no_legible', message: 'No pudimos verificar tu cuenta en este momento. Intenta de nuevo en unos segundos.' })
+    }
+
     // GUARDIA DE BLOQUEO / LISTA NEGRA — una cuenta bloqueada (p. ej. por
     // hackeo) NO puede dispersar dinero aunque llame la API directo.
-    {
-      // NO se usa `is_active`: esa columna la maneja el módulo de Personas y en
-      // Empresas nadie la pone en true, así que marcaba cuentas legítimas como
-      // bloqueadas y les cortaba las dispersiones COP.
-      const { data: bU } = await db.from('users').select('is_blocked, raw_data').eq('id', userId).maybeSingle()
-      const bRaw = ((bU as any)?.raw_data ?? {}) as Record<string, any>
-      if (bU && (bRaw.blacklisted === true || (bU as any).is_blocked === true || bRaw.isBlocked === true)) {
-        return json(403, { error: 'blocked', message: bRaw.blacklisted === true ? 'Esta cuenta está en la lista negra y no puede realizar operaciones.' : 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.' })
-      }
+    // NO se usa `is_active`: esa columna la maneja el módulo de Personas y en
+    // Empresas nadie la pone en true, así que marcaba cuentas legítimas como
+    // bloqueadas y les cortaba las dispersiones COP.
+    if (seg.bl === true || seg.is_blocked === true || seg.ib === true) {
+      return json(403, { error: 'blocked', message: seg.bl === true ? 'Esta cuenta está en la lista negra y no puede realizar operaciones.' : 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.' })
     }
 
     // ── 2FA en el SERVIDOR: si el usuario tiene la verificación en dos pasos
     //    activa, el código TOTP se valida AQUÍ antes de mover un peso — no
     //    basta con haber pasado la pantalla del navegador. (Admin/AdminBypass
     //    exceptuado: es una operación de soporte.) ────────────────────────────
-    if (!caller.admin) {
-      const { data: mfaU } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
-      const mraw = ((mfaU as any)?.raw_data ?? {}) as Record<string, any>
-      if (mraw.mfaEnabled) {
-        // FALLA CERRADO: si el 2FA está activo pero el secreto no se puede
-        // obtener (error al descifrar, llave FIELD_ENC_KEY ausente/rotada), se
-        // BLOQUEA — nunca se deja pasar el envío sin verificar.
-        let mfaSecret = ''
-        try { mfaSecret = mraw.totpSecretEnc ? await decField(String(mraw.totpSecretEnc)) : String(mraw.totpSecret ?? '') } catch { mfaSecret = '' }
-        const otp = String(payload.otp ?? payload.totp ?? '')
-        if (!mfaSecret || !(await verifyTOTPServer(mfaSecret, otp))) {
-          return json(403, { error: 'mfa_required', message: 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.' })
-        }
+    if (!caller.admin && seg.mfa === true) {
+      // 2FA activo pero el secreto no está: puede ser una escritura de otro
+      // proceso a medio camino. Se relee una vez antes de concluir nada.
+      if (!seg.enc && !seg.plano) seg = (await leerSeguridad()) ?? seg
+      // FALLA CERRADO: si el 2FA está activo pero el secreto no se puede
+      // obtener (error al descifrar, llave FIELD_ENC_KEY ausente/rotada), se
+      // BLOQUEA — nunca se deja pasar el envío sin verificar.
+      let mfaSecret = ''
+      try { mfaSecret = seg.enc ? await decField(String(seg.enc)) : String(seg.plano ?? '') } catch { mfaSecret = '' }
+      const otp = String(payload.otp ?? payload.totp ?? '')
+      if (!mfaSecret) {
+        await logAudit(userId, 'mouv.mfa_sin_secreto', { action })
+        return json(403, { error: 'mfa_required', message: 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.' })
+      }
+      if (!(await verifyTOTPServer(mfaSecret, otp))) {
+        await logAudit(userId, 'mouv.mfa_codigo_invalido', { action })
+        return json(403, { error: 'mfa_required', message: 'El código de dos pasos no es válido o ya venció. Escribe el código nuevo de tu app y vuelve a intentar.' })
       }
     }
 
