@@ -88,6 +88,7 @@ export const ROLES: { id: string; nombre: string; que: string }[] = [
   { id: 'operaciones',  nombre: 'Operaciones',  que: 'Cargues, mesa OTC, tesorería, movimientos, fallos y tasas. Mueve plata.' },
   { id: 'cumplimiento', nombre: 'Cumplimiento', que: 'KYC, riesgo, monitoreo y auditoría. Ve la plata, no la mueve.' },
   { id: 'lectura',      nombre: 'Solo lectura', que: 'Mira y no escribe nada, en ningún lado.' },
+  { id: 'tesoreria',    nombre: 'Tesorería y clientes', que: 'Solo Tesorería (aprobar cargues y retiros, traslados a ACH, Billeteras COP) y Clientes. Nada de OTC, tasas, cumplimiento ni configuración.' },
 ];
 
 export const PAISES: { code: string; nombre: string }[] = [

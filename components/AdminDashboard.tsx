@@ -123,7 +123,13 @@ const SKEY_ADMIN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
 interface AdminDashboardProps {
   onLogout: () => void;
+  // Rol del miembro en el equipo (mi_acceso). Solo decide qué se MUESTRA: lo
+  // que cada rol puede pedir lo exige el servidor.
+  rol?: string;
 }
+
+// El rol Tesorería ve solo Clientes y Tesorería (con sus Billeteras COP).
+const TABS_TESORERIA = ['clients', 'treasury', 'cargues'];
 
 interface SystemAlert {
     id: string;
@@ -497,8 +503,9 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
     );
 };
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>('overview');
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol }) => {
+  const soloTesoreria = rol === 'tesoreria';
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'treasury' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -917,7 +924,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
       });
       const d = await r.json();
       if (d?.error) setFinityPool({ loading: false, error: d.error });
-      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Finity no respondió') : undefined });
+      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Mouv (ACH) no respondió') : undefined });
     } catch (e: any) {
       setFinityPool({ loading: false, error: e?.message ?? 'Error de red' });
     }
@@ -1389,6 +1396,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // mirando esa pantalla.
   const otcPrev = useRef<number | null>(null);
   useEffect(() => {
+    // La mesa OTC no es del rol Tesorería: el servidor se la niega.
+    if (soloTesoreria) return;
     let vivo = true;
     const leer = async () => {
       try {
@@ -1438,6 +1447,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   // solicitud el número tiene que bajar ya, no al minuto.
   const enCupos = activeTab === 'cupos';
   useEffect(() => {
+    // Cupos es de Cumplimiento: preguntar cada minuto solo llenaría la
+    // auditoría de "permiso denegado".
+    if (soloTesoreria) return;
     let vivo = true;
     const leer = async () => {
       try {
@@ -1456,6 +1468,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
   const [operadoresVer, setOperadoresVer] = useState(0);
   const enOperadores = activeTab === 'operadores';
   useEffect(() => {
+    if (soloTesoreria) return;
     let vivo = true;
     const leer = async () => {
       try {
@@ -2105,10 +2118,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
-      const railMeta: Record<string, { label: string; sub: string; icon: React.ElementType }> = {
-        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP', icon: Wallet },
-        COP_BREB: { label: 'Bre-B',         sub: 'Pagos inmediatos 24/7',  icon: Zap },
-        COP_ACH:  { label: 'ACH',           sub: 'Interbancario L–V',       icon: Landmark },
+      // Mouv y Finity son la misma empresa: en pantalla va "Mouv" y debajo el
+      // servicio (Bre-B o ACH). Por dentro Bre-B sigue en mouv-proxy y ACH en
+      // finity-proxy. `corto` es para los recuadros de saldo, donde va en una línea.
+      const railMeta: Record<string, { label: string; sub: string; corto: string; icon: React.ElementType }> = {
+        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP',        corto: 'Saldo Lincoin', icon: Wallet },
+        COP_BREB: { label: 'Mouv',          sub: 'Bre-B · Pagos inmediatos 24/7', corto: 'Mouv · Bre-B',  icon: Zap },
+        COP_ACH:  { label: 'Mouv',          sub: 'ACH · Interbancario L–V',       corto: 'Mouv · ACH',    icon: Landmark },
       };
 
       // ── Respaldo y utilidad por riel ──────────────────────────────
@@ -2177,30 +2193,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   <Wallet size={19} style={{ color: '#4ADE80' }} />
                 </div>
                 <div>
+                  {/* Mouv = Bre-B + ACH (la bolsa ACH es la que antes salía como
+                      Finity: es la misma empresa, otro servicio). */}
                   <p style={{ fontSize: 12.5, color: '#878E88', fontWeight: 600 }}>Saldo disponible en Mouv</p>
-                  {mouvPool?.loading ? (
+                  {(mouvPool?.loading || finityPool?.loading) ? (
                     <p style={{ fontSize: 22, fontWeight: 800, color: '#878E88', letterSpacing: '-0.6px' }}>Cargando…</p>
-                  ) : mouvPool?.error ? (
-                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool.error}</p>
+                  ) : (mouvPool?.error || finityPool?.error) ? (
+                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool?.error || finityPool?.error}</p>
                   ) : (
                     <p style={{ fontSize: 26, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-1px' }}>
-                      {Math.round(Number(mouvPool?.total ?? 0)).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
+                      {Math.round(brebPool + achPool).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
                     </p>
                   )}
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-wrap">
                 <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
-                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Zap size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Wallet BreB</span></div>
-                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'}</p>
+                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Zap size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Bre-B</span></div>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool && !mouvPool.loading && !mouvPool.error ? Math.round(brebPool).toLocaleString('es-CO') : '—'}</p>
                 </div>
                 <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
-                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Landmark size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Cuenta ACH</span></div>
-                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}</p>
+                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Landmark size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>ACH</span></div>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{finityPool && !finityPool.loading && !finityPool.error ? Math.round(achPool).toLocaleString('es-CO') : '—'}</p>
                 </div>
-                <button onClick={loadMouvPool} disabled={mouvPool?.loading} title="Actualizar saldo Mouv"
+                <button onClick={() => { loadMouvPool(); loadFinityPool(); }} disabled={mouvPool?.loading || finityPool?.loading} title="Actualizar saldo Mouv"
                   style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 10, padding: '9px 11px', cursor: 'pointer' }}>
-                  <RefreshCw size={15} className={mouvPool?.loading ? 'animate-spin' : ''} />
+                  <RefreshCw size={15} className={(mouvPool?.loading || finityPool?.loading) ? 'animate-spin' : ''} />
                 </button>
               </div>
             </div>
@@ -2210,16 +2228,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               con clientes = disponible para cargar (= utilidad en pesos). */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {([
-              { rail: 'COP_BREB', label: 'Bre-B · Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
+              { rail: 'COP_BREB', label: 'Mouv', servicio: 'Bre-B', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
                 loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
-              { rail: 'COP_ACH', label: 'ACH · Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
+              { rail: 'COP_ACH', label: 'Mouv', servicio: 'ACH', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
                 loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
             ] as const).map(c => (
               <div key={c.rail} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '16px 18px' }}>
                 <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
                   <div className="flex items-center gap-2" style={{ color: '#F4F4F2' }}>
                     <c.icon size={15} style={{ color: '#4ADE80' }} />
-                    <span style={{ fontSize: 13.5, fontWeight: 700 }}>{c.label}</span>
+                    <div>
+                      <p style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{c.label}</p>
+                      <p style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>{c.servicio}</p>
+                    </div>
                   </div>
                   <button onClick={c.reload} disabled={c.loading} title="Actualizar"
                     style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 9, padding: '6px 8px', cursor: 'pointer' }}>
@@ -2233,7 +2254,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 ) : (
                   <>
                     <div className="flex items-center justify-between" style={{ padding: '6px 0' }}>
-                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en {c.rail === 'COP_BREB' ? 'Mouv' : 'Finity'}</span>
+                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en Mouv · {c.servicio}</span>
                       <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Math.round(c.pool).toLocaleString('es-CO')} COP</span>
                     </div>
                     <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
@@ -2272,7 +2293,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
             </summary>
             <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
-                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Finity. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
+                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Mouv. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
               </p>
               {carguesClient && (
                 <button onClick={() => listStuck(carguesClient.id)} disabled={stuckBusy}
@@ -2401,7 +2422,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                       const M = railMeta[code];
                       return (
                         <div key={code} className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-                          <div className="flex items-center gap-1.5 text-slate-500 mb-1"><M.icon size={13} /><span className="text-[11px] font-semibold">{M.label}</span></div>
+                          <div className="flex items-center gap-1.5 text-slate-500 mb-1"><M.icon size={13} /><span className="text-[11px] font-semibold">{M.corto}</span></div>
                           <p className="text-sm font-bold text-slate-800">{formatMoney(bal(carguesClient, code), '')}</p>
                         </div>
                       );
@@ -2849,7 +2870,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                 })()}
                 {cargueExceeds && (
                   <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
-                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
+                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en Mouv · {carguesRail === 'COP_BREB' ? 'Bre-B' : 'ACH'}</p>
                     <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.45, margin: '4px 0 0' }}>
                       Libre para cargar: <b>{Math.round(freeForRail).toLocaleString('es-CO')} COP</b>. Con este cargue quedarías corto en <b>{cargueShortfall.toLocaleString('es-CO')} COP</b> frente a lo que ya les debes a los clientes — estarías acreditando saldo que la bolsa no respalda.
                     </p>
@@ -3014,6 +3035,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
               copBalance={copBalance}
               usdtBalance={usdtBalance}
               onPickWallet={(w) => navTo(w === 'USDT' ? 'gasfree' : 'cargues')}
+              soloCop={soloTesoreria}
               onRegisterMovement={() => setShowInternalMovementModal(true)}
           />
           {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
@@ -3091,9 +3113,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
                   <button onClick={() => setTreasuryTab('history')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'history' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Historial Fiat
                   </button>
-                  <button onClick={() => setTreasuryTab('crypto')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'crypto' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
+                  {/* Las operaciones cripto (USDT) no son del rol Tesorería. */}
+                  {!soloTesoreria && <button onClick={() => setTreasuryTab('crypto')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'crypto' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
                       Operaciones Cripto <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{cryptoTxs.length}</span>
-                  </button>
+                  </button>}
               </div>
 
               <div className="flex flex-col md:flex-row gap-4 justify-between items-center bg-white p-2 rounded-xl border border-slate-200">
@@ -4836,6 +4859,12 @@ const renderDesign = () => (
 
   const closeSidebar = () => setIsSidebarOpen(false);
   const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
+  // Cualquier salto a otra pestaña (un aviso, un botón "volver", la billetera
+  // USDT) vuelve a Tesorería si el rol no la tiene. El servidor igual le
+  // negaría los datos; esto evita que vea una pantalla vacía o con errores.
+  useEffect(() => {
+    if (soloTesoreria && !TABS_TESORERIA.includes(activeTab)) setActiveTab('treasury');
+  }, [soloTesoreria, activeTab]);
   // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
   // propio header); el resto de secciones mantienen su lienzo claro actual.
   const isDark = activeTab === 'overview' || activeTab === 'monitoreo' || activeTab === 'comando' || activeTab === 'security';
@@ -4890,8 +4919,9 @@ const renderDesign = () => (
                 </button>
             </div>
             <div className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
-                {/* Dashboard — fijo arriba, resaltado en verde */}
-                <button
+                {/* Dashboard — fijo arriba, resaltado en verde. El rol Tesorería
+                    no lo tiene: entra directo a Tesorería. */}
+                {!soloTesoreria && <button
                     onClick={() => navTo('overview')}
                     className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors hover:bg-white/5"
                     style={activeTab === 'overview'
@@ -4899,7 +4929,7 @@ const renderDesign = () => (
                         : { color: '#e2e8f0' }}
                 >
                     <BarChart3 size={18} color={activeTab === 'overview' ? '#4ADE80' : '#e2e8f0'} /> Dashboard
-                </button>
+                </button>}
 
                 {(() => {
                     const groups: { key: string; title: string; items: React.ReactNode }[] = [
@@ -4930,9 +4960,17 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
+                    // Rol Tesorería: solo Clientes y Tesorería. Lo demás ni
+                    // se ofrece (el servidor igual se lo negaría).
+                    const visibles = soloTesoreria
+                        ? [{ key: 'operacion', title: 'Operación', items: <>
+                            <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
+                            <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury' || activeTab === 'cargues'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
+                          </> }]
+                        : groups;
                     // Los grupos ya no se pliegan: todo queda a la vista. El
                     // título es solo un rótulo y cada renglón muestra su aviso.
-                    return groups.map(g => (
+                    return visibles.map(g => (
                         <div key={g.key} className="pt-3">
                             <p className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">{g.title}</p>
                             <div className="mt-1 space-y-1">{g.items}</div>
@@ -5058,7 +5096,7 @@ const renderDesign = () => (
                         {orphanMsg && <p style={{ fontSize: 12, color: '#878E88', margin: '9px 0 0' }}>{orphanMsg}</p>}
                       </div>
                     )}
-                    <AdminClientes showToast={showToast} onSincronizarCripto={handleSyncCrypto} onLiberarCorreo={() => setShowOrphanTool(v => !v)} />
+                    <AdminClientes showToast={showToast} onSincronizarCripto={soloTesoreria ? undefined : handleSyncCrypto} onLiberarCorreo={() => setShowOrphanTool(v => !v)} sinBrasil={soloTesoreria} />
                   </div>
                 )}
                 {activeTab === 'marketing' && renderMarketing()}

@@ -91,7 +91,7 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
         );
     }
 
-    return <AdminDashboard onLogout={async () => { olvidarPais(); await onSalir(); }} />;
+    return <AdminDashboard rol={acceso?.rol} onLogout={async () => { olvidarPais(); await onSalir(); }} />;
 };
 
 // ─────────────────────────────────────────────
