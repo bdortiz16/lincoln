@@ -924,7 +924,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
       });
       const d = await r.json();
       if (d?.error) setFinityPool({ loading: false, error: d.error });
-      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Mouv (ACH) no respondió') : undefined });
+      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Finity no respondió') : undefined });
     } catch (e: any) {
       setFinityPool({ loading: false, error: e?.message ?? 'Error de red' });
     }
@@ -2118,13 +2118,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
         .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
-      // Mouv y Finity son la misma empresa: en pantalla va "Mouv" y debajo el
-      // servicio (Bre-B o ACH). Por dentro Bre-B sigue en mouv-proxy y ACH en
-      // finity-proxy. `corto` es para los recuadros de saldo, donde va en una línea.
+      // En pantalla va el PROVEEDOR y debajo el servicio. El saldo Bre-B del
+      // cliente lo respalda Mouv y el ACH lo respalda Finity (ver abajo).
+      // `corto` es para los recuadros de saldo, donde va en una línea.
       const railMeta: Record<string, { label: string; sub: string; corto: string; icon: React.ElementType }> = {
-        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP',        corto: 'Saldo Lincoin', icon: Wallet },
-        COP_BREB: { label: 'Mouv',          sub: 'Bre-B · Pagos inmediatos 24/7', corto: 'Mouv · Bre-B',  icon: Zap },
-        COP_ACH:  { label: 'Mouv',          sub: 'ACH · Interbancario L–V',       corto: 'Mouv · ACH',    icon: Landmark },
+        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP',        corto: 'Saldo Lincoin',  icon: Wallet },
+        COP_BREB: { label: 'Mouv',          sub: 'Bre-B · Pagos inmediatos 24/7', corto: 'Mouv · Bre-B',   icon: Zap },
+        COP_ACH:  { label: 'Finity',        sub: 'ACH · Interbancario L–V',       corto: 'Finity · ACH',   icon: Landmark },
       };
 
       // ── Respaldo y utilidad por riel ──────────────────────────────
@@ -2193,16 +2193,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                   <Wallet size={19} style={{ color: '#4ADE80' }} />
                 </div>
                 <div>
-                  {/* Mouv = Bre-B + ACH (la bolsa ACH es la que antes salía como
-                      Finity: es la misma empresa, otro servicio). */}
                   <p style={{ fontSize: 12.5, color: '#878E88', fontWeight: 600 }}>Saldo disponible en Mouv</p>
-                  {(mouvPool?.loading || finityPool?.loading) ? (
+                  {mouvPool?.loading ? (
                     <p style={{ fontSize: 22, fontWeight: 800, color: '#878E88', letterSpacing: '-0.6px' }}>Cargando…</p>
-                  ) : (mouvPool?.error || finityPool?.error) ? (
-                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool?.error || finityPool?.error}</p>
+                  ) : mouvPool?.error ? (
+                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool.error}</p>
                   ) : (
                     <p style={{ fontSize: 26, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-1px' }}>
-                      {Math.round(brebPool + achPool).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
+                      {Math.round(Number(mouvPool?.total ?? 0)).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
                     </p>
                   )}
                 </div>
@@ -2210,15 +2208,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
               <div className="flex items-center gap-3 flex-wrap">
                 <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
                   <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Zap size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Bre-B</span></div>
-                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool && !mouvPool.loading && !mouvPool.error ? Math.round(brebPool).toLocaleString('es-CO') : '—'}</p>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'}</p>
                 </div>
                 <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
                   <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Landmark size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>ACH</span></div>
-                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{finityPool && !finityPool.loading && !finityPool.error ? Math.round(achPool).toLocaleString('es-CO') : '—'}</p>
+                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}</p>
                 </div>
-                <button onClick={() => { loadMouvPool(); loadFinityPool(); }} disabled={mouvPool?.loading || finityPool?.loading} title="Actualizar saldo Mouv"
+                <button onClick={loadMouvPool} disabled={mouvPool?.loading} title="Actualizar saldo Mouv"
                   style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 10, padding: '9px 11px', cursor: 'pointer' }}>
-                  <RefreshCw size={15} className={(mouvPool?.loading || finityPool?.loading) ? 'animate-spin' : ''} />
+                  <RefreshCw size={15} className={mouvPool?.loading ? 'animate-spin' : ''} />
                 </button>
               </div>
             </div>
@@ -2228,9 +2226,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
               con clientes = disponible para cargar (= utilidad en pesos). */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {([
-              { rail: 'COP_BREB', label: 'Mouv', servicio: 'Bre-B', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
+              // Dos proveedores, cada uno con Bre-B y ACH. Mouv respalda el saldo
+              // Bre-B de los clientes y Finity el ACH.
+              { rail: 'COP_BREB', label: 'Mouv', servicio: 'Bre-B y ACH', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
                 loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
-              { rail: 'COP_ACH', label: 'Mouv', servicio: 'ACH', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
+              { rail: 'COP_ACH', label: 'Finity', servicio: 'Bre-B y ACH', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
                 loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
             ] as const).map(c => (
               <div key={c.rail} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '16px 18px' }}>
@@ -2254,7 +2254,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                 ) : (
                   <>
                     <div className="flex items-center justify-between" style={{ padding: '6px 0' }}>
-                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en Mouv · {c.servicio}</span>
+                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en {c.label}</span>
                       <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Math.round(c.pool).toLocaleString('es-CO')} COP</span>
                     </div>
                     <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
@@ -2293,7 +2293,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
             </summary>
             <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
-                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Mouv. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
+                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Finity. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
               </p>
               {carguesClient && (
                 <button onClick={() => listStuck(carguesClient.id)} disabled={stuckBusy}
@@ -2870,7 +2870,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                 })()}
                 {cargueExceeds && (
                   <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
-                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en Mouv · {carguesRail === 'COP_BREB' ? 'Bre-B' : 'ACH'}</p>
+                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
                     <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.45, margin: '4px 0 0' }}>
                       Libre para cargar: <b>{Math.round(freeForRail).toLocaleString('es-CO')} COP</b>. Con este cargue quedarías corto en <b>{cargueShortfall.toLocaleString('es-CO')} COP</b> frente a lo que ya les debes a los clientes — estarías acreditando saldo que la bolsa no respalda.
                     </p>
