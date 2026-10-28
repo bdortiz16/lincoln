@@ -10,6 +10,7 @@
 //  estado del 2FA, el saldo mostrado y el saldo real de GasFree.
 // ══════════════════════════════════════════════════════════════════
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import { esNitEmpresa, nitSinDv } from '../lib/nit';
 import { Landmark, CheckCircle2, ArrowUpRight, History, Info, Send, RefreshCw, CreditCard, Activity, LogOut, Trash2, Bell, ChevronDown, ChevronUp, Plus, ArrowDownLeft, X, Clock, UploadCloud, CheckCircle, Copy, User, ArrowLeft, ArrowRight, ShieldCheck, ScanSearch, Lock, LayoutGrid, Share2, FileText, Download, ExternalLink, Megaphone, Plane, GraduationCap, TrendingUp, Layers, MoreHorizontal, Settings, Loader2, Ban, QrCode, Edit2, Tag, Minus, Equal, Users, AlertTriangle, Link2, Timer, Zap, Building2, MapPin, Wallet, BookUser, Search, SlidersHorizontal, ArrowLeftRight, XCircle, Archive, MessageSquare } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
@@ -424,7 +425,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       if (st !== 'aprobada') return 'La cuenta de este beneficiario todavía está en validación. Podrás enviarle apenas la aprueben.';
       const benefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
       const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
-      const k = doc ? benefs[doc] : null;
+      // Un NIT: la ficha está por los 9 dígitos base (ver ContactsSection).
+      const k = doc ? (benefs[doc] ?? (esNitEmpresa(doc) ? benefs[nitSinDv(doc)] : null)) : null;
       if (k) {
           if (k.estado !== 'finalizado') return 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.';
           if (k.aprobadoManual !== true && (k.operable === false || k.categoria === 'alto' || k.nombreCoincide === false || k.documentoVigente === false)) {
@@ -1205,7 +1207,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const amlBenefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
                           const amlDe = (c: any) => {
                               const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
-                              return doc ? amlBenefs[doc] : null;
+                              return doc ? (amlBenefs[doc] ?? (esNitEmpresa(doc) ? amlBenefs[nitSinDv(doc)] : null)) : null;
                           };
                           // Solo un veredicto EXPLÍCITO frena. Sin consulta, en
                           // curso o sin resultado, se deja pasar: el servidor
