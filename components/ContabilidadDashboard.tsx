@@ -480,7 +480,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const r = await llamarFuncion('facturacion', { action: 'reconciliar' }, 240000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setReconciliando(false);
     if (!r?.ok) { setReconciliadoMsg(r?.error ?? 'No se pudo.'); return; }
-    setReconciliadoMsg(`Comprobantes creados: ${r.creados} · documentos emitidos: ${r.emitidos}${r.pendientes ? ` · quedan ${r.pendientes} para la próxima vuelta` : ''}${r.errores?.length ? ` · errores: ${r.errores.join(' | ')}` : ''}`);
+    const an = r.anulaciones;
+    const txtAnul = an ? (an.error ? ` · notas crédito: ${an.error}` : an.anuladas?.length ? ` · anuladas en Siigo con nota crédito: ${an.anuladas.join(', ')}` : '') : '';
+    setReconciliadoMsg(`Comprobantes creados: ${r.creados} · documentos emitidos: ${r.emitidos}${r.pendientes ? ` · quedan ${r.pendientes} para la próxima vuelta` : ''}${r.errores?.length ? ` · errores: ${r.errores.join(' | ')}` : ''}${txtAnul}`);
     setFoliosVersion(v => v + 1);
   };
   useEffect(() => {
@@ -1245,8 +1247,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         // dos veces (se veía "pendiente" en una ya emitida).
                         if (foliosEstado === 'cargando') return <span style={{ color: C.tenue }}>cargando…</span>;
                         // 'emitiendo' de más de 3 min = se cayó a mitad: se ofrece otra vez.
-                        const emitiendo = fa?.estado === 'emitiendo' && (!fa.at || Date.now() - new Date(fa.at).getTime() < 180000);
-                        if (emitiendo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
+                        const emitiendoSiigo = fa?.estado === 'emitiendo' && (!fa.at || Date.now() - new Date(fa.at).getTime() < 180000);
+                        if (emitiendoSiigo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
                             <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
@@ -1260,7 +1262,15 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                                 ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
                                 : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
                               {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
-                              {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
+                              {/* Anulada (en Siigo, con nota crédito): se vuelve a
+                                  emitir al mismo cliente, con el cálculo vigente. */}
+                              {fa.estado === 'anulada' && esComision && completado && facturacionActiva && txId && !soloLectura
+                                ? <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
+                                    title="Emite una factura nueva al mismo cliente de la anulada: terceros por el valor completo + la comisión"
+                                    style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>
+                                    {emitiendo === txId ? '…' : 'Volver a emitir'}
+                                  </button>
+                                : completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                             </span>
                             {/* El porqué, a la vista: "no aplica" sin motivo obliga a adivinar. */}
                             {fa.estado === 'omitida' && fa.error && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{fa.error}</span>}

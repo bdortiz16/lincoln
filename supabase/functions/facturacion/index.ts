@@ -762,6 +762,9 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   const marcar = async (patch: Record<string, unknown>) => {
     await db.from('comprobantes').update({ ...patch, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', folio)
   }
+  // Una factura anulada no se marca "no aplica" por estar pausada la
+  // facturación: se perdería que estuvo facturada y anulada.
+  if ((!cfg || !cfg.activo) && opts.forzar && ((comp as any).factura_estado === 'anulada' || Array.isArray((comp as any).factura_detalle?.anteriores))) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para volver a emitir.' }
   if (!cfg || !cfg.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación automática no activa.' }); return { ok: true, estado: 'omitida' } }
   const tipo = String((comp as any).tipo ?? '')
   const reglas = documentosDe(cfg)
@@ -784,6 +787,20 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
       return { ok: true, estado: 'omitida' }
     }
     if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: true, estado: 'emitida', numero: (comp as any).factura_numero }
+    // VOLVER A EMITIR una factura anulada (con nota crédito en Siigo): al
+    // mismo cliente y con el mismo porcentaje que la anulada, ya con el
+    // cálculo vigente — sea un envío o un depósito facturado antes.
+    const detAnt: any = (comp as any).factura_detalle ?? {}
+    const clienteAnt: any = detAnt?.comision?.cliente ?? null
+    // También si el reemplazo ya se intentó y falló (queda en error, con la
+    // anulada en el historial): se reintenta igual, no como movimiento nuevo.
+    const yaFueAnulada = (comp as any).factura_estado === 'anulada' || ((comp as any).factura_estado === 'error' && Array.isArray(detAnt?.anteriores) && detAnt.anteriores.length > 0)
+    if (opts.forzar && yaFueAnulada && clienteAnt?.identification) {
+      return emitirComision(userId, String((comp as any).transaction_id), {
+        identification: String(clienteAnt.identification), nombre: clienteAnt.nombre ? String(clienteAnt.nombre) : undefined,
+        pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true,
+      })
+    }
     // A quién: al ordenante (el cliente por cuenta de quien se pagó), que se
     // elige al enviar y viaja en raw_data.recipient.ordenante.
     const rdC: any = (comp as any)?.detalle?.raw_data ?? {}
@@ -1014,6 +1031,131 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
   return { ok: true, estado: 'emitida', tipo: clase, numero, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
 }
 
+// ── Anulaciones con NOTA CRÉDITO ────────────────────────────────────────
+// Una factura electrónica no se borra en Siigo: se anula con una nota
+// crédito, y la factura sigue existiendo, sin la marca `annulled` y con el
+// mismo estado ante la DIAN. Por eso Lincoin no se enteraba: la contadora
+// anulaba en Siigo y aquí la factura seguía "emitida", sin poder volver a
+// emitirla. Ahora se le pregunta a Siigo por las notas crédito (cada una
+// trae `invoice.id`, la factura a la que apunta) y, si cubren el total de
+// la factura, el comprobante queda anulado y se puede volver a emitir.
+type NotaCredito = { id: string; nombre: string; fecha: string | null; total: number }
+async function notasCreditoDesde(token: string, partner: string, desde: string, soloFactura?: string): Promise<Map<string, NotaCredito[]>> {
+  const m = new Map<string, NotaCredito[]>()
+  // Se piden de a 100; si Siigo no acepta ese tamaño, se sigue con el suyo.
+  let tam: number | null = 100
+  for (let pagina = 1; pagina <= 200; pagina++) {
+    const ruta = `/v1/credit-notes?date_start=${encodeURIComponent(desde)}&page=${pagina}${tam ? `&page_size=${tam}` : ''}`
+    let r = await siigo('GET', ruta, { token, partner })
+    if (!r.ok && pagina === 1 && tam && r.status === 400) {
+      tam = null
+      r = await siigo('GET', `/v1/credit-notes?date_start=${encodeURIComponent(desde)}&page=1`, { token, partner })
+    }
+    if (!r.ok) throw new Error(`No se pudieron leer las notas crédito de Siigo — ${motivoDe(r)}`)
+    const lista: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+    for (const nc of lista) {
+      const fid = String(nc?.invoice?.id ?? '')
+      if (!fid || (soloFactura && fid !== soloFactura)) continue
+      const nombre = String(nc?.name ?? (nc?.number != null ? `${nc?.prefix ?? 'NC'}-${nc.number}` : nc?.id ?? ''))
+      m.set(fid, [...(m.get(fid) ?? []), { id: String(nc?.id ?? ''), nombre, fecha: nc?.date ?? null, total: Number(nc?.total) || 0 }])
+    }
+    const totalRes = Number(r.data?.pagination?.total_results ?? NaN)
+    const porPagina = tam ?? (Number(r.data?.pagination?.page_size) || lista.length)
+    if (!lista.length || lista.length < porPagina || (Number.isFinite(totalRes) && pagina * porPagina >= totalRes)) break
+  }
+  return m
+}
+
+// Lo que costó la factura: lo que contestó Siigo al crearla o, si no, lo que
+// se le mandó a pagar.
+function totalDeFactura(det: any): number | null {
+  const t = Number(det?.respuesta_creacion?.total ?? det?.respuesta?.total)
+  if (Number.isFinite(t) && t > 0) return t
+  const pagos = Array.isArray(det?.enviado?.payments) ? det.enviado.payments : []
+  const s = pagos.reduce((a: number, p: any) => a + (Number(p?.value) || 0), 0)
+  return s > 0 ? s : null
+}
+
+// Factura de mandato armada con el cálculo viejo (antes del 28-oct-2026): la
+// línea de terceros iba por monto − comisión. Se reconoce por lo que se le
+// mandó a Siigo: dos ítems y el primero (terceros) por menos que el monto.
+function facturaMalCalculada(c: any): { transferido: number; terceros: number; faltante: number } | null {
+  if (!c || c.factura_estado !== 'emitida' || c.factura_tipo === 'DS') return null
+  const det = c.factura_detalle ?? {}
+  const items = det?.enviado?.items
+  if (!det?.comision || !Array.isArray(items) || items.length !== 2) return null
+  const transferido = Number(String(c.monto ?? '0').replace(/,/g, ''))
+  const terceros = Number(items[0]?.price)
+  if (!Number.isFinite(transferido) || !Number.isFinite(terceros) || !(terceros < transferido - 0.5)) return null
+  return { transferido, terceros, faltante: r2(transferido - terceros) }
+}
+
+// Marca como anulado un comprobante cuyas notas crédito cubren la factura.
+// La factura anulada queda en el historial (`anteriores`) con sus notas, y
+// los datos para volver a emitirla (cliente y porcentaje) se conservan.
+async function aplicarNotasCredito(c: any, notas: NotaCredito[]): Promise<'anulada' | 'parcial' | null> {
+  if (!notas.length) return null
+  const det = c.factura_detalle ?? {}
+  const sumaNC = r2(notas.reduce((a, n) => a + n.total, 0))
+  const totalF = totalDeFactura(det)
+  const nombres = notas.map(n => n.nombre).join(', ')
+  if (totalF == null || sumaNC < totalF - 1) {
+    // Nota crédito parcial (una devolución, un ajuste): la factura sigue
+    // vigente. Se deja anotado para que se vea en el detalle.
+    if (JSON.stringify(det.notas_credito ?? null) === JSON.stringify(notas)) return 'parcial'
+    await db.from('comprobantes').update({ factura_detalle: { ...det, notas_credito: notas, notas_credito_parciales: true } }).eq('folio', c.folio)
+    return 'parcial'
+  }
+  const fechas = notas.map(n => n.fecha).filter(Boolean).join(', ')
+  const anteriores = Array.isArray(det.anteriores) ? det.anteriores : []
+  const yaEsta = anteriores.some((a: any) => a?.id && a.id === c.factura_id)
+  await db.from('comprobantes').update({
+    factura_estado: 'anulada',
+    factura_error: `Anulada en Siigo con ${notas.length === 1 ? 'la nota crédito' : 'las notas crédito'} ${nombres}${fechas ? ` (${fechas})` : ''}. Se puede volver a emitir.`,
+    factura_detalle: {
+      ...det, notas_credito: notas, notas_credito_parciales: false,
+      anteriores: yaEsta ? anteriores : [...anteriores, { id: c.factura_id ?? null, numero: c.factura_numero ?? null, cufe: c.factura_cufe ?? null, total: totalF, emitida_at: c.factura_at ?? null, notas_credito: notas, anulada_detectada_at: new Date().toISOString() }],
+    },
+  }).eq('folio', c.folio).eq('factura_estado', 'emitida')
+  return 'anulada'
+}
+
+// Revisa contra Siigo todas las facturas emitidas de la cuenta (desde la más
+// vieja) y marca las anuladas con nota crédito.
+async function sincronizarAnulaciones(userId: string): Promise<{ revisadas: number; anuladas: string[]; parciales: string[]; error?: string }> {
+  const out = { revisadas: 0, anuladas: [] as string[], parciales: [] as string[] }
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ...out, error: 'Siigo no está configurado.' }
+  const filas: any[] = []
+  for (let desde = 0; desde < 20000; desde += 1000) {
+    const { data, error } = await db.from('comprobantes').select('*')
+      .eq('user_id', userId).eq('factura_estado', 'emitida').not('factura_id', 'is', null)
+      .order('folio', { ascending: true }).range(desde, desde + 999)
+    if (error) return { ...out, error: error.message }
+    filas.push(...((data ?? []) as any[]).filter(f => f.factura_tipo !== 'DS'))
+    if (!data || data.length < 1000) break
+  }
+  out.revisadas = filas.length
+  if (!filas.length) return out
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return { ...out, error: t.error }
+  const masVieja = filas.map(f => String(f.factura_at ?? '')).filter(Boolean).sort()[0]
+  // Un día antes: la fecha de la factura puede ser la del día anterior en
+  // Colombia, y la nota crédito siempre es posterior a la factura.
+  const desde = masVieja ? new Date(Date.parse(masVieja) - 86_400_000).toISOString().slice(0, 10) : new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10)
+  let porFactura: Map<string, NotaCredito[]>
+  try { porFactura = await notasCreditoDesde(t.token, cfg.partner_id || 'Lincoin', desde) }
+  catch (e) { return { ...out, error: String((e as Error)?.message ?? e) } }
+  for (const c of filas) {
+    const notas = porFactura.get(String(c.factura_id))
+    if (!notas) continue
+    const r = await aplicarNotasCredito(c, notas)
+    if (r === 'anulada') out.anuladas.push(String(c.factura_numero ?? c.numero))
+    if (r === 'parcial') out.parciales.push(String(c.factura_numero ?? c.numero))
+  }
+  return out
+}
+
 // ── Factura de COMISIÓN por un depósito (modelo PSP), a mano ─────────────
 // El cliente elige a quién se le factura (quien mandó la plata) y el
 // porcentaje (por defecto el de Configuración). La factura lleva UN ítem: el
@@ -1023,7 +1165,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
 // 60.000 + IVA. Siigo calcula el IVA sobre la base que se le manda, con la
 // tarifa del ítem, así que el total puede diferir del objetivo en un
 // centavo de redondeo; el pago va por lo que Siigo va a calcular.
-async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean }): Promise<any> {
+async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean; reemplazo?: boolean }): Promise<any> {
   const cfg = await leerConfig(userId)
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
@@ -1034,11 +1176,19 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', c.folio).maybeSingle()
   if (!comp) return { ok: false, error: 'comprobante_no_encontrado' }
   if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: false, error: `Este movimiento ya tiene la factura ${(comp as any).factura_numero}.` }
-  if (String(cfg.modelo ?? '') === 'comision' && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
+  // Reemplazo de una factura anulada: el movimiento ya se facturó una vez y
+  // se vuelve a facturar igual (aunque hoy la regla diga "solo envíos").
+  if (!d.reemplazo && String(cfg.modelo ?? '') === 'comision' && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
     return { ok: false, error: 'En el modelo Comisión solo se facturan los envíos; los cargues y depósitos no llevan factura.' }
   }
+  // Lo que ya pasó con este movimiento (facturas anuladas, sus notas
+  // crédito) no se pierde al guardar la factura nueva.
+  const detPrevio = ((comp as any).factura_detalle ?? {}) as Record<string, unknown>
+  const historia: Record<string, unknown> = {}
+  if (Array.isArray(detPrevio.anteriores)) historia.anteriores = detPrevio.anteriores
   const marcar = async (patch: Record<string, unknown>) => {
-    await db.from('comprobantes').update({ ...patch, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
+    const p = patch.factura_detalle && typeof patch.factura_detalle === 'object' ? { ...patch, factura_detalle: { ...(patch.factura_detalle as Record<string, unknown>), ...historia } } : patch
+    await db.from('comprobantes').update({ ...p, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
   }
   const falla = async (e: string, extra: Record<string, unknown> = {}) => { await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV', ...extra }); return { ok: false, error: e } }
 
@@ -1903,6 +2053,25 @@ Deno.serve(async (req) => {
         const rt = (globalThis as any).EdgeRuntime
         if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p)
       }
+      // Anulaciones hechas en Siigo (notas crédito): se revisan al abrir
+      // Contabilidad, como mucho cada 15 minutos por cuenta.
+      {
+        const clave = `facturacion_nc_sync:${userId}`
+        const { data: ult } = await db.from('system_config').select('value').eq('key', clave).maybeSingle()
+        if (!ult || Date.now() - Number((ult as any).value) > 15 * 60_000) {
+          // Igual que saveSystemConfig de gasfree: upsert y, si la tabla no
+          // tiene la clave única, update o insert.
+          const ahoraTxt = String(Date.now())
+          const up = await db.from('system_config').upsert({ key: clave, value: ahoraTxt })
+          if (up.error) {
+            const upd = await db.from('system_config').update({ value: ahoraTxt }).eq('key', clave).select('key')
+            if (!upd.error && !(upd.data?.length)) await db.from('system_config').insert({ key: clave, value: ahoraTxt })
+          }
+          const p = sincronizarAnulaciones(userId).then(r => { if (r.anuladas.length || r.error) console.log('[facturacion] anulaciones', userId, JSON.stringify(r)) }, e => console.error('[facturacion] anulaciones', String((e as Error)?.message ?? e)))
+          const rt = (globalThis as any).EdgeRuntime
+          if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p)
+        }
+      }
       return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES, chequeo })
     }
 
@@ -2099,7 +2268,8 @@ Deno.serve(async (req) => {
     // ── Ponerse al día: comprobantes y documentos que el aviso automático
     //    no alcanzó a crear ──────────────────────────────────────────────
     if (accion === 'reconciliar') {
-      return json({ ok: true, ...(await reconciliar(userId)) })
+      const anul = await sincronizarAnulaciones(userId).catch(e => ({ revisadas: 0, anuladas: [] as string[], parciales: [] as string[], error: String((e as Error)?.message ?? e) }))
+      return json({ ok: true, ...(await reconciliar(userId)), anulaciones: anul })
     }
 
     // ── Factura de comisión por un depósito (PSP), a mano ──────────────
@@ -2190,13 +2360,30 @@ Deno.serve(async (req) => {
             if (d.annulled === true || /anul|cancel/i.test(String(d.status ?? ''))) {
               cambios.factura_estado = 'anulada'
               cambios.factura_error = `Anulado en Siigo${d.status ? ` (estado «${d.status}»)` : ''}.`
-            } else if (c.factura_estado === 'anulada') {
+            } else if (c.factura_estado === 'anulada' && !(Array.isArray(c.factura_detalle?.notas_credito) && c.factura_detalle.notas_credito_parciales === false)) {
+              // Solo se revierte una anulación que se leyó de la marca de
+              // Siigo; la que viene de una nota crédito no se deshace porque
+              // la factura siga existiendo (siempre sigue).
               cambios.factura_estado = 'emitida'; cambios.factura_error = null
             }
             cambios.factura_detalle = { ...(c.factura_detalle ?? {}), respuesta_creacion: creacion ?? g, respuesta: d, respuesta_consulta: g, consultado_at: new Date().toISOString() }
             await db.from('comprobantes').update(cambios).eq('folio', c.folio).then(() => {}, () => {})
             Object.assign(c, cambios)
             actualizado = true
+            // ¿Se anuló con nota crédito? La factura no lo dice: se pregunta
+            // por las notas crédito que apuntan a ella.
+            if (clase === 'FV' && c.factura_estado === 'emitida') {
+              try {
+                const fechaF = String(d.date ?? c.factura_at ?? '').slice(0, 10)
+                const desdeNC = fechaF ? new Date(Date.parse(fechaF) - 86_400_000).toISOString().slice(0, 10) : new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10)
+                const ncs = (await notasCreditoDesde(t.token, partner, desdeNC, String(c.factura_id))).get(String(c.factura_id)) ?? []
+                if (ncs.length) {
+                  await aplicarNotasCredito(c, ncs)
+                  const { data: fresco } = await db.from('comprobantes').select('*').eq('folio', c.folio).maybeSingle()
+                  if (fresco) Object.assign(c, fresco)
+                }
+              } catch (e) { avisoSiigo = String((e as Error)?.message ?? e) }
+            }
             // Rechazado por la DIAN: pedir el detalle del rechazo.
             if (/reject|rechaz|error|fail/i.test(String(d.stamp?.status ?? ''))) {
               const re = await siigo('GET', `${rutaDoc}/${encodeURIComponent(String(c.factura_id))}/stamp/errors`, { token: t.token, partner })
@@ -2246,6 +2433,17 @@ Deno.serve(async (req) => {
           rechazo_dian: selloErrores,
           // El PDF por API solo existe para la factura de venta.
           pdf_api: clase === 'FV',
+          notas_credito: Array.isArray(c.factura_detalle?.notas_credito) ? c.factura_detalle.notas_credito : [],
+          anteriores: Array.isArray(c.factura_detalle?.anteriores) ? c.factura_detalle.anteriores.map((a: any) => ({ numero: a?.numero ?? null, total: a?.total ?? null, notas_credito: a?.notas_credito ?? [] })) : [],
+          mal_calculada: facturaMalCalculada(c),
+          // Se puede volver a emitir al mismo cliente de la factura anulada, y
+          // así va a quedar: terceros por el monto completo + la comisión.
+          reemision: (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
+            const monto = Number(String(c.monto ?? '0').replace(/,/g, '')) || 0
+            const pct = Number(c.factura_detalle.comision.pct) || 0
+            const comision = r2(monto * pct / 100)
+            return { cliente: { identification: String(c.factura_detalle.comision.cliente.identification), nombre: c.factura_detalle.comision.cliente.nombre ?? null }, pct, terceros: r2(monto), comision, total: r2(monto + comision) }
+          })() : null,
           respuesta_cruda: d ? JSON.stringify(d).slice(0, 6000) : null,
           actualizado, aviso: avisoSiigo,
         } : null,

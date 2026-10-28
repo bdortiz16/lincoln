@@ -519,6 +519,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [docVersion, setDocVersion] = useState(0);
   const [docCrudaAbierta, setDocCrudaAbierta] = useState(false);
   const [docEmitiendo, setDocEmitiendo] = useState(false);
+  // Volver a emitir una factura anulada pide confirmar: es un documento nuevo
+  // ante la DIAN.
+  const [docConfirmarReemision, setDocConfirmarReemision] = useState(false);
   // Emitir de nuevo el documento de un movimiento (anulado en Siigo o en
   // error), con la configuración actual. Se recarga la tarjeta al terminar.
   const emitirDeNuevoSiigo = async (txId: string) => {
@@ -533,6 +536,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   useEffect(() => {
     const id = selectedTx?.id ? String(selectedTx.id) : '';
     setDocCrudaAbierta(false);
+    setDocConfirmarReemision(false);
     if (!id) { setDocSiigo(null); return; }
     let vivo = true;
     setDocSiigo({ txId: id, estado: 'cargando' });
@@ -4457,6 +4461,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 if (cude) filas.push({ label: esDS ? 'CUDS' : 'CUFE', value: truncMid(cude, 10, 8), mono: true, copy: cude });
                 if (sg?.stamp?.errors) filas.push({ label: 'Error DIAN', value: String(sg.stamp.errors), color: '#F87171' });
                 if (sg?.stamp?.observations) filas.push({ label: 'Obs. DIAN', value: String(sg.stamp.observations) });
+                // La nota crédito con que se anuló en Siigo (o una parcial).
+                if (Array.isArray(doc.notas_credito) && doc.notas_credito.length) filas.push({ label: doc.notas_credito.length === 1 ? 'Nota crédito' : 'Notas crédito', value: doc.notas_credito.map((n: any) => `${n.nombre}${n.total ? ` · ${formatMoney(Number(n.total), 'COP')}` : ''}`).join(' · '), mono: true, color: doc.estado === 'anulada' ? '#F4F4F2' : '#FB923C' });
               }
               if (ds.comprobante?.numero) filas.push({ label: 'Comprobante Lincoin', value: String(ds.comprobante.numero), mono: true });
               const estadoTxt = doc.estado === 'emitida' ? (rechazado ? { l: 'RECHAZADO POR LA DIAN', c: '#F87171', b: 'rgba(248,113,113,0.35)' } : { l: 'EMITIDO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)' })
@@ -4466,6 +4472,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 : { l: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
               const rechazoMsgs: string[] = Array.isArray(doc.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];
               const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado';
+              // Anulada con nota crédito y con a quién facturar: se muestra
+              // cómo va a quedar la factura nueva y se pide confirmar.
+              const reem: any = doc.estado === 'anulada' || doc.estado === 'error' ? doc.reemision : null;
+              const mal: any = doc.estado === 'emitida' ? doc.mal_calculada : null;
               return (
                 <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, background: 'rgba(255,255,255,0.02)', padding: '12px 14px' }}>
                   <div className="flex items-center justify-between" style={{ gap: 10 }}>
@@ -4533,11 +4543,52 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   {doc.estado === 'emitida' && !doc.pdf_api && (
                     <p style={{ marginTop: 10, fontSize: 11, color: '#878E88', lineHeight: 1.45 }}>El PDF del documento soporte no lo entrega Siigo por API. Se descarga en Siigo Nube: Compras → Documento soporte → {doc.numero ?? ''} → Imprimir o descargar.</p>
                   )}
-                  {puedeReemitir && (
+                  {/* Emitida con el cálculo viejo (terceros = monto − comisión) y
+                      todavía sin nota crédito en Siigo. */}
+                  {mal && (
+                    <div style={{ marginTop: 10, border: '1px solid rgba(251,146,60,0.35)', borderRadius: 10, background: 'rgba(251,146,60,0.06)', padding: '10px 12px' }}>
+                      <p style={{ fontSize: 11.5, fontWeight: 700, color: '#FB923C' }}>Esta factura se calculó mal</p>
+                      <p style={{ fontSize: 11.5, color: '#F4F4F2', marginTop: 4, lineHeight: 1.5 }}>
+                        Los ingresos para terceros salieron por {formatMoney(Number(mal.terceros), 'COP')} y lo transferido fue {formatMoney(Number(mal.transferido), 'COP')}: se restó la comisión. Anúlala con una nota crédito en Siigo; al abrir este detalle Lincoin la ve anulada y aparece «Volver a emitir».
+                      </p>
+                    </div>
+                  )}
+                  {puedeReemitir && reem && !docConfirmarReemision && (
+                    <button onClick={() => setDocConfirmarReemision(true)} disabled={docEmitiendo}
+                      className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                      style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', opacity: docEmitiendo ? 0.6 : 1 }}>
+                      <FileText size={13} /> Volver a emitir
+                    </button>
+                  )}
+                  {puedeReemitir && reem && docConfirmarReemision && (
+                    <div style={{ marginTop: 10, border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, background: 'rgba(255,255,255,0.03)', padding: '10px 12px' }}>
+                      <p style={{ fontSize: 11.5, fontWeight: 700, color: '#F4F4F2' }}>Factura nueva en Siigo{reem.cliente?.nombre ? ` a ${reem.cliente.nombre}` : ''} ({reem.cliente?.identification})</p>
+                      {[
+                        ['Ingresos recibidos para terceros (sin IVA)', reem.terceros],
+                        [`Comisión ${reem.pct} % (IVA incluido)`, reem.comision],
+                        ['Total', reem.total],
+                      ].map(([l, v]: any, i: number) => (
+                        <div key={l} className="flex items-center justify-between" style={{ gap: 10, padding: '4px 0', borderTop: i === 2 ? '1px solid rgba(255,255,255,0.08)' : 'none', marginTop: i === 2 ? 4 : 0 }}>
+                          <span style={{ fontSize: 11.5, color: '#878E88' }}>{l}</span>
+                          <span style={{ fontSize: 11.5, fontWeight: i === 2 ? 800 : 600, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{formatMoney(Number(v), 'COP')} COP</span>
+                        </div>
+                      ))}
+                      <p style={{ fontSize: 11, color: '#878E88', marginTop: 6, lineHeight: 1.45 }}>Se envía a la DIAN como una factura nueva. La anulada queda registrada con su nota crédito.</p>
+                      <div className="flex" style={{ gap: 8, marginTop: 8 }}>
+                        <button onClick={() => setDocConfirmarReemision(false)} disabled={docEmitiendo}
+                          className="flex-1 hover:bg-white/[0.09] transition-colors"
+                          style={{ padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)' }}>Cancelar</button>
+                        <button onClick={() => { emitirDeNuevoSiigo(String(tx.id)); setDocConfirmarReemision(false); }} disabled={docEmitiendo}
+                          className="flex-1"
+                          style={{ padding: '8px 0', borderRadius: 9, fontSize: 12, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', opacity: docEmitiendo ? 0.6 : 1 }}>{docEmitiendo ? 'Emitiendo en Siigo…' : 'Emitir factura nueva'}</button>
+                      </div>
+                    </div>
+                  )}
+                  {puedeReemitir && !reem && (
                     <button onClick={() => emitirDeNuevoSiigo(String(tx.id))} disabled={docEmitiendo}
                       className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
                       style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', opacity: docEmitiendo ? 0.6 : 1 }}>
-                      <FileText size={13} /> {docEmitiendo ? 'Emitiendo en Siigo…' : 'Emitir de nuevo'}
+                      <FileText size={13} /> {docEmitiendo ? 'Emitiendo en Siigo…' : doc.estado === 'anulada' ? 'Volver a emitir' : 'Emitir de nuevo'}
                     </button>
                   )}
                   {doc.respuesta_cruda && (
