@@ -36,7 +36,7 @@ import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia } from './cliente.ts'
 import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuzgar, CRITERIO } from './traductor.ts'
-import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta } from './padron.ts'
+import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -201,6 +201,9 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
 
 // ── Recoger ─────────────────────────────────────────────────────────────
 const MAX_REINTENTOS = 3
+// JSON con las llaves en orden, para comparar sin que importe el orden.
+const estable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
+  x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : x)
 async function recoger(uid: string) {
   const raw = await leerRaw(uid)
   const fichas: Record<string, any> = raw?.tusdatos?.beneficiarios ?? {}
@@ -232,7 +235,11 @@ async function recoger(uid: string) {
         reintentados++
         continue
       }
-      if (enCursoAun && check.aggregateOutcome === f.sarblock?.aggregateOutcome && JSON.stringify(check.catalog) === JSON.stringify(f.sarblock?.catalog)) continue
+      // Se compara con llaves ordenadas: la ficha guardada vuelve de la base
+      // (jsonb) con las llaves de cada objeto reordenadas, y comparando el
+      // texto tal cual nunca daba igual. Cada lectura reescribía la ficha y
+      // el padrón (visto el 2026-10-28: 555 escrituras en 6 h, dos fichas).
+      if (enCursoAun && check.aggregateOutcome === f.sarblock?.aggregateOutcome && estable(check.catalog) === estable(f.sarblock?.catalog)) continue
       const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}) }
       await guardarFicha(uid, doc, conDecision(nueva, f))
       // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
@@ -535,7 +542,9 @@ Deno.serve(async (req) => {
       const fichas = raw?.tusdatos?.beneficiarios ?? {}
       const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
       const limite = Math.max(1, Math.min(10, Number(body.limite ?? 4) || 4))
-      const faltan = contactos.filter(x => x?.accountKind !== 'wallet' && soloDigitos(x?.docNumber) && !fichas[soloDigitos(x.docNumber)])
+      // Un NIT con DV pegado tiene su ficha por los 9 dígitos base.
+      const faltan = contactos.filter(x => x?.accountKind !== 'wallet' && soloDigitos(x?.docNumber)
+        && !fichas[soloDigitos(x.docNumber)] && !fichas[docPadron(String(x.docNumber), String(x.docType ?? 'CC'))])
       let lanzados = 0, tope = false
       for (const x of faltan.slice(0, limite)) {
         const r: any = await lanzar(uid, { documento: String(x.docNumber), tipoDocumento: String(x.docType ?? 'CC'), nombre: x.name }, c, yo.esAdmin)

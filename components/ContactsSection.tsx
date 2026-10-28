@@ -464,6 +464,11 @@ export const ContactsSection: React.FC<{
     }, [currentUser?.id, leerTusdatos]);
 
     const amlBenef: Record<string, any> = tdSrv ? tdSrv.benef : (tdRaw.beneficiarios ?? {});
+    // La ficha de una EMPRESA la guarda Sarblock por los 9 dígitos base del
+    // NIT; el beneficiario se inscribe con el DV pegado (9009691858). Sin
+    // esto la pantalla no la encontraba: mostraba "consultando" para siempre
+    // y seguía pidiendo la verificación cada minuto.
+    const fichaAml = (doc: string) => amlBenef[doc] ?? (esNitEmpresa(doc) ? amlBenef[nitSinDv(doc)] : undefined);
     // La columna aparece si la verificación corre para esta cuenta O si ya hay
     // resultados guardados. Lo segundo importa: apagar la integración no debe
     // hacer desaparecer veredictos que ya se consultaron y ya están frenando
@@ -492,7 +497,7 @@ export const ContactsSection: React.FC<{
         if (!amlActivo) return null;
         const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
         if (!doc) return null;
-        const f = amlBenef[doc];
+        const f = fichaAml(doc);
         // 'archivado' = la consulta de un beneficiario borrado (queda en el
         // archivo de cumplimiento). Si vuelve a aparecer, espera una nueva.
         // Sin ficha: "consultando" SOLO si la verificación corre para esta
@@ -877,7 +882,7 @@ export const ContactsSection: React.FC<{
         setVerHallazgos(false);
         const doc = String(detail.docNumber ?? '').replace(/\D/g, '');
         if (!doc || detalleTraidoRef.current.has(doc)) return;
-        const k = amlBenef[doc];
+        const k = fichaAml(doc);
         if (!k || k.estado !== 'finalizado') return;
         if (Array.isArray(k.hallazgos) && k.hallazgos.length) return;
         // Un "riesgo alto" sin conteo también tiene que mostrar el porqué:
@@ -1302,7 +1307,7 @@ export const ContactsSection: React.FC<{
     // Se detiene solo cuando ya no queda nada pendiente, o a los 10 minutos.
     const hayEnProceso = bankContacts.some(c => c.status === 'en_proceso')
         || Object.values(amlBenef).some((k: any) => String(k?.estado ?? '') === 'procesando')
-        || bankContacts.some(c => { const d = String(c.docNumber ?? '').replace(/\D/g, ''); return d && !amlBenef[d]; });
+        || bankContacts.some(c => { const d = String(c.docNumber ?? '').replace(/\D/g, ''); return d && !fichaAml(d); });
     useEffect(() => {
         const uid = currentUser?.id;
         if (!uid || !hayEnProceso) return;
@@ -1345,7 +1350,7 @@ export const ContactsSection: React.FC<{
     const amlPendientes = bankContacts.map(c => {
         const doc = String(c.docNumber ?? '').replace(/\D/g, '');
         if (!doc) return '';
-        const k = amlBenef[doc];
+        const k = fichaAml(doc);
         const estK = String(k?.estado ?? '');
         if (!k || estK === 'procesando' || estK === 'archivado') return doc;
         // Las que no terminaron se reintentan solas en el servidor: el reloj

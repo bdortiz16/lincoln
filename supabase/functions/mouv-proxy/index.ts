@@ -3639,7 +3639,10 @@ serve(async (req: Request) => {
         try {
           const tdCfg = await configAntecedentes(userId)
           if (tdCfg?.activo) {
-            const f = (rawU?.tusdatos?.beneficiarios ?? {})[docDest]
+            // La ficha de un NIT está por sus 9 dígitos base (así la guarda
+            // Sarblock); el beneficiario puede venir con el DV pegado.
+            const fichasAml = (rawU?.tusdatos?.beneficiarios ?? {}) as Record<string, any>
+            const f = fichasAml[docDest] ?? fichasAml[normDoc(docDest)]
             if (f?.nombreReal) nombresTitular.push(String(f.nombreReal))
             const cat = String(f?.categoria ?? '')
             const cerrado = f?.estado === 'finalizado'
