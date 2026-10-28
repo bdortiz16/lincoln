@@ -36,12 +36,14 @@ const fmtCop = (n: number) => '$' + Math.round(n).toLocaleString('es-CO');
 const WalletsModal: React.FC<{
   copBalance: number | null;
   usdtBalance: number | null;
+  soloCop?: boolean;
   onPick: (w: WalletKind) => void;
   onClose: () => void;
-}> = ({ copBalance, usdtBalance, onPick, onClose }) => {
+}> = ({ copBalance, usdtBalance, soloCop, onPick, onClose }) => {
   const activas = [
-    { key: 'COP' as WalletKind, flag: '🇨🇴', name: 'COP · Peso colombiano', sub: 'Cargues · Mouv · dispersión Bre-B', bal: copBalance != null ? fmtCop(copBalance) : '—' },
-    { key: 'USDT' as WalletKind, flag: '🇺🇸', name: 'USD · Dólar digital (USDT)', sub: 'Custodia GasFree · TRC-20', bal: usdtBalance != null ? `${usdtBalance.toLocaleString('es-CO')} USDT` : '—' },
+    { key: 'COP' as WalletKind, flag: '🇨🇴', name: 'COP · Peso colombiano', sub: 'Cargues · Mouv · Bre-B y ACH', bal: copBalance != null ? fmtCop(copBalance) : '—' },
+    // La billetera USDT no es del rol Tesorería: no se le ofrece.
+    ...(soloCop ? [] : [{ key: 'USDT' as WalletKind, flag: '🇺🇸', name: 'USD · Dólar digital (USDT)', sub: 'Custodia GasFree · TRC-20', bal: usdtBalance != null ? `${usdtBalance.toLocaleString('es-CO')} USDT` : '—' }]),
   ];
   const proximas = [
     { flag: '🇲🇽', name: 'MXN · Peso mexicano', sub: 'En integración' },
@@ -100,7 +102,9 @@ export const AdminTreasuryPanel: React.FC<{
   usdtBalance: number | null;
   onPickWallet?: (w: WalletKind) => void;
   onRegisterMovement?: () => void;
-}> = ({ pendingLoads, pendingWithdrawals, monthVolume, monthOps, heldForReview, inflow, outflow, flow14, copBalance, usdtBalance, onPickWallet, onRegisterMovement }) => {
+  // Rol Tesorería: solo la billetera COP.
+  soloCop?: boolean;
+}> = ({ pendingLoads, pendingWithdrawals, monthVolume, monthOps, heldForReview, inflow, outflow, flow14, copBalance, usdtBalance, onPickWallet, onRegisterMovement, soloCop }) => {
   const [now, setNow] = useState(Date.now());
   const [walletsOpen, setWalletsOpen] = useState(false);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
@@ -221,7 +225,7 @@ export const AdminTreasuryPanel: React.FC<{
       </Card>
 
       {walletsOpen && (
-        <WalletsModal copBalance={copBalance} usdtBalance={usdtBalance}
+        <WalletsModal copBalance={copBalance} usdtBalance={usdtBalance} soloCop={soloCop}
           onPick={(w) => onPickWallet?.(w)} onClose={() => setWalletsOpen(false)} />
       )}
 

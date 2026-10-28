@@ -887,7 +887,7 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
     try {
       const list = await blockedIps()
       if (!list.some(b => b.ip === ip)) {
-        list.unshift({ ip, at: new Date().toISOString(), reason: `bloqueo de la cuenta de admin (${motivo})`, attempts: MAX_FALLOS_ADMIN, geo })
+        list.unshift({ ip, at: new Date().toISOString(), reason: `bloqueo de la cuenta de admin (${motivo})`, attempts: MAX_FALLOS_ADMIN, geo, soloPanel: true })
         await saveBlockedIps(list)
         await auditAdmin(req, 'auth.ip_blocked', { ip, porBloqueoDeCuenta: true })
       }
@@ -1163,7 +1163,11 @@ async function accessDenied(req: Request): Promise<string | null> {
 }
 
 const BLOCKED_IPS_KEY = 'blocked_ips'
-type BlockedIp = { ip: string; at: string; reason: string; attempts: number; geo?: Geo | null }
+// soloPanel: la IP se bloqueó por fallos contra una cuenta de ADMIN. Frena
+// el panel y las cuentas de admin, no a los clientes: una oficina comparte
+// IP, y un admin que se equivocó dos veces con su código dejaba sin poder
+// entrar a todas las empresas de esa red.
+type BlockedIp = { ip: string; at: string; reason: string; attempts: number; geo?: Geo | null; soloPanel?: boolean }
 async function blockedIps(): Promise<BlockedIp[]> {
   try {
     const { data } = await db.from('system_config').select('value').eq('key', BLOCKED_IPS_KEY).single()
@@ -1176,7 +1180,8 @@ async function saveBlockedIps(list: BlockedIp[]) {
 async function isIpBlocked(req: Request): Promise<boolean> {
   const ip = ipOf(req)
   if (!ip) return false
-  return (await blockedIps()).some(b => b.ip === ip)
+  // Sin identidad no se sabe si es un admin: los bloqueos solo del panel no cuentan.
+  return (await blockedIps()).some(b => b.ip === ip && !b.soloPanel)
 }
 
 async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string; userId?: string; email?: string; acceso?: Acceso }> {
@@ -1442,7 +1447,19 @@ Deno.serve(async (req: Request) => {
         return pag('Enlace inválido o ya usado', 'Cada enlace sirve una sola vez. Si necesitas otro, intenta iniciar sesión para generar uno nuevo.', false)
       }
       await clearAdminLock(uid)
-      await auditAdmin(req, 'security.admin_unlocked', { userId: uid })
+      // La IP que se bloqueó junto con la cuenta también se libera: quien abre
+      // este enlace probó que es el titular (el correo). Antes la cuenta
+      // quedaba activa pero la IP seguía bloqueada, y nadie de esa red —ni el
+      // titular— podía entrar hasta que alguien la quitara desde Monitoreo.
+      let ipLiberada: string | null = null
+      if (lock.ip) {
+        try {
+          const list = await blockedIps()
+          const resto = list.filter(b => !(b.ip === lock.ip && (b.soloPanel || String(b.reason ?? '').startsWith('bloqueo de la cuenta de admin'))))
+          if (resto.length !== list.length) { await saveBlockedIps(resto); ipLiberada = String(lock.ip) }
+        } catch { /* la cuenta ya quedó desbloqueada; la IP se puede quitar desde Monitoreo */ }
+      }
+      await auditAdmin(req, 'security.admin_unlocked', { userId: uid, ipLiberada })
       return pag('Cuenta desbloqueada', 'Ya puedes iniciar sesión. Si no fuiste tú quien pidió esto, cambia la contraseña de inmediato.', true)
     }
 
@@ -1490,7 +1507,7 @@ Deno.serve(async (req: Request) => {
           if (contraAdmin && fails >= 3) {
             const list = await blockedIps()
             if (!list.some(b => b.ip === ip)) {
-              list.unshift({ ip, at: new Date().toISOString(), reason: `${fails} intentos fallidos en 1 h`, attempts: fails, geo: await geoOf(ip) })
+              list.unshift({ ip, at: new Date().toISOString(), reason: `${fails} intentos fallidos en 1 h`, attempts: fails, geo: await geoOf(ip), soloPanel: true })
               await saveBlockedIps(list)
               await auditAdmin(req, 'auth.ip_blocked', { ip, attempts: fails, email })
             }

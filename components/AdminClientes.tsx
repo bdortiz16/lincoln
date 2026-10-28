@@ -124,7 +124,10 @@ export const AdminClientes: React.FC<{
   // segunda copia de algo que mueve dinero se desincroniza y nadie se entera.
   onSincronizarCripto?: (userId: string, userName: string) => void | Promise<void>;
   onLiberarCorreo?: () => void;
-}> = ({ showToast, onSincronizarCripto, onLiberarCorreo }) => {
+  // Cuentas Brasil es Gowd (PIX): el rol Tesorería solo opera Colombia y
+  // Estados Unidos, así que no se le ofrece.
+  sinBrasil?: boolean;
+}> = ({ showToast, onSincronizarCripto, onLiberarCorreo, sinBrasil }) => {
   const {
     getAllUsers, getTransactionHistory, refreshData,
     verifyUser, toggleUserBlock, updateUserProfile, updateUserRawData, deleteUser,
@@ -406,7 +409,7 @@ export const AdminClientes: React.FC<{
           {onLiberarCorreo && (
             <button onClick={onLiberarCorreo} style={btnSec}>Liberar correo</button>
           )}
-          <button onClick={() => setBrasilAbierto(true)} style={btnSec}>Cuentas Brasil</button>
+          {!sinBrasil && <button onClick={() => setBrasilAbierto(true)} style={btnSec}>Cuentas Brasil</button>}
           <button onClick={() => showToast?.('Invitar cliente: próximamente.')} style={btnPri}>
             <Ico d={I.mas} /> Invitar cliente
           </button>

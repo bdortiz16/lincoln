@@ -166,7 +166,7 @@ export const SelectorPais: React.FC<Props> = ({ paises, rol, cargando, onElegir,
 
         <div style={{ marginTop: 22, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span style={{ fontSize: 11, color: TXT3 }}>
-            Rol: <b style={{ color: TXT2 }}>{({ dueno: 'Dueño', operaciones: 'Operaciones', cumplimiento: 'Cumplimiento', lectura: 'Solo lectura' } as Record<string, string>)[rol] ?? rol}</b>
+            Rol: <b style={{ color: TXT2 }}>{({ dueno: 'Dueño', operaciones: 'Operaciones', cumplimiento: 'Cumplimiento', lectura: 'Solo lectura', tesoreria: 'Tesorería y clientes' } as Record<string, string>)[rol] ?? rol}</b>
           </span>
           <button onClick={onSalir} style={{ background: 'none', border: 'none', color: TXT3, fontSize: 11.5, cursor: 'pointer', textDecoration: 'underline' }}>
             Cerrar sesión
