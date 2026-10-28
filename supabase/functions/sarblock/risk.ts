@@ -216,11 +216,14 @@ export async function resumen(db: any, cfg: ConfigRisk) {
   const costoVendidas = usadasConCosto * costoUnit
   const coberturaPct = pendientesClientes ? Math.round((disponibles / pendientesClientes) * 100) : null
 
-  const uids = [...new Set([...sds.map(s => s.user_id), ...cps.map(c => c.user_id)])]
+  // Todas las empresas son clientes del admin, aunque nunca hayan comprado:
+  // así se les puede ver el saldo y hacer un ajuste.
+  const { data: empresasData } = await db.from('users').select('id').eq('role', 'business').limit(20000)
+  const uids = [...new Set([...((empresasData ?? []) as any[]).map(u => u.id), ...sds.map(s => s.user_id), ...cps.map(c => c.user_id)])]
   const nombres: Record<string, string> = {}
   for (let i = 0; i < uids.length; i += 200) {
-    const { data } = await db.from('users').select('id, company_name, full_name, name, email').in('id', uids.slice(i, i + 200))
-    for (const u of (data ?? []) as any[]) nombres[u.id] = u.company_name || u.full_name || u.name || u.email || u.id
+    const { data } = await db.from('users').select('id, company_name, full_name, name, email, rdEmpresa:raw_data->>companyName').in('id', uids.slice(i, i + 200))
+    for (const u of (data ?? []) as any[]) nombres[u.id] = u.company_name || u.rdEmpresa || u.full_name || u.name || u.email || u.id
   }
   const clientes = uids.map(uid => {
     const suyas = cps.filter(c => c.user_id === uid)
@@ -231,7 +234,7 @@ export async function resumen(db: any, cfg: ConfigRisk) {
       usadas: cns.filter(c => c.user_id === uid && c.estado !== 'fallida').length,
       ultimaCompra: suyas.map(x => x.at).sort().reverse()[0] ?? null,
     }
-  }).sort((a, b) => b.compradas - a.compradas)
+  }).sort((a, b) => b.compradas - a.compradas || b.saldo - a.saldo || a.nombre.localeCompare(b.nombre))
 
   return {
     caja: { compradas, costoTotal, costoUnit, consumidas, disponibles },

@@ -309,6 +309,23 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
       try { saldoSarblock = saldoScreening(await cliente().consumo()) } catch { /* sin saldo a la vista */ }
       return { ok: true, config: cfg, ...(await R.resumen(db, cfg)), saldoSarblock }
     }
+    // Lo que queda en Sarblock y en qué se gastó este periodo. Leerlo es
+    // gratis. AML de beneficiarios y Lincoin Risk comparten estos créditos.
+    if (accion === 'admin_sarblock_uso') {
+      let u: any
+      try { u = await cliente().consumo() } catch (e) { return { ok: false, motivo: `No se pudo leer el consumo en Sarblock: ${String((e as Error)?.message ?? e).slice(0, 160)}` } }
+      const s = u?.screening ?? {}, cr = u?.credits ?? {}
+      const desde = String(u?.period?.start ?? new Date(Date.now() - 30 * 86400_000).toISOString())
+      const [aml, risk] = await Promise.all([
+        db.from('audit_log').select('id', { count: 'exact', head: true }).eq('action', 'sarblock.lanzado').gte('created_at', desde),
+        db.from('risk_consultas').select('id', { count: 'exact', head: true }).not('check_id', 'is', null).gte('at', desde),
+      ])
+      return { ok: true,
+        plan: u?.period?.planCode ?? null, desde, renueva: cr.renewsAt ?? u?.period?.end ?? null,
+        incluidas: Number(s.included ?? cr.planIncluded ?? 0), consumidas: Number(s.consumed ?? 0), reservadas: Number(s.reserved ?? 0),
+        quedan: saldoScreening(u), adicionales: Math.max(0, saldoScreening(u) - Number(s.planRemaining ?? cr.planRemaining ?? 0)),
+        enAml: aml.count ?? 0, enRisk: risk.count ?? 0 }
+    }
     if (accion === 'admin_risk_config') {
       const nueva = R.normalizarConfig(cfg, body.config ?? {})
       const { error } = await db.from('system_config').upsert({ key: R.CONFIG_KEY_RISK, value: JSON.stringify(nueva) }, { onConflict: 'key' })
