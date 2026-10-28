@@ -35,6 +35,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { cabecerasInternas } from '../_shared/webhook-auth.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -423,7 +424,14 @@ async function esMiReferencia(caller: { userId?: string; internal?: boolean }, i
   } catch { return false }   // ante la duda, no se muestra
 }
 
-async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean }> {
+// Qué permiso del equipo pide cada acción a un admin humano. Lo que no figura
+// (convertir, crear retiros, sondear el proveedor) queda para el dueño y para
+// las llamadas internas del servidor.
+const PERMISO_FINITY: Record<string, string | string[]> = {
+  treasury_balances: ['plata.ver', 'tesoreria'],
+}
+
+async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean; servicio?: boolean }> {
   const auth = req.headers.get('authorization') ?? ''
   const jwt = auth.replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
@@ -435,7 +443,7 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   // por mouv-proxy, que debita el saldo ANTES de llamar aquí.
   if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) {
     const uid = String(payload.user_id ?? '')
-    return { ok: true, userId: uid || undefined, internal: true, viaJwt: true }
+    return { ok: true, userId: uid || undefined, internal: true, viaJwt: true, servicio: true }
   }
   // (El "AdminBypass <password>" se eliminó: era un secreto compartido que
   //  viajaba en el bundle del frontend. El admin real entra por JWT abajo.)
@@ -587,6 +595,13 @@ Deno.serve(async (req) => {
     const READ_ACTIONS = new Set(['ping', 'rates'])
 
     const caller = await validCaller(req, payload)
+    // Ser admin ya no alcanza: un miembro del equipo opera acá solo lo que su
+    // rol permite (_shared/equipo.ts). Si no alcanza, pierde la confianza de
+    // `internal` y queda como un usuario más. El ACH es Colombia: pide CO.
+    if (caller.ok && caller.internal && !caller.servicio && caller.userId) {
+      const g = await equipoPermite(db, caller.userId, PERMISO_FINITY[action], { pais: 'CO' })
+      if (!g.ok) caller.internal = false
+    }
     if (!caller.ok && !READ_ACTIONS.has(action)) {
       // 'proxy v3' en el mensaje: si el panel muestra 'unauthorized' pelado,
       // la función desplegada es una versión vieja.

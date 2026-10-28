@@ -28,6 +28,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { igualSeguro } from '../_shared/admin-auth.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -113,7 +114,12 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmi
     const { data: { user } } = await db.auth.getUser(jwt)
     if (!user) return { userId: null, esAdmin: false }
     const { data } = await db.from('users').select('role').eq('id', user.id).single()
-    return { userId: user.id, esAdmin: (data as any)?.role === 'admin' }
+    // Ser admin no alcanza: del equipo, solo Cumplimiento (y el dueño) opera
+    // acá. Antes un miembro de Tesorería o de "Solo lectura" podía leer los
+    // veredictos AML o cambiar su configuración llamando directo.
+    const esAdmin = (data as any)?.role === 'admin'
+      && (await equipoPermite(db, user.id, 'cumplimiento', { email: user.email ?? null })).ok
+    return { userId: user.id, esAdmin }
   } catch { return { userId: null, esAdmin: false } }
 }
 

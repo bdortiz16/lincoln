@@ -39,6 +39,7 @@ import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuz
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -88,7 +89,12 @@ async function quienLlama(req: Request): Promise<Yo> {
     const { data: { user } } = await db.auth.getUser(jwt)
     if (!user) return { userId: null, esAdmin: false }
     const { data } = await db.from('users').select('role').eq('id', user.id).single()
-    return { userId: user.id, esAdmin: (data as any)?.role === 'admin' }
+    // Ser admin no alcanza: del equipo, solo Cumplimiento (y el dueño) opera
+    // acá. Antes un miembro de Tesorería o de "Solo lectura" podía leer los
+    // veredictos AML o cambiar su configuración llamando directo.
+    const esAdmin = (data as any)?.role === 'admin'
+      && (await equipoPermite(db, user.id, 'cumplimiento', { email: user.email ?? null })).ok
+    return { userId: user.id, esAdmin }
   } catch { return { userId: null, esAdmin: false } }
 }
 // Las acciones de administración exigen la sesión con segundo factor, igual

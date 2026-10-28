@@ -25,6 +25,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
@@ -1773,7 +1774,22 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
   return { id: tx.id, result: 'still_processing', providerStatus: s || null }
 }
 
-async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean }> {
+// Qué permiso del equipo pide cada acción de admin. Lo que no figura queda
+// para el dueño. Tesorería ve las bolsas (Billeteras) y concilia desde
+// Clientes; lo de Fallos (devolver, confirmar, vincular) es de Operaciones.
+const PERMISO_MOUV: Record<string, string | string[]> = {
+  treasury_balances: ['plata.ver', 'tesoreria'],
+  sondear_dispersion: ['plata.ver', 'tesoreria'],
+  reconcile_breb: ['plata.mover', 'tesoreria'],
+  reconcile_ach: ['plata.mover', 'tesoreria'],
+  confirmar_dispersion: 'plata.mover',
+  force_return: 'plata.mover',
+  marcar_reembolso_externo: 'plata.mover',
+  vincular_referencia: 'plata.mover',
+  verify_and_credit: 'plata.mover',
+}
+
+async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; userId: string | null; admin: boolean; viaJwt: boolean; servicio?: boolean }> {
   const authHeader = req.headers.get('Authorization') ?? ''
   // (El "AdminBypass <password>" se eliminó: secreto compartido que se filtraba
   //  en el bundle del frontend. El admin real entra por JWT con role='admin'.)
@@ -1786,7 +1802,7 @@ async function validCaller(req: Request, payload: any): Promise<{ ok: boolean; u
   //
   // Solo la sabe el servidor: no viaja al navegador ni esta en el bundle.
   if (jwt && SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) {
-    return { ok: true, userId: payload?.user_id ?? payload?.userId ?? null, admin: true, viaJwt: true }
+    return { ok: true, userId: payload?.user_id ?? payload?.userId ?? null, admin: true, viaJwt: true, servicio: true }
   }
 
   if (jwt) {
@@ -2028,6 +2044,18 @@ serve(async (req: Request) => {
 
   const caller = await validCaller(req, payload)
   if (!caller.ok) return json(401, { error: 'unauthorized', message: 'Tu sesión expiró. Vuelve a iniciar sesión.' })
+
+  // ── Rol en el equipo ──────────────────────────────────────────────────
+  // Ser admin ya no alcanza: un miembro opera acá solo lo que su rol permite
+  // (_shared/equipo.ts). Antes cualquier cuenta admin —"Solo lectura"
+  // incluida— podía devolver dispersiones o acreditar depósitos llamando acá
+  // directo, aunque admin-data le negara lo mismo. Si el rol no alcanza, se
+  // le trata como un usuario más: lo de admin le responde 403 y lo propio
+  // sigue siendo solo lo propio. Mouv es Colombia: pide tener CO asignado.
+  if (caller.admin && !caller.servicio && caller.userId) {
+    const g = await equipoPermite(db, caller.userId, PERMISO_MOUV[action], { pais: 'CO' })
+    if (!g.ok) caller.admin = false
+  }
 
   // ── Consultar una llave Bre-B (directorio Mouv): devuelve el TITULAR
   //    (nombre, documento) y su BANCO para autollenar la inscripción de

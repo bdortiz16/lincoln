@@ -44,6 +44,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -289,6 +290,11 @@ Deno.serve(async (req) => {
     // ── CUMPLIMIENTO (admin) ─────────────────────────────────────────────
     if (accion.startsWith('admin_')) {
       if (yo.role !== 'admin') return json({ ok: false, error: 'Solo administración' }, 403)
+      // Los operadores de las empresas los aprueba Cumplimiento: del equipo,
+      // solo ese rol (y el dueño).
+      if (!(await equipoPermite(db, yo.id, 'cumplimiento', { email: yo.email })).ok) {
+        return json({ ok: false, error: 'Tu rol no permite esta operación.' }, 403)
+      }
 
       if (accion === 'admin_listar') {
         const emp = await empresaPorId(String(body.empresaId ?? ''))

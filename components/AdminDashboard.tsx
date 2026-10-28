@@ -1738,7 +1738,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           }
       }
 
-      registerInternalMovement(
+      // El aviso dice lo que pasó: antes decía "registrado" siempre, aunque el
+      // guardado (que era solo del dueño) hubiera fallado.
+      const r = await registerInternalMovement(
           parseFloat(internalAmount), 
           internalCurrency, 
           internalMoveType, 
@@ -1747,7 +1749,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
           internalReferenceId,
           proofUrl
       );
-      
+      if (!r.ok) { showToast(r.error || 'No se pudo registrar el movimiento.'); return; }
+
       setShowInternalMovementModal(false);
       setInternalAmount('');
       setInternalReason('');

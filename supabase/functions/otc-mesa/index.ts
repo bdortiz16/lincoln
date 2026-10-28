@@ -28,6 +28,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -88,7 +89,10 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   const { data } = await db.auth.getUser(jwt)
   if (data?.user) {
     const { data: prof } = await db.from('users').select('role, full_name, email').eq('id', data.user.id).maybeSingle()
+    // Ser admin no alcanza: la mesa OTC mueve plata, y del equipo solo la
+    // opera quien tiene 'plata.mover' (Operaciones y el dueño). Tesorería no.
     const admin = String((prof as any)?.role ?? '') === 'admin'
+      && (await equipoPermite(db, data.user.id, 'plata.mover', { email: (prof as any)?.email ?? data.user.email ?? null })).ok
     return {
       ok: true, userId: data.user.id, admin, viaJwt: true,
       nombre: (prof as any)?.full_name ?? (prof as any)?.email ?? 'Mesa Lincoin',
