@@ -3087,8 +3087,26 @@ Deno.serve(async (req: Request) => {
         if (!cuenta) {
           return json({ ok: false, error: 'sin_cuenta', message: 'Esa persona todavía no tiene cuenta en Lincoin. Que se registre primero.' }, 400)
         }
+        // Antes pedía "cambiale el rol primero en Clientes", pero Clientes solo
+        // deja elegir persona o empresa: no había forma de hacer a alguien
+        // administrador desde el panel. Ahora lo hace el dueño acá, a
+        // propósito (hacerAdmin), con su 2FA, y queda en la auditoría.
         if ((cuenta as any).role !== 'admin') {
-          return json({ ok: false, error: 'sin_rol_admin', message: 'Esa cuenta existe pero no tiene rol de administrador. Cambiáselo primero en Clientes.' }, 400)
+          if (body.hacerAdmin !== true) {
+            return json({ ok: false, error: 'sin_rol_admin', message: 'Esa cuenta es de cliente. Para darle acceso al panel hay que convertirla en administrador.' }, 400)
+          }
+          // Una cuenta con plata es de un cliente que opera: convertirla le
+          // quitaría su app y dejaría saldos de clientes en una cuenta del equipo.
+          const { data: saldos } = await db.from('users').select('balances, crypto_balances').eq('id', (cuenta as any).id).maybeSingle()
+          const hayPlata = [...Object.values(((saldos as any)?.balances ?? {}) as Record<string, unknown>), ...Object.values(((saldos as any)?.crypto_balances ?? {}) as Record<string, unknown>)]
+            .some(v => Math.abs(Number(v) || 0) > 0)
+          if (hayPlata) {
+            return json({ ok: false, error: 'cuenta_con_saldo', message: 'Esa cuenta tiene saldo de cliente. Usa una cuenta sin saldo para el equipo.' }, 400)
+          }
+          const rolAnterior = (cuenta as any).role ?? null
+          const { error: eRol } = await db.from('users').update({ role: 'admin' }).eq('id', (cuenta as any).id)
+          if (eRol) return json({ ok: false, error: eRol.message }, 500)
+          await auditAdmin(req, 'equipo.cuenta_hecha_admin', { email, rolAnterior })
         }
 
         // Quien guarda es el dueño (equipo_* no figura en PERMISO_DE_ACCION).

@@ -2118,13 +2118,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
         .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
-      // En pantalla va el PROVEEDOR y debajo el servicio. El saldo Bre-B del
-      // cliente lo respalda Mouv y el ACH lo respalda Finity (ver abajo).
-      // `corto` es para los recuadros de saldo, donde va en una línea.
+      // En pantalla va el PROVEEDOR y debajo sus servicios: Mouv y Finity
+      // tienen los dos Bre-B y ACH. Por dentro el saldo COP_BREB del cliente es
+      // su cuenta en Mouv y COP_ACH su cuenta en Finity (los nombres de las
+      // columnas vienen de antes, cuando cada proveedor tenía un solo servicio).
       const railMeta: Record<string, { label: string; sub: string; corto: string; icon: React.ElementType }> = {
-        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP',        corto: 'Saldo Lincoin',  icon: Wallet },
-        COP_BREB: { label: 'Mouv',          sub: 'Bre-B · Pagos inmediatos 24/7', corto: 'Mouv · Bre-B',   icon: Zap },
-        COP_ACH:  { label: 'Finity',        sub: 'ACH · Interbancario L–V',       corto: 'Finity · ACH',   icon: Landmark },
+        COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP', corto: 'Saldo Lincoin', icon: Wallet },
+        COP_BREB: { label: 'Mouv',          sub: 'Bre-B y ACH',            corto: 'Mouv',          icon: Zap },
+        COP_ACH:  { label: 'Finity',        sub: 'Bre-B y ACH',            corto: 'Finity',        icon: Landmark },
       };
 
       // ── Respaldo y utilidad por riel ──────────────────────────────
@@ -2226,8 +2227,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
               con clientes = disponible para cargar (= utilidad en pesos). */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {([
-              // Dos proveedores, cada uno con Bre-B y ACH. Mouv respalda el saldo
-              // Bre-B de los clientes y Finity el ACH.
+              // Dos proveedores, cada uno con Bre-B y ACH: la bolsa de cada uno
+              // respalda la cuenta del cliente en ese proveedor.
               { rail: 'COP_BREB', label: 'Mouv', servicio: 'Bre-B y ACH', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
                 loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
               { rail: 'COP_ACH', label: 'Finity', servicio: 'Bre-B y ACH', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
