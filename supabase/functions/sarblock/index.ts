@@ -344,6 +344,54 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
       await auditar('risk.ajuste', { por: yo.userId, userId: cli, cantidad, motivo, saldo: r.saldo })
       return { ok: true, saldo: r.saldo }
     }
+    // ── Historiales de TODAS las empresas ──────────────────────────────
+    // Cumplimiento ve todo lo que se consultó y buscó, de quién y cuándo.
+    // La lista no trae la ficha (pesa); el detalle se abre con
+    // admin_risk_ver, que queda en la auditoría: son antecedentes de
+    // personas reales.
+    if (accion === 'admin_risk_consultas' || accion === 'admin_risk_busquedas') {
+      const esConsultas = accion === 'admin_risk_consultas'
+      const pagina = Math.max(1, Number(body.pagina) || 1), porPagina = 30
+      let q = db.from(esConsultas ? 'risk_consultas' : 'risk_busquedas')
+        .select(esConsultas ? `user_id, ${R.COLS}` : '*', { count: 'exact' })
+      if (body.cliente) q = q.eq('user_id', String(body.cliente))
+      const texto = String(body.q ?? '').trim().replace(/[%,()]/g, '')
+      if (texto) q = q.or(esConsultas
+        ? `documento.ilike.%${texto}%,nombre_oficial.ilike.%${texto}%,nombre_escrito.ilike.%${texto}%`
+        : `documento.ilike.%${texto}%,nombre.ilike.%${texto}%`)
+      if (body.desde) q = q.gte('at', String(body.desde))
+      if (body.hasta) q = q.lte('at', `${String(body.hasta).slice(0, 10)}T23:59:59.999Z`)
+      if (esConsultas) {
+        if (body.nivel === 'alto') q = q.or('operable.eq.false,categoria.eq.alto')
+        // Ojo con los NULL: neq('operable', false) deja fuera las filas sin
+        // valor, por eso va con or(... is.null ...).
+        else if (body.nivel === 'medio') q = q.eq('categoria', 'medio').or('operable.is.null,operable.eq.true')
+        else if (body.nivel === 'bajo') q = q.eq('estado', 'lista').or('categoria.is.null,categoria.not.in.(alto,medio)').or('operable.is.null,operable.eq.true')
+        if (body.riesgo) q = q.contains('riesgos', [String(body.riesgo)])
+        if (body.estado) q = q.eq('estado', String(body.estado))
+        if (body.origen === 'sarblock') q = q.eq('de_cache', false)
+        else if (body.origen === 'padron') q = q.eq('de_cache', true)
+      } else if (body.resultado) q = q.eq('resultado', String(body.resultado))
+      const { data, count, error } = await q.order('at', { ascending: false }).range((pagina - 1) * porPagina, pagina * porPagina - 1)
+      if (error) return { ok: false, motivo: 'No se pudo leer el historial.' }
+      const filas = (data ?? []) as any[]
+      const ids = [...new Set(filas.map(f => f.user_id))]
+      const empresas: Record<string, string> = {}
+      if (ids.length) {
+        const { data: us } = await db.from('users').select('id, company_name, full_name, name, email, rdEmpresa:raw_data->>companyName').in('id', ids)
+        for (const u of (us ?? []) as any[]) empresas[u.id] = u.company_name || u.rdEmpresa || u.full_name || u.name || u.email || u.id
+      }
+      return { ok: true, total: count ?? 0, pagina, paginas: Math.max(1, Math.ceil((count ?? 0) / porPagina)),
+        filas: filas.map(f => esConsultas
+          ? { ...vista(f, cfg), cliente: f.user_id, empresa: empresas[f.user_id] ?? f.user_id }
+          : { id: f.id, at: f.at, por: f.por, tipoDocumento: f.tipo_documento, documento: f.documento, nombre: f.nombre, resultado: f.resultado, consultaId: f.consulta_id, cliente: f.user_id, empresa: empresas[f.user_id] ?? f.user_id }) }
+    }
+    if (accion === 'admin_risk_ver') {
+      const { data: r } = await db.from('risk_consultas').select('*').eq('id', String(body.consultaId ?? '')).maybeSingle()
+      if (!r) return { ok: false, motivo: 'No existe esa consulta.' }
+      await auditar('risk.admin_ver', { por: yo.userId, consultaId: (r as any).id, userId: (r as any).user_id, documento: (r as any).documento })
+      return { ok: true, consulta: vista(r, cfg, await empresaDe((r as any).user_id)) }
+    }
     return { ok: false, error: `Acción desconocida: ${accion}` }
   }
 

@@ -24,7 +24,7 @@ export const BTN2: React.CSSProperties = { height: 44, borderRadius: 10, fontSiz
 export const TARJETA: React.CSSProperties = { background: C.fondo, border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18 };
 export const pesos = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
 const num = (n: number) => Math.round(n).toLocaleString('es-CO');
-const hace = (d: string) => {
+export const hace = (d: string) => {
   const m = Math.round((Date.now() - Date.parse(d)) / 60000);
   if (m < 1) return 'ahora';
   if (m < 60) return `hace ${m} min`;
@@ -32,7 +32,7 @@ const hace = (d: string) => {
   return new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
-const ESTILOS = `
+export const ESTILOS = `
 @keyframes lr-giro { to { transform: rotate(360deg) } }
 @keyframes lr-entra { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
 @keyframes lr-panel { from { transform: translateX(24px); opacity: 0 } to { transform: none; opacity: 1 } }
@@ -53,8 +53,8 @@ const veredicto = (f: any, nombre: string): Tono => {
   if (f.categoria === 'sin_validar') return { t: 'Identidad sin validar', corto: 'Revisar', c: C.ambar, txt: 'No se pudo contrastar el documento con la fuente oficial.' };
   return { t: f.categoria === 'bajo' ? 'Riesgo bajo' : 'Sin hallazgos', corto: 'Bajo', c: C.verde, txt: `Se puede operar con ${nombre || 'esta persona'}.` };
 };
-const GRUPO: Record<string, { t: string; c: string }> = { alto: { t: 'Alto', c: C.rojo }, medio: { t: 'Medio', c: C.ambar }, bajo: { t: 'Bajo', c: C.verde } };
-const TIPOS: Record<string, string> = { sanciones: 'Listas restrictivas', judicial: 'Procesos judiciales', antecedentes: 'Antecedentes', pep: 'PEP', prensa: 'Prensa adversa', identidad: 'Identidad', ninguno: 'Sin hallazgos' };
+export const GRUPO: Record<string, { t: string; c: string }> = { alto: { t: 'Alto', c: C.rojo }, medio: { t: 'Medio', c: C.ambar }, bajo: { t: 'Bajo', c: C.verde } };
+export const TIPOS: Record<string, string> = { sanciones: 'Listas restrictivas', judicial: 'Procesos judiciales', antecedentes: 'Antecedentes', pep: 'PEP', prensa: 'Prensa adversa', identidad: 'Identidad', ninguno: 'Sin hallazgos' };
 // Vencimiento con color: verde, ámbar (≤30 días), rojo (≤7), gris (vencida).
 const VENCE: Record<string, { c: string; t: (d: number) => string }> = {
   vigente: { c: C.verde, t: d => `Vence en ${d} días` },
@@ -62,14 +62,14 @@ const VENCE: Record<string, { c: string; t: (d: number) => string }> = {
   critico: { c: C.rojo, t: d => d === 1 ? 'Vence mañana' : `Vence en ${d} días` },
   vencida: { c: C.tenue, t: () => 'Vencida' },
 };
-const Vence: React.FC<{ v: any }> = ({ v }) => {
+export const Vence: React.FC<{ v: any }> = ({ v }) => {
   if (!v) return null;
   const e = VENCE[v.estado] ?? VENCE.vigente;
   return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: e.c, border: `1px solid ${e.c === C.tenue ? 'rgba(255,255,255,0.14)' : e.c + '55'}`, borderRadius: 999, padding: '3px 9px', whiteSpace: 'nowrap' }}>
     <span style={{ width: 6, height: 6, borderRadius: '50%', background: e.c }} />{e.t(v.dias)}</span>;
 };
 
-const Punto: React.FC<{ c: string; tam?: number }> = ({ c, tam = 8 }) => <span style={{ width: tam, height: tam, borderRadius: '50%', background: c, display: 'inline-block', flexShrink: 0 }} />;
+export const Punto: React.FC<{ c: string; tam?: number }> = ({ c, tam = 8 }) => <span style={{ width: tam, height: tam, borderRadius: '50%', background: c, display: 'inline-block', flexShrink: 0 }} />;
 const Giro: React.FC<{ tam?: number }> = ({ tam = 14 }) => <span style={{ width: tam, height: tam, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.15)', borderTopColor: C.verde, display: 'inline-block', animation: 'lr-giro .8s linear infinite', flexShrink: 0 }} />;
 
 // Cifra que sube o baja animada (el saldo al recargar o consultar).
@@ -89,7 +89,7 @@ const Contador: React.FC<{ valor: number; style?: React.CSSProperties }> = ({ va
 };
 
 // ── Panel lateral ───────────────────────────────────────────────────────
-const Panel: React.FC<{ titulo: string; abierto: boolean; cerrar: () => void; children: React.ReactNode; ancho?: number }> = ({ titulo, abierto, cerrar, children, ancho = 520 }) => {
+export const Panel: React.FC<{ titulo: string; abierto: boolean; cerrar: () => void; children: React.ReactNode; ancho?: number }> = ({ titulo, abierto, cerrar, children, ancho = 520 }) => {
   useEffect(() => {
     if (!abierto) return;
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') cerrar(); };
