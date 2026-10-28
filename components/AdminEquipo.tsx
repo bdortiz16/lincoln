@@ -167,18 +167,24 @@ const ModalMiembro: React.FC<{
   const [paises, setPaises] = useState<string[]>(inicial?.paises ?? []);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // La cuenta existe pero es de cliente: se ofrece convertirla, a propósito.
+  const [ofrecerAdmin, setOfrecerAdmin] = useState(false);
 
   const alternar = (code: string) =>
     setPaises((l) => (l.includes(code) ? l.filter((x) => x !== code) : [...l, code]));
 
-  const guardar = async () => {
+  const guardar = async (hacerAdmin = false) => {
     setGuardando(true); setError(null);
-    const r = await pedirAdmin({ action: 'equipo_guardar', email, nombre, rol, paises }).catch(() => null);
+    const r = await pedirAdmin({ action: 'equipo_guardar', email, nombre, rol, paises, hacerAdmin }).catch(() => null);
     setGuardando(false);
     // El servidor distingue "no tiene cuenta" de "no es admin" y lo dice con
     // sus palabras. Mostrarlo tal cual evita el clásico "algo salió mal" que
     // deja a alguien probando de nuevo sin saber qué cambiar.
-    if (!r?.ok) { setError(r?.message ?? r?.error ?? 'No se pudo guardar.'); return; }
+    if (!r?.ok) {
+      setOfrecerAdmin(r?.error === 'sin_rol_admin');
+      setError(r?.message ?? r?.error ?? 'No se pudo guardar.');
+      return;
+    }
     onGuardado();
   };
 
@@ -194,8 +200,9 @@ const ModalMiembro: React.FC<{
 
         <div className="px-6 py-5 space-y-5 max-h-[70vh] overflow-y-auto">
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600 leading-relaxed">
-            Esto <b>no crea una cuenta</b>. La persona ya tiene que tener su cuenta en Lincoin
-            con rol de administrador; acá se define qué puede hacer con ella.
+            Esto <b>no crea una cuenta</b>. La persona ya tiene que estar registrada en Lincoin
+            con ese correo; si su cuenta es de cliente (sin saldo), acá se convierte en
+            administrador y se define qué puede hacer.
           </div>
 
           <div>
@@ -252,11 +259,17 @@ const ModalMiembro: React.FC<{
           )}
 
           {error && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+          {ofrecerAdmin && (
+            <button onClick={() => guardar(true)} disabled={guardando}
+              className="w-full bg-amber-50 border border-amber-300 text-amber-800 rounded-lg px-3 py-2 text-sm font-bold disabled:opacity-40">
+              Convertir {email} en administrador y guardar
+            </button>
+          )}
         </div>
 
         <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2">
           <button onClick={onCerrar} className="px-4 py-2 text-sm font-semibold text-slate-600">Cancelar</button>
-          <button onClick={guardar} disabled={guardando || !email}
+          <button onClick={() => guardar()} disabled={guardando || !email}
             className="bg-[#0C0E0D] text-white px-4 py-2 rounded-lg font-bold text-sm disabled:opacity-40">
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
