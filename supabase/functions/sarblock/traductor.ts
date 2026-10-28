@@ -14,15 +14,17 @@
 // en contra: solo corta una decisión explícita.
 // ════════════════════════════════════════════════════════
 
+import { compararNombres } from './nombres.ts';
+
 export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string; fuente: string };
 
 // Qué versión de la matriz decidió esta ficha. Si la matriz cambia, se sabe
 // con qué regla se juzgó cada caso.
-export const CRITERIO = 'lincoin-v1-2026-10-27';
+export const CRITERIO = 'lincoin-v2-2026-10-27';
 
 export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string };
 
-const PASIVA = (h: any) => String(h?.judicial?.partySide ?? '').toLowerCase() === 'pasiva';
+export const PASIVA = (h: any) => String(h?.judicial?.partySide ?? '').toLowerCase() === 'pasiva';
 const RAMA_GRAVE = (rama: string) => /penal|extinci/.test(rama);
 const ANTECEDENTES = new Set(['co_policia', 'co_procuraduria', 'co_contraloria']);
 const GRAVEDAD_ALTA = new Set(['EXTREMO', 'ALTO']);
@@ -96,6 +98,9 @@ export type Ficha = {
   nombreInscrito?: string;
   nombreReal?: string;
   nombreCoincide?: boolean;
+  // El mismo nombre escrito corto o con una letra distinta: no bloquea, y
+  // en pantalla se muestra el nombre completo del documento.
+  nombreIncompleto?: boolean;
   validado?: boolean;
   hallazgo?: boolean;
   categoria?: 'alto' | 'medio' | 'bajo' | 'ninguno' | 'sin_validar';
@@ -181,17 +186,31 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const fuentesConError = catalogo.filter(e => e?.status === 'UNAVAILABLE').map(e => String(e.label ?? e.code));
   const fuentesEnCurso = enCurso(check);
 
-  // Identidad: si el nombre declarado y el oficial se parecen poco, Sarblock
-  // marca posible suplantación. Para nosotros es "el nombre no corresponde",
-  // que pesa más que cualquier antecedente: no se sabe a quién se le paga.
-  const spoof = id?.spoofSuspected === true;
-  const nombreCoincide = id ? !spoof : undefined;
+  // ── Identidad: el documento manda ──────────────────────────────────────
+  // Sarblock marca "posible suplantación" por similitud de texto, y un nombre
+  // abreviado ("JEISY URREA" para "JEISSY TATIANA URREA RAMIREZ") le da una
+  // similitud baja. La decisión es nuestra, palabra por palabra
+  // (nombres.ts): el mismo nombre incompleto NO bloquea; otra persona sí.
+  const declarado = d.nombre || id?.declaredName || undefined;
+  const comparacion = id?.verifiedName ? compararNombres(declarado, id.verifiedName) : undefined;
+  const suplantacion = comparacion === 'distinto' || (comparacion === undefined && id?.spoofSuspected === true);
+  const nombreCoincide = comparacion ? comparacion !== 'distinto' : (id ? !suplantacion : undefined);
+  const nombreIncompleto = comparacion === 'incompleto' || undefined;
+  if (suplantacion) {
+    // Va como motivo para que se lea en el detalle, el modal y el PDF.
+    hallazgos.unshift({ nivel: 'alto', codigo: 'identidad', fuente: 'Identidad Colombia',
+      texto: `El nombre inscrito${declarado ? ` (${declarado})` : ''} no corresponde al documento${id?.verifiedName ? `: según la Registraduría es ${id.verifiedName}` : ''}.` });
+  }
 
-  const accion = String(s.action ?? '');
-  let categoria = CATEGORIA[String(s.riskLevel ?? '')] ?? undefined;
+  // Si lo único que Sarblock objetó fue la identidad y nosotros la
+  // aceptamos (nombre incompleto), su nivel y su "revisar" no aplican.
+  const soloIdentidad = /spoof/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0;
+  const ignorarSarblock = soloIdentidad && !suplantacion;
+  const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
+  let categoria = ignorarSarblock ? ('ninguno' as Ficha['categoria']) : (CATEGORIA[String(s.riskLevel ?? '')] ?? undefined);
   // La decisión explícita de Sarblock manda sobre su nivel: BLOCK es alto y
   // HOLD_FOR_REVIEW es al menos medio.
-  if (s.shouldBlock === true || accion === 'BLOCK') categoria = 'alto';
+  if (!ignorarSarblock && (s.shouldBlock === true || accion === 'BLOCK')) categoria = 'alto';
   else if (accion === 'HOLD_FOR_REVIEW' && (categoria === 'bajo' || categoria === 'ninguno' || !categoria)) categoria = 'medio';
   // Y la matriz de Lincoin sube el nivel si encontró algo más grave.
   if (altos > 0) categoria = 'alto';
@@ -200,10 +219,10 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   // los antecedentes: igual que el 'sin_validar' de TusDatos, no bloquea.
   if (id && id.validated === false && (categoria === 'ninguno' || categoria === 'bajo')) categoria = 'sin_validar';
 
-  const bloqueaSarblock = s.shouldBlock === true || accion === 'BLOCK';
-  const operable = !(bloqueaSarblock || spoof || altos > 0);
+  const bloqueaSarblock = !ignorarSarblock && (s.shouldBlock === true || accion === 'BLOCK');
+  const operable = !(bloqueaSarblock || suplantacion || altos > 0);
   const motivosTexto = (nivel: 'alto' | 'medio') => motivos.filter(m => m.nivel === nivel).map(m => m.texto);
-  const bloqueo = spoof
+  const bloqueo = suplantacion
     ? `El nombre inscrito no corresponde al documento.${id?.verifiedName ? ` Según la fuente oficial es ${id.verifiedName}.` : ''}`
     : altos > 0
       ? `Riesgo alto: ${motivosTexto('alto').join(' · ')}`
@@ -219,6 +238,7 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     nombre: id?.verifiedName || undefined,
     nombreReal: id?.verifiedName || undefined,
     nombreCoincide,
+    ...(nombreIncompleto ? { nombreIncompleto, nombreInscrito: declarado } : {}),
     validado: id ? id.validated === true : undefined,
     hallazgo: Number(s.matchedLists ?? coinciden.length) > 0,
     categoria,
@@ -264,3 +284,15 @@ export const releerFicha = (f: any, ahora = Date.now()) =>
 export const hayQueReintentar = (check: any) =>
   terminado(check) && Number(check?.summary?.unavailableLists ?? 0) > 0
   && (Array.isArray(check?.catalog) ? check.catalog : []).some((e: any) => e?.status === 'UNAVAILABLE' && e?.retryable === true);
+
+// Vuelve a juzgar una ficha de Sarblock con la matriz vigente, desde el
+// catálogo que ya se pagó (no llama a Sarblock). Sirve para el padrón, para
+// las fichas juzgadas con una versión anterior de la matriz y para comparar
+// el nombre que escribió OTRA cuenta contra el oficial.
+export function rejuzgar(f: any, d: { documento: string; tipoDocumento: string; nombre?: string }): Ficha | null {
+  const s = f?.sarblock;
+  if (!s?.catalog) return null;
+  const check = { id: s.checkId, status: 'COMPLETED', aggregateOutcome: s.aggregateOutcome, screeningRecordId: s.screeningRecordId,
+    catalogVersion: s.catalogVersion, summary: s.summary, identity: s.identity, catalog: s.catalog, completedAt: f.at };
+  return { ...traducir(check, d), ...(f.lanzadoAt ? { lanzadoAt: f.lanzadoAt } : {}) };
+}

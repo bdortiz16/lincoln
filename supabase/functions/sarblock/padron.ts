@@ -39,32 +39,23 @@ export function docPadron(doc: string, tipo?: string): string {
   return dvNit(d.slice(0, 9)) === Number(d[9]) ? d.slice(0, 9) : d;
 }
 
-// El nombre que escribió el cliente contra el oficial: sin tildes, sin
-// formas jurídicas ni conectores. Coincide si al menos el 60 % de las
-// palabras escritas están en el nombre oficial ("Juan Perez" ⊂ "JUAN PÉREZ
-// GÓMEZ" sí; "María Ospina" contra "JUAN PÉREZ" no).
-const RELLENO = new Set(['SAS', 'SA', 'SAC', 'LTDA', 'LTD', 'EU', 'BIC', 'CIA', 'INC', 'CORP', 'DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL', 'Y', 'EN']);
-const palabras = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
-  .replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(t => t.length > 1 && !RELLENO.has(t));
+import { compararNombres } from './nombres.ts';
+import { rejuzgar } from './traductor.ts';
+
+// ¿El nombre escrito es el del documento? (igual o el mismo incompleto)
 export function nombreCoincide(escrito: string | undefined, oficial: string | undefined): boolean | undefined {
-  const a = palabras(escrito), b = new Set(palabras(oficial));
-  if (!a.length || !b.size) return undefined;
-  return a.filter(t => b.has(t)).length / a.length >= 0.6;
+  const c = compararNombres(escrito, oficial);
+  return c === undefined ? undefined : c !== 'distinto';
 }
 
-// La ficha del padrón, ajustada a QUIEN pregunta ahora: su nombre escrito y
-// la comparación contra el oficial. Un nombre que no corresponde bloquea,
-// igual que una suplantación detectada por Sarblock.
+// La ficha del padrón, juzgada otra vez para QUIEN pregunta ahora: con su
+// nombre escrito contra el oficial y con la matriz vigente. Sale del
+// catálogo guardado, sin llamar a Sarblock.
 export function fichaParaCuenta(base: any, nombreEscrito?: string, extra: Record<string, unknown> = {}) {
-  const f = { ...base, ...extra };
-  if (!nombreEscrito) return f;
-  const coincide = nombreCoincide(nombreEscrito, f.nombreReal);
-  if (coincide === undefined) return { ...f, nombreInscrito: nombreEscrito };
-  if (coincide) return { ...f, nombreInscrito: nombreEscrito, nombreCoincide: true };
-  return {
-    ...f, nombreInscrito: nombreEscrito, nombreCoincide: false, operable: false,
-    bloqueo: `El nombre inscrito no corresponde al documento.${f.nombreReal ? ` Según la fuente oficial es ${f.nombreReal}.` : ''}`,
-  };
+  const documento = String(extra.documento ?? base?.documento ?? '');
+  const tipoDocumento = String(extra.tipoDocumento ?? base?.tipoDocumento ?? 'CC');
+  const r = rejuzgar(base, { documento, tipoDocumento, nombre: nombreEscrito || undefined }) ?? base;
+  return { ...r, ...extra, ...(nombreEscrito ? { nombreInscrito: r.nombreInscrito ?? nombreEscrito } : {}) };
 }
 
 // ── Base de datos ───────────────────────────────────────────────────────

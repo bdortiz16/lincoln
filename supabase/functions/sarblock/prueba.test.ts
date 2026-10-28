@@ -65,7 +65,7 @@ Deno.test('OFAC: alto, no operable, con el motivo', () => {
   assert(f.bloqueo?.startsWith('Riesgo alto: Coincidencia en lista restrictiva: OFAC SDN'));
   assertEquals(f.altos, 1);
   assertEquals(f.hallazgos?.[0], { nivel: 'alto', codigo: 'lista_restrictiva', texto: 'Coincidencia en lista restrictiva: OFAC SDN (Ada Lovelace)', fuente: 'OFAC SDN' });
-  assertEquals(f.criterio, 'lincoin-v1-2026-10-27');
+  assertEquals(f.criterio, 'lincoin-v2-2026-10-27');
 });
 
 Deno.test('PEP: medio, sigue operable (la revisión la decide la config)', () => {
@@ -400,4 +400,100 @@ Deno.test('padrón: reutilizar con otro nombre que no corresponde bloquea', () =
   assertEquals(malo.nombreCoincide, false);
   assert(String(malo.bloqueo).includes('ADA LOVELACE'));
   assertEquals(fichaParaCuenta(base, undefined).operable, true);   // sin nombre no se juzga
+});
+
+// ── Nombre incompleto: el documento manda ──────────────────────────────
+import { compararNombres } from './nombres.ts';
+
+Deno.test('nombres: igual, incompleto o distinto', () => {
+  assertEquals(compararNombres('Ada Lovelace', 'ADA LOVELACE'), 'igual');
+  assertEquals(compararNombres('JEISY URREA', 'JEISSY TATIANA URREA RAMIREZ'), 'incompleto');     // caso real
+  assertEquals(compararNombres('Kevin Fernando Echeverri R', 'KEVIN FERNANDO ECHEVERRI RODRIGUEZ'), 'incompleto');
+  assertEquals(compararNombres('Juan Perez', 'JUAN PÉREZ GÓMEZ'), 'incompleto');
+  assertEquals(compararNombres('María Ospina', 'JUAN PÉREZ GÓMEZ'), 'distinto');
+  assertEquals(compararNombres('Juan Perez Lopez', 'JUAN PÉREZ GÓMEZ'), 'distinto');             // una palabra ajena
+  assertEquals(compararNombres('Juan', 'JUAN PÉREZ GÓMEZ'), 'distinto');                         // una sola palabra no alcanza
+  assertEquals(compararNombres('', 'JUAN'), undefined);
+});
+
+Deno.test('caso real CC 43689692: Sarblock dice suplantación, es el mismo nombre incompleto → no bloquea', () => {
+  const f = traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: 'identity_spoof_suspected', hasPepResult: false, matchedLists: 0, unavailableLists: 0 },
+    identity: { validated: true, declaredName: 'JEISY URREA', verifiedName: 'JEISSY TATIANA URREA RAMIREZ', spoofSuspected: true, nameSimilarity: 0.39 },
+  }), { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
+  assertEquals(f.nombreCoincide, true);
+  assertEquals(f.nombreIncompleto, true);
+  assertEquals(f.nombreReal, 'JEISSY TATIANA URREA RAMIREZ');
+  assertEquals(f.operable, true);
+  assertEquals(f.categoria, 'ninguno');
+  assertEquals(f.bloqueo, undefined);
+});
+
+Deno.test('otra persona: bloquea y el motivo queda escrito como hallazgo', () => {
+  const f = traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: 'identity_spoof_suspected', matchedLists: 0, unavailableLists: 0 },
+    identity: { validated: true, declaredName: 'MARIA OSPINA', verifiedName: 'JEISSY TATIANA URREA RAMIREZ', spoofSuspected: true, nameSimilarity: 0.1 },
+  }), { documento: '43689692', tipoDocumento: 'CC', nombre: 'MARIA OSPINA' });
+  assertEquals(f.nombreCoincide, false);
+  assertEquals(f.operable, false);
+  assertEquals(f.hallazgos?.[0].codigo, 'identidad');
+  assert(f.hallazgos?.[0].texto.includes('JEISSY TATIANA URREA RAMIREZ'));
+});
+
+Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a Sarblock', async () => {
+  const { rejuzgar } = await import('./traductor.ts');
+  const vieja = { ...traducir(check({ identity: { validated: true, declaredName: 'JEISY URREA', verifiedName: 'JEISSY TATIANA URREA RAMIREZ', spoofSuspected: true, nameSimilarity: 0.39 },
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: 'identity_spoof_suspected', matchedLists: 0, unavailableLists: 0 } }), { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' }),
+    criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
+  const nueva = rejuzgar(vieja, { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
+  assertEquals(nueva?.operable, true);
+  assertEquals(nueva?.criterio, 'lincoin-v2-2026-10-27');
+});
+
+// ── Lincoin Risk prepago ────────────────────────────────────────────────
+import * as Risk from './risk.ts';
+
+Deno.test('risk: precio con IVA y compra mínima desde la configuración', () => {
+  const cfg = Risk.normalizarConfig(Risk.CONFIG_INICIAL, { precioPorConsulta: 3500, ivaPct: 19, minimoCompra: 300 });
+  assertEquals(Risk.cotizar(cfg, 300), { cantidad: 300, precioUnit: 3500, subtotal: 1_050_000, iva: 199_500, total: 1_249_500 });
+  assertEquals(Risk.validarCompra(cfg, 299, 'COP_ACH', 9e9), 'La compra mínima es de 300 consultas.');
+  assertEquals(Risk.validarCompra(cfg, 300, 'COP_ACH', 1_249_499), 'No tienes saldo suficiente en ese bolsillo.');
+  assertEquals(Risk.validarCompra(cfg, 300, 'COP_ACH', 1_249_500), null);
+  // Coincenda queda listo pero apagado.
+  assertEquals(Risk.validarCompra(cfg, 300, 'COP_COINCENDA', 9e9), 'Ese medio de pago no está disponible.');
+  // Sin precio definido no se vende.
+  assertEquals(Risk.validarCompra(Risk.CONFIG_INICIAL, 300, 'COP_ACH', 9e9), 'El precio de las consultas todavía no está definido.');
+});
+
+Deno.test('risk: la configuración ignora valores inválidos', () => {
+  const c = Risk.normalizarConfig(Risk.CONFIG_INICIAL, { precioPorConsulta: -5, minimoCompra: 0, vigenciaDias: '', ivaPct: 'x', bolsillos: { COP_BREB: { activo: false }, OTRO: { activo: true } } });
+  assertEquals(c.precioPorConsulta, 0);
+  assertEquals(c.minimoCompra, 1);
+  assertEquals(c.vigenciaDias, 90);
+  assertEquals(c.ivaPct, 0);
+  assertEquals(c.bolsillos.COP_BREB.activo, false);
+  assertEquals('OTRO' in c.bolsillos, false);
+});
+
+Deno.test('risk: vencimiento a color', () => {
+  const cfg = Risk.CONFIG_INICIAL;
+  const hace = (d: number) => new Date(Date.now() - d * 86400_000).toISOString();
+  assertEquals(Risk.vencimiento(cfg, hace(0)).estado, 'vigente');
+  assertEquals(Risk.vencimiento(cfg, hace(65)).estado, 'pronto');
+  assertEquals(Risk.vencimiento(cfg, hace(85)).estado, 'critico');
+  assertEquals(Risk.vencimiento(cfg, hace(91)).estado, 'vencida');
+});
+
+Deno.test('risk: tipos de riesgo y despachos solo de parte pasiva', () => {
+  const ficha = {
+    hallazgos: [{ regla: 'rama_penal_pasiva' }, { regla: 'pep' }],
+    sarblock: { catalog: [{ code: 'co_rama_judicial', hits: [
+      { judicial: { partySide: 'PASIVA', court: 'JUZGADO 003 DE FAMILIA DE MANIZALES' } },
+      { judicial: { partySide: 'ACTIVA', court: 'JUZGADO 001 PROMISCUO MUNICIPAL DE FILADELFIA' } },
+    ] }] },
+  };
+  assertEquals(Risk.tiposDeRiesgo(ficha).sort(), ['judicial', 'pep']);
+  assertEquals(Risk.tiposDeRiesgo({ hallazgos: [] }), ['ninguno']);
+  assertEquals(Risk.tiposDeRiesgo({ hallazgos: [], nombreCoincide: false }), ['identidad']);
+  assertEquals(Risk.despachos(ficha), ['JUZGADO 003 DE FAMILIA DE MANIZALES']);
 });
