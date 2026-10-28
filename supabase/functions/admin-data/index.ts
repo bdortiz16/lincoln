@@ -5,6 +5,7 @@ import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
+import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permite, visibleEnPais, ROLES_VALIDOS, type Rol, type Acceso } from '../_shared/equipo.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
 // un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
@@ -1209,67 +1210,10 @@ async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string;
   }
 }
 
-// Qué rol y qué países tiene esta cuenta.
-//
-// EL DUEÑO NO SE PUEDE QUEDAR AFUERA. Si no hay fila en admin_miembros y el
-// correo es el de ADMIN_EMAIL, se trata como dueño con todos los países. Sin
-// esa salvedad, el día que se aplique la migración nadie —ni el dueño— podría
-// entrar a crear la primera fila: el arranque dependería de algo que todavía
-// no existe.
-//
-// Una cuenta admin SIN fila y que NO es ADMIN_EMAIL queda en 'lectura' sin
-// países: ve el panel, no ve datos. Es el lado seguro del error — alguien
-// avisa que no ve nada, nadie avisa que ve de más.
-async function accesoDe(userId: string, email: string): Promise<Acceso> {
-  const TODO: Acceso = { rol: 'dueno', paises: [], todosLosPaises: true }
-
-  const { data: m, error } = await db.from('admin_miembros')
-    .select('rol, paises, activo').eq('id', userId).maybeSingle()
-
-  // La tabla todavía no existe (migración sin correr). Antes de esta función
-  // TODO admin veía todo; una migración que no se corrió no puede quitarle el
-  // acceso a nadie. CUALQUIER OTRO error de la base es distinto: antes también
-  // daba dueño, y un tropiezo de la base convertía a cualquier admin en dueño.
-  // Ahí se cae al lado seguro (solo lectura) hasta que la base responda.
-  const tablaAusente = (e: any) => /does not exist|42P01|PGRST205|schema cache|could not find the table/i.test(`${e?.code ?? ''} ${e?.message ?? ''}`)
-  const SOLO_LECTURA: Acceso = { rol: 'lectura', paises: [], todosLosPaises: false }
-  if (error) return tablaAusente(error) ? TODO : SOLO_LECTURA
-
-  if (m && (m as any).activo) {
-    const rol = String((m as any).rol) as Rol
-    return {
-      rol,
-      paises: Array.isArray((m as any).paises) ? (m as any).paises.map(String) : [],
-      todosLosPaises: rol === 'dueno',
-    }
-  }
-
-  // Fila desactivada: el acceso se le quitó a propósito. Sin respaldo — si lo
-  // hubiera, desactivar a alguien no haría nada.
-  if (m && !(m as any).activo) return { rol: 'lectura', paises: [], todosLosPaises: false, desactivado: true }
-
-  // ── Sin fila. Acá se decide si la restricción está ENCENDIDA ──
-  //
-  // La regla: los permisos por miembro empiezan a regir cuando alguien
-  // empieza a usarlos. Si la tabla está vacía, el sistema todavía no está
-  // configurado y todos siguen como antes; en cuanto hay aunque sea un
-  // miembro cargado, una cuenta sin fila es alguien a quien no se le dio
-  // acceso todavía.
-  //
-  // Lo aprendí rompiéndolo: la primera versión dejaba en 'lectura' a
-  // cualquiera sin fila, y como el respaldo dependía de un secreto
-  // (ADMIN_EMAIL) cuyo valor por defecto es de OTRO dominio, el panel se
-  // quedó sin datos apenas se desplegó la función. Un permiso nuevo no puede
-  // depender de que alguien haya configurado algo que todavía no sabía que
-  // existía.
-  const { count, error: errCount } = await db.from('admin_miembros')
-    .select('id', { count: 'exact', head: true })
-  if (errCount) return tablaAusente(errCount) ? TODO : SOLO_LECTURA
-  if (!count) return TODO
-
-  const esDuenoPorCorreo = !!ADMIN_EMAIL && email.toLowerCase() === String(ADMIN_EMAIL).toLowerCase()
-  if (esDuenoPorCorreo) return TODO
-  return { rol: 'lectura', paises: [], todosLosPaises: false }
+// Qué rol y qué países tiene esta cuenta. La regla vive en _shared/equipo.ts
+// (la usan también gasfree, mouv-proxy, finity-proxy y las de cumplimiento).
+function accesoDe(userId: string, email: string): Promise<Acceso> {
+  return accesoEquipo(db, userId, email, ADMIN_EMAIL)
 }
 
 // ════════════════════════════════════════════════════════
@@ -1281,33 +1225,13 @@ async function accesoDe(userId: string, email: string): Promise<Acceso> {
 //  tiene que significarlo acá.
 // ════════════════════════════════════════════════════════
 
-type Rol = 'dueno' | 'operaciones' | 'cumplimiento' | 'lectura'
-
-interface Acceso {
-  rol: Rol
-  paises: string[]      // códigos ISO; para 'dueno' no se miran
-  todosLosPaises: boolean
-  // Miembro dado de baja: no opera NADA, ni consulta. Antes quedaba en
-  // 'lectura' y seguía viendo clientes y saldos.
-  desactivado?: boolean
-}
-
-// Los permisos son gruesos a propósito: cuatro roles que alguien puede
-// explicar en una frase valen más que veinte casillas que nadie revisa.
-const PERMISOS_POR_ROL: Record<Rol, Set<string>> = {
-  dueno:        new Set(['*']),
-  operaciones:  new Set(['clientes.ver', 'clientes.editar', 'plata.ver', 'plata.mover']),
-  cumplimiento: new Set(['clientes.ver', 'plata.ver', 'cumplimiento']),
-  lectura:      new Set(['clientes.ver', 'plata.ver']),
-}
-
 // Qué permiso exige cada acción.
 //
 // LO QUE NO ESTÁ EN ESTA TABLA SE NIEGA a todo el que no sea dueño. Es
 // deliberado: cuando se agregue una acción nueva y alguien se olvide de
 // anotarla acá, lo que pasa es que no funciona para el equipo — no que quede
 // abierta. Entre romperse y filtrarse, que se rompa.
-const PERMISO_DE_ACCION: Record<string, string> = {
+const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Saber quién soy: lo tienen los cuatro roles. Sin esto, un miembro no
   // podría ni enterarse de qué países le tocan, y el panel quedaría en blanco
   // sin decir por qué.
@@ -1322,7 +1246,7 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   // Consultar
   admin_logins: 'plata.ver',
   command_map: 'plata.ver',
-  get_tx_proof: 'plata.ver',
+  get_tx_proof: ['plata.ver', 'tesoreria'],
   conciliar_movimientos: 'plata.mover',
   otc_ajuste_get: 'plata.ver',
   limites_envio_get: 'plata.ver',
@@ -1350,11 +1274,15 @@ const PERMISO_DE_ACCION: Record<string, string> = {
   email_incidencias: 'clientes.ver',
   email_incidencia_resuelta: 'clientes.editar',
 
-  // Mover plata
-  admin_credit_balance: 'plata.mover',
+  // Mover plata — Tesorería: cargue manual en las billeteras COP y los
+  // traslados Saldo Lincoin → ACH. El cargue cripto (USDT) queda en
+  // 'plata.mover': no es parte de lo que se le delega a Tesorería.
+  admin_credit_balance: 'tesoreria',
   admin_credit_crypto: 'plata.mover',
-  approve_rail_move: 'plata.mover',
-  reject_rail_move: 'plata.mover',
+  approve_rail_move: 'tesoreria',
+  // "Registrar movimiento" en una cuenta de tesorería (no la config entera).
+  tesoreria_movimiento: 'tesoreria',
+  reject_rail_move: 'tesoreria',
   otc_ajuste_set: 'plata.mover',
   // Los topes de envío son un control de cumplimiento: los ajusta Compliance
   // (el dueño también, como todo).
@@ -1408,25 +1336,6 @@ function paisDeMovimiento(tx: Record<string, unknown>): string | null {
   if (riel.includes('BREB') || riel.includes('ACH') || riel.includes('COP')) return 'CO'
   if (riel.includes('PIX') || riel.includes('BRL')) return 'BR'
   return null
-}
-
-// LO QUE NO TIENE PAÍS NO DESAPARECE.
-//
-// Hoy muchos clientes vienen sin país y el panel asumía "Colombia" cuando
-// faltaba. Si filtrara a secas, esas personas se volverían invisibles en
-// TODAS las vistas y nadie notaría que existen: ni para atenderlas, ni para
-// detectar algo raro en su cuenta. Un dato que falta no es permiso para
-// esconder a alguien.
-//
-// Así que lo no atribuible se muestra a cualquiera que tenga al menos un
-// país, marcado aparte, para que alguien lo asigne. El día que opere más de
-// un país de verdad, esto se endurece — y cuando eso pase habrá que decidirlo
-// a propósito, no descubrirlo.
-function visibleEnPais(paisDelDato: string | null, acceso: Acceso): boolean {
-  if (acceso.todosLosPaises) return true
-  if (!acceso.paises.length) return false
-  if (!paisDelDato) return true
-  return acceso.paises.includes(paisDelDato)
 }
 
 // Auditoría DURABLE de acciones sensibles del admin (borrado de cuentas, etc.).
@@ -3003,13 +2912,21 @@ Deno.serve(async (req: Request) => {
         const accion = String(body.action ?? '')
         const permisos = PERMISOS_POR_ROL[acceso.rol] ?? new Set<string>()
         const necesita = PERMISO_DE_ACCION[accion]
-        const puede = permisos.has('*') || (!!necesita && permisos.has(necesita))
+        const puede = permite(permisos, necesita)
         if (!puede) {
           await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: auth.userId })
           return json({
             error: 'Tu rol no permite esta operación.',
             permisoDenegado: true, rol: acceso.rol,
           }, 403)
+        }
+        // Los cargues COP y los traslados a ACH son plata de Colombia: quien
+        // no tiene Colombia asignado no los opera, aunque su rol sí lo permita.
+        // Sin esto, el país solo filtraba lo que se VE, no lo que se MUEVE.
+        const COP_DE_COLOMBIA = new Set(['admin_credit_balance', 'approve_rail_move', 'reject_rail_move'])
+        if (COP_DE_COLOMBIA.has(accion) && !visibleEnPais('CO', acceso)) {
+          await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: auth.userId, motivo: 'pais' })
+          return json({ error: 'Colombia no está entre tus países asignados.', permisoDenegado: true, rol: acceso.rol }, 403)
         }
       }
 
@@ -3020,7 +2937,7 @@ Deno.serve(async (req: Request) => {
       const SENSITIVE_ADMIN_ACTIONS = new Set([
         // Mueven dinero
         'admin_credit_balance', 'admin_credit_crypto',
-        'approve_rail_move', 'reject_rail_move',
+        'approve_rail_move', 'reject_rail_move', 'tesoreria_movimiento',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -3139,7 +3056,7 @@ Deno.serve(async (req: Request) => {
         const email = String(body.email ?? '').toLowerCase().trim()
         const rol = String(body.rol ?? '') as Rol
         if (!email) return json({ ok: false, error: 'falta_email' }, 400)
-        if (!['dueno', 'operaciones', 'cumplimiento', 'lectura'].includes(rol)) {
+        if (!ROLES_VALIDOS.includes(rol)) {
           return json({ ok: false, error: 'rol_invalido' }, 400)
         }
         const paises = Array.isArray(body.paises) ? body.paises.map((p: unknown) => String(p).toUpperCase()) : []
@@ -3155,6 +3072,23 @@ Deno.serve(async (req: Request) => {
         }
         if ((cuenta as any).role !== 'admin') {
           return json({ ok: false, error: 'sin_rol_admin', message: 'Esa cuenta existe pero no tiene rol de administrador. Cambiáselo primero en Clientes.' }, 400)
+        }
+
+        // Quien guarda es el dueño (equipo_* no figura en PERMISO_DE_ACCION).
+        // Si todavía no tiene su propia fila, se le crea como dueño ANTES de
+        // agregar a nadie: en cuanto la tabla deja de estar vacía, una cuenta
+        // sin fila deja de ser dueña en la base (admin_equipo_permite) y el
+        // dueño se quedaría sin poder aprobar en Tesorería.
+        if (auth.userId && String(auth.userId) !== String((cuenta as any).id)) {
+          const { data: yo } = await db.from('admin_miembros').select('id').eq('id', auth.userId).maybeSingle()
+          if (!yo) {
+            const { error: eYo } = await db.from('admin_miembros').insert({
+              id: auth.userId, email: String(auth.email ?? '').toLowerCase(), rol: 'dueno', paises: [],
+              activo: true, creado_por: auth.userId,
+            })
+            if (eYo) return json({ ok: false, error: eYo.message }, 500)
+            await auditAdmin(req, 'equipo.dueno_registrado', { email: auth.email })
+          }
         }
 
         const fila = {
@@ -4513,6 +4447,52 @@ Deno.serve(async (req: Request) => {
         })
         await auditAdmin(req, 'admin.ajuste_cripto', { userId: body.userId, currency: cur, delta, nuevoSaldo: newBal, opId: opId || null })
         return json({ success: true, newBalance: newBal })
+      }
+
+      // Tesorería — "Registrar movimiento": sube o baja el saldo de UNA cuenta
+      // de tesorería (settings.treasuryAccounts).
+      //
+      // Antes el panel reescribía la configuración ENTERA con save_config, que
+      // es solo del dueño: a cualquiera del equipo le fallaba, y darle
+      // save_config para esto le habría abierto también tasas, países y
+      // límites. Esta acción toca solo el saldo de esa cuenta, y deja en la
+      // auditoría quién, cuánto, por qué y el saldo antes y después.
+      // body: { action:'tesoreria_movimiento', accountId?, currency, type:'credit'|'debit', amount, reason, refId? }
+      // Sin accountId se usa la primera cuenta de esa moneda (lo que hacía el
+      // panel al aprobar un cargue o un retiro).
+      if (body.action === 'tesoreria_movimiento') {
+        const tipo = String(body.type ?? '')
+        const monto = Number(body.amount)
+        const motivo = String(body.reason ?? '').trim().slice(0, 300)
+        if (tipo !== 'credit' && tipo !== 'debit') return json({ ok: false, error: 'Tipo inválido' }, 400)
+        if (!isFinite(monto) || monto <= 0) return json({ ok: false, error: 'Monto inválido' }, 400)
+        if (!motivo) return json({ ok: false, error: 'Falta el motivo' }, 400)
+
+        const { data: cfg, error: eCfg } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        if (eCfg) return errorGenerico('tesoreria_movimiento', eCfg)
+        const settings = ((cfg as any)?.settings ?? {}) as Record<string, any>
+        const cuentas: any[] = Array.isArray(settings.treasuryAccounts) ? settings.treasuryAccounts : []
+        const cuenta = body.accountId != null
+          ? cuentas.find(a => String(a?.id) === String(body.accountId))
+          : cuentas.find(a => String(a?.currency) === String(body.currency ?? ''))
+        if (!cuenta) return json({ ok: false, error: 'No hay una cuenta de tesorería para eso.' }, 404)
+
+        const acc = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        if (!visibleEnPais(PAIS_POR_MONEDA[String(cuenta.currency ?? '').toUpperCase()] ?? null, acc)) {
+          return json({ ok: false, error: 'Esa cuenta es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+        }
+
+        const antes = Number(cuenta.amount ?? 0)
+        const despues = tipo === 'credit' ? antes + monto : antes - monto
+        const nuevas = cuentas.map(a => a === cuenta ? { ...a, amount: despues } : a)
+        const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, treasuryAccounts: nuevas } }).eq('id', 1)
+        if (eUp) return errorGenerico('tesoreria_movimiento', eUp)
+
+        await auditAdmin(req, 'tesoreria.movimiento', {
+          cuenta: cuenta.id, banco: cuenta.bank ?? null, moneda: cuenta.currency, tipo, monto, motivo,
+          refId: body.refId ?? null, antes, despues,
+        })
+        return json({ ok: true, antes, despues })
       }
 
       // Cargues — acreditar (o descontar) manualmente el saldo FIAT de un

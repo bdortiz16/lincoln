@@ -146,7 +146,7 @@ interface DatabaseContextType {
   updateAdminUser: (id: string, d: Partial<AdminUser>) => void;
   deleteAdminUser: (id: string) => void;
   deleteUser: (id: string) => Promise<{ error?: string }>;
-  registerInternalMovement: (amt: number, curr: string, type: 'credit' | 'debit', reason: string, accId: string, refId?: string, proof?: string) => Promise<void>;
+  registerInternalMovement: (amt: number, curr: string, type: 'credit' | 'debit', reason: string, accId: string, refId?: string, proof?: string) => Promise<{ ok: boolean; error?: string }>;
   updateBankList: (country: string, banks: BankDetail[]) => void;
   restoreDatabase: (json: any) => boolean;
   sendPasswordReset: (email: string, captchaToken?: string) => Promise<void>;
@@ -2675,15 +2675,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       lsUpsertUser({ ...user, balances: newBal });
     }
     await updateTxStatus(tx.id, { status: 'Completado' });
-    // Auto-credit the matching treasury account so the balance stays in sync
-    const currentTreasury: TreasuryAccount[] = config.treasuryAccounts || [];
-    const matchingAcc = currentTreasury.find((a: any) => a.currency === tx.currency);
-    if (matchingAcc) {
-      const updatedTreasury = currentTreasury.map((a: any) =>
-        a.id === matchingAcc.id ? { ...a, amount: (a.amount || 0) + tx.amount } : a
-      );
-      updateConfig({ treasuryAccounts: updatedTreasury });
-    }
+    // La cuenta de tesorería de esa moneda sube con el cargue.
+    moverCuentaTesoreria(tx, 'credit');
     fetchData();
     return { ok: true };
   };
@@ -2699,12 +2692,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeWithdrawal = async (id: any): Promise<ResTesoreria> => {
     const tx = transactions.find(t => String(t.id) === String(id));
-    const sincronizarTesoreria = () => {
-      if (!tx) return;
-      const t0: TreasuryAccount[] = config.treasuryAccounts || [];
-      const acc = t0.find((a: any) => a.currency === tx.currency);
-      if (acc) updateConfig({ treasuryAccounts: t0.map((a: any) => a.id === acc.id ? { ...a, amount: (a.amount || 0) - tx.amount } : a) });
-    };
+    const sincronizarTesoreria = () => moverCuentaTesoreria(tx, 'debit');
     if (isSupabaseConfigured) {
       const r = await llamarTesoreria('admin_complete_withdrawal', { p_tx_id: id });
       if (r) { if (r.ok) sincronizarTesoreria(); return r; }
@@ -2805,13 +2793,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   const updateAdminUser = (id: string, d: any) => updateConfig({ adminTeam: getAdminTeam().map((x: any) => x.id === id ? { ...x, ...d } : x) });
   const deleteAdminUser = (id: string) => updateConfig({ adminTeam: getAdminTeam().filter((x: any) => x.id !== id) });
 
-  const registerInternalMovement = async (amt: number, curr: string, type: 'credit' | 'debit', reason: string, accId: string) => {
-    const newTreasury = treasuryAccounts.map((a: any) => {
-      if (a.id === accId) return { ...a, amount: type === 'credit' ? a.amount + amt : a.amount - amt };
-      return a;
-    });
-    updateConfig({ treasuryAccounts: newTreasury });
-    await saveTx({ userId: 'admin', userName: 'Tesorería', type: 'internal', initials: 'TS', title: reason, date: new Date().toLocaleDateString(), amount: amt, currency: curr, status: 'Completado' });
+  // Lo guarda el servidor (tesoreria_movimiento), que toca solo esa cuenta y
+  // lo deja en la auditoría. Antes reescribía la configuración entera
+  // (save_config, solo del dueño): a cualquiera del equipo le fallaba en
+  // silencio, y la fila 'internal' con userId 'admin' no entraba a la base.
+  const registerInternalMovement = async (amt: number, curr: string, type: 'credit' | 'debit', reason: string, accId: string, refId?: string): Promise<ResTesoreria> => {
+    const d = await postAdminData({ action: 'tesoreria_movimiento', accountId: accId, currency: curr, type, amount: amt, reason, refId: refId || null });
+    return d?.ok ? { ok: true } : { ok: false, error: d?.error || 'No se pudo registrar el movimiento.' };
+  };
+  // Al aprobar un cargue o un retiro, la cuenta de tesorería de esa moneda
+  // se mueve igual. Si no hay cuenta registrada, no hay nada que mover.
+  const moverCuentaTesoreria = (tx: any, type: 'credit' | 'debit') => {
+    if (!tx || !(config.treasuryAccounts || []).some((a: any) => a.currency === tx.currency)) return;
+    void postAdminData({ action: 'tesoreria_movimiento', currency: tx.currency, type, amount: Number(tx.amount), reason: type === 'credit' ? 'Cargue aprobado' : 'Retiro completado', refId: tx.id });
   };
 
   const updateBankList = (country: string, banks: BankDetail[]) => {

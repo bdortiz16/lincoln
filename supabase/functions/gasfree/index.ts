@@ -27,6 +27,8 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { reclamarCandado } from '../_shared/candado.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
+import { requireMfaSession } from '../_shared/admin-auth.ts'
 import { ethers } from 'https://esm.sh/ethers@6.13.5'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -267,7 +269,13 @@ const err = (msg: string, status = 500) => new Response(JSON.stringify({ error: 
 // podía llamar 'send'/'sweep_all' y mover fondos reales de la
 // recaudadora. Acciones admin exigen rol admin; las acciones "propias"
 // del cliente exigen que su JWT coincida con el userId que pide.
-async function callerIsAdmin(req: Request): Promise<boolean> {
+//
+// Ser admin ya no alcanza: además se mira el rol del miembro en el equipo
+// (_shared/equipo.ts). Antes un miembro de "Solo lectura" o de Tesorería
+// podía barrer billeteras o acreditar COP llamando acá directo, aunque
+// admin-data le negara lo mismo. `necesita` es el permiso que pide la acción;
+// sin permiso anotado, solo el dueño.
+async function callerIsAdmin(req: Request, necesita?: string | string[], pais?: string): Promise<boolean> {
   const authHeader = req.headers.get('Authorization') ?? ''
   // Solo JWT real de Supabase con role='admin'. Se eliminó el "AdminBypass
   // <password>" (secreto compartido que se filtraba en el bundle del frontend).
@@ -277,9 +285,35 @@ async function callerIsAdmin(req: Request): Promise<boolean> {
     const { data: { user } } = await db.auth.getUser(jwt)
     if (!user) return false
     const { data: profile } = await db.from('users').select('role').eq('id', user.id).single()
-    return profile?.role === 'admin'
+    if (profile?.role !== 'admin') return false
+    const g = await equipoPermite(db, user.id, necesita, { email: user.email ?? null, ...(pais ? { pais } : {}) })
+    return g.ok
   } catch { return false }
 }
+
+// Qué permiso del equipo pide cada acción de admin. Lo que no figura queda
+// para el dueño: credenciales de proveedores, frases semilla y la
+// configuración de la tesorería.
+const PERMISO_GASFREE: Record<string, string | string[]> = {
+  // Consultar
+  status: 'plata.ver', user_address: 'plata.ver', find_address: 'plata.ver',
+  locate: 'plata.ver', trace: 'plata.ver', wallet_log: 'plata.ver',
+  audit_address: 'plata.ver', audit_indexes: 'plata.ver', get_providers: 'plata.ver',
+  get_treasury_config: 'plata.ver', get_treasury_movements: 'plata.ver',
+  treasury_txid: 'plata.ver', recaudadora_current: 'plata.ver', recaudadora_list: 'plata.ver',
+  user_by_email: 'plata.ver', wallet_forensics: 'plata.ver',
+  // Mover fondos on-chain
+  send: 'plata.mover', sweep_user: 'plata.mover', sweep_all: 'plata.mover',
+  sweep_address: 'plata.mover', sweep_index: 'plata.mover', pin_address: 'plata.mover',
+  reset_user_index: 'plata.mover', recaudadora_pin: 'plata.mover',
+  recaudadora_rotate: 'plata.mover', recaudadora_consolidate: 'plata.mover',
+  // Resolver una conversión trabada acredita COP: es de Tesorería (Billeteras).
+  admin_settle_convert: ['plata.mover', 'tesoreria'],
+}
+// Estas, además, exigen que la sesión haya pasado el segundo factor.
+const GASFREE_MUEVE = new Set(['send', 'sweep_user', 'sweep_all', 'sweep_address', 'sweep_index',
+  'pin_address', 'reset_user_index', 'recaudadora_pin', 'recaudadora_rotate', 'recaudadora_consolidate',
+  'admin_settle_convert', 'set_providers', 'set_treasury_config'])
 async function callerUserId(req: Request): Promise<string | null> {
   const authHeader = req.headers.get('Authorization') ?? ''
   const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
@@ -290,10 +324,12 @@ async function callerUserId(req: Request): Promise<string | null> {
   } catch { return null }
 }
 // true si el que llama es admin O es el propio userId de la acción
+// Un admin operando la billetera de OTRO cliente mueve plata ajena: pide
+// 'plata.mover' en el equipo.
 async function verifySelfOrAdmin(req: Request, userId: string): Promise<boolean> {
-  if (await callerIsAdmin(req)) return true
   const uid = await callerUserId(req)
-  return uid === userId
+  if (uid && uid === userId) return true
+  return await callerIsAdmin(req, 'plata.mover')
 }
 
 // ── Utilidades de dirección TRON ──────────────────────────
@@ -3311,7 +3347,7 @@ Deno.serve(async (req) => {
       if (!userId || !body.txId || !body.copAmount) return err('Faltan userId, txId o copAmount', 400)
       // El crédito lo hace el autopiloto del servidor con su propio cálculo.
       // Desde afuera solo un admin (el COP lo decidía el navegador).
-      if (!(await callerIsAdmin(req))) return err('No autorizado', 401)
+      if (!(await callerIsAdmin(req, 'plata.mover'))) return err('No autorizado', 401)
       return ok(await myConvertCredit(userId, String(body.txId), Number(body.copAmount), {
         // El convertidor Finity manda la tasa como finityRate; el nombre
         // histórico interno es mouvRate — se aceptan ambos.
@@ -3325,7 +3361,7 @@ Deno.serve(async (req) => {
       // Pagaba desde la TESORERÍA contra el saldo USD mientras el USDT seguía
       // en la wallet del cliente (gasto doble). La app ya no lo usa: queda
       // solo para un admin.
-      if (!(await callerIsAdmin(req))) return err('No autorizado', 401)
+      if (!(await callerIsAdmin(req, 'plata.mover'))) return err('No autorizado', 401)
       const mfaErr = await require2FA(userId, body.otp)   // retiro on-chain → 2FA server-side
       if (mfaErr) return err(mfaErr, 403)
       return ok(await myWalletWithdrawal(userId, String(toAddress), Number(amount)))
@@ -3337,14 +3373,22 @@ Deno.serve(async (req) => {
     if (action === 'kick_pending_converts') {
       const authHeader = req.headers.get('Authorization') ?? ''
       const isService = !!SERVICE_KEY && igualSeguro(authHeader, `Bearer ${SERVICE_KEY}`)
-      if (!isService && !(await callerIsAdmin(req))) return err('No autorizado', 401)
+      if (!isService && !(await callerIsAdmin(req, ['plata.mover', 'tesoreria']))) return err('No autorizado', 401)
       return ok(await kickPendingConverts())
     }
 
     // ── Acciones ADMIN (mueven fondos de la recaudadora o de cualquier
     // cliente) — exigen rol admin explícito. ──
-    const isAdmin = await callerIsAdmin(req)
-    if (!isAdmin) return err('No autorizado — se requiere sesión de administrador', 401)
+    // Resolver una conversión trabada acredita COP: exige tener Colombia.
+    const isAdmin = await callerIsAdmin(req, PERMISO_GASFREE[action], action === 'admin_settle_convert' ? 'CO' : undefined)
+    if (!isAdmin) return err('No autorizado — tu rol no permite esta operación', 401)
+    // Lo que mueve fondos exige la sesión con segundo factor, como admin-data.
+    // Consultar una conversión trabada (preview / list) no mueve nada.
+    const soloConsulta = action === 'admin_settle_convert' && (body.preview === true || body.list === true)
+    if (GASFREE_MUEVE.has(action) && !soloConsulta) {
+      const mfa = await requireMfaSession(db, req, await callerUserId(req))
+      if (mfa) return err(mfa, 403)
+    }
 
     if (action === 'status') return ok(await status())
     if (action === 'user_address') {

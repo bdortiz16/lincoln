@@ -24,6 +24,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -214,7 +215,11 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   const { data } = await db.auth.getUser(jwt)
   if (data?.user) {
     const { data: prof } = await db.from('users').select('role').eq('id', data.user.id).maybeSingle()
-    return { ok: true, userId: data.user.id, admin: String((prof as any)?.role ?? '') === 'admin' }
+    // Ser admin no alcanza: leer o mandar avisos de OTROS clientes pide poder
+    // editar clientes en el equipo (_shared/equipo.ts).
+    const admin = String((prof as any)?.role ?? '') === 'admin'
+      && (await equipoPermite(db, data.user.id, 'clientes.editar', { email: data.user.email ?? null })).ok
+    return { ok: true, userId: data.user.id, admin }
   }
   return { ok: false }
 }
