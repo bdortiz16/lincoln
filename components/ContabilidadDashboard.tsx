@@ -34,7 +34,7 @@ import { FacturacionConfig } from './FacturacionConfig';
 import { AccesoContadorModal } from './AccesoContadorModal';
 import { EstadoCuentaHoja } from './EstadoCuentaHoja';
 import {
-  ENTRA, MESES, MESES_L, asientosDe, claveTercero, cuenta, datosTercero, efecto, esDeTercero, estadoDeCuenta, fichaDeUsuario, fmtMon, terceros,
+  ENTRA, MESES, MESES_L, SALE, asientosDe, claveTercero, cuenta, datosTercero, efecto, esDeTercero, estadoDeCuenta, fichaDeUsuario, fmtMon, terceros,
   type Asiento, type Dir, type FichaEmpresa, type Moneda, type Tercero,
 } from './libroContable';
 
@@ -74,25 +74,107 @@ type Props = {
 // se escribe. El cálculo de acá es el mismo que hace el servidor.
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const fmtCop2 = (n: number) => n.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () => void; onEmitida: () => void }> = ({ asiento, cfg, onCerrar, onEmitida }) => {
-  const monto = Number(asiento.monto) || 0;
-  const [pct, setPct] = useState<string>(cfg?.utilidad_pct != null && cfg.utilidad_pct !== '' ? String(cfg.utilidad_pct) : '');
-  const [q, setQ] = useState('');
-  const [buscando, setBuscando] = useState(false);
-  const [resultados, setResultados] = useState<any[] | null>(null);
-  const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
-  // Ordenantes de Configuración (modelo Comisión) para elegir con un clic. Si
-  // el envío ya trae el suyo (se eligió al enviar), viene puesto.
+const CAMPO: React.CSSProperties = { fontFamily: FONT, width: '100%', fontSize: 13.5, color: C.text, background: '#121413', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 11px', outline: 'none' };
+const pctDeCfg = (cfg: any) => (cfg?.utilidad_pct != null && cfg.utilidad_pct !== '' ? String(cfg.utilidad_pct) : '');
+
+type ClienteFactura = { identification: string; nombre: string; esEmpresa: boolean };
+// El ordenante del envío (el cliente por cuenta de quien se pagó), si se
+// eligió al enviar: la factura de la comisión va a su nombre.
+const ordenanteDe = (tx: any): ClienteFactura | null => {
+  const o: any = tx?.recipient?.ordenante ?? tx?.raw_data?.recipient?.ordenante ?? tx?.ordenante ?? null;
+  const doc = String(o?.doc ?? '').replace(/\D/g, '');
+  return doc ? { identification: doc, nombre: String(o?.nombre ?? ''), esEmpresa: String(o?.docTipo ?? '') === 'NIT' } : null;
+};
+
+// A quién se le factura: un ordenante de Configuración con un clic, uno
+// buscado en el Siigo del usuario, o uno escrito (se crea en Siigo al
+// emitir). Lo usan la factura de un movimiento y la emisión en lote.
+const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?: string; onCambio: (c: ClienteFactura | null) => void }> = ({ inicial = null, notaInicial, onCambio }) => {
   const { currentUser } = useDatabase();
   const cuU: any = currentUser ?? {};
   const listaOrd = Array.isArray(cuU?.raw_data?.ordenantes) ? cuU.raw_data.ordenantes : Array.isArray(cuU?.ordenantes) ? cuU.ordenantes : [];
   const ordenantes: { id: string; nombre: string; docTipo: string; doc: string }[] = listaOrd.filter((o: any) => o && o.doc);
-  const txAny: any = asiento.tx ?? {};
-  const ordTx: any = txAny?.recipient?.ordenante ?? txAny?.raw_data?.recipient?.ordenante ?? txAny?.ordenante ?? null;
-  const [cliente, setCliente] = useState<{ identification: string; nombre: string; esEmpresa: boolean } | null>(
-    ordTx?.doc ? { identification: String(ordTx.doc).replace(/\D/g, ''), nombre: String(ordTx.nombre ?? ''), esEmpresa: String(ordTx.docTipo ?? '') === 'NIT' } : null,
-  );
+  const [cliente, setCliente] = useState<ClienteFactura | null>(inicial);
+  const [q, setQ] = useState('');
+  const [buscando, setBuscando] = useState(false);
+  const [resultados, setResultados] = useState<any[] | null>(null);
+  const [errorBusqueda, setErrorBusqueda] = useState<string | null>(null);
   const [manual, setManual] = useState<{ doc: string; nombre: string; esEmpresa: boolean }>({ doc: '', nombre: '', esEmpresa: true });
+  const docManual = manual.doc.replace(/\D/g, '');
+  const elegido: ClienteFactura | null = cliente ?? (docManual.length >= 5 ? { identification: docManual, nombre: manual.nombre.trim(), esEmpresa: manual.esEmpresa } : null);
+  const clave = elegido ? `${elegido.identification}|${elegido.nombre}|${elegido.esEmpresa}` : '';
+  useEffect(() => { onCambio(elegido); }, [clave]); // eslint-disable-line react-hooks/exhaustive-deps
+  const buscar = async () => {
+    if (!q.trim()) return;
+    setBuscando(true); setErrorBusqueda(null); setResultados(null);
+    const r = await llamarFuncion('facturacion', { action: 'buscar_clientes', q: q.trim() }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setBuscando(false);
+    if (!r?.ok) { setErrorBusqueda(r?.error ?? 'No se pudo buscar.'); return; }
+    setResultados(r.clientes ?? []);
+  };
+  return (
+    <>
+      {inicial && cliente && notaInicial && inicial.identification === cliente.identification && (
+        <p style={{ fontSize: 11.5, color: C.entra, margin: '0 0 6px' }}>{notaInicial}</p>
+      )}
+      {!cliente && ordenantes.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <p style={{ fontSize: 11.5, color: C.sub, margin: '0 0 6px' }}>Tus ordenantes:</p>
+          <div className="flex flex-wrap" style={{ gap: 6 }}>
+            {ordenantes.map(o => (
+              <button key={o.id ?? o.doc} onClick={() => setCliente({ identification: String(o.doc).replace(/\D/g, ''), nombre: o.nombre, esEmpresa: o.docTipo === 'NIT' })}
+                style={{ fontFamily: FONT, textAlign: 'left', fontSize: 12.5, color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '7px 11px', cursor: 'pointer' }}>
+                <b>{o.nombre}</b> <span style={{ color: C.sub }}>· {o.docTipo} {o.doc}</span>
+              </button>
+            ))}
+          </div>
+          <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 0' }}>O busca otro cliente:</p>
+        </div>
+      )}
+      {cliente ? (
+        <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
+          <span style={{ fontSize: 13, color: C.text }}><b>{cliente.nombre || cliente.identification}</b> · {cliente.esEmpresa ? 'NIT' : 'CC'} {cliente.identification}</span>
+          <button onClick={() => setCliente(null)} style={{ fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cambiar</button>
+        </div>
+      ) : (
+        <>
+          <div className="flex" style={{ gap: 8 }}>
+            <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') buscar(); }} placeholder="Buscar en tu Siigo por NIT o nombre" style={CAMPO} />
+            <button onClick={buscar} disabled={buscando || !q.trim()} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '0 14px', cursor: 'pointer', opacity: buscando || !q.trim() ? 0.5 : 1, whiteSpace: 'nowrap' }}>{buscando ? '…' : 'Buscar'}</button>
+          </div>
+          {errorBusqueda && <p style={{ fontSize: 11.5, color: '#F87171', margin: '6px 0 0' }}>{errorBusqueda}</p>}
+          {resultados && (
+            <div style={{ marginTop: 8, maxHeight: 180, overflowY: 'auto', border: `1px solid ${C.borde}`, borderRadius: 10 }}>
+              {resultados.length === 0 && <p style={{ fontSize: 12, color: C.tenue, margin: 0, padding: '10px 12px' }}>Siigo no devolvió clientes con eso. Escribilo abajo y se crea en Siigo al emitir.</p>}
+              {resultados.map((c: any, i: number) => (
+                <button key={`${c.identification}-${i}`} onClick={() => setCliente({ identification: c.identification, nombre: c.nombre, esEmpresa: !!c.esEmpresa })}
+                  className="w-full text-left hover:bg-white/[0.05] transition-colors" style={{ display: 'block', padding: '9px 12px', borderTop: i ? `1px solid ${C.borde}` : 'none', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT }}>
+                  <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{c.nombre || c.comercial || c.identification}</span>
+                  <span style={{ fontSize: 11.5, color: C.sub, marginLeft: 8 }}>{c.esEmpresa ? 'NIT' : 'CC'} {c.identification}{c.activo === false ? ' · inactivo' : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 6px' }}>O escribilo (si no existe en Siigo, se crea al emitir):</p>
+          <div className="grid grid-cols-3 gap-2">
+            <input value={manual.doc} onChange={e => setManual(m => ({ ...m, doc: e.target.value }))} placeholder={manual.esEmpresa ? 'NIT (9 dígitos)' : 'Cédula'} inputMode="numeric" style={CAMPO} />
+            <input value={manual.nombre} onChange={e => setManual(m => ({ ...m, nombre: e.target.value }))} placeholder={manual.esEmpresa ? 'Razón social' : 'Nombre completo'} style={{ ...CAMPO, gridColumn: 'span 2' }} />
+          </div>
+          <label className="flex items-center" style={{ gap: 8, marginTop: 8, fontSize: 12.5, color: C.sub, cursor: 'pointer' }}>
+            <input type="checkbox" checked={manual.esEmpresa} onChange={e => setManual(m => ({ ...m, esEmpresa: e.target.checked }))} style={{ accentColor: C.entra }} /> Es empresa (NIT)
+          </label>
+        </>
+      )}
+    </>
+  );
+};
+
+const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () => void; onEmitida: () => void }> = ({ asiento, cfg, onCerrar, onEmitida }) => {
+  const monto = Number(asiento.monto) || 0;
+  const [pct, setPct] = useState<string>(pctDeCfg(cfg));
+  // Si el envío ya trae su ordenante (se eligió al enviar), viene puesto.
+  const ordTx = useMemo(() => ordenanteDe(asiento.tx), [asiento.tx]);
+  const [elegido, setElegido] = useState<ClienteFactura | null>(ordTx);
   const [emitiendo, setEmitiendo] = useState(false);
   const [resultado, setResultado] = useState<{ ok: boolean; texto: string } | null>(null);
   // El IVA del ítem de comisión, tal como está en Siigo (o el elegido en Configuración).
@@ -117,15 +199,6 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   const terceros = mandato ? r2(monto) : 0;
   const total = r2(terceros + base + ivaV);
   const faltaItem = !item || (mandato && !itemTerceros);
-  const elegido = cliente ?? (manual.doc.replace(/\D/g, '').length >= 5 ? { identification: manual.doc.replace(/\D/g, ''), nombre: manual.nombre.trim(), esEmpresa: manual.esEmpresa } : null);
-  const buscar = async () => {
-    if (!q.trim()) return;
-    setBuscando(true); setErrorBusqueda(null); setResultados(null);
-    const r = await llamarFuncion('facturacion', { action: 'buscar_clientes', q: q.trim() }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
-    setBuscando(false);
-    if (!r?.ok) { setErrorBusqueda(r?.error ?? 'No se pudo buscar.'); return; }
-    setResultados(r.clientes ?? []);
-  };
   const emitir = async () => {
     if (!elegido || !(p > 0) || faltaItem) return;
     setEmitiendo(true); setResultado(null);
@@ -135,7 +208,6 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
     setResultado({ ok: true, texto: `Factura ${r.numero ?? ''} emitida por ${fmtCop2(Number(r.total ?? total))} COP.${r.aviso ? ` ${r.aviso}` : ''}` });
     setTimeout(onEmitida, 900);
   };
-  const campo: React.CSSProperties = { fontFamily: FONT, width: '100%', fontSize: 13.5, color: C.text, background: '#121413', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 11px', outline: 'none' };
   const fila = (l: string, v: string, fuerte = false) => (
     <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: `1px solid ${C.borde}` }}>
       <span style={{ fontSize: 12.5, color: fuerte ? C.text : C.sub, fontWeight: fuerte ? 800 : 400 }}>{l}</span>
@@ -154,61 +226,11 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
         </div>
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
-        {ordTx?.doc && cliente && String(ordTx.doc).replace(/\D/g, '') === cliente.identification && (
-          <p style={{ fontSize: 11.5, color: C.entra, margin: '0 0 6px' }}>Ordenante elegido al hacer el envío.</p>
-        )}
-        {!cliente && ordenantes.length > 0 && (
-          <div style={{ marginBottom: 10 }}>
-            <p style={{ fontSize: 11.5, color: C.sub, margin: '0 0 6px' }}>Tus ordenantes:</p>
-            <div className="flex flex-wrap" style={{ gap: 6 }}>
-              {ordenantes.map(o => (
-                <button key={o.id ?? o.doc} onClick={() => setCliente({ identification: String(o.doc).replace(/\D/g, ''), nombre: o.nombre, esEmpresa: o.docTipo === 'NIT' })}
-                  style={{ fontFamily: FONT, textAlign: 'left', fontSize: 12.5, color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '7px 11px', cursor: 'pointer' }}>
-                  <b>{o.nombre}</b> <span style={{ color: C.sub }}>· {o.docTipo} {o.doc}</span>
-                </button>
-              ))}
-            </div>
-            <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 0' }}>O busca otro cliente:</p>
-          </div>
-        )}
-        {cliente ? (
-          <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
-            <span style={{ fontSize: 13, color: C.text }}><b>{cliente.nombre || cliente.identification}</b> · {cliente.esEmpresa ? 'NIT' : 'CC'} {cliente.identification}</span>
-            <button onClick={() => setCliente(null)} style={{ fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cambiar</button>
-          </div>
-        ) : (
-          <>
-            <div className="flex" style={{ gap: 8 }}>
-              <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') buscar(); }} placeholder="Buscar en tu Siigo por NIT o nombre" style={campo} />
-              <button onClick={buscar} disabled={buscando || !q.trim()} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '0 14px', cursor: 'pointer', opacity: buscando || !q.trim() ? 0.5 : 1, whiteSpace: 'nowrap' }}>{buscando ? '…' : 'Buscar'}</button>
-            </div>
-            {errorBusqueda && <p style={{ fontSize: 11.5, color: '#F87171', margin: '6px 0 0' }}>{errorBusqueda}</p>}
-            {resultados && (
-              <div style={{ marginTop: 8, maxHeight: 180, overflowY: 'auto', border: `1px solid ${C.borde}`, borderRadius: 10 }}>
-                {resultados.length === 0 && <p style={{ fontSize: 12, color: C.tenue, margin: 0, padding: '10px 12px' }}>Siigo no devolvió clientes con eso. Escribilo abajo y se crea en Siigo al emitir.</p>}
-                {resultados.map((c: any, i: number) => (
-                  <button key={`${c.identification}-${i}`} onClick={() => setCliente({ identification: c.identification, nombre: c.nombre, esEmpresa: !!c.esEmpresa })}
-                    className="w-full text-left hover:bg-white/[0.05] transition-colors" style={{ display: 'block', padding: '9px 12px', borderTop: i ? `1px solid ${C.borde}` : 'none', background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: FONT }}>
-                    <span style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{c.nombre || c.comercial || c.identification}</span>
-                    <span style={{ fontSize: 11.5, color: C.sub, marginLeft: 8 }}>{c.esEmpresa ? 'NIT' : 'CC'} {c.identification}{c.activo === false ? ' · inactivo' : ''}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 6px' }}>O escribilo (si no existe en Siigo, se crea al emitir):</p>
-            <div className="grid grid-cols-3 gap-2">
-              <input value={manual.doc} onChange={e => setManual(m => ({ ...m, doc: e.target.value }))} placeholder={manual.esEmpresa ? 'NIT (9 dígitos)' : 'Cédula'} inputMode="numeric" style={campo} />
-              <input value={manual.nombre} onChange={e => setManual(m => ({ ...m, nombre: e.target.value }))} placeholder={manual.esEmpresa ? 'Razón social' : 'Nombre completo'} style={{ ...campo, gridColumn: 'span 2' }} />
-            </div>
-            <label className="flex items-center" style={{ gap: 8, marginTop: 8, fontSize: 12.5, color: C.sub, cursor: 'pointer' }}>
-              <input type="checkbox" checked={manual.esEmpresa} onChange={e => setManual(m => ({ ...m, esEmpresa: e.target.checked }))} style={{ accentColor: C.entra }} /> Es empresa (NIT)
-            </label>
-          </>
-        )}
+        <SelectorCliente inicial={ordTx} notaInicial="Ordenante elegido al hacer el envío." onCambio={setElegido} />
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE {asiento.dir === 'in' ? 'EL DEPÓSITO' : 'EL MOVIMIENTO'}, IVA INCLUIDO)</p>
         <div className="flex items-center" style={{ gap: 10 }}>
-          <input type="number" min={0} max={100} step={0.01} value={pct} onChange={e => setPct(e.target.value)} placeholder="0,6" inputMode="decimal" style={{ ...campo, width: 120 }} />
+          <input type="number" min={0} max={100} step={0.01} value={pct} onChange={e => setPct(e.target.value)} placeholder="0,6" inputMode="decimal" style={{ ...CAMPO, width: 120 }} />
           <span style={{ fontSize: 12, color: C.sub }}>{cfg?.utilidad_pct ? `Configurado: ${cfg.utilidad_pct} %` : 'Ponelo en Configuración para no escribirlo cada vez'}</span>
         </div>
         {!item && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0' }}>Falta elegir en Configuración el ítem de comisión (con IVA). Sin eso no se puede emitir.</p>}
@@ -230,6 +252,242 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
             style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: emitiendo || !elegido || !(p > 0) || faltaItem ? 0.45 : 1 }}>
             {emitiendo ? 'Emitiendo en Siigo…' : `Emitir factura por ${fmtCop2(total)}`}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Emisión en lote ─────────────────────────────────────────────────
+// Las facturas de los movimientos que quedaron sin ella, una por una y en
+// orden, no en paralelo: Siigo toma como duplicada una factura igual a otra
+// de segundos antes (mismo cliente y valor), y el candado de cada
+// comprobante en el servidor ya impide emitir dos veces la misma. Cada envío
+// va a nombre de su ordenante; los que no lo tienen, al cliente que se elija
+// acá. Una anulada se vuelve a emitir como desde el detalle: al mismo
+// cliente y con el mismo porcentaje que la anulada.
+type ModoLote = 'reemitir' | 'comision' | 'directo';
+type ItemLote = { a: Asiento; txId: string; modo: ModoLote; ordenante: ClienteFactura | null };
+type EstadoLote = { estado: 'emitiendo' | 'ok' | 'error' | 'reintento' | 'otro'; texto?: string; a?: string };
+// Si Siigo la toma como duplicada, se reintenta al final de la cola, con
+// espera: lo acepta pasado un rato.
+const ESPERA_DUPLICADO_MS = 90000;
+const REINTENTOS_LOTE = 2;
+
+const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: string; onCerrar: () => void; onTerminado: () => void }> = ({ items, cfg, periodoTxt, onCerrar, onTerminado }) => {
+  const [marcados, setMarcados] = useState<Set<string>>(() => new Set(items.map(i => i.txId)));
+  const [pct, setPct] = useState<string>(pctDeCfg(cfg));
+  const [cliente, setCliente] = useState<ClienteFactura | null>(null);
+  const [estados, setEstados] = useState<Record<string, EstadoLote>>({});
+  const [corriendo, setCorriendo] = useState(false);
+  const [terminado, setTerminado] = useState(false);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const [progreso, setProgreso] = useState<{ n: number; total: number }>({ n: 0, total: 0 });
+  const detener = useRef(false);
+  const p = Number(String(pct).replace(',', '.')) || 0;
+  const mandato = String(cfg?.modelo ?? '') === 'comision';
+  const yaSalio = (i: ItemLote) => estados[i.txId]?.estado === 'ok';
+  // Lo marcado que falta emitir: en una segunda vuelta (tras corregir el
+  // cliente o el porcentaje) no se repiten las que ya salieron.
+  const porEmitir = items.filter(i => marcados.has(i.txId) && !yaSalio(i));
+  const nComision = porEmitir.filter(i => i.modo === 'comision').length;
+  const sinOrdenante = porEmitir.filter(i => i.modo === 'comision' && !i.ordenante).length;
+  const nReemitir = porEmitir.filter(i => i.modo === 'reemitir').length;
+  const faltaItem = nComision > 0 && (!cfg?.item_comision || (mandato && !cfg?.item_terceros));
+  const listo = porEmitir.length > 0 && (sinOrdenante === 0 || !!cliente) && (nComision === 0 || p > 0) && !faltaItem;
+  // Lo que se va a facturar (solo lo calculable acá: las de comisión).
+  const comisionDe = (i: ItemLote) => r2((Number(i.a.monto) || 0) * p / 100);
+  const totalDe = (i: ItemLote) => r2((mandato ? Number(i.a.monto) || 0 : 0) + comisionDe(i));
+  const sumaComision = porEmitir.filter(i => i.modo === 'comision').reduce((s, i) => s + comisionDe(i), 0);
+  const sumaTotal = porEmitir.filter(i => i.modo === 'comision').reduce((s, i) => s + totalDe(i), 0);
+  const resultados = Object.values(estados) as EstadoLote[];
+  const bien = resultados.filter(e => e.estado === 'ok').length;
+  const mal = resultados.filter(e => e.estado === 'error').length;
+
+  // Cerrar la pestaña a mitad corta la cola (lo ya emitido queda emitido).
+  useEffect(() => {
+    if (!corriendo) return;
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [corriendo]);
+
+  const emitirUno = (i: ItemLote): Promise<any> => {
+    if (i.modo === 'comision') {
+      const c = i.ordenante ?? cliente!;
+      return llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: i.txId, clienteIdentification: c.identification, clienteNombre: c.nombre, clienteEsEmpresa: c.esEmpresa, comisionPct: p }, 130000);
+    }
+    return llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: i.txId }, 130000);
+  };
+  const dormir = async (ms: number) => {
+    const fin = Date.now() + ms;
+    while (Date.now() < fin && !detener.current) await new Promise(r => setTimeout(r, Math.min(1000, fin - Date.now())));
+  };
+  const correr = async () => {
+    if (!listo || corriendo) return;
+    detener.current = false;
+    setCorriendo(true); setTerminado(false); setAviso(null);
+    const cola = porEmitir.map(i => ({ i, intentos: 0, noAntes: 0 }));
+    // Las que fallaron antes vuelven a la cola: su error viejo se borra.
+    setEstados(s => Object.fromEntries((Object.entries(s) as [string, EstadoLote][]).filter(([, v]) => v.estado === 'ok')));
+    let n = 0;
+    setProgreso({ n: 0, total: cola.length });
+    while (cola.length && !detener.current) {
+      const k = cola.findIndex(x => x.noAntes <= Date.now());
+      if (k < 0) {
+        const espera = Math.min(...cola.map(x => x.noAntes)) - Date.now();
+        setAviso(`Esperando ${Math.ceil(espera / 1000)} s para reintentar las que Siigo tomó como duplicadas…`);
+        await dormir(espera);
+        setAviso(null);
+        continue;
+      }
+      const [x] = cola.splice(k, 1);
+      setEstados(s => ({ ...s, [x.i.txId]: { estado: 'emitiendo' } }));
+      const r: any = await emitirUno(x.i).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+      let nuevo: EstadoLote;
+      // A quién se le facturó de verdad: el cliente elegido puede cambiar
+      // antes de una segunda vuelta.
+      const usado = x.i.modo === 'comision' ? (x.i.ordenante ?? cliente) : null;
+      if (r?.ok && (r.estado === 'emitida' || r.numero)) nuevo = { estado: 'ok', texto: String(r.numero ?? 'emitida'), ...(usado ? { a: usado.nombre || usado.identification } : {}) };
+      else if (r?.ok) nuevo = { estado: 'otro', texto: r.estado === 'omitida' ? 'no aplica' : String(r.estado ?? 'sin cambio') };
+      else if (r?.reintento && x.intentos < REINTENTOS_LOTE) {
+        cola.push({ ...x, intentos: x.intentos + 1, noAntes: Date.now() + ESPERA_DUPLICADO_MS });
+        nuevo = { estado: 'reintento', texto: 'Siigo la tomó como duplicada; se reintenta en un rato' };
+      } else nuevo = { estado: 'error', texto: String(r?.error ?? 'No se pudo emitir.') };
+      if (nuevo.estado !== 'reintento') { n += 1; setProgreso(pr => ({ ...pr, n })); }
+      setEstados(s => ({ ...s, [x.i.txId]: nuevo }));
+    }
+    // Detenido: lo que quedó en la cola no se intentó (o esperaba reintento).
+    if (cola.length) {
+      setEstados(s => { const m = { ...s }; for (const x of cola) m[x.i.txId] = { estado: 'otro', texto: 'sin emitir' }; return m; });
+      setAviso(`Detenido. Quedaron ${cola.length} sin emitir.`);
+    } else setAviso(null);
+    setCorriendo(false); setTerminado(true);
+    onTerminado();
+  };
+
+  const alternar = (txId: string) => setMarcados(m => { const n = new Set(m); if (n.has(txId)) n.delete(txId); else n.add(txId); return n; });
+  const todos = marcados.size === items.length;
+  const aNombreDe = (i: ItemLote) => estados[i.txId]?.a ? `a ${estados[i.txId].a}${i.ordenante ? ' (ordenante)' : ''}`
+    : i.modo === 'reemitir' ? 'al mismo cliente de la anulada'
+    : i.modo === 'directo' ? 'según Configuración'
+    : i.ordenante ? `a ${i.ordenante.nombre || i.ordenante.identification} (ordenante)`
+    : cliente ? `a ${cliente.nombre || cliente.identification}` : 'al cliente que elijas';
+  const colorEstado = (e?: EstadoLote) => !e ? C.tenue : e.estado === 'ok' ? C.entra : e.estado === 'error' ? '#F87171' : e.estado === 'reintento' ? '#F59E0B' : C.sub;
+  // Corto, a la derecha; el detalle del error o de la espera va debajo.
+  const rotEstado = (e: EstadoLote) => e.estado === 'emitiendo' ? 'emitiendo…' : e.estado === 'ok' ? (e.texto ?? 'emitida') : e.estado === 'error' ? 'error' : e.estado === 'reintento' ? 'en espera' : (e.texto ?? '');
+  const bloqueado = corriendo || terminado;
+
+  return (
+    <div className="fixed inset-0 z-[110] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => { if (!corriendo) onCerrar(); }}>
+      <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 680, maxHeight: '92vh', overflowY: 'auto', background: '#0C0E0D', border: `1px solid rgba(255,255,255,0.12)`, borderRadius: 18, fontFamily: FONT, padding: '20px 22px' }}>
+        <div className="flex items-start justify-between" style={{ gap: 12 }}>
+          <div>
+            <p style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: 0 }}>Emitir facturas en lote</p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0' }}>{items.length} movimiento{items.length === 1 ? '' : 's'} sin factura · {periodoTxt}</p>
+          </div>
+          <button onClick={() => { if (!corriendo) onCerrar(); }} disabled={corriendo} aria-label="Cerrar" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.borde}`, background: 'transparent', color: C.sub, fontSize: 16, cursor: corriendo ? 'not-allowed' : 'pointer', opacity: corriendo ? 0.4 : 1 }}>×</button>
+        </div>
+
+        {nComision > 0 && !bloqueado && (
+          <>
+            {sinOrdenante > 0 && (
+              <>
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>
+                  {nComision - sinOrdenante > 0 ? `${nComision - sinOrdenante} van a nombre del ordenante elegido al enviar. ` : ''}
+                  {sinOrdenante === 1 ? 'Uno no tiene ordenante: elige a quién se le factura.' : `${sinOrdenante} no tienen ordenante: elige a quién se les factura.`}
+                </p>
+                <SelectorCliente onCambio={setCliente} />
+              </>
+            )}
+            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE CADA MOVIMIENTO, IVA INCLUIDO)</p>
+            <div className="flex items-center" style={{ gap: 10 }}>
+              <input type="number" min={0} max={100} step={0.01} value={pct} onChange={e => setPct(e.target.value)} placeholder="0,6" inputMode="decimal" style={{ ...CAMPO, width: 120 }} />
+              <span style={{ fontSize: 12, color: C.sub }}>{cfg?.utilidad_pct ? `Configurado: ${cfg.utilidad_pct} %` : 'Ponelo en Configuración para no escribirlo cada vez'}</span>
+            </div>
+            {faltaItem && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0' }}>Faltan en Configuración el ítem de comisión{mandato ? ' y el de ingresos recibidos para terceros' : ''}. Sin eso no se puede emitir.</p>}
+          </>
+        )}
+
+        <div className="flex items-center justify-between" style={{ margin: '18px 0 6px', gap: 10 }}>
+          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>MOVIMIENTOS · {marcados.size} DE {items.length}</p>
+          {!bloqueado && <button onClick={() => setMarcados(todos ? new Set() : new Set(items.map(i => i.txId)))} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>{todos ? 'Quitar todos' : 'Marcar todos'}</button>}
+        </div>
+        <div style={{ border: `1px solid ${C.borde}`, borderRadius: 10, maxHeight: 300, overflowY: 'auto' }}>
+          {items.map((i, k) => {
+            const e = estados[i.txId];
+            const on = marcados.has(i.txId);
+            const fija = bloqueado || yaSalio(i);
+            return (
+              <label key={i.txId} className="flex items-start" style={{ gap: 10, padding: '9px 12px', borderTop: k ? `1px solid ${C.borde}` : 'none', cursor: fija ? 'default' : 'pointer', opacity: on ? 1 : 0.45 }}>
+                <input type="checkbox" checked={on} disabled={fija} onChange={() => alternar(i.txId)} style={{ accentColor: C.entra, marginTop: 3 }} />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="flex items-baseline justify-between" style={{ gap: 10 }}>
+                    <span style={{ fontSize: 12.5, color: C.text, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.a.tipo} · {i.a.contraparte || '—'}</span>
+                    <span style={{ fontSize: 12.5, color: C.text, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{fmtMon(i.a.monto, i.a.moneda)}</span>
+                  </span>
+                  <span className="flex items-baseline justify-between" style={{ gap: 10, marginTop: 2 }}>
+                    <span style={{ fontSize: 11, color: C.sub, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {new Date(i.a.ts).toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })} · {i.modo === 'reemitir' ? 'Volver a emitir · ' : ''}{aNombreDe(i)}
+                    </span>
+                    {i.modo === 'comision' && p > 0 && !e && <span style={{ fontSize: 11, color: C.sub, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>factura {fmtCop2(totalDe(i))}</span>}
+                    {e && <span style={{ fontSize: 11, fontWeight: 700, color: colorEstado(e), whiteSpace: 'nowrap', fontFamily: e.estado === 'ok' ? 'ui-monospace, monospace' : FONT }}>{rotEstado(e)}</span>}
+                  </span>
+                  {e && (e.estado === 'error' || e.estado === 'reintento') && e.texto && (
+                    <span style={{ display: 'block', fontSize: 10.5, color: colorEstado(e), marginTop: 3, lineHeight: 1.4, wordBreak: 'break-word' }}>{e.texto}</span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        {nComision > 0 && p > 0 && !bloqueado && (
+          <div style={{ marginTop: 10 }}>
+            <div className="flex items-center justify-between" style={{ padding: '5px 0' }}>
+              <span style={{ fontSize: 12.5, color: C.sub }}>Comisiones ({p} %, IVA incluido)</span>
+              <span style={{ fontSize: 12.5, color: C.text, fontWeight: 600, fontFamily: 'ui-monospace, monospace' }}>{fmtCop2(sumaComision)} COP</span>
+            </div>
+            <div className="flex items-center justify-between" style={{ padding: '5px 0', borderTop: `1px solid ${C.borde}` }}>
+              <span style={{ fontSize: 12.5, color: C.text, fontWeight: 800 }}>Total de {nComision} factura{nComision === 1 ? '' : 's'}{mandato ? ' (transferido + comisión)' : ''}</span>
+              <span style={{ fontSize: 12.5, color: C.text, fontWeight: 800, fontFamily: 'ui-monospace, monospace' }}>{fmtCop2(sumaTotal)} COP</span>
+            </div>
+          </div>
+        )}
+        {nReemitir > 0 && !bloqueado && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>{nReemitir === 1 ? 'La anulada se vuelve' : `Las ${nReemitir} anuladas se vuelven`} a emitir al mismo cliente y con el mismo porcentaje de la factura anulada, con el cálculo vigente.</p>}
+
+        {(corriendo || terminado) && (
+          <p style={{ fontSize: 12.5, color: C.text, margin: '14px 0 0', lineHeight: 1.5 }}>
+            {corriendo ? `Emitiendo ${Math.min(progreso.n + 1, progreso.total)} de ${progreso.total}… ` : 'Listo. '}
+            <span style={{ color: C.entra }}>{bien} emitida{bien === 1 ? '' : 's'}</span>
+            {mal > 0 && <span style={{ color: '#F87171' }}> · {mal} con error</span>}
+          </p>
+        )}
+        {corriendo && <p style={{ fontSize: 11, color: C.tenue, margin: '4px 0 0' }}>No cierres esta ventana mientras emite. Las que ya salieron quedan emitidas aunque se detenga.</p>}
+        {aviso && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '6px 0 0' }}>{aviso}</p>}
+
+        <div className="flex" style={{ gap: 9, marginTop: 16 }}>
+          {corriendo ? (
+            <button onClick={() => { detener.current = true; }} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>
+              Detener después de esta
+            </button>
+          ) : terminado ? (
+            <>
+              {/* Vuelve a la configuración con lo que falta: se puede
+                  cambiar el cliente o el porcentaje y emitir otra vez. */}
+              {porEmitir.length > 0 && <button onClick={() => setTerminado(false)} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Corregir y reintentar</button>}
+              <button onClick={onCerrar} className="lincoin-btn-white" style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Cerrar</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onCerrar} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Cancelar</button>
+              <button onClick={correr} disabled={!listo} className="lincoin-btn-white"
+                style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: listo ? 'pointer' : 'not-allowed', opacity: listo ? 1 : 0.45 }}>
+                {`Emitir ${porEmitir.length} factura${porEmitir.length === 1 ? '' : 's'}`}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -397,6 +655,11 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [mesVer, setMesVer] = useState<{ y: number; m: number } | null>(null);
   const [monedaSel, setMonedaSel] = useState<Moneda | null>(null);
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
+  // Solo lo que falta facturar (se combina con la dirección y la búsqueda).
+  const [soloSinFactura, setSoloSinFactura] = useState(false);
+  // Emisión en lote: la lista se congela al abrir, para que refrescar los
+  // comprobantes mientras emite no la cambie a mitad.
+  const [lote, setLote] = useState<ItemLote[] | null>(null);
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(25);
   const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null; at?: string | null } }>>({});
@@ -544,6 +807,28 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (esComision) return a.dir === 'out' ? botonFacturaComision(a) : null;
     return (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type))) ? botonFacturaComision(a) : botonEmitir(txId);
   };
+  // SIN FACTURA: un movimiento completado que se puede facturar y no tiene
+  // factura emitida (ni una saliendo ahora). Devuelve cómo se emitiría en
+  // lote, con la misma regla de los botones de cada fila; null = nada que
+  // emitir. En el modelo Comisión solo cuentan los envíos en pesos (un
+  // depósito "no aplica") y las anuladas, que se vuelven a emitir.
+  const modoLote = (a: Asiento): ModoLote | null => {
+    if (a.estado !== 'Completado' || a.tipo === 'Conversión') return null;
+    const tipoTx = String(a.tx?.type ?? '');
+    if (!SALE.has(tipoTx) && !ENTRA.has(tipoTx)) return null;
+    const txId = String(a.tx?.id ?? '');
+    if (!txId) return null;
+    const fa = folios[txId]?.factura;
+    const est = fa?.estado ?? null;
+    if (est === 'emitida') return null;
+    if (est === 'emitiendo' && (!fa?.at || Date.now() - new Date(fa.at).getTime() < 180000)) return null;
+    if (esComision) {
+      if (est === 'anulada') return 'reemitir';
+      return a.dir === 'out' && a.moneda === 'COP' ? 'comision' : null;
+    }
+    if (esPsp && a.dir === 'in') return 'comision';
+    return 'directo';
+  };
 
   // Todos los asientos de la cuenta.
   const asientos = useMemo(() => (transactions ?? []).filter(t => t.userId === userId).flatMap(asientosDe), [transactions, userId]);
@@ -633,11 +918,30 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
 
   // Lista de movimientos: filtro y búsqueda juntos.
   const q = busca.trim().toLowerCase();
-  const lista = del
+  const listaBase = del
     .filter(a => filtroDir === 'todos' || (filtroDir === 'conv' ? a.tipo === 'Conversión' : (a.dir === filtroDir && a.tipo !== 'Conversión')))
     .filter(a => !q || a.contraparte.toLowerCase().includes(q) || a.tipo.toLowerCase().includes(q) || String(folios[String(a.tx.id)]?.numero ?? '').toLowerCase().includes(q) || String(a.tx.providerRef ?? a.tx.reference ?? '').toLowerCase().includes(q))
     .sort((x, y) => y.ts - x.ts);
+  // Mientras no llegan los comprobantes no se sabe qué tiene factura.
+  const sinFactura = foliosEstado === 'ok' ? listaBase.filter(a => modoLote(a) != null) : [];
+  const lista = soloSinFactura ? sinFactura : listaBase;
   const mostrados = lista.slice(0, limite);
+  // El lote: lo que está sin factura en lo filtrado (periodo, moneda,
+  // dirección y búsqueda), un ítem por movimiento.
+  const puedeLote = !soloLectura && !!facturacionActiva && !!cfgFact;
+  const itemsLote = (): ItemLote[] => {
+    const vistos = new Set<string>();
+    const out: ItemLote[] = [];
+    for (const a of sinFactura) {
+      const txId = String(a.tx.id);
+      const modo = modoLote(a);
+      if (!modo || vistos.has(txId)) continue;
+      vistos.add(txId);
+      out.push({ a, txId, modo, ordenante: modo === 'comision' && a.dir === 'out' ? ordenanteDe(a.tx) : null });
+    }
+    return out;
+  };
+  const nLote = new Set(sinFactura.map(a => String(a.tx.id))).size;
 
   // ── Estado de cuenta del periodo, en la moneda elegida ──
   const [pDesde, pHasta] = R;
@@ -980,6 +1284,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         <EstadoCuentaHoja estado={ec} ficha={ficha} periodoTxt={periodoTxt} desdeTxt={desdeTxt} hastaTxt={hastaTxt}
           folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />
       )}
+      {lote && cfgFact && (
+        <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} onCerrar={() => { setLote(null); setFoliosVersion(v => v + 1); }} onTerminado={() => setPulsoFolios(v => v + 1)} />
+      )}
       {comisionPara && cfgFact && (
         <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
       )}
@@ -1211,14 +1518,32 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             {([['todos', 'Todos'], ['in', 'Recibidos'], ['out', 'Enviados'], ['conv', 'Conversiones']] as const).map(([k, rot]) => { const act = filtroDir === k; return (
               <button key={k} onClick={() => { setFiltroDir(k); setLimite(25); }} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 999, cursor: 'pointer', color: act ? C.text : C.sub, background: act ? 'rgba(255,255,255,0.08)' : 'transparent', border: `1px solid ${act ? 'rgba(255,255,255,0.22)' : C.borde}` }}>{rot}</button>
             ); })}
+            {/* Aparte de la dirección: se combina con ella (p. ej. Enviados
+                sin factura). El número es lo que falta en lo filtrado. */}
+            {foliosEstado === 'ok' && (
+              <button onClick={() => { setSoloSinFactura(v => !v); setLimite(25); }} aria-pressed={soloSinFactura}
+                title="Movimientos completados que se pueden facturar y todavía no tienen factura emitida"
+                style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 999, cursor: 'pointer', marginLeft: 4, color: soloSinFactura ? C.text : C.sub, background: soloSinFactura ? 'rgba(74,222,128,0.10)' : 'transparent', border: `1px solid ${soloSinFactura ? 'rgba(74,222,128,0.40)' : C.borde}` }}>
+                Sin factura <span style={{ color: soloSinFactura ? C.entra : C.tenue, fontVariantNumeric: 'tabular-nums' }}>· {nLote}</span>
+              </button>
+            )}
           </div>
+          <div className="flex items-center flex-wrap" style={{ gap: 8, maxWidth: '100%' }}>
+            {puedeLote && nLote > 0 && (
+              <button onClick={() => setLote(itemsLote())}
+                title="Emitir en Siigo, una por una, las facturas de los movimientos sin factura de lo que está filtrado"
+                style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Emitir en lote · {nLote}
+              </button>
+            )}
           <input value={busca} onChange={e => { setBusca(e.target.value); setLimite(25); }} placeholder="Buscar por contraparte, comprobante o referencia" style={{ fontFamily: FONT, fontSize: 13, color: C.text, background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 12px', outline: 'none', width: 300, maxWidth: '100%' }} />
+          </div>
         </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
             <thead><tr>{['FECHA', 'MOVIMIENTO', 'MONTO', 'ESTADO', 'COMPROBANTE', 'FACTURA', ''].map((h, i) => <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 2 ? 'right' : 'left', padding: '9px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
             <tbody>
-              {mostrados.length === 0 && <tr><td colSpan={7} style={{ padding: '18px 20px', fontSize: 12.5, color: C.tenue }}>Sin movimientos que coincidan.</td></tr>}
+              {mostrados.length === 0 && <tr><td colSpan={7} style={{ padding: '18px 20px', fontSize: 12.5, color: C.tenue }}>{soloSinFactura && listaBase.length ? `Todo lo filtrado de ${periodoTxt} ya tiene factura (o no aplica).` : 'Sin movimientos que coincidan.'}</td></tr>}
               {mostrados.map((a, i) => {
                 const rech = a.estado === 'Rechazado' || a.estado === 'Fallido';
                 const f = folios[String(a.tx.id)];
