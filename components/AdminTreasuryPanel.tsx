@@ -41,7 +41,7 @@ const WalletsModal: React.FC<{
   onClose: () => void;
 }> = ({ copBalance, usdtBalance, soloCop, onPick, onClose }) => {
   const activas = [
-    { key: 'COP' as WalletKind, flag: '🇨🇴', name: 'COP · Peso colombiano', sub: 'Cargues · Mouv · Bre-B y ACH', bal: copBalance != null ? fmtCop(copBalance) : '—' },
+    { key: 'COP' as WalletKind, flag: '🇨🇴', name: 'COP · Peso colombiano', sub: 'Cargues · Mouv y Finity · Bre-B y ACH', bal: copBalance != null ? fmtCop(copBalance) : '—' },
     // La billetera USDT no es del rol Tesorería: no se le ofrece.
     ...(soloCop ? [] : [{ key: 'USDT' as WalletKind, flag: '🇺🇸', name: 'USD · Dólar digital (USDT)', sub: 'Custodia GasFree · TRC-20', bal: usdtBalance != null ? `${usdtBalance.toLocaleString('es-CO')} USDT` : '—' }]),
   ];
