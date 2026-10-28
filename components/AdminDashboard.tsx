@@ -94,7 +94,7 @@ import { AdminKumplo } from './AdminKumplo';
 import { AdminTusdatos } from './AdminTusdatos';
 import { AdminCompliance } from './AdminCompliance';
 import { AdminLincoinRisk } from './AdminLincoinRisk';
-import { RiskAdmin } from './risk/RiskAdmin';
+import { AdminSarblock } from './risk/AdminSarblock';
 import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminContabilidad } from './AdminContabilidad';
@@ -233,7 +233,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 // Las dos secciones que agrupan varias pantallas. El orden es el de las
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
-const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'risk_ventas', 'tusdatos', 'kumplo'];
+const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'kumplo'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
@@ -241,7 +241,7 @@ const TAB_TITLES: Record<string, string> = {
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
-  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', risk_ventas: 'Risk · Ventas', cupos: 'Cupos por beneficiario', operadores: 'Operadores',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores',
   otcCierres: 'Cierres OTC', gowd: 'Gowd · Brasil',
 };
 
@@ -5086,9 +5086,10 @@ const renderDesign = () => (
                 {activeTab === 'operadores' && <div className="animate-in fade-in duration-300"><AdminOperadores onCambio={() => setOperadoresVer(v => v + 1)} /></div>}
                 {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
-                {/* Venta de consultas a empresas: caja, precio y saldos. Trae su
-                    propio lienzo oscuro, como el resto de Lincoin Risk. */}
-                {(activeTab as string) === 'risk_ventas' && <div className="animate-in fade-in duration-300" style={{ background: '#070808', color: '#F4F4F2', borderRadius: 20, padding: '24px 20px', fontFamily: "'Archivo', system-ui, sans-serif" }}><RiskAdmin /></div>}
+                {/* Sarblock: ventas de Lincoin Risk, historiales de todas las
+                    empresas y la AML de beneficiarios. Trae su propio lienzo
+                    oscuro, como el resto de Lincoin Risk. */}
+                {(activeTab as string) === 'sarblock' && <div className="animate-in fade-in duration-300" style={{ background: '#070808', color: '#F4F4F2', borderRadius: 20, padding: '24px 20px', fontFamily: "'Archivo', system-ui, sans-serif" }}><AdminSarblock /></div>}
                 {activeTab === 'gasfree' && (<>
                   {/* Igual que Cargues: se entra por Tesorería → Billeteras → USDT. */}
                   <button onClick={() => navTo('treasury')}
