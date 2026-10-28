@@ -126,11 +126,11 @@ const Aml: React.FC = () => {
   const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
   useEffect(() => {
     (async () => {
-      const [r, u] = await Promise.all([llamar('config_get'), llamar('uso')]);
+      const r = await llamar('config_get');
       if (!r?.ok) { setMsg({ ok: false, t: r?.error ?? 'No se pudo leer la configuración.' }); return; }
       const c = { ...r.config, cuentas: (r.config.soloEstosUsuarios ?? []).join('\n') };
       setCfg(c); setOrig(JSON.stringify(c));
-      setExtra({ credencial: r.credencial, saldo: u?.ok ? u.saldo : null });
+      setExtra({ credencial: r.credencial });
     })();
   }, []);
   if (!cfg) return msg ? <p style={{ color: C.rojo, fontSize: 13 }}>{msg.t}</p> : <p style={{ color: C.sub, fontSize: 13 }}>Cargando…</p>;
@@ -165,13 +165,49 @@ const Aml: React.FC = () => {
         </div>
       </div>
       <div style={{ ...TARJETA, padding: '18px 20px' }}>
-        <p style={LBL}>Créditos en Sarblock</p>
-        <p style={{ fontSize: 30, fontWeight: 800, margin: '2px 0 0' }}>{extra.saldo == null ? '—' : extra.saldo.toLocaleString('es-CO')}</p>
-        <p style={{ fontSize: 12.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>Los comparten la AML de beneficiarios y Lincoin Risk. Las consultas que salen del padrón no gastan créditos.</p>
+        <p style={LBL}>Créditos</p>
+        <p style={{ fontSize: 12.5, color: C.sub, margin: 0, lineHeight: 1.5 }}>Los de arriba los comparten la AML de beneficiarios y Lincoin Risk. Las consultas que salen del padrón no gastan créditos.</p>
         <p style={{ fontSize: 12, color: extra.credencial === 'configurada' ? C.sub : C.rojo, margin: '12px 0 0' }}>
           Credencial: {extra.credencial === 'configurada' ? 'configurada' : 'falta SARBLOCK_ORG_API_KEY'}
         </p>
       </div>
+    </div>
+  );
+};
+
+// ── Créditos que quedan en Sarblock (arriba, en todas las vistas) ────────
+const Creditos: React.FC = () => {
+  const [u, setU] = useState<any>(null);
+  const cargar = useCallback(async () => { setU(await llamar('admin_sarblock_uso')); }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+  if (!u) return <div style={{ ...TARJETA, padding: '16px 20px', marginBottom: 16, color: C.sub, fontSize: 13 }}>Leyendo créditos de Sarblock…</div>;
+  if (!u.ok) return <div style={{ ...TARJETA, padding: '16px 20px', marginBottom: 16, color: C.rojo, fontSize: 13 }}>{u.motivo ?? u.error ?? 'No se pudo leer el consumo.'}</div>;
+  const pct = u.incluidas ? Math.min(100, Math.round((u.consumidas / u.incluidas) * 100)) : 0;
+  const bajo = u.incluidas ? u.quedan / u.incluidas <= 0.15 : u.quedan <= 50;
+  const dias = u.renueva ? Math.max(0, Math.ceil((Date.parse(u.renueva) - Date.now()) / 86400_000)) : null;
+  const n = (x: number) => Number(x || 0).toLocaleString('es-CO');
+  return (
+    <div style={{ ...TARJETA, padding: '18px 20px', marginBottom: 16, display: 'flex', gap: 28, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ minWidth: 170 }}>
+        <p style={LBL}>Créditos en Sarblock</p>
+        <p style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-0.8px', margin: 0, color: bajo ? C.ambar : C.texto }}>{n(u.quedan)}</p>
+        <p style={{ fontSize: 12, color: C.sub, margin: '2px 0 0' }}>consultas disponibles{u.adicionales ? ` · ${n(u.adicionales)} adicionales` : ''}</p>
+      </div>
+      <div style={{ flex: 1, minWidth: 240 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: C.sub, marginBottom: 6 }}>
+          <span>Usadas <b style={{ color: C.texto }}>{n(u.consumidas)}</b> de {n(u.incluidas)} del plan{u.reservadas ? ` · ${n(u.reservadas)} en curso` : ''}</span>
+          <span>{pct}%</span>
+        </div>
+        <div style={{ height: 8, borderRadius: 999, background: C.elevado, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: bajo ? C.ambar : C.verde, transition: 'width .4s' }} />
+        </div>
+        <p style={{ fontSize: 12, color: C.sub, margin: '8px 0 0' }}>
+          Este periodo: <b style={{ color: C.texto }}>{n(u.enAml)}</b> en AML de beneficiarios · <b style={{ color: C.texto }}>{n(u.enRisk)}</b> en Lincoin Risk
+          {u.renueva ? ` · se renueva el ${new Date(u.renueva).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}${dias != null ? ` (en ${dias} días)` : ''}` : ''}
+        </p>
+        {bajo && <p style={{ fontSize: 12, color: C.ambar, margin: '6px 0 0' }}>Quedan pocos créditos: compra un paquete en Sarblock y regístralo en Ventas › Reponer caja.</p>}
+      </div>
+      <button onClick={cargar} style={{ ...BTN2, height: 36 }}>Actualizar</button>
     </div>
   );
 };
@@ -199,6 +235,7 @@ export const AdminSarblock: React.FC = () => {
         </div>
       </div>
 
+      <Creditos />
       {vista === 'ventas' && <RiskAdmin />}
       {vista === 'consultas' && <Historial key="c" tipo="consultas" clientes={clientes} abrir={abrir} />}
       {vista === 'busquedas' && <Historial key="b" tipo="busquedas" clientes={clientes} abrir={abrir} />}
