@@ -258,6 +258,8 @@ async function ponerseAlDia(userId: string, opts: { tope?: number; hastaMs?: num
   const cfg = await leerConfig(userId)
   const out = { creados: 0, emitidos: 0, reintentados: 0, errores: [] as string[] }
   if (!cfg?.activo) return out
+  // Una cola de lote cuyo relevo se perdió se retoma (en su propia llamada).
+  await reanudarCola(userId).catch(e => console.error('[facturacion] reanudar cola', userId, String((e as Error)?.message ?? e)))
   const r = await reconciliar(userId, tope)
   out.creados = r.creados; out.emitidos = r.emitidos; out.errores.push(...r.errores)
   let hechos = r.emitidos + r.errores.length
@@ -752,9 +754,11 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
 // intentos; después queda en error para que alguien lo mire.
 const esDuplicadoSiigo = (motivo: string) => /duplicated_document/i.test(motivo)
 const REINTENTOS_DUPLICADO = 4
+// En la cola del lote, una duplicada se reintenta pasado este tiempo.
+const ESPERA_DUPLICADO_MS = 90_000
 
 // ── Emitir la factura de UN comprobante ──────────────────────────
-async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<any> {
+async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boolean } = {}): Promise<any> {
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', folio).maybeSingle()
   if (!comp) return { ok: false, error: 'comprobante_no_encontrado' }
   const userId = String((comp as any).user_id ?? '')
@@ -955,7 +959,7 @@ async function emitir(folio: number, opts: { forzar?: boolean } = {}): Promise<a
     const { data: tomado, error: eLock } = await db.from('comprobantes')
       .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: new Date().toISOString() })
       .eq('folio', folio)
-      .or(`factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
+      .or(opts.desdeCola ? `factura_estado.eq.en_cola,and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})` : `factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada,en_cola),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
       .select('folio')
     if (!eLock && Array.isArray(tomado) && tomado.length === 0) {
       return { ok: false, error: 'Este documento ya se está emitiendo o ya salió. Espera un momento y recarga.' }
@@ -1165,7 +1169,11 @@ async function sincronizarAnulaciones(userId: string): Promise<{ revisadas: numb
 // 60.000 + IVA. Siigo calcula el IVA sobre la base que se le manda, con la
 // tarifa del ítem, así que el total puede diferir del objetivo en un
 // centavo de redondeo; el pago va por lo que Siigo va a calcular.
-async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean; reemplazo?: boolean }): Promise<any> {
+// `cola`: los datos del lote con que se encoló (emisión en segundo plano). Si
+// Siigo la toma como duplicada, vuelve a la cola con espera en vez de quedar
+// 'pendiente': el cron reintenta los 'pendiente' con las reglas automáticas,
+// que no saben del cliente elegido en el lote.
+async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean; reemplazo?: boolean; cola?: Record<string, any> }): Promise<any> {
   const cfg = await leerConfig(userId)
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
@@ -1333,16 +1341,51 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     const vigente = await leerConfig(userId)
     if (!vigente?.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar la factura a Siigo.' }); return { ok: true, estado: 'omitida' } }
   }
-  // CANDADO: dos clics (o el automático y uno a mano) no pueden emitir dos
-  // facturas del mismo movimiento ante la DIAN. Se toma el comprobante en
-  // 'emitiendo' solo si nadie lo tiene; un 'emitiendo' de hace más de 3 min
-  // se da por caído. Al terminar queda 'emitida' o 'error'.
+  // UN 'EMITIENDO' QUE QUEDÓ A MEDIAS (se cerró la pantalla durante un lote,
+  // la función se cortó): Siigo pudo haber creado la factura. Antes de
+  // reenviar se busca en Siigo; si está, se adopta y no se manda otra a la
+  // DIAN. Si no se puede preguntar, no se reenvía.
+  const hace3 = new Date(Date.now() - 180000).toISOString()
+  const intentoPrevio: any = (detPrevio as any)?.intento ?? null
+  // (Si se encoló estando así, la marca de la cola dice cómo estaba.)
+  const quedoAMedias = ((comp as any).factura_estado === 'emitiendo' && !(Date.parse(String((comp as any).factura_at ?? '')) > Date.now() - 180000))
+    || ((comp as any).factura_estado === 'en_cola' && (detPrevio as any)?.lote?.estado_previo === 'emitiendo')
+  if (quedoAMedias) {
+    const identV = String(intentoPrevio?.cliente ?? cp.identification)
+    const totalV = Number.isFinite(Number(intentoPrevio?.total)) ? Number(intentoPrevio.total) : armar(tarifaCatalogo).total
+    const b = await facturaDelComprobanteEnSiigo(userId, t.token, partner, identV, String(intentoPrevio?.at ?? (comp as any).factura_at ?? ''), String((comp as any).numero ?? ''), totalV)
+    if (!b.ok) {
+      const e = 'Esta factura quedó a medias y no se pudo revisar en Siigo si ya salió. No se reenvió para no duplicarla: revísala en Siigo Nube (Ventas → Facturas) o intenta en unos minutos.'
+      // Desde la cola: vuelve a 'emitiendo' (no a error), para que el
+      // próximo intento también revise en Siigo antes de mandar nada.
+      if ((comp as any).factura_estado === 'en_cola') await db.from('comprobantes').update({ factura_estado: 'emitiendo', factura_error: e }).eq('folio', c.folio).eq('factura_estado', 'en_cola')
+      return { ok: false, error: e }
+    }
+    if (b.factura) {
+      const f0 = b.factura
+      const numero0 = f0.name ?? (f0.number != null ? `${f0.prefix ?? ''}${f0.number}` : null) ?? String(f0.id ?? '')
+      await marcar({
+        factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV', factura_proveedor: 'siigo',
+        factura_id: f0.id != null ? String(f0.id) : null, factura_numero: numero0, factura_cufe: f0.stamp?.cufe ?? null, factura_url: f0.public_url ?? null,
+        factura_at: new Date().toISOString(),
+        factura_detalle: { respuesta: f0, adoptada: true, comision: { pct, comision, total: Number(f0.total) || totalV, cliente: { identification: identV, nombre: cp.nombre } } },
+      })
+      return { ok: true, estado: 'emitida', tipo: 'FV', numero: numero0, adoptada: true, aviso: 'Ya estaba emitida en Siigo: se registró esa, no se emitió otra.' }
+    }
+  }
+  // CANDADO: dos clics (o el automático y uno a mano, o la cola) no pueden
+  // emitir dos facturas del mismo movimiento ante la DIAN. Se toma el
+  // comprobante en 'emitiendo' solo si nadie lo tiene; un 'emitiendo' de hace
+  // más de 3 min se da por caído (y ya se revisó arriba que no salió). Se
+  // anota a quién y por cuánto, para poder buscarla si este intento se corta.
   {
-    const hace3 = new Date(Date.now() - 180000).toISOString()
+    const ahoraLock = new Date().toISOString()
     const { data: tomado, error: eLock } = await db.from('comprobantes')
-      .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: new Date().toISOString() })
+      .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: ahoraLock, factura_detalle: { ...detPrevio, intento: { cliente: cp.identification, total: armar(tarifaCatalogo).total, at: ahoraLock } } })
       .eq('folio', c.folio)
-      .or(`factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
+      // Desde la cola, solo si sigue en cola: un «Detener» justo antes la
+      // devolvió a como estaba, y no se emite.
+      .or(d.cola ? `factura_estado.eq.en_cola,and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})` : `factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada,en_cola),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
       .select('folio')
     if (!eLock && Array.isArray(tomado) && tomado.length === 0) {
       return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Espera un momento y recarga.' }
@@ -1377,8 +1420,12 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: arm.cuerpo, tarifa, nota: 'Sin tercero por ítem' })
   }
   const { base, ivaV, total, cuerpo } = arm
-  if (!r.ok && r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number((comp as any).factura_intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
+  if (!r.ok && r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && (d.cola ? Number(d.cola.duplicadas ?? 0) < REINTENTOS_DUPLICADO : Number((comp as any).factura_intentos ?? 0) + 1 < REINTENTOS_DUPLICADO)) {
     const espera = `Siigo la tomó como duplicado de otra factura parecida emitida segundos antes (mismo cliente y valor). Se reintenta sola en unos minutos.`
+    if (d.cola) {
+      await marcar({ factura_estado: 'en_cola', factura_error: espera, factura_tipo: 'FV', factura_detalle: { enviado: cuerpo, intentos, lote: { ...d.cola, duplicadas: Number(d.cola.duplicadas ?? 0) + 1, no_antes: Date.now() + ESPERA_DUPLICADO_MS } } })
+      return { ok: false, error: espera, reintento: true }
+    }
     await marcar({ factura_estado: 'pendiente', factura_error: espera, factura_tipo: 'FV', factura_detalle: { enviado: cuerpo, intentos } })
     return { ok: false, error: espera, reintento: true }
   }
@@ -1393,6 +1440,271 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } },
   })
   return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, tarifa, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null, ...(notaTercero ? { aviso: notaTercero } : {}) }
+}
+
+// ── ¿La factura de este comprobante YA está en Siigo? ──────────────────
+// Para un comprobante que quedó 'emitiendo' (se cerró la pantalla durante un
+// lote, la función se cortó): Siigo pudo haberla creado. Se buscan las
+// facturas del cliente desde el día del intento: la que lleve la marca del
+// comprobante en la observación ("Lincoin LC-000978"); si ninguna la lleva
+// (la observación se recorta a 500 caracteres), una del mismo total que
+// ningún otro comprobante tenga registrada. ok:false = no se pudo preguntar.
+async function facturaDelComprobanteEnSiigo(userId: string, token: string, partner: string, identificacion: string, desdeIso: string, numero: string, total: number | null): Promise<{ ok: boolean; factura: any | null }> {
+  const d = new Date(Date.parse(desdeIso) || Date.now())
+  const desde = new Date(d.getTime() - 86400000).toISOString().slice(0, 10)
+  const lista: any[] = []
+  for (let page = 1; page <= 5; page++) {
+    const r = await siigo('GET', `/v1/invoices?customer_identification=${encodeURIComponent(identificacion)}&date_start=${desde}&page=${page}&page_size=100`, { token, partner, ms: 30000 })
+    if (!r.ok) return { ok: false, factura: null }
+    const res: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+    lista.push(...res)
+    if (!res.length || page * 100 >= Number(r.data?.pagination?.total_results ?? 0)) break
+  }
+  const delCliente = lista.filter(x => !x?.customer?.identification || String(x.customer.identification) === identificacion)
+  const marca = `Lincoin ${numero}`
+  const conMarca = numero ? delCliente.find(x => { const o = String(x?.observations ?? ''); const i = o.indexOf(marca); return i >= 0 && !/\d/.test(o.charAt(i + marca.length)) }) : null
+  if (conMarca) return { ok: true, factura: conMarca }
+  if (total == null || !Number.isFinite(total)) return { ok: true, factura: null }
+  const mismos = delCliente.filter(x => x?.id != null && Math.abs(Number(x?.total) - total) < 1)
+  if (!mismos.length) return { ok: true, factura: null }
+  const { data: usadas } = await db.from('comprobantes').select('factura_id').eq('user_id', userId).in('factura_id', mismos.map(x => String(x.id)))
+  const ya = new Set(((usadas ?? []) as any[]).map(u => String(u.factura_id)))
+  return { ok: true, factura: mismos.find(x => !ya.has(String(x.id))) ?? null }
+}
+
+// ── Cola de emisión (lote) ─────────────────────────────────────────────
+// «Emitir en lote» deja los comprobantes en 'en_cola', con lo necesario
+// (cliente, porcentaje) en factura_detalle.lote, y el servidor los emite uno
+// por uno en segundo plano. Antes la cola corría en el navegador: al
+// cerrarse la pantalla en un lote de 144 se detuvo a mitad, y la que estaba
+// saliendo quedó 'emitiendo' sin saber si Siigo la creó.
+// Cada vuelta trabaja ~90 s (una función vive 150 s como mucho) y le pasa el
+// relevo a una llamada nueva. Si el relevo se pierde, la retoman la app
+// (al_dia, config_get) o el cron de facturas al día, mirando el latido.
+const COLA_VUELTA_MS = 90_000
+const COLA_LATIDO_MS = 150_000
+// Cada vez que la cola toma un comprobante cuenta una pasada; con muchas, se
+// deja (error, o sin marca de cola) para que la cola siempre termine.
+const COLA_MAX_PASADAS = REINTENTOS_DUPLICADO + 2
+const SALIDAS = ['dispersion', 'send', 'pay_sent', 'otc_withdraw']
+const claveCola = (userId: string) => `facturacion_cola:${userId}`
+
+// Igual que saveSystemConfig de gasfree: upsert y, si la tabla no tiene la
+// clave única, update o insert.
+async function guardarSistema(clave: string, valor: string): Promise<void> {
+  const up = await db.from('system_config').upsert({ key: clave, value: valor })
+  if (up.error) {
+    const upd = await db.from('system_config').update({ value: valor }).eq('key', clave).select('key')
+    if (!upd.error && !(upd.data?.length)) await db.from('system_config').insert({ key: clave, value: valor })
+  }
+}
+async function colaViva(userId: string): Promise<boolean> {
+  const { data } = await db.from('system_config').select('value').eq('key', claveCola(userId)).maybeSingle()
+  return Date.now() - Number((data as any)?.value ?? 0) < COLA_LATIDO_MS
+}
+
+// Encolar: el servidor decide cómo se emite cada uno (no le cree al
+// navegador): en Comisión, una anulada se vuelve a emitir al cliente y con
+// el porcentaje de la anulada; un envío va a su ordenante o, si no tiene, al
+// cliente elegido; un depósito no se factura. En PSP, un depósito va al
+// cliente elegido. En los demás modelos, con las reglas de Configuración.
+async function encolarLote(userId: string, body: any): Promise<any> {
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
+  if (!cfg.activo) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para emitir.' }
+  const modelo = String(cfg.modelo ?? '')
+  const ids = Array.from(new Set((Array.isArray(body.transactionIds) ? body.transactionIds : []).map((x: unknown) => String(x ?? '')).filter(Boolean))).slice(0, 1000) as string[]
+  if (!ids.length) return { ok: false, error: 'No hay movimientos para emitir.' }
+  const pct = Number(body.comisionPct ?? cfg.utilidad_pct) || 0
+  const cl = body.cliente && typeof body.cliente === 'object' ? body.cliente : null
+  const docCl = String(cl?.identification ?? '').replace(/\D/g, '')
+  const elegido = docCl.length >= 5 ? { identification: docCl, nombre: String(cl?.nombre ?? '').trim().slice(0, 200), esEmpresa: typeof cl?.esEmpresa === 'boolean' ? cl.esEmpresa : docCl.length === 9 } : null
+  const omitidos: { id: string; motivo: string }[] = []
+  let encolados = 0
+  const ahoraIso = new Date().toISOString()
+  for (let i = 0; i < ids.length; i += 150) {
+    const parte = ids.slice(i, i + 150)
+    const [{ data: txs }, { data: comps }] = await Promise.all([
+      db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').in('id', parte),
+      db.from('comprobantes').select('folio, transaction_id, factura_estado, factura_error, factura_at, factura_detalle').eq('user_id', userId).in('transaction_id', parte),
+    ])
+    const txPorId = new Map(((txs ?? []) as any[]).map(t => [String(t.id), t]))
+    const compPorTx = new Map(((comps ?? []) as any[]).map(c => [String(c.transaction_id), c]))
+    for (const id of parte) {
+      const no = (motivo: string) => { omitidos.push({ id, motivo }) }
+      const tx = txPorId.get(id)
+      if (!tx || String(tx.user_id) !== userId) { no('Movimiento no encontrado.'); continue }
+      if (String(tx.status) !== 'Completado') { no(`La operación está en "${tx.status}".`); continue }
+      let comp = compPorTx.get(id)
+      if (!comp) {
+        const c = await asegurarComprobante(tx, userId)
+        if ('error' in c) { no(c.error); continue }
+        comp = (await db.from('comprobantes').select('folio, transaction_id, factura_estado, factura_error, factura_at, factura_detalle').eq('folio', c.folio).maybeSingle()).data
+        if (!comp) { no('No se pudo leer el comprobante.'); continue }
+      }
+      const est: string | null = comp.factura_estado ?? null
+      if (est === 'emitida') { no('Ya tiene factura.'); continue }
+      if (est === 'en_cola') { no('Ya está en la cola.'); continue }
+      if (est === 'emitiendo' && Date.parse(String(comp.factura_at ?? '')) > Date.now() - 180000) { no('Se está emitiendo ahora.'); continue }
+      const det: any = comp.factura_detalle ?? {}
+      const salida = SALIDAS.includes(String(tx.type))
+      let lote: Record<string, unknown>
+      if (modelo === 'comision' || (modelo === 'psp' && !salida)) {
+        const yaFueAnulada = est === 'anulada' || (est === 'error' && Array.isArray(det.anteriores) && det.anteriores.length > 0)
+        if (!/^COP/i.test(String(tx.currency ?? ''))) { no('La factura en Siigo va en pesos y la operación no es en COP.'); continue }
+        if (modelo === 'comision' && yaFueAnulada) {
+          const ca = det?.comision?.cliente
+          if (!ca?.identification) { no('No se sabe a qué cliente iba la factura anulada: emítela desde el movimiento.'); continue }
+          lote = { modo: 'reemitir', cliente: { identification: String(ca.identification), nombre: String(ca.nombre ?? '') }, pct: Number(det?.comision?.pct) || pct, reemplazo: true }
+        } else {
+          if (modelo === 'comision' && !salida) { no('En el modelo Comisión los depósitos no llevan factura.'); continue }
+          const rd: any = tx.raw_data ?? {}
+          const o: any = salida ? (rd?.recipient?.ordenante ?? rd?.ordenante ?? null) : null
+          const docO = String(o?.doc ?? '').replace(/\D/g, '')
+          const cli = docO ? { identification: docO, nombre: String(o?.nombre ?? ''), esEmpresa: String(o?.docTipo ?? '') === 'NIT' } : elegido
+          if (!cli) { no('No tiene ordenante y no se eligió a qué cliente facturarlo.'); continue }
+          if (!(pct > 0)) { no('Falta el porcentaje de comisión.'); continue }
+          lote = { modo: 'comision', cliente: cli, pct }
+        }
+      } else {
+        lote = { modo: 'directo' }
+      }
+      let q = db.from('comprobantes').update({
+        factura_estado: 'en_cola', factura_error: null,
+        factura_detalle: { ...det, lote: { ...lote, estado_previo: est, error_previo: comp.factura_error ?? null, encolado_at: ahoraIso } },
+      }).eq('folio', comp.folio)
+      q = est == null ? q.is('factura_estado', null) : q.eq('factura_estado', est)
+      const { data: tomada, error: eUp } = await q.select('folio')
+      if (eUp || !tomada?.length) { no(eUp ? eUp.message : 'Cambió mientras se encolaba; recarga.'); continue }
+      encolados++
+    }
+  }
+  // La cola arranca en una llamada propia: encolar muchos puede haber gastado
+  // buena parte del tiempo de esta.
+  const corriendo = encolados > 0 ? (await colaViva(userId)) || await relevarCola(userId) : false
+  return { ok: true, encolados, omitidos, corriendo }
+}
+
+// Emite UN comprobante de la cola. Devuelve qué pasó para la cuenta de la
+// vuelta; el resultado de verdad queda en el comprobante.
+async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error' | 'espera' | 'otro'> {
+  const det: any = f.factura_detalle ?? {}
+  const lote: any = det.lote ?? {}
+  const pasadas = Number(lote.pasadas ?? 0) + 1
+  if (pasadas > COLA_MAX_PASADAS) {
+    if (f.factura_estado === 'en_cola') {
+      await db.from('comprobantes').update({ factura_estado: 'error', factura_error: `No se pudo emitir desde la cola después de ${pasadas - 1} intentos. Reintenta desde el movimiento.` }).eq('folio', f.folio).eq('factura_estado', 'en_cola')
+    } else {
+      // Un 'emitiendo' a medias que no se pudo revisar en Siigo: sale de la
+      // cola pero sigue 'emitiendo', para que el próximo intento revise antes.
+      const { lote: _sale, ...resto } = det
+      await db.from('comprobantes').update({ factura_detalle: resto, factura_error: 'Quedó a medias y no se pudo revisar en Siigo si salió. Revísala en Siigo Nube antes de reintentar.' }).eq('folio', f.folio).eq('factura_estado', f.factura_estado)
+    }
+    return 'error'
+  }
+  await db.from('comprobantes').update({ factura_detalle: { ...det, lote: { ...lote, pasadas } } }).eq('folio', f.folio).eq('factura_estado', f.factura_estado)
+  let r: any
+  try {
+    if (lote.modo === 'directo') r = await emitir(Number(f.folio), { forzar: true, desdeCola: true })
+    else r = await emitirComision(userId, String(f.transaction_id), {
+      identification: String(lote.cliente?.identification ?? ''), nombre: lote.cliente?.nombre ? String(lote.cliente.nombre) : undefined,
+      esEmpresa: typeof lote.cliente?.esEmpresa === 'boolean' ? lote.cliente.esEmpresa : undefined,
+      pct: Number(lote.pct) || undefined, reemplazo: !!lote.reemplazo, cola: { ...lote, pasadas },
+    })
+  } catch (e) { r = { ok: false, error: String((e as Error)?.message ?? e) } }
+  if (r?.ok && (r.estado === 'emitida' || r.numero)) return 'emitida'
+  if (r?.reintento) return 'espera'
+  // Si contestó sin tomarla (operación no completada, falta configuración),
+  // sigue 'en_cola': pasa a error con el motivo, o la cola la repetiría.
+  const { data: ahora } = await db.from('comprobantes').select('factura_estado').eq('folio', f.folio).maybeSingle()
+  if ((ahora as any)?.factura_estado === 'en_cola') {
+    await db.from('comprobantes').update({ factura_estado: 'error', factura_error: String(r?.error ?? 'No se pudo emitir.') }).eq('folio', f.folio).eq('factura_estado', 'en_cola')
+  }
+  return r?.ok ? 'otro' : 'error'
+}
+
+// Lo que la cola tiene por hacer: lo encolado, y lo que ella misma dejó
+// 'emitiendo' hace más de 5 min (se cortó a mitad: se revisa en Siigo).
+async function pendientesDeCola(userId: string): Promise<any[]> {
+  const viejo = new Date(Date.now() - 300_000).toISOString()
+  const { data } = await db.from('comprobantes').select('folio, transaction_id, factura_estado, factura_at, factura_detalle')
+    .eq('user_id', userId).or(`factura_estado.eq.en_cola,and(factura_estado.eq.emitiendo,factura_at.lt.${viejo})`)
+    .order('folio', { ascending: true }).limit(100)
+  return ((data ?? []) as any[]).filter(f => f.factura_estado === 'en_cola' || f.factura_detalle?.lote)
+}
+
+async function procesarCola(userId: string): Promise<{ emitidas: number; errores: number; quedan: number; relevo: boolean }> {
+  const inicio = Date.now()
+  const out = { emitidas: 0, errores: 0, quedan: 0, relevo: false }
+  await guardarSistema(claveCola(userId), String(inicio))
+  const cfg = await leerConfig(userId)
+  // Pausada: la cola espera; al activarla la retoman la app o el cron.
+  if (!cfg?.activo) { await guardarSistema(claveCola(userId), '0'); return out }
+  const vistos = new Set<number>()
+  while (Date.now() - inicio < COLA_VUELTA_MS) {
+    const filas = (await pendientesDeCola(userId)).filter(f => !vistos.has(Number(f.folio)))
+    if (!filas.length) break
+    const ahora = Date.now()
+    const lista = filas.find(f => !(Number(f.factura_detalle?.lote?.no_antes) > ahora))
+    if (!lista) {
+      // Solo quedan duplicadas esperando a Siigo: se espera acá si alcanza.
+      const prox = Math.min(...filas.map(f => Number(f.factura_detalle?.lote?.no_antes) || ahora))
+      if (prox - inicio > COLA_VUELTA_MS) break
+      await new Promise(r => setTimeout(r, Math.max(1000, prox - Date.now())))
+      continue
+    }
+    vistos.add(Number(lista.folio))
+    const r = await emitirDeCola(userId, lista)
+    if (r === 'emitida') out.emitidas++
+    else if (r === 'error') out.errores++
+    await guardarSistema(claveCola(userId), String(Date.now()))
+  }
+  out.quedan = (await pendientesDeCola(userId)).length
+  if (out.quedan > 0) out.relevo = await relevarCola(userId)
+  else await guardarSistema(claveCola(userId), '0')
+  return out
+}
+
+// El relevo: una llamada nueva a esta misma función, que contesta enseguida
+// y sigue con la cola en segundo plano.
+async function relevarCola(userId: string): Promise<boolean> {
+  await guardarSistema(claveCola(userId), '0')
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'cola_seguir', userId }),
+      signal: AbortSignal.timeout(20000),
+    })
+    return r.ok
+  } catch (e) {
+    console.error('[facturacion] relevo de la cola', userId, String((e as Error)?.message ?? e))
+    return false
+  }
+}
+
+// Si hay cola y nadie la está trabajando (se perdió un relevo), se retoma.
+async function reanudarCola(userId: string): Promise<boolean> {
+  const { count } = await db.from('comprobantes').select('folio', { count: 'exact', head: true }).eq('user_id', userId).eq('factura_estado', 'en_cola')
+  if (!count || await colaViva(userId)) return false
+  return relevarCola(userId)
+}
+
+// Detener: lo que sigue en cola vuelve a como estaba antes de encolarlo.
+async function cancelarCola(userId: string): Promise<number> {
+  let n = 0
+  for (let vuelta = 0; vuelta < 10; vuelta++) {
+    const { data } = await db.from('comprobantes').select('folio, factura_detalle').eq('user_id', userId).eq('factura_estado', 'en_cola').limit(200)
+    const filas = (data ?? []) as any[]
+    for (const f of filas) {
+      const { lote, ...resto } = (f.factura_detalle ?? {}) as any
+      const { data: u } = await db.from('comprobantes').update({ factura_estado: lote?.estado_previo ?? null, factura_error: lote?.error_previo ?? null, factura_detalle: resto })
+        .eq('folio', f.folio).eq('factura_estado', 'en_cola').select('folio')
+      if (u?.length) n++
+    }
+    if (filas.length < 200) break
+  }
+  return n
 }
 
 // Clientes de Siigo, para elegir a quién se le factura la comisión. Por
@@ -2005,6 +2317,19 @@ Deno.serve(async (req) => {
       return json({ ok: true, cuentas: ids.length, resultados, lincoin })
     }
 
+    // ── Cola del lote (sistema): el relevo que se pasa la cola a sí misma.
+    //    Contesta enseguida; la vuelta sigue en segundo plano.
+    if (accion === 'cola_seguir') {
+      if (!yo.servicio) return json({ error: 'no_autorizado' }, 401)
+      const uid = String(body.userId ?? '')
+      if (!uid) return json({ ok: false, error: 'falta_userId' }, 400)
+      if (await colaViva(uid)) return json({ ok: true, yaCorre: true })
+      await guardarSistema(claveCola(uid), String(Date.now()))
+      const p = procesarCola(uid)
+      if (!enSegundoPlano(p, `cola ${uid}`)) return json({ ok: true, ...(await p) })
+      return json({ ok: true, enSegundoPlano: true })
+    }
+
     // ── Facturas de Lincoin a sus clientes: solo el sistema (admin-data ya
     //    revisó el permiso del admin; notify-transaction y el cron).
     if (accion.startsWith('lincoin_')) {
@@ -2059,18 +2384,17 @@ Deno.serve(async (req) => {
         const clave = `facturacion_nc_sync:${userId}`
         const { data: ult } = await db.from('system_config').select('value').eq('key', clave).maybeSingle()
         if (!ult || Date.now() - Number((ult as any).value) > 15 * 60_000) {
-          // Igual que saveSystemConfig de gasfree: upsert y, si la tabla no
-          // tiene la clave única, update o insert.
-          const ahoraTxt = String(Date.now())
-          const up = await db.from('system_config').upsert({ key: clave, value: ahoraTxt })
-          if (up.error) {
-            const upd = await db.from('system_config').update({ value: ahoraTxt }).eq('key', clave).select('key')
-            if (!upd.error && !(upd.data?.length)) await db.from('system_config').insert({ key: clave, value: ahoraTxt })
-          }
+          await guardarSistema(clave, String(Date.now()))
           const p = sincronizarAnulaciones(userId).then(r => { if (r.anuladas.length || r.error) console.log('[facturacion] anulaciones', userId, JSON.stringify(r)) }, e => console.error('[facturacion] anulaciones', String((e as Error)?.message ?? e)))
           const rt = (globalThis as any).EdgeRuntime
           if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p)
         }
+      }
+      // Una cola de lote que quedó sin trabajar (se perdió el relevo).
+      {
+        const pc = reanudarCola(userId).then(v => { if (v) console.log('[facturacion] cola reanudada', userId) }, e => console.error('[facturacion] reanudar cola', String((e as Error)?.message ?? e)))
+        const rt = (globalThis as any).EdgeRuntime
+        if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(pc)
       }
       return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES, chequeo })
     }
@@ -2284,6 +2608,16 @@ Deno.serve(async (req) => {
     }
     if (accion === 'buscar_clientes') {
       return json(await buscarClientes(userId, String(body.q ?? '')))
+    }
+
+    // ── Emisión en lote: se encola y el servidor emite en segundo plano,
+    //    aunque se cierre la pantalla. Detener devuelve lo que falta a como
+    //    estaba.
+    if (accion === 'lote_encolar') {
+      return json(await encolarLote(userId, body))
+    }
+    if (accion === 'lote_cancelar') {
+      return json({ ok: true, cancelados: await cancelarCola(userId) })
     }
 
     // ── El documento de UN movimiento, para verlo desde el detalle ──────

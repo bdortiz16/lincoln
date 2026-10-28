@@ -259,34 +259,41 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
 };
 
 // ── Emisión en lote ─────────────────────────────────────────────────
-// Las facturas de los movimientos que quedaron sin ella, una por una y en
-// orden, no en paralelo: Siigo toma como duplicada una factura igual a otra
-// de segundos antes (mismo cliente y valor), y el candado de cada
-// comprobante en el servidor ya impide emitir dos veces la misma. Cada envío
-// va a nombre de su ordenante; los que no lo tienen, al cliente que se elija
-// acá. Una anulada se vuelve a emitir como desde el detalle: al mismo
-// cliente y con el mismo porcentaje que la anulada.
+// Las facturas de los movimientos que quedaron sin ella. Se ENCOLAN en el
+// servidor y Lincoin las emite una por una en segundo plano: se puede cerrar
+// la ventana o la pantalla. (La primera versión emitía desde el navegador, y
+// al cerrarse la pantalla en un lote de 144 se detuvo a mitad.) Una por una
+// y no en paralelo: Siigo toma como duplicada una factura igual a otra de
+// segundos antes, y el candado de cada comprobante impide emitir dos veces
+// la misma. Cada envío va a nombre de su ordenante; los que no lo tienen, al
+// cliente que se elija acá. Una anulada se vuelve a emitir al mismo cliente
+// y con el mismo porcentaje. El servidor decide cada caso; esto es la vista.
 type ModoLote = 'reemitir' | 'comision' | 'directo';
 type ItemLote = { a: Asiento; txId: string; modo: ModoLote; ordenante: ClienteFactura | null };
-type EstadoLote = { estado: 'emitiendo' | 'ok' | 'error' | 'reintento' | 'otro'; texto?: string; a?: string };
-// Si Siigo la toma como duplicada, se reintenta al final de la cola, con
-// espera: lo acepta pasado un rato.
-const ESPERA_DUPLICADO_MS = 90000;
-const REINTENTOS_LOTE = 2;
+type FacturaVivo = { estado: string | null; numero: string | null; error: string | null };
+const ROJO = '#F87171', AMBAR = '#F59E0B';
 
-const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: string; onCerrar: () => void; onTerminado: () => void }> = ({ items, cfg, periodoTxt, onCerrar, onTerminado }) => {
+const EmisionLoteModal: React.FC<{
+  items: ItemLote[]; cfg: any; periodoTxt: string;
+  /** El estado de cada factura según la última lectura de comprobantes, y
+   *  cuántas lecturas van (para no confiar en una anterior a encolar). */
+  vivo: Record<string, FacturaVivo | undefined>; lecturas: number;
+  onCerrar: () => void; onEncolado: () => void;
+}> = ({ items, cfg, periodoTxt, vivo, lecturas, onCerrar, onEncolado }) => {
   const [marcados, setMarcados] = useState<Set<string>>(() => new Set(items.map(i => i.txId)));
   const [pct, setPct] = useState<string>(pctDeCfg(cfg));
   const [cliente, setCliente] = useState<ClienteFactura | null>(null);
-  const [estados, setEstados] = useState<Record<string, EstadoLote>>({});
-  const [corriendo, setCorriendo] = useState(false);
-  const [terminado, setTerminado] = useState(false);
+  // config: se elige · enviando: se encola en el servidor · cola: se mira el avance.
+  const [fase, setFase] = useState<'config' | 'enviando' | 'cola'>('config');
+  const [enviados, setEnviados] = useState<Set<string>>(() => new Set());
+  const [rechazados, setRechazados] = useState<Record<string, string>>({});
+  const [lecturaEnvio, setLecturaEnvio] = useState(0);
   const [aviso, setAviso] = useState<string | null>(null);
-  const [progreso, setProgreso] = useState<{ n: number; total: number }>({ n: 0, total: 0 });
-  const detener = useRef(false);
+  const [deteniendo, setDeteniendo] = useState(false);
   const p = Number(String(pct).replace(',', '.')) || 0;
   const mandato = String(cfg?.modelo ?? '') === 'comision';
-  const yaSalio = (i: ItemLote) => estados[i.txId]?.estado === 'ok';
+  const estadoDe = (txId: string) => vivo[txId]?.estado ?? null;
+  const yaSalio = (i: ItemLote) => estadoDe(i.txId) === 'emitida';
   // Lo marcado que falta emitir: en una segunda vuelta (tras corregir el
   // cliente o el porcentaje) no se repiten las que ya salieron.
   const porEmitir = items.filter(i => marcados.has(i.txId) && !yaSalio(i));
@@ -300,96 +307,73 @@ const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: stri
   const totalDe = (i: ItemLote) => r2((mandato ? Number(i.a.monto) || 0 : 0) + comisionDe(i));
   const sumaComision = porEmitir.filter(i => i.modo === 'comision').reduce((s, i) => s + comisionDe(i), 0);
   const sumaTotal = porEmitir.filter(i => i.modo === 'comision').reduce((s, i) => s + totalDe(i), 0);
-  const resultados = Object.values(estados) as EstadoLote[];
-  const bien = resultados.filter(e => e.estado === 'ok').length;
-  const mal = resultados.filter(e => e.estado === 'error').length;
 
-  // Cerrar la pestaña a mitad corta la cola (lo ya emitido queda emitido).
-  useEffect(() => {
-    if (!corriendo) return;
-    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
-    window.addEventListener('beforeunload', h);
-    return () => window.removeEventListener('beforeunload', h);
-  }, [corriendo]);
+  // El avance sale de los comprobantes: hasta que llega una lectura hecha
+  // después de encolar, lo enviado se muestra "en cola".
+  const fiable = lecturas > lecturaEnvio;
+  type Fila = { rot: string; color: string; detalle?: string; mono?: boolean; cola?: boolean };
+  const estadoFila = (i: ItemLote): Fila | null => {
+    const v = vivo[i.txId];
+    const e = v?.estado ?? null;
+    if (fase === 'cola' && enviados.has(i.txId)) {
+      if (rechazados[i.txId]) return { rot: 'no se encoló', color: ROJO, detalle: rechazados[i.txId] };
+      if (!fiable) return { rot: 'en cola', color: C.sub, cola: true };
+      if (e === 'en_cola') return /duplicad/i.test(v?.error ?? '') ? { rot: 'en espera', color: AMBAR, detalle: v?.error ?? undefined, cola: true } : { rot: 'en cola', color: C.sub, cola: true };
+      if (e === 'emitiendo') return { rot: 'emitiendo…', color: C.text, cola: true };
+    }
+    if (e === 'emitida') return { rot: v?.numero ?? 'emitida', color: C.entra, mono: true };
+    if (e === 'error' && (fase === 'cola' ? enviados.has(i.txId) : true)) return { rot: 'error', color: ROJO, detalle: v?.error ?? undefined };
+    if (fase === 'cola' && enviados.has(i.txId)) return { rot: e === 'omitida' ? 'no aplica' : (e ?? 'sin estado'), color: C.sub, detalle: v?.error ?? undefined };
+    return null;
+  };
+  const env = items.filter(i => enviados.has(i.txId));
+  const filas = env.map(estadoFila);
+  const nEmitidas = env.filter(i => yaSalio(i)).length;
+  const nCola = filas.filter(f => f?.cola).length;
+  const nError = filas.filter(f => f?.color === ROJO).length;
+  const terminado = fase === 'cola' && fiable && nCola === 0;
 
-  const emitirUno = (i: ItemLote): Promise<any> => {
-    if (i.modo === 'comision') {
-      const c = i.ordenante ?? cliente!;
-      return llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: i.txId, clienteIdentification: c.identification, clienteNombre: c.nombre, clienteEsEmpresa: c.esEmpresa, comisionPct: p }, 130000);
-    }
-    return llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: i.txId }, 130000);
+  const encolar = async () => {
+    if (!listo || fase !== 'config') return;
+    setFase('enviando'); setAviso(null);
+    const ids = porEmitir.map(i => i.txId);
+    const r = await llamarFuncion('facturacion', { action: 'lote_encolar', transactionIds: ids, comisionPct: p, cliente }, 120000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    if (!r?.ok) { setFase('config'); setAviso(r?.error ?? 'No se pudo poner en cola.'); return; }
+    const rech: Record<string, string> = {};
+    for (const o of (r.omitidos ?? []) as any[]) rech[String(o.id)] = String(o.motivo ?? 'No se encoló.');
+    setRechazados(rech); setEnviados(new Set(ids)); setLecturaEnvio(lecturas); setFase('cola');
+    if (Number(r.encolados) > 0 && !r.corriendo) setAviso('Quedaron en cola, pero la emisión no arrancó todavía. Se retoma sola en unos minutos.');
+    onEncolado();
   };
-  const dormir = async (ms: number) => {
-    const fin = Date.now() + ms;
-    while (Date.now() < fin && !detener.current) await new Promise(r => setTimeout(r, Math.min(1000, fin - Date.now())));
-  };
-  const correr = async () => {
-    if (!listo || corriendo) return;
-    detener.current = false;
-    setCorriendo(true); setTerminado(false); setAviso(null);
-    const cola = porEmitir.map(i => ({ i, intentos: 0, noAntes: 0 }));
-    // Las que fallaron antes vuelven a la cola: su error viejo se borra.
-    setEstados(s => Object.fromEntries((Object.entries(s) as [string, EstadoLote][]).filter(([, v]) => v.estado === 'ok')));
-    let n = 0;
-    setProgreso({ n: 0, total: cola.length });
-    while (cola.length && !detener.current) {
-      const k = cola.findIndex(x => x.noAntes <= Date.now());
-      if (k < 0) {
-        const espera = Math.min(...cola.map(x => x.noAntes)) - Date.now();
-        setAviso(`Esperando ${Math.ceil(espera / 1000)} s para reintentar las que Siigo tomó como duplicadas…`);
-        await dormir(espera);
-        setAviso(null);
-        continue;
-      }
-      const [x] = cola.splice(k, 1);
-      setEstados(s => ({ ...s, [x.i.txId]: { estado: 'emitiendo' } }));
-      const r: any = await emitirUno(x.i).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
-      let nuevo: EstadoLote;
-      // A quién se le facturó de verdad: el cliente elegido puede cambiar
-      // antes de una segunda vuelta.
-      const usado = x.i.modo === 'comision' ? (x.i.ordenante ?? cliente) : null;
-      if (r?.ok && (r.estado === 'emitida' || r.numero)) nuevo = { estado: 'ok', texto: String(r.numero ?? 'emitida'), ...(usado ? { a: usado.nombre || usado.identification } : {}) };
-      else if (r?.ok) nuevo = { estado: 'otro', texto: r.estado === 'omitida' ? 'no aplica' : String(r.estado ?? 'sin cambio') };
-      else if (r?.reintento && x.intentos < REINTENTOS_LOTE) {
-        cola.push({ ...x, intentos: x.intentos + 1, noAntes: Date.now() + ESPERA_DUPLICADO_MS });
-        nuevo = { estado: 'reintento', texto: 'Siigo la tomó como duplicada; se reintenta en un rato' };
-      } else nuevo = { estado: 'error', texto: String(r?.error ?? 'No se pudo emitir.') };
-      if (nuevo.estado !== 'reintento') { n += 1; setProgreso(pr => ({ ...pr, n })); }
-      setEstados(s => ({ ...s, [x.i.txId]: nuevo }));
-    }
-    // Detenido: lo que quedó en la cola no se intentó (o esperaba reintento).
-    if (cola.length) {
-      setEstados(s => { const m = { ...s }; for (const x of cola) m[x.i.txId] = { estado: 'otro', texto: 'sin emitir' }; return m; });
-      setAviso(`Detenido. Quedaron ${cola.length} sin emitir.`);
-    } else setAviso(null);
-    setCorriendo(false); setTerminado(true);
-    onTerminado();
+  const detener = async () => {
+    setDeteniendo(true);
+    const r = await llamarFuncion('facturacion', { action: 'lote_cancelar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setDeteniendo(false);
+    setAviso(r?.ok ? `Detenido. ${Number(r.cancelados) || 0} volvieron a como estaban (las que ya salieron quedan emitidas).` : (r?.error ?? 'No se pudo detener.'));
+    onEncolado();
   };
 
   const alternar = (txId: string) => setMarcados(m => { const n = new Set(m); if (n.has(txId)) n.delete(txId); else n.add(txId); return n; });
   const todos = marcados.size === items.length;
-  const aNombreDe = (i: ItemLote) => estados[i.txId]?.a ? `a ${estados[i.txId].a}${i.ordenante ? ' (ordenante)' : ''}`
+  const aNombreDe = (i: ItemLote) => yaSalio(i) ? 'factura emitida'
     : i.modo === 'reemitir' ? 'al mismo cliente de la anulada'
     : i.modo === 'directo' ? 'según Configuración'
     : i.ordenante ? `a ${i.ordenante.nombre || i.ordenante.identification} (ordenante)`
     : cliente ? `a ${cliente.nombre || cliente.identification}` : 'al cliente que elijas';
-  const colorEstado = (e?: EstadoLote) => !e ? C.tenue : e.estado === 'ok' ? C.entra : e.estado === 'error' ? '#F87171' : e.estado === 'reintento' ? '#F59E0B' : C.sub;
-  // Corto, a la derecha; el detalle del error o de la espera va debajo.
-  const rotEstado = (e: EstadoLote) => e.estado === 'emitiendo' ? 'emitiendo…' : e.estado === 'ok' ? (e.texto ?? 'emitida') : e.estado === 'error' ? 'error' : e.estado === 'reintento' ? 'en espera' : (e.texto ?? '');
-  const bloqueado = corriendo || terminado;
+  const enConfig = fase === 'config';
 
   return (
-    <div className="fixed inset-0 z-[110] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => { if (!corriendo) onCerrar(); }}>
+    <div className="fixed inset-0 z-[110] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => { if (fase !== 'enviando') onCerrar(); }}>
       <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 680, maxHeight: '92vh', overflowY: 'auto', background: '#0C0E0D', border: `1px solid rgba(255,255,255,0.12)`, borderRadius: 18, fontFamily: FONT, padding: '20px 22px' }}>
         <div className="flex items-start justify-between" style={{ gap: 12 }}>
           <div>
             <p style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: 0 }}>Emitir facturas en lote</p>
             <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0' }}>{items.length} movimiento{items.length === 1 ? '' : 's'} sin factura · {periodoTxt}</p>
           </div>
-          <button onClick={() => { if (!corriendo) onCerrar(); }} disabled={corriendo} aria-label="Cerrar" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.borde}`, background: 'transparent', color: C.sub, fontSize: 16, cursor: corriendo ? 'not-allowed' : 'pointer', opacity: corriendo ? 0.4 : 1 }}>×</button>
+          <button onClick={() => { if (fase !== 'enviando') onCerrar(); }} aria-label="Cerrar" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.borde}`, background: 'transparent', color: C.sub, fontSize: 16, cursor: 'pointer' }}>×</button>
         </div>
 
-        {nComision > 0 && !bloqueado && (
+        {nComision > 0 && enConfig && (
           <>
             {sinOrdenante > 0 && (
               <>
@@ -406,19 +390,35 @@ const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: stri
               <input type="number" min={0} max={100} step={0.01} value={pct} onChange={e => setPct(e.target.value)} placeholder="0,6" inputMode="decimal" style={{ ...CAMPO, width: 120 }} />
               <span style={{ fontSize: 12, color: C.sub }}>{cfg?.utilidad_pct ? `Configurado: ${cfg.utilidad_pct} %` : 'Ponelo en Configuración para no escribirlo cada vez'}</span>
             </div>
-            {faltaItem && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0' }}>Faltan en Configuración el ítem de comisión{mandato ? ' y el de ingresos recibidos para terceros' : ''}. Sin eso no se puede emitir.</p>}
+            {faltaItem && <p style={{ fontSize: 11.5, color: AMBAR, margin: '8px 0 0' }}>Faltan en Configuración el ítem de comisión{mandato ? ' y el de ingresos recibidos para terceros' : ''}. Sin eso no se puede emitir.</p>}
           </>
+        )}
+
+        {fase !== 'config' && (
+          <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 12, border: `1px solid ${terminado ? C.borde : 'rgba(74,222,128,0.30)'}`, background: terminado ? 'transparent' : 'rgba(74,222,128,0.05)' }}>
+            <p style={{ fontSize: 13, color: C.text, margin: 0, fontWeight: 700 }}>
+              {fase === 'enviando' ? 'Poniendo en cola…' : terminado ? 'Listo.' : 'Emitiendo en Siigo, una por una…'}
+            </p>
+            {fase === 'cola' && (
+              <p style={{ fontSize: 12.5, margin: '4px 0 0', lineHeight: 1.5 }}>
+                <span style={{ color: C.entra }}>{nEmitidas} emitida{nEmitidas === 1 ? '' : 's'}</span>
+                {nError > 0 && <span style={{ color: ROJO }}> · {nError} con error</span>}
+                {nCola > 0 && <span style={{ color: C.sub }}> · {nCola} en cola</span>}
+              </p>
+            )}
+            {fase === 'cola' && !terminado && <p style={{ fontSize: 11.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.5 }}>Sigue en segundo plano: puedes cerrar esta ventana o la pantalla. Las que salen van apareciendo con su número en Movimientos.</p>}
+          </div>
         )}
 
         <div className="flex items-center justify-between" style={{ margin: '18px 0 6px', gap: 10 }}>
           <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>MOVIMIENTOS · {marcados.size} DE {items.length}</p>
-          {!bloqueado && <button onClick={() => setMarcados(todos ? new Set() : new Set(items.map(i => i.txId)))} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>{todos ? 'Quitar todos' : 'Marcar todos'}</button>}
+          {enConfig && <button onClick={() => setMarcados(todos ? new Set() : new Set(items.map(i => i.txId)))} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>{todos ? 'Quitar todos' : 'Marcar todos'}</button>}
         </div>
         <div style={{ border: `1px solid ${C.borde}`, borderRadius: 10, maxHeight: 300, overflowY: 'auto' }}>
           {items.map((i, k) => {
-            const e = estados[i.txId];
+            const f = estadoFila(i);
             const on = marcados.has(i.txId);
-            const fija = bloqueado || yaSalio(i);
+            const fija = !enConfig || yaSalio(i);
             return (
               <label key={i.txId} className="flex items-start" style={{ gap: 10, padding: '9px 12px', borderTop: k ? `1px solid ${C.borde}` : 'none', cursor: fija ? 'default' : 'pointer', opacity: on ? 1 : 0.45 }}>
                 <input type="checkbox" checked={on} disabled={fija} onChange={() => alternar(i.txId)} style={{ accentColor: C.entra, marginTop: 3 }} />
@@ -429,13 +429,13 @@ const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: stri
                   </span>
                   <span className="flex items-baseline justify-between" style={{ gap: 10, marginTop: 2 }}>
                     <span style={{ fontSize: 11, color: C.sub, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {new Date(i.a.ts).toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })} · {i.modo === 'reemitir' ? 'Volver a emitir · ' : ''}{aNombreDe(i)}
+                      {new Date(i.a.ts).toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })} · {i.modo === 'reemitir' && !yaSalio(i) ? 'Volver a emitir · ' : ''}{aNombreDe(i)}
                     </span>
-                    {i.modo === 'comision' && p > 0 && !e && <span style={{ fontSize: 11, color: C.sub, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>factura {fmtCop2(totalDe(i))}</span>}
-                    {e && <span style={{ fontSize: 11, fontWeight: 700, color: colorEstado(e), whiteSpace: 'nowrap', fontFamily: e.estado === 'ok' ? 'ui-monospace, monospace' : FONT }}>{rotEstado(e)}</span>}
+                    {f ? <span style={{ fontSize: 11, fontWeight: 700, color: f.color, whiteSpace: 'nowrap', fontFamily: f.mono ? 'ui-monospace, monospace' : FONT }}>{f.rot}</span>
+                      : i.modo === 'comision' && p > 0 && <span style={{ fontSize: 11, color: C.sub, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>factura {fmtCop2(totalDe(i))}</span>}
                   </span>
-                  {e && (e.estado === 'error' || e.estado === 'reintento') && e.texto && (
-                    <span style={{ display: 'block', fontSize: 10.5, color: colorEstado(e), marginTop: 3, lineHeight: 1.4, wordBreak: 'break-word' }}>{e.texto}</span>
+                  {f?.detalle && (f.color === ROJO || f.color === AMBAR) && (
+                    <span style={{ display: 'block', fontSize: 10.5, color: f.color, marginTop: 3, lineHeight: 1.4, wordBreak: 'break-word' }}>{f.detalle}</span>
                   )}
                 </span>
               </label>
@@ -443,7 +443,7 @@ const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: stri
           })}
         </div>
 
-        {nComision > 0 && p > 0 && !bloqueado && (
+        {nComision > 0 && p > 0 && enConfig && (
           <div style={{ marginTop: 10 }}>
             <div className="flex items-center justify-between" style={{ padding: '5px 0' }}>
               <span style={{ fontSize: 12.5, color: C.sub }}>Comisiones ({p} %, IVA incluido)</span>
@@ -455,37 +455,36 @@ const EmisionLoteModal: React.FC<{ items: ItemLote[]; cfg: any; periodoTxt: stri
             </div>
           </div>
         )}
-        {nReemitir > 0 && !bloqueado && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>{nReemitir === 1 ? 'La anulada se vuelve' : `Las ${nReemitir} anuladas se vuelven`} a emitir al mismo cliente y con el mismo porcentaje de la factura anulada, con el cálculo vigente.</p>}
-
-        {(corriendo || terminado) && (
-          <p style={{ fontSize: 12.5, color: C.text, margin: '14px 0 0', lineHeight: 1.5 }}>
-            {corriendo ? `Emitiendo ${Math.min(progreso.n + 1, progreso.total)} de ${progreso.total}… ` : 'Listo. '}
-            <span style={{ color: C.entra }}>{bien} emitida{bien === 1 ? '' : 's'}</span>
-            {mal > 0 && <span style={{ color: '#F87171' }}> · {mal} con error</span>}
-          </p>
-        )}
-        {corriendo && <p style={{ fontSize: 11, color: C.tenue, margin: '4px 0 0' }}>No cierres esta ventana mientras emite. Las que ya salieron quedan emitidas aunque se detenga.</p>}
-        {aviso && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '6px 0 0' }}>{aviso}</p>}
+        {nReemitir > 0 && enConfig && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>{nReemitir === 1 ? 'La anulada se vuelve' : `Las ${nReemitir} anuladas se vuelven`} a emitir al mismo cliente y con el mismo porcentaje de la factura anulada, con el cálculo vigente.</p>}
+        {enConfig && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Lincoin las emite en segundo plano: después de confirmar puedes cerrar la ventana.</p>}
+        {aviso && <p style={{ fontSize: 11.5, color: AMBAR, margin: '10px 0 0', lineHeight: 1.5 }}>{aviso}</p>}
 
         <div className="flex" style={{ gap: 9, marginTop: 16 }}>
-          {corriendo ? (
-            <button onClick={() => { detener.current = true; }} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>
-              Detener después de esta
-            </button>
-          ) : terminado ? (
-            <>
-              {/* Vuelve a la configuración con lo que falta: se puede
-                  cambiar el cliente o el porcentaje y emitir otra vez. */}
-              {porEmitir.length > 0 && <button onClick={() => setTerminado(false)} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Corregir y reintentar</button>}
-              <button onClick={onCerrar} className="lincoin-btn-white" style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Cerrar</button>
-            </>
-          ) : (
+          {fase === 'config' ? (
             <>
               <button onClick={onCerrar} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Cancelar</button>
-              <button onClick={correr} disabled={!listo} className="lincoin-btn-white"
+              <button onClick={encolar} disabled={!listo} className="lincoin-btn-white"
                 style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: listo ? 'pointer' : 'not-allowed', opacity: listo ? 1 : 0.45 }}>
                 {`Emitir ${porEmitir.length} factura${porEmitir.length === 1 ? '' : 's'}`}
               </button>
+            </>
+          ) : fase === 'enviando' ? (
+            <button disabled className="lincoin-btn-white" style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', opacity: 0.6 }}>Poniendo en cola…</button>
+          ) : (
+            <>
+              {!terminado && (
+                <button onClick={detener} disabled={deteniendo} title="Lo que todavía no salió vuelve a como estaba; lo emitido queda emitido"
+                  style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer', opacity: deteniendo ? 0.5 : 1 }}>
+                  {deteniendo ? 'Deteniendo…' : 'Detener las que faltan'}
+                </button>
+              )}
+              {terminado && nError > 0 && porEmitir.length > 0 && (
+                <button onClick={() => { setFase('config'); setEnviados(new Set()); setRechazados({}); setAviso(null); }}
+                  style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>
+                  Corregir y reintentar
+                </button>
+              )}
+              <button onClick={onCerrar} className="lincoin-btn-white" style={{ flex: 1.4, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer' }}>Cerrar</button>
             </>
           )}
         </div>
@@ -670,6 +669,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [foliosVersion, setFoliosVersion] = useState(0);
   // Relectura liviana de los comprobantes (sin pedir la configuración otra vez).
   const [pulsoFolios, setPulsoFolios] = useState(0);
+  // Cuántas lecturas de comprobantes van: el lote no confía en una que se
+  // pidió antes de encolar.
+  const [lecturas, setLecturas] = useState(0);
 
   const ahora = useMemo(() => new Date(), []);
   const mesY = mesVer?.y ?? ahora.getFullYear(), mesM = mesVer?.m ?? ahora.getMonth();
@@ -711,7 +713,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       if (error && /column|schema cache|PGRST/i.test(error.message)) ({ data, error } = await supabase.from('comprobantes').select('*').eq('user_id', userId).limit(2000));
       if (!vivo) return;
       if (error) { setFoliosEstado(/does not exist|42P01|schema cache/i.test(error.message) ? 'sin_tabla' : 'error'); return; }
-      setFolios(mapaFolios((data ?? []) as any[])); setFoliosEstado('ok');
+      setFolios(mapaFolios((data ?? []) as any[])); setFoliosEstado('ok'); setLecturas(v => v + 1);
     })();
     return () => { vivo = false; };
   }, [userId, foliosVersion, pulsoFolios, soloLectura, comprobantesExternos]);
@@ -726,6 +728,31 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     window.addEventListener('focus', otraVez);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', otraVez); window.removeEventListener('focus', otraVez); };
   }, [userId, soloLectura, comprobantesExternos]);
+  // Con una cola de lote andando (o su ventana abierta), cada 5 s: así se
+  // ven salir las facturas una por una.
+  type FolioFila = (typeof folios)[string];
+  const enCola = useMemo(() => (Object.values(folios) as FolioFila[]).filter(f => f.factura?.estado === 'en_cola').length, [folios]);
+  const emitiendoAhora = useMemo(() => (Object.values(folios) as FolioFila[]).some(f => f.factura?.estado === 'emitiendo' && f.factura.at && Date.now() - new Date(f.factura.at).getTime() < 300000), [folios]);
+  const [loteAbierto, setLoteAbierto] = useState(false);
+  useEffect(() => {
+    if (!userId || soloLectura || comprobantesExternos) return;
+    if (!enCola && !emitiendoAhora && !loteAbierto) return;
+    const t = setInterval(() => { if (document.visibilityState === 'visible') setPulsoFolios(v => v + 1); }, 5000);
+    return () => clearInterval(t);
+  }, [userId, soloLectura, comprobantesExternos, enCola > 0, emitiendoAhora, loteAbierto]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vivo = useMemo(() => {
+    const m: Record<string, FacturaVivo> = {};
+    for (const [k, f] of Object.entries(folios) as [string, FolioFila][]) m[k] = { estado: f.factura?.estado ?? null, numero: f.factura?.numero ?? null, error: f.factura?.error ?? null };
+    return m;
+  }, [folios]);
+  const [deteniendoCola, setDeteniendoCola] = useState(false);
+  const detenerCola = async () => {
+    setDeteniendoCola(true);
+    const r = await llamarFuncion('facturacion', { action: 'lote_cancelar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setDeteniendoCola(false);
+    setPulsoFolios(v => v + 1);
+    if (!r?.ok) alert(r?.error ?? 'No se pudo detener la cola.');
+  };
   // ¿Tiene la facturación automática activa? Solo para decidir qué dice la
   // columna FACTURA y el botón de configuración. Y el chequeo del servidor:
   // movimientos completados que nunca recibieron comprobante (señal de que
@@ -820,7 +847,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (!txId) return null;
     const fa = folios[txId]?.factura;
     const est = fa?.estado ?? null;
-    if (est === 'emitida') return null;
+    if (est === 'emitida' || est === 'en_cola') return null;
     if (est === 'emitiendo' && (!fa?.at || Date.now() - new Date(fa.at).getTime() < 180000)) return null;
     if (esComision) {
       if (est === 'anulada') return 'reemitir';
@@ -923,7 +950,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     .filter(a => !q || a.contraparte.toLowerCase().includes(q) || a.tipo.toLowerCase().includes(q) || String(folios[String(a.tx.id)]?.numero ?? '').toLowerCase().includes(q) || String(a.tx.providerRef ?? a.tx.reference ?? '').toLowerCase().includes(q))
     .sort((x, y) => y.ts - x.ts);
   // Mientras no llegan los comprobantes no se sabe qué tiene factura.
-  const sinFactura = foliosEstado === 'ok' ? listaBase.filter(a => modoLote(a) != null) : [];
+  // Lo que está en la cola del lote también está sin factura (todavía).
+  const sinFactura = foliosEstado === 'ok' ? listaBase.filter(a => modoLote(a) != null || folios[String(a.tx?.id ?? '')]?.factura?.estado === 'en_cola') : [];
   const lista = soloSinFactura ? sinFactura : listaBase;
   const mostrados = lista.slice(0, limite);
   // El lote: lo que está sin factura en lo filtrado (periodo, moneda,
@@ -941,7 +969,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     }
     return out;
   };
-  const nLote = new Set(sinFactura.map(a => String(a.tx.id))).size;
+  const nSinFactura = new Set(sinFactura.map(a => String(a.tx.id))).size;
+  const nLote = new Set(sinFactura.filter(a => modoLote(a) != null).map(a => String(a.tx.id))).size;
 
   // ── Estado de cuenta del periodo, en la moneda elegida ──
   const [pDesde, pHasta] = R;
@@ -1285,7 +1314,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />
       )}
       {lote && cfgFact && (
-        <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} onCerrar={() => { setLote(null); setFoliosVersion(v => v + 1); }} onTerminado={() => setPulsoFolios(v => v + 1)} />
+        <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} vivo={vivo} lecturas={lecturas} onCerrar={() => { setLote(null); setLoteAbierto(false); setPulsoFolios(v => v + 1); }} onEncolado={() => setPulsoFolios(v => v + 1)} />
       )}
       {comisionPara && cfgFact && (
         <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
@@ -1524,13 +1553,22 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
               <button onClick={() => { setSoloSinFactura(v => !v); setLimite(25); }} aria-pressed={soloSinFactura}
                 title="Movimientos completados que se pueden facturar y todavía no tienen factura emitida"
                 style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 999, cursor: 'pointer', marginLeft: 4, color: soloSinFactura ? C.text : C.sub, background: soloSinFactura ? 'rgba(74,222,128,0.10)' : 'transparent', border: `1px solid ${soloSinFactura ? 'rgba(74,222,128,0.40)' : C.borde}` }}>
-                Sin factura <span style={{ color: soloSinFactura ? C.entra : C.tenue, fontVariantNumeric: 'tabular-nums' }}>· {nLote}</span>
+                Sin factura <span style={{ color: soloSinFactura ? C.entra : C.tenue, fontVariantNumeric: 'tabular-nums' }}>· {nSinFactura}</span>
               </button>
             )}
           </div>
           <div className="flex items-center flex-wrap" style={{ gap: 8, maxWidth: '100%' }}>
+            {/* La cola del lote trabaja en el servidor: se ve acá aunque se
+                haya cerrado la ventana, y se puede detener. */}
+            {enCola > 0 && !soloLectura && (
+              <span className="flex items-center" style={{ gap: 8, fontSize: 12, color: C.sub, padding: '6px 4px' }} title="Lincoin está emitiendo estas facturas en segundo plano, una por una">
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: C.entra, display: 'inline-block' }} />
+                Emitiendo · quedan {enCola}
+                <button onClick={detenerCola} disabled={deteniendoCola} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: deteniendoCola ? 0.5 : 1 }}>{deteniendoCola ? '…' : 'Detener'}</button>
+              </span>
+            )}
             {puedeLote && nLote > 0 && (
-              <button onClick={() => setLote(itemsLote())}
+              <button onClick={() => { setLote(itemsLote()); setLoteAbierto(true); }}
                 title="Emitir en Siigo, una por una, las facturas de los movimientos sin factura de lo que está filtrado"
                 style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                 Emitir en lote · {nLote}
@@ -1574,6 +1612,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         // 'emitiendo' de más de 3 min = se cayó a mitad: se ofrece otra vez.
                         const emitiendoSiigo = fa?.estado === 'emitiendo' && (!fa.at || Date.now() - new Date(fa.at).getTime() < 180000);
                         if (emitiendoSiigo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
+                        if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
                             <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
