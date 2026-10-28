@@ -634,8 +634,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                     'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte o una factura de venta al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. Por cada depósito que recibís, facturás a mano tu comisión (IVA incluido) al cliente que te mandó la plata: elegís el cliente y se emite.',
                     'Envío de 15.000.000: documento soporte al beneficiario por 15.000.000. Depósito de 10.000.000 con 0,6 %: factura de 60.000 (base 50.420,17 + IVA 9.579,83).')}
                   {tarjetaModelo('comision', 'Comisión',
-                    'Factura de mandato por el valor TOTAL de cada movimiento, a nombre del ordenante, con dos ítems: ingresos recibidos para terceros (sin IVA) y tu comisión, con el IVA incluido en ella: base + IVA = comisión exacta.',
-                    'Transferencia de 10.000.000 con 1 %: terceros 9.900.000 + comisión 84.033,61 + IVA 15.966,39 = 10.000.000.')}
+                    'Factura de mandato a nombre del ordenante, con dos ítems: ingresos recibidos para terceros por el valor transferido completo (sin IVA) y tu comisión aparte, con el IVA incluido en ella: base + IVA = comisión exacta.',
+                    'Transferencia de 10.000.000 con 1 %: terceros 10.000.000 + comisión 84.033,61 + IVA 15.966,39 = 10.100.000.')}
                 </div>
               </Seccion>
 
@@ -776,7 +776,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                       <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>{modelo === 'comision' ? 'FACTURA DE COMISIÓN POR MOVIMIENTO (AUTOMÁTICA)' : 'DEPÓSITOS: FACTURA DE COMISIÓN (A MANO)'}</p>
                       <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
                         {modelo === 'comision'
-                          ? <>Cada movimiento completado de los tipos marcados emite una factura de mandato por el <b style={{ color: C.text }}>valor total</b>, a nombre del ordenante (en depósitos, de quien mandó la plata), con dos ítems: <b style={{ color: C.text }}>ingresos recibidos para terceros</b> (sin IVA) y tu <b style={{ color: C.text }}>comisión con el IVA incluido</b>. 10.000.000 con 1 %: terceros 9.900.000 + comisión 84.033,61 + IVA 15.966,39 = 10.000.000. Si una factura debe ir a otro cliente o con otro porcentaje, se emite a mano desde el movimiento.</>
+                          ? <>Cada movimiento completado de los tipos marcados emite una factura de mandato a nombre del ordenante (en depósitos, de quien mandó la plata), con dos ítems: <b style={{ color: C.text }}>ingresos recibidos para terceros</b> por el <b style={{ color: C.text }}>valor transferido completo</b> (sin IVA) y tu <b style={{ color: C.text }}>comisión con el IVA incluido</b>, aparte. 10.000.000 con 1 %: terceros 10.000.000 + comisión 84.033,61 + IVA 15.966,39 = 10.100.000. Si una factura debe ir a otro cliente o con otro porcentaje, se emite a mano desde el movimiento.</>
                           : <>Un depósito no se factura por el monto: se factura tu comisión al cliente que te mandó la plata, y ese cliente se elige al emitir (Contabilidad → «Emitir factura» en el depósito). El porcentaje es <b style={{ color: C.text }}>con IVA incluido</b>: con 10.000.000 y 0,6 % la factura es de 60.000 en total, no 60.000 + IVA.</>}
                       </p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>

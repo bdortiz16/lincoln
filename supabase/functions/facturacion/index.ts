@@ -1108,12 +1108,15 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy, utilidad: String(pct),
   }
   const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? `{${k}}`)
-  // MODELO COMISIÓN = factura de MANDATO por el valor TOTAL del movimiento,
-  // con dos ítems (como la FEV 723 que hizo el cliente a mano):
-  //   1) Ingresos recibidos para terceros = monto − comisión, sin IVA.
+  // MODELO COMISIÓN = factura de MANDATO con dos ítems:
+  //   1) Ingresos recibidos para terceros = el monto COMPLETO transferido,
+  //      sin IVA.
   //   2) Comisión por intermediación: base tal que base + IVA = comisión.
-  // 10.000.000 con 100.000 de comisión → 9.900.000 + 84.033,61 + IVA
-  // 15.966,39 = 10.000.000. En PSP (depósito a mano) sigue solo la comisión.
+  // 10.000.000 con 1 % → 10.000.000 + 84.033,61 + IVA 15.966,39 =
+  // 10.100.000. Antes la línea de terceros era monto − comisión, para que el
+  // total diera el monto exacto: así la factura decía que se transfirió
+  // menos de lo que se transfirió, y la comisión quedaba descontada en vez
+  // de cobrada aparte. En PSP (depósito a mano) sigue solo la comisión.
   const mandato = String(cfg.modelo ?? '') === 'comision'
   const itemTerceros = String(cfg.item_terceros ?? '').trim()
   if (mandato && !itemTerceros) return falla('Falta elegir en Configuración el ítem de ingresos recibidos para terceros (sin IVA).')
@@ -1153,8 +1156,9 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const armar = (tarifa: number) => {
     const base = r2(comision / (1 + tarifa))
     const ivaV = r2(base * tarifa)
-    // Mandato: los terceros absorben el redondeo, así el total es el monto exacto.
-    const terceros = mandato ? r2(monto - base - ivaV) : 0
+    // Mandato: los terceros son el monto transferido, completo; la comisión
+    // (base + IVA) va aparte y se suma.
+    const terceros = mandato ? r2(monto) : 0
     const total = r2(terceros + base + ivaV)
     // El impuesto va SIEMPRE en la línea cuando hay tarifa: Siigo no aplica
     // por su cuenta el IVA del producto en una factura por API (con 60.000

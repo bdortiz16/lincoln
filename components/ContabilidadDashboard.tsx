@@ -108,12 +108,13 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   const comision = r2(monto * p / 100);
   const base = r2(comision / (1 + tarifa));
   const ivaV = r2(base * tarifa);
-  // Modelo Comisión = factura de mandato por el total del movimiento:
-  // ítem 1 ingresos para terceros (sin IVA) + ítem 2 comisión con IVA incluido.
+  // Modelo Comisión = factura de mandato: ítem 1 ingresos para terceros por
+  // el monto completo transferido (sin IVA) + ítem 2 comisión con IVA
+  // incluido. El total es el monto más la comisión.
   const mandato = String(cfg?.modelo ?? '') === 'comision';
   const itemTerceros = String(cfg?.item_terceros ?? '');
   const prodTerceros = (cfg?.catalogos?.productos ?? []).find((x: any) => String(x.code) === itemTerceros) ?? null;
-  const terceros = mandato ? r2(monto - base - ivaV) : 0;
+  const terceros = mandato ? r2(monto) : 0;
   const total = r2(terceros + base + ivaV);
   const faltaItem = !item || (mandato && !itemTerceros);
   const elegido = cliente ?? (manual.doc.replace(/\D/g, '').length >= 5 ? { identification: manual.doc.replace(/\D/g, ''), nombre: manual.nombre.trim(), esEmpresa: manual.esEmpresa } : null);
@@ -219,7 +220,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
           {fila(iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA (el ítem no tiene impuesto en Siigo)', `${fmtCop2(ivaV)} COP`)}
           {fila('Total de la factura', `${fmtCop2(total)} COP`, true)}
         </div>
-        {mandato && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Factura de mandato por el total del movimiento: terceros + base + IVA = {fmtCop2(monto)} COP. Los ingresos para terceros no son ingreso propio y van sin IVA.</p>}
+        {mandato && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Factura de mandato: el valor transferido completo ({fmtCop2(monto)} COP) más tu comisión (base + IVA) = {fmtCop2(total)} COP. Los ingresos para terceros no son ingreso propio y van sin IVA.</p>}
         <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>La comisión no es {fmtCop2(comision)} + IVA: la base se calcula para que base + IVA dé la comisión. Siigo liquida el IVA con la tarifa del ítem; puede haber un centavo de redondeo.</p>
 
         {resultado && <p style={{ fontSize: 12.5, color: resultado.ok ? C.entra : '#F87171', margin: '12px 0 0', lineHeight: 1.5, wordBreak: 'break-word' }}>{resultado.texto}</p>}
