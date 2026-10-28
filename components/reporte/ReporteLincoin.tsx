@@ -17,7 +17,7 @@ import ReactDOM from 'react-dom/client';
 
 // A4 a 96 dpi.
 const ANCHO = 794, ALTO = 1123, MARGEN = 44;
-const CABECERA_1 = 150, CABECERA_N = 56, PIE = 70;
+const CABECERA_1 = 168, CABECERA_N = 56, PIE = 70;
 
 // Paleta sobre fondo claro (CLAUDE.md): letras #15181A, verde #22A35C.
 const T = {
@@ -217,6 +217,11 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
           </div>
           <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.4px', margin: '18px 0 0' }}>{nombre}</p>
           <p style={{ fontSize: 11, color: T.sub, margin: '3px 0 0' }}>{`${f.tipoDocumento ?? ''} ${f.documento ?? ''}`.trim()} · ID de consulta {sb.checkId ?? f.jobid ?? '—'}</p>
+          {f.empresa?.nombre && (
+            <p style={{ fontSize: 10.5, color: T.sub, margin: '6px 0 0' }}>
+              Consultado por <b style={{ color: T.texto }}>{f.empresa.nombre}</b>{f.empresa.nit ? ` · NIT ${f.empresa.nit}` : ''}{f.consultadoPor ? ` · ${f.consultadoPor}` : ''}{f.consultadoAt ? ` · ${fecha(f.consultadoAt)}` : ''}
+            </p>
+          )}
         </div>
       ) : (
         <div style={{ height: CABECERA_N - MARGEN + 30, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${T.borde}`, marginBottom: 14 }}>
@@ -228,7 +233,7 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
       <div style={{ position: 'absolute', left: MARGEN, right: MARGEN, bottom: 26, borderTop: `1px solid ${T.borde}`, paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 20 }}>
         <p style={{ fontSize: 8.5, color: T.tenue, margin: 0, lineHeight: 1.45, maxWidth: 560 }}>
           Resumen de la consulta de listas internacionales y fuentes públicas realizada a través de Sarblock. La calidad de cada dato es atribuible a su fuente.
-          Documento de uso interno de cumplimiento; contiene datos personales protegidos por la Ley 1581 de 2012.
+          Documento de uso interno de cumplimiento{f.empresa?.nombre ? ` de ${f.empresa.nombre}` : ''}; contiene datos personales protegidos por la Ley 1581 de 2012.
           {sb.catalogVersion ? ` Catálogo de fuentes ${sb.catalogVersion}.` : ''}
         </p>
         <p style={{ fontSize: 9, color: T.sub, margin: 0, whiteSpace: 'nowrap' }}>Página {n} de {total}</p>
