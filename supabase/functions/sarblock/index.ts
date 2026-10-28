@@ -300,7 +300,7 @@ const vista = (r: any, cfg: R.ConfigRisk, empresa?: { nombre: string; nit: strin
 
 async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Record<string, any>): Promise<Response | Record<string, unknown>> {
   // ── Admin ──────────────────────────────────────────────────────────────
-  if (accion.startsWith('admin_risk_')) {
+  if (accion.startsWith('admin_risk_') || accion === 'admin_sarblock_uso') {
     const no = await exigirAdmin(req, yo); if (no) return no
     const cfg = await R.leerConfigRisk(db)
     const por = await nombreDe(yo.userId) ?? 'admin'
@@ -681,7 +681,7 @@ Deno.serve(async (req) => {
     }
 
     // ── Lincoin Risk prepago (risk.ts) ───────────────────────────────────
-    if (accion.startsWith('risk_') || accion.startsWith('admin_risk_')) { const r = await risk(req, yo, uid, accion, body); return r instanceof Response ? r : json(r) }
+    if (accion.startsWith('risk_') || accion.startsWith('admin_risk_') || accion === 'admin_sarblock_uso') { const r = await risk(req, yo, uid, accion, body); return r instanceof Response ? r : json(r) }
 
     // ── Administración ───────────────────────────────────────────────────
     if (accion === 'config_get') {
