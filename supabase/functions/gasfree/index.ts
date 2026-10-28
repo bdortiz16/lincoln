@@ -3104,7 +3104,15 @@ Deno.serve(async (req) => {
         try {
           const { data } = await db.from('system_config').select('value').eq('key', 'blocked_ips').single()
           const list: any[] = data?.value ? JSON.parse(data.value) : []
-          if (list.some((b: any) => b?.ip === reqIp)) {
+          const hit = list.find((b: any) => b?.ip === reqIp)
+          // Un bloqueo "soloPanel" (fallos contra una cuenta de admin) no frena
+          // a los clientes que comparten esa red; a un admin, sí.
+          let esAdminQuienLlama = false
+          if (hit?.soloPanel) {
+            const uid = await callerUserId(req)
+            if (uid) { const { data: pr } = await db.from('users').select('role').eq('id', uid).maybeSingle(); esAdminQuienLlama = (pr as any)?.role === 'admin' }
+          }
+          if (hit && (!hit.soloPanel || esAdminQuienLlama)) {
             return err('Esta conexión está bloqueada por seguridad. Contacta a soporte.', 403)
           }
         } catch { /* si no se puede leer la lista, no se bloquea a nadie por error */ }

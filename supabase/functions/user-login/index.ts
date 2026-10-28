@@ -62,7 +62,15 @@ async function loginThrottle(req: Request, email: string): Promise<string | null
     try {
       const { data } = await db.from('system_config').select('value').eq('key', 'blocked_ips').single()
       const list: any[] = data?.value ? JSON.parse(data.value) : []
-      if (list.some((b: any) => b?.ip === ip)) return 'ip_blocked'
+      const hit = list.find((b: any) => b?.ip === ip)
+      if (hit) {
+        // Un bloqueo "soloPanel" salió de fallos contra una cuenta de admin:
+        // frena solo a cuentas admin. Una oficina comparte IP, y un admin que
+        // se equivocó con su código dejaba afuera a todos los clientes de esa red.
+        if (!hit.soloPanel) return 'ip_blocked'
+        const { data: u } = await db.from('users').select('role').ilike('email', email).maybeSingle()
+        if ((u as any)?.role === 'admin') return 'ip_blocked'
+      }
     } catch { /* si no se puede leer, no se bloquea a nadie por error */ }
   }
   try {
