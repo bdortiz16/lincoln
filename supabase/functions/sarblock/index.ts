@@ -111,6 +111,11 @@ async function guardarFicha(uid: string, doc: string, ficha: Record<string, unkn
   await setRawPath(db, uid, ['tusdatos', 'beneficiarios', doc], ficha, false)
 }
 const soloDigitos = (s: unknown) => String(s ?? '').replace(/\D/g, '')
+// ¿Es el mismo nombre escrito? (sin tildes, mayúsculas ni signos). Ojo: esto
+// no decide si el nombre corresponde al documento —eso es compararNombres—,
+// solo si el cliente escribió lo mismo que la ficha ya tiene.
+const claveNombre = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()
+const mismoNombre = (a: unknown, b: unknown) => claveNombre(a) === claveNombre(b)
 
 // Solo de SUS beneficiarios inscritos se pueden pedir antecedentes desde la
 // cuenta del cliente: sin esto, cualquiera averiguaba de quién es un
@@ -178,8 +183,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     // pagada, sin llamar a Sarblock. Antes la ficha quedaba con el nombre
     // viejo y el bloqueo por identidad seguía (caso Arnu, 2026-10-28).
     const nuevo = String(d.nombre ?? '').trim()
-    const mismo = (a: unknown, b: unknown) => String(a ?? '').trim().toUpperCase().replace(/\s+/g, ' ') === String(b ?? '').trim().toUpperCase().replace(/\s+/g, ' ')
-    if (nuevo && previa.proveedor === 'sarblock' && previa.estado === 'finalizado' && !mismo(nuevo, previa.nombreInscrito)) {
+    if (nuevo && previa.proveedor === 'sarblock' && previa.estado === 'finalizado' && !mismoNombre(nuevo, previa.nombreInscrito)) {
       const r = rejuzgar(previa, { documento: doc, tipoDocumento: d.tipoDocumento, nombre: nuevo })
       if (r) {
         const ficha = { ...r, nombreInscrito: nuevo }
@@ -561,8 +565,21 @@ Deno.serve(async (req) => {
       const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
       const limite = Math.max(1, Math.min(10, Number(body.limite ?? 4) || 4))
       // Un NIT con DV pegado tiene su ficha por los 9 dígitos base.
+      const fichaDe = (x: any) => fichas[soloDigitos(x.docNumber)] ?? fichas[docPadron(String(x.docNumber), String(x.docType ?? 'CC'))]
+      // Ficha de Sarblock con OTRO nombre que el inscrito: se borró y se
+      // volvió a inscribir corregido. lanzar() lo vuelve a juzgar gratis. Si
+      // otro contacto con el mismo documento sí tiene el nombre de la ficha,
+      // no se toca (si no, dos contactos se la quitarían cada vuelta).
+      const renombrado = (x: any) => {
+        const f = fichaDe(x)
+        if (!f || f.proveedor !== 'sarblock' || f.estado !== 'finalizado' || !x.name || mismoNombre(x.name, f.nombreInscrito)) return false
+        const d = soloDigitos(x.docNumber)
+        return !contactos.some((o: any) => soloDigitos(o?.docNumber) === d && mismoNombre(o?.name, f.nombreInscrito))
+      }
+      // Archivada = la de un beneficiario borrado; si vuelve a estar inscrito
+      // se retoma (del padrón, sin costo, si sigue vigente).
       const faltan = contactos.filter(x => x?.accountKind !== 'wallet' && soloDigitos(x?.docNumber)
-        && !fichas[soloDigitos(x.docNumber)] && !fichas[docPadron(String(x.docNumber), String(x.docType ?? 'CC'))])
+        && (!fichaDe(x) || fichaDe(x).estado === 'archivado' || renombrado(x)))
       let lanzados = 0, tope = false
       for (const x of faltan.slice(0, limite)) {
         const r: any = await lanzar(uid, { documento: String(x.docNumber), tipoDocumento: String(x.docType ?? 'CC'), nombre: x.name }, c, yo.esAdmin)
