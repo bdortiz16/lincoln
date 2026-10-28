@@ -38,6 +38,7 @@ import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempote
 import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuzgar, CRITERIO } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
+import { normDoc } from '../_shared/cupos.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -171,7 +172,24 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   const previa = raw?.tusdatos?.beneficiarios?.[doc]
   // Ya consultado (por Sarblock o por TusDatos) y no archivado: no se paga
   // otra vez.
-  if (previa && previa.estado !== 'error' && previa.estado !== 'archivado') return { ok: true, documento: doc, yaExistia: true }
+  if (previa && previa.estado !== 'error' && previa.estado !== 'archivado') {
+    // Se volvió a inscribir con OTRO nombre (p. ej. para corregirlo): el
+    // nombre se compara otra vez contra el oficial desde la consulta ya
+    // pagada, sin llamar a Sarblock. Antes la ficha quedaba con el nombre
+    // viejo y el bloqueo por identidad seguía (caso Arnu, 2026-10-28).
+    const nuevo = String(d.nombre ?? '').trim()
+    const mismo = (a: unknown, b: unknown) => String(a ?? '').trim().toUpperCase().replace(/\s+/g, ' ') === String(b ?? '').trim().toUpperCase().replace(/\s+/g, ' ')
+    if (nuevo && previa.proveedor === 'sarblock' && previa.estado === 'finalizado' && !mismo(nuevo, previa.nombreInscrito)) {
+      const r = rejuzgar(previa, { documento: doc, tipoDocumento: d.tipoDocumento, nombre: nuevo })
+      if (r) {
+        const ficha = { ...r, nombreInscrito: nuevo }
+        await guardarFicha(uid, doc, conDecision(ficha, previa))
+        await auditar('sarblock.nombre_rejuzgado', { userId: uid, documento: doc, antes: previa.nombreInscrito ?? null, ahora: nuevo, nombreCoincide: ficha.nombreCoincide ?? null, categoria: ficha.categoria, operable: ficha.operable })
+        return { ok: true, documento: doc, yaExistia: true, rejuzgado: true }
+      }
+    }
+    return { ok: true, documento: doc, yaExistia: true }
+  }
   // Lincoin Risk: otra cuenta ya consultó a esta persona en los últimos 90
   // días. Se reutiliza sin costo (y no cuenta para el tope); el nombre se
   // compara contra el oficial con lo que escribió ESTA cuenta.
@@ -570,8 +588,12 @@ Deno.serve(async (req) => {
     if (accion === 'archivar_beneficiario') {
       // Se archiva, no se borra: el resultado queda para cumplimiento.
       if (!propio()) return json({ error: 'No autorizado' }, 401)
-      const doc = soloDigitos(body.documento)
-      const f = (await leerRaw(uid))?.tusdatos?.beneficiarios?.[doc]
+      // Un NIT llega con el DV pegado y la ficha está por los 9 dígitos base:
+      // sin esto no se archivaba, y al volver a inscribirlo se reutilizaba
+      // la ficha vieja con el nombre viejo.
+      const fichas = (await leerRaw(uid))?.tusdatos?.beneficiarios ?? {}
+      const doc = fichas[soloDigitos(body.documento)] ? soloDigitos(body.documento) : normDoc(body.documento)
+      const f = fichas[doc]
       if (f) await guardarFicha(uid, doc, { ...f, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: String(body.motivo ?? '').slice(0, 300) || null })
       return json({ ok: true })
     }
