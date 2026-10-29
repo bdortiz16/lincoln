@@ -1195,6 +1195,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [tesCargando, setTesCargando] = useState(false);
   const [tesError, setTesError] = useState<string | null>(null);
   const [tesVer, setTesVer] = useState(0);
+  const [tesVerOcultos, setTesVerOcultos] = useState(false);
+  // Caja de Lincoin (caja_estado): apertura, Lincoin esperado, sospechosas.
+  const [caja, setCaja] = useState<any>(null);
+  const [cajaVer, setCajaVer] = useState(0);
+  const [cajaAbierta, setCajaAbierta] = useState(false);       // detalle del cierre desplegado
+  const [cajaOcultar, setCajaOcultar] = useState<any>(null);    // cargue a revisar/ocultar
+  const [cajaMotivo, setCajaMotivo] = useState('');
+  const [cajaEditar, setCajaEditar] = useState<{ proveedor: string; monto: string; nota: string } | null>(null);
+  const [cajaOcupada, setCajaOcupada] = useState(false);
   // Comprobante bajo demanda: el listado llega sin las imágenes base64
   // (admin-data las reemplaza por '__stored__' para no pesar megas) y aquí
   // se pide la real solo al abrir el detalle.
@@ -1352,13 +1361,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     let vigente = true;
     const t = setTimeout(async () => {
       setTesCargando(true); setTesError(null);
-      const d = await pedirAdmin({ action: 'tesoreria_resumen', desde: tesRango.desde, hasta: tesRango.hasta, filtro: tesFiltro, q: tesQ, miembro: tesMiembro || undefined, mios: tesMios, pagina: tesPagina }).catch(() => null);
+      const d = await pedirAdmin({ action: 'tesoreria_resumen', desde: tesRango.desde, hasta: tesRango.hasta, filtro: tesFiltro, q: tesQ, miembro: tesMiembro || undefined, mios: tesMios, pagina: tesPagina, verOcultos: tesVerOcultos }).catch(() => null);
       if (!vigente) return;
       setTesCargando(false);
       if (d?.ok) setTesData(d); else setTesError(d?.error ?? 'No se pudo cargar el tablero.');
     }, tesQ ? 350 : 0);
     return () => { vigente = false; clearTimeout(t); };
-  }, [activeTab, tesoreriaOk, tesRango, tesFiltro, tesQ, tesMiembro, tesMios, tesPagina, tesVer]);
+  }, [activeTab, tesoreriaOk, tesRango, tesFiltro, tesQ, tesMiembro, tesMios, tesPagina, tesVer, tesVerOcultos]);
+
+  // La caja se lee al abrir la Billetera o la Tesorería.
+  useEffect(() => {
+    if (activeTab !== 'cargues' && activeTab !== 'treasury') return;
+    let vigente = true;
+    pedirAdmin({ action: 'caja_estado' }).then(d => { if (vigente && d?.ok) setCaja(d); }).catch(() => {});
+    return () => { vigente = false; };
+  }, [activeTab, cajaVer]);
+  const cajaAccion = async (body: Record<string, unknown>, ok: string) => {
+    setCajaOcupada(true);
+    const d = await pedirAdmin(body).catch(() => null);
+    setCajaOcupada(false);
+    if (!d?.ok) { showToast(d?.error ?? 'No se pudo completar.'); return false; }
+    showToast(ok); setCajaVer(v => v + 1); setTesVer(v => v + 1);
+    return true;
+  };
   const startMfaEnroll = async () => {
     setMfaBusy(true); setMfaMsg(null);
     try {
@@ -2363,6 +2388,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </div>
                 );
               })}
+              {/* Lo que es de Lincoin en las bolsas: apertura + utilidad desde
+                  entonces (caja_estado). Antes de abrir la caja, se avisa. */}
+              {(() => {
+                const ps: any[] = caja?.proveedores ?? [];
+                const abiertas = ps.filter(p => p.lincoinEsperado != null);
+                const total = abiertas.reduce((a, p) => a + Number(p.lincoinEsperado), 0);
+                return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 200 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· utilidades</span></span>
+                    {!caja ? <p style={{ margin: '4px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
+                      : abiertas.length === 0 ? <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88', maxWidth: 210, lineHeight: 1.4 }}>La caja se abre hoy a las 23:59 (o desde Tesorería).</p>
+                      : <>
+                          <p style={{ margin: '3px 0 0', fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2' }}>{Math.round(total).toLocaleString('es-CO')}</p>
+                          <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{ps.map(p => `${p.proveedor} ${p.lincoinEsperado == null ? '—' : Math.round(p.lincoinEsperado).toLocaleString('es-CO')}`).join(' · ')}</p>
+                        </>}
+                  </div>
+                );
+              })()}
             </div>}
           </div>
           {billeteraPais === 'US' ? (
@@ -3124,6 +3167,111 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           </div>
           {tesError && <p style={{ margin: 0, fontSize: 12.5, color: '#F87171' }}>{tesError}</p>}
 
+          {/* ── Cierre de caja: franja compacta; el detalle se abre a pedido ──
+              bolsa = clientes + Lincoin (+ movimientos externos) ± diferencia.
+              La diferencia de "ahora" usa la bolsa en vivo; la de cada noche
+              queda guardada en caja_cierres (23:59). */}
+          {(() => {
+              const ps: any[] = caja?.proveedores ?? [];
+              const vivo = (n: string) => bolsas.find(b => b.n === n);
+              const filasCaja = ps.map(p => {
+                  const b = vivo(p.proveedor);
+                  const listo = b && !b.loading && !b.error;
+                  const dif = p.lincoinEsperado != null && listo ? Math.round(b!.pool - b!.oblig - p.lincoinEsperado) : null;
+                  const per = f?.porProveedor?.[p.proveedor] ?? { ent: 0, sal: 0, ajustes: 0, costo: 0, utilidad: 0 };
+                  return { ...p, bolsaVivo: listo ? b!.pool : null, clientesVivo: b?.oblig ?? 0, dif, per };
+              });
+              const abiertas = filasCaja.filter(x => x.apertura);
+              const lincoinHoy = abiertas.reduce((a, x) => a + Number(x.lincoinEsperado ?? 0), 0);
+              const difTotal = abiertas.every(x => x.dif != null) && abiertas.length ? abiertas.reduce((a, x) => a + x.dif, 0) : null;
+              const signo = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${fmtCop(Math.abs(n))}`;
+              const dato = (l: string, v: string, color?: string) => (
+                  <div style={{ minWidth: 0 }}>
+                      <p style={{ margin: 0, fontSize: 11, color: '#878E88' }}>{l}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: 15, fontWeight: 800, letterSpacing: '-0.3px', color: color ?? '#F4F4F2', whiteSpace: 'nowrap' }}>{v}</p>
+                  </div>
+              );
+              const franja = (
+                  <div className="flex items-center flex-wrap" style={{ gap: 22 }}>
+                      <div className="flex items-center" style={{ gap: 8, minWidth: 150 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: '#878E88' }}>Cierre de caja</span>
+                          {abiertas.length === 0 && <span style={{ fontSize: 10.5, fontWeight: 700, color: '#93C5FD', border: '1px solid rgba(96,165,250,0.35)', borderRadius: 999, padding: '2px 8px' }}>abre hoy 23:59</span>}
+                      </div>
+                      {abiertas.length > 0 ? <>
+                          {dato('Lincoin hoy', fmtCop(lincoinHoy), '#4ADE80')}
+                          {filasCaja.map(x => <React.Fragment key={x.proveedor}>{dato(`Utilidad ${x.proveedor} · ${tesRango.etiqueta.toLowerCase()}`, signo(Math.round(x.per.utilidad)), x.per.utilidad < 0 ? '#F87171' : undefined)}</React.Fragment>)}
+                          {dato('Diferencia ahora', difTotal == null ? '—' : signo(difTotal), difTotal == null ? 'rgba(244,244,242,0.45)' : difTotal === 0 ? '#4ADE80' : '#FBBF24')}
+                      </> : <span style={{ fontSize: 12.5, color: '#878E88' }}>La caja empieza hoy: a las 23:59 se toma la apertura de cada bolsa.</span>}
+                      <button onClick={() => setCajaAbierta(v => !v)} style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 9, padding: '7px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                          {cajaAbierta ? 'Ocultar detalle' : 'Ver detalle'} <ChevronDown size={14} style={{ transform: cajaAbierta ? 'rotate(180deg)' : 'none' }} />
+                      </button>
+                  </div>
+              );
+              const linea = (l: React.ReactNode, v: number | null, o: { signo?: string; color?: string; tenue?: boolean; fuerte?: boolean } = {}) => (
+                  <div className="flex justify-between" style={{ gap: 10, padding: '5px 0', fontSize: 12.5, color: o.tenue ? 'rgba(244,244,242,0.45)' : '#878E88' }}>
+                      <span>{l}</span>
+                      <span style={{ fontWeight: o.fuerte ? 800 : 700, color: o.color ?? (o.tenue ? 'rgba(244,244,242,0.45)' : '#F4F4F2'), fontVariantNumeric: 'tabular-nums' }}>{v == null ? '—' : `${o.signo ?? ''}${fmtCop(Math.abs(v))}`}</span>
+                  </div>
+              );
+              return (
+                  <div style={{ ...CARD, padding: cajaAbierta ? 18 : '12px 16px' }}>
+                      {franja}
+                      {cajaAbierta && (
+                          <div style={{ marginTop: 14 }}>
+                              {abiertas.length < filasCaja.length && (
+                                  <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 10, padding: '9px 12px', fontSize: 12, color: '#93C5FD', marginBottom: 12 }}>
+                                      <span>La caja se abre sola hoy a las 23:59 con las bolsas de ese momento: lo que sobre después de los saldos de los clientes queda como de Lincoin.</span>
+                                      {esDueno && <button disabled={cajaOcupada} onClick={() => cajaAccion({ action: 'caja_abrir' }, 'Caja abierta.')} style={{ background: '#F4F4F2', color: '#0C0E0D', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>Abrir caja ahora</button>}
+                                  </div>
+                              )}
+                              <div className="grid grid-cols-1 lg:grid-cols-2" style={{ gap: 14 }}>
+                                  {filasCaja.map(x => (
+                                      <div key={x.proveedor} style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: 14 }}>
+                                          <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                                              <span className="flex items-center" style={{ gap: 7, fontWeight: 800, fontSize: 14, color: '#F4F4F2' }}>{x.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {x.proveedor}</span>
+                                              {x.dif == null ? null : x.dif === 0
+                                                ? <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={12} /> Cuadra</span>
+                                                : <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#FBBF24' }}><AlertTriangle size={12} /> No cuadra</span>}
+                                          </div>
+                                          {x.apertura ? <>
+                                              <p style={{ margin: '0 0 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>APERTURA · {new Date(x.apertura.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }).toUpperCase()}</p>
+                                              {linea('Bolsa', x.apertura.bolsa)}
+                                              {linea('− Saldos de los clientes', x.apertura.clientes, { signo: '−' })}
+                                              {linea(<>= Lincoin<span style={{ color: '#4ADE80' }}>.</span> de apertura{x.apertura.editadoAt && x.apertura.nota ? <span style={{ color: 'rgba(244,244,242,0.45)' }}> · corregida</span> : null}</>, x.apertura.lincoin, { color: '#4ADE80', fuerte: true })}
+                                              <p style={{ margin: '10px 0 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>AHORA</p>
+                                              {linea('Bolsa en el proveedor', x.bolsaVivo)}
+                                              {linea('− Saldos de los clientes', x.clientesVivo, { signo: '−' })}
+                                              {linea(<>− Lincoin esperado <span style={{ color: 'rgba(244,244,242,0.45)' }}>(apertura + {fmtCop(x.utilidadDesdeApertura)} de utilidad)</span></>, x.lincoinEsperado, { signo: '−' })}
+                                              {linea(<span style={{ color: 'rgba(244,244,242,0.45)' }}>± Retiros de Lincoin y movimientos externos · próximamente</span>, 0, { tenue: true })}
+                                              <div className="flex justify-between" style={{ marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
+                                                  background: x.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${x.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: x.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
+                                                  <span>Diferencia sin explicar</span><span>{x.dif == null ? '—' : signo(x.dif)}</span>
+                                              </div>
+                                              {x.ultimaFoto && <p style={{ margin: '5px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>Último cierre ({x.ultimaFoto.fecha}): diferencia {x.ultimaFoto.diferencia == null ? '—' : signo(x.ultimaFoto.diferencia)}</p>}
+                                          </> : <p style={{ margin: '4px 0 8px', fontSize: 12.5, color: '#878E88' }}>Sin apertura todavía.</p>}
+                                          <p style={{ margin: '10px 0 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>{tesRango.etiqueta.toUpperCase()}</p>
+                                          {linea('+ Cargues', x.per.ent, { signo: '+' })}
+                                          {x.per.costo > 0 && linea(<span style={{ color: 'rgba(244,244,242,0.45)' }}>&nbsp;&nbsp;costo Mouv 0,10 % (no es de Lincoin)</span>, x.per.costo, { signo: '−', tenue: true })}
+                                          {linea('− Dispersiones', x.per.sal, { signo: '−' })}
+                                          {linea('− Descuentos / reversas', x.per.ajustes, { signo: '−' })}
+                                          {linea('Utilidad Lincoin', Math.round(x.per.utilidad), { signo: x.per.utilidad < 0 ? '−' : '+', color: x.per.utilidad < 0 ? '#F87171' : '#4ADE80' })}
+                                          {esDueno && x.apertura && (
+                                              <button onClick={() => setCajaEditar({ proveedor: x.proveedor, monto: String(Math.round(x.apertura.lincoin)), nota: x.apertura.nota ?? '' })}
+                                                  style={{ marginTop: 8, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 8, padding: '6px 11px', fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>Editar saldo de apertura</button>
+                                          )}
+                                      </div>
+                                  ))}
+                              </div>
+                              <p style={{ margin: '10px 0 0', fontSize: 11.5, color: 'rgba(244,244,242,0.45)', lineHeight: 1.55 }}>
+                                  La bolsa debería ser clientes + Lincoin. Lo que no cuadra queda "sin explicar" hasta que se registren los retiros de Lincoin o los movimientos hechos fuera de Lincoin.
+                                  La utilidad no cuenta los cargues ocultos{caja?.ocultos ? ` (${caja.ocultos})` : ''} ni el 0,10 % de Bre-B, que es un costo de Mouv.
+                              </p>
+                          </div>
+                      )}
+                  </div>
+              );
+          })()}
+
           {/* 1 · Liquidez */}
           <div className="grid grid-cols-1 lg:grid-cols-3" style={{ gap: 12 }}>
               {bolsas.map(b => {
@@ -3190,6 +3338,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       accion: 'Revisar', onClick: () => pr.cargues.primero && abrirCargue(pr.cargues.primero.id) });
                   if (pr.procesando.n > 0) filas.push({ k: 'p', icon: Clock, tono: '#FBBF24', titulo: `${pr.procesando.n} ${pr.procesando.n === 1 ? 'dispersión' : 'dispersiones'} en "Procesando" hace más de 30 min`, det: `${fmtCop(pr.procesando.total)} COP`, accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
                   if (pr.fallidasMes + pr.rechazadasMes > 0) filas.push({ k: 'f', icon: AlertTriangle, tono: '#F87171', titulo: `${pr.fallidasMes} fallidas · ${pr.rechazadasMes} rechazadas este mes`, det: 'Revisa que cada una haya vuelto al saldo del cliente', accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
+                  // Contabilidad sospechosa (tasa de venta absurda o utilidad muy
+                  // negativa): solo el dueño, para revisarla u ocultarla.
+                  if (esDueno) for (const sx of (caja?.sospechosas ?? []) as any[]) filas.push({ k: `s-${sx.id}`, icon: AlertTriangle, tono: '#F87171',
+                      titulo: 'Cargue con contabilidad sospechosa',
+                      det: `${sx.cliente} · ${new Date(sx.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} · ${sx.proveedor} · utilidad ${fmtCop(Number(sx.acct?.utilityCop) || 0)} (tasa de venta ${Number(sx.acct?.sellRate) || '—'})`,
+                      accion: 'Revisar', onClick: () => { setCajaOcultar(sx); setCajaMotivo(''); } });
                   // Monitoreo del equipo: solo llega para el dueño.
                   if (esDueno && Array.isArray(pr.fueraDeHorario) && pr.fueraDeHorario.length) {
                       const quien = Array.from(new Set(pr.fueraDeHorario.map((x: any) => x.quien))).join(', ');
@@ -3336,6 +3490,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       ))}
                   </div>
                   <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                      {esDueno && (caja?.ocultos ?? 0) > 0 && (
+                          <label className="flex items-center" style={{ gap: 6, fontSize: 12, color: '#878E88', cursor: 'pointer' }}>
+                              <input type="checkbox" checked={tesVerOcultos} onChange={e => { setTesVerOcultos(e.target.checked); setTesPagina(0); }} style={{ accentColor: '#4ADE80' }} /> Ver ocultos ({caja.ocultos})
+                          </label>
+                      )}
                       {/* Quién lo hizo: el dueño filtra por miembro; los demás, "Mis cargues". */}
                       {esDueno ? (
                           <select value={tesMiembro} onChange={e => { setTesMiembro(e.target.value); setTesPagina(0); }}
@@ -3367,13 +3526,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                       {new Date(m.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                                       <br /><span style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', fontFamily: 'monospace' }}>{String(m.id).slice(0, 8)}</span>
                                   </td>
-                                  <td style={{ padding: '10px 18px', fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.cliente}</td>
+                                  <td style={{ padding: '10px 18px', fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                                      {m.cliente}
+                                      {m.oculto && <><br /><span style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', fontWeight: 500 }}>Oculto por {m.oculto.por} · {m.oculto.motivo}</span></>}
+                                  </td>
                                   <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.tipo}</td>
                                   <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.proveedor}</td>
                                   <td style={{ padding: '10px 18px', fontSize: 12.5, borderBottom: '1px solid rgba(255,255,255,0.06)', fontWeight: m.hechoPor === 'Cliente' ? 500 : 700, color: m.hechoPor === 'Tú' ? '#4ADE80' : m.hechoPor === 'Cliente' ? 'rgba(244,244,242,0.45)' : '#F4F4F2' }}>{m.hechoPor}</td>
                                   <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 800, textAlign: 'right', color: m.entrada ? '#4ADE80' : '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{m.entrada ? '+' : '−'}{fmtCop(m.monto)}</td>
                                   <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                                       <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: '3px 8px', borderRadius: 999, border: `1px solid ${colorEstado}59`, color: colorEstado }}>{String(m.estado).toUpperCase()}</span>
+                                      {m.oculto && esDueno && <> <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)', color: '#878E88' }}>OCULTO</span>{' '}
+                                          <button onClick={(e) => { e.stopPropagation(); cajaAccion({ action: 'mov_ocultar', txId: m.id, ocultar: false }, 'Movimiento visible otra vez.'); }} style={{ background: 'none', border: 'none', color: '#F4F4F2', textDecoration: 'underline', cursor: 'pointer', fontSize: 11.5 }}>Mostrar</button></>}
                                   </td>
                               </tr>
                               );
@@ -3390,6 +3554,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </div>
               </div>
           </div>
+          {/* Revisar un cargue sospechoso y ocultarlo SIN borrarlo (solo el dueño) */}
+          {cajaOcultar && (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setCajaOcultar(null)}>
+                  <div onClick={e => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
+                      <div className="flex items-center justify-between">
+                          <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Cargue · {cajaOcultar.cliente} · {new Date(cajaOcultar.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                          <button onClick={() => setCajaOcultar(null)} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
+                      </div>
+                      {([['USDT que envió', cajaOcultar.acct?.usdtGross], ['USDT que llegaron', cajaOcultar.acct?.usdtNet], ['A cómo vendí', cajaOcultar.acct?.sellRate], ['A cómo le pago', cajaOcultar.acct?.clientRate], ['Se le acreditó', `${fmtCop(cajaOcultar.monto)} COP`], ['Utilidad calculada', `${fmtCop(Number(cajaOcultar.acct?.utilityCop) || 0)} COP`]] as [string, any][]).map(([l, v]) => (
+                          <div key={l} className="flex justify-between" style={{ fontSize: 13, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                              <span style={{ color: '#878E88' }}>{l}</span><b style={{ color: '#F4F4F2' }}>{v == null || v === '' ? '—' : typeof v === 'number' ? v.toLocaleString('es-CO') : String(v)}</b>
+                          </div>
+                      ))}
+                      <p style={{ margin: '10px 0 6px', fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
+                          Ocultar <b style={{ color: '#F4F4F2' }}>no borra</b> el cargue ni cambia el saldo del cliente: deja de listarse y su utilidad deja de sumar. Queda quién, cuándo y por qué, y se puede volver a mostrar.
+                      </p>
+                      <textarea value={cajaMotivo} onChange={e => setCajaMotivo(e.target.value)} placeholder="Motivo (obligatorio). Ej.: tasa de venta mal escrita, pendiente de corregir."
+                          style={{ width: '100%', boxSizing: 'border-box', minHeight: 64, background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: 10, fontSize: 12.5, resize: 'vertical' }} />
+                      <div className="flex" style={{ gap: 8, marginTop: 10 }}>
+                          <button onClick={() => setCajaOcultar(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+                          <button disabled={cajaMotivo.trim().length < 5 || cajaOcupada}
+                              onClick={async () => { if (await cajaAccion({ action: 'mov_ocultar', txId: cajaOcultar.id, ocultar: true, motivo: cajaMotivo.trim() }, 'Cargue oculto: su utilidad ya no suma.')) setCajaOcultar(null); }}
+                              style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: cajaMotivo.trim().length < 5 ? 'not-allowed' : 'pointer', background: cajaMotivo.trim().length < 5 ? 'rgba(255,255,255,0.08)' : '#F4F4F2', color: cajaMotivo.trim().length < 5 ? 'rgba(244,244,242,0.45)' : '#0C0E0D' }}>{cajaOcupada ? 'Ocultando…' : 'Ocultar'}</button>
+                      </div>
+                  </div>
+              </div>
+          )}
+
+          {/* Corregir el saldo de apertura de Lincoin (solo el dueño) */}
+          {cajaEditar && (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setCajaEditar(null)}>
+                  <div onClick={e => e.stopPropagation()} style={{ width: 400, maxWidth: '100%', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
+                      <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Saldo de apertura · {cajaEditar.proveedor}</p>
+                      <p style={{ margin: '6px 0 10px', fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Lo que era de Lincoin en la bolsa el día de la apertura. Queda en la auditoría quién lo cambió y el valor anterior.</p>
+                      <input inputMode="numeric" value={cajaEditar.monto ? Number(cajaEditar.monto.replace(/[^\d-]/g, '') || 0).toLocaleString('es-CO') : ''} onChange={e => setCajaEditar(c => c && ({ ...c, monto: e.target.value.replace(/[^\d-]/g, '') }))}
+                          style={{ width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 18, fontWeight: 800 }} />
+                      <input value={cajaEditar.nota} onChange={e => setCajaEditar(c => c && ({ ...c, nota: e.target.value }))} placeholder="Nota (de dónde sale la cifra)"
+                          style={{ width: '100%', boxSizing: 'border-box', marginTop: 8, background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '10px 12px', fontSize: 13 }} />
+                      <div className="flex" style={{ gap: 8, marginTop: 12 }}>
+                          <button onClick={() => setCajaEditar(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+                          <button disabled={cajaOcupada || cajaEditar.monto === ''}
+                              onClick={async () => { if (await cajaAccion({ action: 'caja_apertura_set', proveedor: cajaEditar.proveedor, lincoin: Number(cajaEditar.monto), nota: cajaEditar.nota }, 'Saldo de apertura actualizado.')) setCajaEditar(null); }}
+                              style={{ flex: 1, background: '#4ADE80', border: 'none', color: '#0C0E0D', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer' }}>{cajaOcupada ? 'Guardando…' : 'Guardar'}</button>
+                      </div>
+                  </div>
+              </div>
+          )}
       </div>
       );
   };
