@@ -2523,7 +2523,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               {/* 2 · Destino: dónde queda el saldo del cliente */}
               <div>
                 <label style={ROTULO}>Destino</label>
-                <div className="grid grid-cols-3" style={{ gap: 8 }}>
+                {/* En el celular van uno debajo del otro: en tres columnas no cabían. */}
+                <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 8 }}>
                   {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
                     const M = railMeta[code];
                     const active = carguesRail === code;
@@ -3269,9 +3270,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                               {linea('− Saldos de los clientes', x.clientesVivo, { signo: '−' })}
                                               {linea(<>− Lincoin esperado <span style={{ color: 'rgba(244,244,242,0.45)' }}>(apertura + {fmtCop(x.utilidadDesdeApertura)} de utilidad{x.retirosDesdeApertura ? ` − ${fmtCop(x.retirosDesdeApertura)} de retiros` : ''}{x.externosDesdeApertura ? ` ${x.externosDesdeApertura < 0 ? '−' : '+'} ${fmtCop(Math.abs(x.externosDesdeApertura))} externos` : ''})</span></>, x.lincoinEsperado, { signo: '−' })}
                                               <button onClick={() => navTo('lincoin')} style={{ background: 'none', border: 'none', padding: '2px 0', color: '#878E88', fontSize: 11.5, textDecoration: 'underline', cursor: 'pointer' }}>Retiros y movimientos externos: ver y registrar en Lincoin</button>
-                                              <div className="flex justify-between" style={{ marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
+                                              <div className="flex justify-between" style={{ gap: 10, marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
                                                   background: x.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${x.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: x.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
-                                                  <span>Diferencia sin explicar</span><span>{x.dif == null ? '—' : signo(x.dif)}</span>
+                                                  <span>Diferencia sin explicar</span><span style={{ whiteSpace: 'nowrap' }}>{x.dif == null ? '—' : signo(x.dif)}</span>
                                               </div>
                                               {x.ultimaFoto && <p style={{ margin: '5px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>Último cierre ({x.ultimaFoto.fecha}): diferencia {x.ultimaFoto.diferencia == null ? '—' : signo(x.ultimaFoto.diferencia)}</p>}
                                           </> : <p style={{ margin: '4px 0 8px', fontSize: 12.5, color: '#878E88' }}>Sin apertura todavía.</p>}
@@ -3444,7 +3445,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       </div>
                   </div>
                   {!f ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>{tesCargando ? 'Cargando…' : '—'}</p> : <>
-                      <div className="grid grid-cols-3" style={{ gap: 12 }}>
+                      <div className="grid grid-cols-2 sm:grid-cols-3" style={{ gap: 12 }}>
                           {[
                               { l: 'Entradas · cargues', v: f.entradas, n: f.nEnt, c: '#4ADE80', i: ArrowDownCircle, neto: false },
                               { l: 'Salidas · dispersiones', v: f.salidas, n: f.nSal, c: '#F87171', i: ArrowUpCircle, neto: false },
@@ -3468,7 +3469,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       <div className="flex justify-between" style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 5 }}>
                           <span>{barras.length ? etiquetaBarra(0) : ''}</span><span>{barras.length ? etiquetaBarra(barras.length - 1) : ''}</span>
                       </div>
-                      <div className="grid grid-cols-2" style={{ gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                           {['Mouv', 'Finity'].map(n => (
                               <div key={n} style={{ fontSize: 12, color: '#878E88' }}>
                                   <b style={{ color: '#F4F4F2' }}>{n}</b> · entra {millones(f.porProveedor?.[n]?.ent ?? 0)} · sale {millones(f.porProveedor?.[n]?.sal ?? 0)}
@@ -3868,9 +3869,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                       {fila('= Lincoin esperado', c.lincoinEsperado, { fuerte: true, color: '#4ADE80' })}
                                       {fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
                                   </div>
-                                  <div className="flex justify-between" style={{ marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
+                                  <div className="flex justify-between" style={{ gap: 10, marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
                                       background: c.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${c.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: c.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
-                                      <span>Diferencia sin explicar</span><span>{c.dif == null ? '—' : signo(c.dif)}</span>
+                                      <span>Diferencia sin explicar</span><span style={{ whiteSpace: 'nowrap' }}>{c.dif == null ? '—' : signo(c.dif)}</span>
                                   </div>
                                   {c.dif != null && c.dif !== 0 && <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>}
                               </>}
