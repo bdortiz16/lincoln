@@ -65,6 +65,21 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
   return out
 }
 
+// ── Quién del equipo hizo cada movimiento manual ─────────────────────────
+// raw_data.por (cargue o descuento) y raw_data.resueltoPor (aprobar/rechazar)
+// guardan el id, el correo y el nombre. El dueño los ve; cualquier otro
+// miembro solo recibe si fue él ("Tú") o no ("Equipo"): el monitoreo del
+// equipo es del dueño, y los nombres no viajan a los demás navegadores.
+function autoresParaPanel(rd: unknown, esDueno: boolean, yoId: string): unknown {
+  if (esDueno || !rd || typeof rd !== 'object') return rd
+  const out = { ...(rd as Record<string, unknown>) }
+  for (const k of ['por', 'resueltoPor']) {
+    const v = out[k] as any
+    if (v && typeof v === 'object') out[k] = { esYo: String(v.id ?? '') === yoId }
+  }
+  return out
+}
+
 // ── Usuarios para el panel ────────────────────────────────────────────────
 // Lo que viaja al navegador del admin: sin los hashes de clave/PIN ni el
 // secreto 2FA de columna, y sin los blobs gigantes de raw_data.
@@ -1221,6 +1236,20 @@ function accesoDe(userId: string, email: string): Promise<Acceso> {
   return accesoEquipo(db, userId, email, ADMIN_EMAIL)
 }
 
+// El autor que se guarda con un movimiento manual.
+async function autorDe(auth: { userId?: string; email?: string; acceso?: Acceso }): Promise<Record<string, unknown>> {
+  let nombre: string | null = null
+  try {
+    const { data } = await db.from('admin_miembros').select('nombre').eq('id', auth.userId ?? '').maybeSingle()
+    nombre = (data as any)?.nombre ?? null
+    if (!nombre) {
+      const { data: u } = await db.from('users').select('full_name, name').eq('id', auth.userId ?? '').maybeSingle()
+      nombre = (u as any)?.full_name || (u as any)?.name || null
+    }
+  } catch { /* sin nombre: queda el correo */ }
+  return { id: auth.userId ?? null, email: auth.email ?? null, nombre, rol: auth.acceso?.rol ?? null, at: new Date().toISOString() }
+}
+
 // ════════════════════════════════════════════════════════
 //  EQUIPO: QUÉ PUEDE HACER CADA UNO Y SOBRE QUÉ PAÍSES
 //
@@ -1287,6 +1316,8 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   approve_rail_move: 'tesoreria',
   // "Registrar movimiento" en una cuenta de tesorería (no la config entera).
   tesoreria_movimiento: 'tesoreria',
+  // El tablero de Tesorería (solo lectura, cifras de toda la base).
+  tesoreria_resumen: ['plata.ver', 'tesoreria'],
   reject_rail_move: 'tesoreria',
   otc_ajuste_set: 'plata.mover',
   // Los topes de envío son un control de cumplimiento: los ajusta Compliance
@@ -4071,7 +4102,8 @@ Deno.serve(async (req: Request) => {
           if (!data || data.length < PAGINA) { truncado = false; break }
         }
         const visibles = filas.filter(t => accM.todosLosPaises || visibleEnPais(paisDeMovimiento(t), accM))
-        return json({ ok: true, total: visibles.length, truncado, ids, transactions: visibles.map(t => ({ ...t, raw_data: slimRawData(t.raw_data) })) })
+        const esDuenoM = accM.rol === 'dueno'
+        return json({ ok: true, total: visibles.length, truncado, ids, transactions: visibles.map(t => ({ ...t, raw_data: autoresParaPanel(slimRawData(t.raw_data), esDuenoM, String(auth.userId ?? '')) })) })
       }
 
       // ── Límites por envío ACH ──────────────────────────────────────────
@@ -4484,6 +4516,173 @@ Deno.serve(async (req: Request) => {
         return json({ success: true, newBalance: newBal })
       }
 
+      // ── Tablero de Tesorería ─────────────────────────────────────────
+      // Antes el tablero sumaba los ~200 movimientos que el panel tiene en
+      // memoria, mezclaba COP con USD, decidía "entrada" por el título y
+      // contaba retiros de un tipo (send) que ya no existe: mostraba "$0" con
+      // mil dispersiones en el mes. Esto calcula sobre la base, en COP y con
+      // hora de Colombia. Solo lee.
+      // body: { action:'tesoreria_resumen', desde?, hasta? (YYYY-MM-DD),
+      //         filtro?, q?, miembro?, mios?, pagina? }
+      if (body.action === 'tesoreria_resumen') {
+        const acc: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const esDueno = acc.rol === 'dueno'
+        const yoId = String(auth.userId ?? '')
+        const TZ = 5 * 3600_000   // Colombia: UTC−5, sin horario de verano
+        const ymdB = (ms: number) => new Date(ms - TZ).toISOString().slice(0, 10)
+        const aUtc = (ymd: string, finDelDia = false) => new Date(Date.parse(`${ymd}T00:00:00Z`) + TZ + (finDelDia ? 86_400_000 : 0)).toISOString()
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+        const hoy = ymdB(Date.now())
+        const desde = esYmd(body.desde) ? String(body.desde) : `${hoy.slice(0, 7)}-01`
+        const hasta = esYmd(body.hasta) ? String(body.hasta) : hoy
+        if (desde > hasta) return json({ ok: false, error: 'El inicio va después del final.' }, 400)
+        const nDias = Math.round((Date.parse(hasta) - Date.parse(desde)) / 86_400_000) + 1
+        if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
+        const visible = (t: any) => acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc)
+        const esCop = (c: unknown) => String(c ?? '').toUpperCase().startsWith('COP')
+        const prov = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : 'Saldo Lincoin' }
+
+        // 1 · Flujo del periodo: entradas (cargues) y salidas (dispersiones)
+        // completadas, en COP, por hora / día / semana.
+        const { filas: flujo, truncado: flujoTruncado } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, created_at, type, currency, amount, user_id')
+          .in('type', ['load', 'dispersion']).eq('status', 'Completado')
+          .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 60_000 })
+        const porHora = nDias === 1, porSemana = nDias > 45
+        const nBarras = porHora ? 24 : porSemana ? Math.ceil(nDias / 7) : nDias
+        const barras = Array.from({ length: nBarras }, (_, i) => ({ i, ent: 0, sal: 0 }))
+        const tot = { entradas: 0, nEnt: 0, salidas: 0, nSal: 0 }
+        const porProv: Record<string, { ent: number; sal: number }> = {}
+        const inicioMs = Date.parse(`${desde}T00:00:00Z`)
+        for (const t of flujo) {
+          if (!esCop(t.currency) || !visible(t)) continue
+          const monto = Math.abs(Number(t.amount) || 0)
+          const local = Date.parse(t.created_at) - TZ
+          const idx = porHora ? new Date(local).getUTCHours() : Math.floor((local - inicioMs) / 86_400_000 / (porSemana ? 7 : 1))
+          const b = barras[Math.max(0, Math.min(nBarras - 1, idx))]
+          const p = (porProv[prov(t.currency)] ??= { ent: 0, sal: 0 })
+          if (t.type === 'load') { tot.entradas += monto; tot.nEnt++; b.ent += monto; p.ent += monto }
+          else { tot.salidas += monto; tot.nSal++; b.sal += monto; p.sal += monto }
+        }
+
+        // 2 · Por resolver: solo lo que pide que alguien haga algo.
+        const hace30m = new Date(Date.now() - 30 * 60_000).toISOString()
+        const inicioMes = aUtc(`${hoy.slice(0, 7)}-01`)
+        const [pendCargues, railPend, procesando, fallidas, rechazadas] = await Promise.all([
+          db.from('transactions').select('id, user_id, amount, currency, created_at').eq('type', 'load').eq('status', 'Pendiente').order('created_at', { ascending: true }).limit(50),
+          db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'rail_move').eq('status', 'Pendiente'),
+          db.from('transactions').select('amount, currency').eq('type', 'dispersion').eq('status', 'Procesando').lt('created_at', hace30m).limit(500),
+          db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'dispersion').eq('status', 'Fallido').gte('created_at', inicioMes),
+          db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'dispersion').eq('status', 'Rechazado').gte('created_at', inicioMes),
+        ])
+        const cargesPend = ((pendCargues.data ?? []) as any[]).filter(visible)
+        const procVis = ((procesando.data ?? []) as any[]).filter(visible)
+
+        // 3 · El mes en curso: utilidad (de la contabilidad de cada cargue) y
+        // los clientes con más movimiento.
+        const { filas: delMes } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, type, currency, amount, user_id, source:raw_data->>source, utilidad:raw_data->acct->>utilityCop')
+          .in('type', ['load', 'dispersion']).eq('status', 'Completado').gte('created_at', inicioMes), { tope: 60_000 })
+        let utilidad = 0, conAcct = 0, sinAcct = 0
+        const utilProv: Record<string, number> = {}
+        const volCliente: Record<string, { vol: number; ops: number }> = {}
+        for (const t of delMes as any[]) {
+          if (!esCop(t.currency) || !visible(t)) continue
+          if (t.type === 'load' && (t.source === 'admin_cargue')) {
+            if (t.utilidad != null && t.utilidad !== '') { const u = Number(t.utilidad) || 0; utilidad += u; conAcct++; utilProv[prov(t.currency)] = (utilProv[prov(t.currency)] ?? 0) + u }
+            else sinAcct++
+          }
+          const v = (volCliente[String(t.user_id)] ??= { vol: 0, ops: 0 }); v.vol += Math.abs(Number(t.amount) || 0); v.ops++
+        }
+        const top = Object.entries(volCliente).sort((a, b) => b[1].vol - a[1].vol).slice(0, 5)
+
+        // 4 · Movimientos, paginados en el servidor.
+        const filtro = String(body.filtro ?? 'todos')
+        const POR = 12
+        const pagina = Math.max(0, Math.min(500, Number(body.pagina) || 0))
+        let mq = db.from('transactions').select('id, created_at, type, currency, amount, status, user_id, raw_data', { count: 'exact' })
+          .order('created_at', { ascending: false })
+        mq = filtro === 'cargue' ? mq.eq('type', 'load')
+          : filtro === 'dispersion' ? mq.eq('type', 'dispersion')
+          : filtro === 'problemas' ? mq.in('type', ['load', 'dispersion', 'adjustment', 'rail_move']).in('status', ['Fallido', 'Rechazado', 'Procesando', 'Pendiente'])
+          : mq.in('type', ['load', 'dispersion', 'adjustment', 'rail_move'])
+        // Quién lo hizo: el dueño filtra por miembro; los demás, solo los suyos.
+        if (esDueno && /^[0-9a-f-]{36}$/i.test(String(body.miembro ?? ''))) mq = mq.eq('raw_data->por->>id', String(body.miembro))
+        if (!esDueno && body.mios === true) mq = mq.eq('raw_data->por->>id', yoId)
+        const q = String(body.q ?? '').trim()
+        if (q) {
+          const soloNum = q.replace(/[.\s,$]/g, '')
+          if (/^\d+$/.test(soloNum)) mq = mq.eq('amount', Number(soloNum))
+          // El id es uuid: PostgREST no le aplica ilike, así que solo el id completo.
+          else if (UUID_RE.test(q)) mq = mq.eq('id', q)
+          else {
+            const { data: us } = await db.from('users').select('id').or(`full_name.ilike.%${q.replace(/[%,()]/g, '')}%,company_name.ilike.%${q.replace(/[%,()]/g, '')}%,email.ilike.%${q.replace(/[%,()]/g, '')}%`).limit(60)
+            const ids = ((us ?? []) as any[]).map(u => String(u.id))
+            mq = ids.length ? mq.in('user_id', ids) : mq.eq('user_id', '00000000-0000-0000-0000-000000000000')
+          }
+        }
+        const { data: movs, count: totalMovs, error: eMov } = await mq.range(pagina * POR, pagina * POR + POR - 1)
+        if (eMov) return errorGenerico('tesoreria_resumen', eMov)
+
+        // Nombres de los clientes que aparecen.
+        const idsNombre = Array.from(new Set([...(movs ?? []).map((m: any) => String(m.user_id)), ...top.map(([id]) => id), ...cargesPend.slice(0, 1).map((c: any) => String(c.user_id))].filter(id => UUID_RE.test(id))))
+        const nombres: Record<string, string> = {}
+        if (idsNombre.length) {
+          const { data: us } = await db.from('users').select('id, full_name, company_name, email').in('id', idsNombre)
+          for (const u of (us ?? []) as any[]) nombres[String(u.id)] = String(u.company_name || u.full_name || u.email || '—')
+        }
+        const hechoPor = (rd: any, type: string): string => {
+          const a = rd?.por ?? rd?.resueltoPor
+          if (type === 'dispersion' && !a) return 'Cliente'
+          if (!a) return esDueno ? 'admin (antes del registro)' : 'Equipo'
+          if (!esDueno) return String(a.id ?? '') === yoId ? 'Tú' : 'Equipo'
+          return String(a.nombre || a.email || 'admin')
+        }
+
+        // 5 · Monitoreo del equipo (solo el dueño): cargues de otros miembros
+        // fuera de horario (20:00–06:00 de Colombia) en los últimos 7 días.
+        let fueraDeHorario: unknown[] = []
+        if (esDueno) {
+          const { data: ult } = await db.from('transactions').select('id, created_at, amount, currency, por:raw_data->por')
+            .eq('raw_data->>source', 'admin_cargue').gte('created_at', new Date(Date.now() - 7 * 86_400_000).toISOString()).limit(1000)
+          fueraDeHorario = ((ult ?? []) as any[])
+            .filter(t => t.por && t.por.rol && t.por.rol !== 'dueno')
+            .filter(t => { const h = new Date(Date.parse(t.created_at) - TZ).getUTCHours(); return h >= 20 || h < 6 })
+            .map(t => ({ id: t.id, at: t.created_at, monto: Number(t.amount) || 0, quien: t.por.nombre || t.por.email, quienId: t.por.id, proveedor: prov(t.currency) }))
+        }
+        let equipo: unknown[] = []
+        if (esDueno) {
+          const { data: m } = await db.from('admin_miembros').select('id, nombre, email, rol').eq('activo', true)
+          equipo = (m ?? []) as unknown[]
+        }
+
+        const primero = cargesPend[0] as any
+        return json({
+          ok: true, desde, hasta, nDias, granularidad: porHora ? 'hora' : porSemana ? 'semana' : 'dia', parcial: flujoTruncado,
+          flujo: { ...tot, porProveedor: porProv, barras: barras.map(b => ({ ent: Math.round(b.ent), sal: Math.round(b.sal) })) },
+          porResolver: {
+            cargues: { n: cargesPend.length, total: cargesPend.reduce((s, c: any) => s + Math.abs(Number(c.amount) || 0), 0),
+              primero: primero ? { id: primero.id, cliente: nombres[String(primero.user_id)] ?? '—', monto: Number(primero.amount) || 0, proveedor: prov(primero.currency), at: primero.created_at } : null },
+            trasladosAch: railPend.count ?? 0,
+            procesando: { n: procVis.length, total: procVis.reduce((s, c: any) => s + Math.abs(Number(c.amount) || 0), 0) },
+            fallidasMes: fallidas.count ?? 0, rechazadasMes: rechazadas.count ?? 0,
+            fueraDeHorario,
+          },
+          utilidadMes: { total: Math.round(utilidad), conContabilidad: conAcct, sinContabilidad: sinAcct, porProveedor: utilProv },
+          topClientes: top.map(([id, v]) => ({ id, nombre: nombres[id] ?? '—', vol: v.vol, ops: v.ops })),
+          movimientos: {
+            total: totalMovs ?? 0, pagina, porPagina: POR,
+            filas: ((movs ?? []) as any[]).filter(visible).map(m => ({
+              id: m.id, at: m.created_at, cliente: nombres[String(m.user_id)] ?? '—', clienteId: m.user_id,
+              tipo: m.type === 'load' ? 'Cargue' : m.type === 'dispersion' ? 'Dispersión' : m.type === 'rail_move' ? 'Traslado a ACH' : 'Ajuste',
+              proveedor: prov(m.currency), monto: Number(m.amount) || 0, entrada: m.type === 'load' || (m.type === 'adjustment' && (m.raw_data?.direction ?? 'credit') === 'credit'),
+              estado: m.status, hechoPor: hechoPor(m.raw_data, m.type), esMio: String((m.raw_data?.por ?? m.raw_data?.resueltoPor)?.id ?? '') === yoId,
+            })),
+          },
+          equipo,
+        })
+      }
+
       // Tesorería — "Registrar movimiento": sube o baja el saldo de UNA cuenta
       // de tesorería (settings.treasuryAccounts).
       //
@@ -4602,6 +4801,8 @@ Deno.serve(async (req: Request) => {
         const utilityCop = acct ? Math.round(acct.revenueCop - credit) : null
         // ATÓMICO: primero el movimiento — si el registro falla, NO se toca
         // el saldo (un cargue sin rastro en el historial es un descuadre).
+        // Quién lo hizo: queda con el movimiento (ver autoresParaPanel).
+        const autorCargue = await autorDe(auth)
         const { data: txIns, error: txInsErr } = await db.from('transactions').insert({
           user_id: body.userId,
           type: delta > 0 ? 'load' : 'adjustment',
@@ -4625,9 +4826,13 @@ Deno.serve(async (req: Request) => {
               ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual')
               : 'Ajuste manual'),
             creditedAt: new Date().toISOString(),
+            por: autorCargue,
           },
         }).select('id').single()
         if (txInsErr) { await soltar(); return json({ success: false, error: `No se registró el movimiento (${txInsErr.message}) — el saldo NO fue modificado.` }, 500) }
+        // Todo cargue o descuento queda en la auditoría, tenga o no contabilidad
+        // (antes solo los que la tenían dejaban rastro de quién los hizo).
+        await auditAdmin(req, 'admin.cargue', { userId: body.userId, rail: cur, monto: credit, direccion: delta > 0 ? 'credit' : 'debit', recordOnly, txId: (txIns as any)?.id ?? null })
         let newBal = parseFloat(Number(bals[cur] ?? 0).toFixed(2))
         if (!recordOnly) {
           // SUMA atómica sobre la base, no "saldo leído + monto". Antes se
@@ -4716,8 +4921,8 @@ Deno.serve(async (req: Request) => {
         const { data: reclamada } = await db.from('transactions').update({
           status: aprobar ? 'Completado' : 'Rechazado',
           raw_data: aprobar
-            ? { ...rd, approvedAt: ahora, title: 'Saldo Lincoin → ACH · aprobado' }
-            : { ...rd, rejectedAt: ahora, rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)' },
+            ? { ...rd, approvedAt: ahora, title: 'Saldo Lincoin → ACH · aprobado', resueltoPor: await autorDe(auth) }
+            : { ...rd, rejectedAt: ahora, rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)', resueltoPor: await autorDe(auth) },
         }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
         if (!reclamada?.length) return json({ success: true, already: true })
         // Abono atómico (sin leer-y-escribir el saldo entero).
@@ -4894,7 +5099,7 @@ Deno.serve(async (req: Request) => {
       resumenUsuarios: { clientes: clientesTotal, empresas: nEmpresas, pendientes: nPendientes, verificados: nVerificados, bloqueados: nBloqueados, cargados: clientesCargados, parcial: clientesTotal != null && clientesTotal > clientesCargados },
       obligaciones: obligaciones ? obligaciones.valor : null,
       obligacionesParciales: obligaciones ? obligaciones.parcial : null,
-      transactions: movimientosVisibles.map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
+      transactions: movimientosVisibles.map((t: Record<string, unknown>) => ({ ...t, raw_data: autoresParaPanel(slimRawData(t.raw_data), (auth.acceso?.rol ?? 'lectura') === 'dueno', String(auth.userId ?? '')) })),
       // Para que el panel pueda decir "estás viendo solo Colombia" en vez de
       // dejar creer que eso es todo lo que hay.
       alcance: { rol: acc.rol, paises: acc.paises, todos: acc.todosLosPaises },

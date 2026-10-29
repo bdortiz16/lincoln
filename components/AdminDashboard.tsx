@@ -104,7 +104,7 @@ import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
-import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare } from 'lucide-react';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
@@ -126,6 +126,8 @@ interface AdminDashboardProps {
   // Rol del miembro en el equipo (mi_acceso). Solo decide qué se MUESTRA: lo
   // que cada rol puede pedir lo exige el servidor.
   rol?: string;
+  // Países del miembro (mi_acceso): qué billeteras se le ofrecen.
+  paises?: string[];
 }
 
 // El rol Tesorería ve solo Clientes y Tesorería (con sus Billeteras COP).
@@ -542,8 +544,10 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
     );
 };
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, paises }) => {
   const soloTesoreria = rol === 'tesoreria';
+  // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
+  const esDueno = !rol || rol === 'dueno';
   const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'cargues' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
@@ -1004,8 +1008,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
   };
 
   useEffect(() => {
-    if (activeTab === 'cargues' && !mouvPool) loadMouvPool();
-    if (activeTab === 'cargues' && !finityPool) loadFinityPool();
+    if ((activeTab === 'cargues' || activeTab === 'treasury') && !mouvPool) loadMouvPool();
+    if ((activeTab === 'cargues' || activeTab === 'treasury') && !finityPool) loadFinityPool();
     if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -1167,6 +1171,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
   const [treasurySegment, setTreasurySegment] = useState<'all' | 'personal' | 'business'>('all');
   const [treasurySearch, setTreasurySearch] = useState('');
   const [selectedTreasuryTx, setSelectedTreasuryTx] = useState<Transaction | null>(null);
+  // Billetera: país de la billetera (cambio rápido) y tipo de cliente del
+  // buscador (por defecto empresas: son las que más se cargan).
+  const billeterasDisponibles = (['CO', 'US'] as const).filter(c => esDueno || !paises || paises.includes(c));
+  const [billeteraPais, setBilleteraPais] = useState<'CO' | 'US'>('CO');
+  const [menuBilletera, setMenuBilletera] = useState(false);
+  const [carguesTipo, setCarguesTipo] = useState<'business' | 'personal' | 'todos'>('business');
+  // Tesorería: periodo del flujo (por defecto el mes en curso), filtros de la
+  // tabla y lo que devuelve tesoreria_resumen.
+  const hoyBog = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10);
+  const [tesRango, setTesRango] = useState<{ desde: string; hasta: string; etiqueta: string }>(() => ({ desde: `${hoyBog().slice(0, 7)}-01`, hasta: hoyBog(), etiqueta: 'Este mes' }));
+  const [tesMenu, setTesMenu] = useState(false);
+  const [tesDia, setTesDia] = useState(hoyBog);
+  const [tesMes, setTesMes] = useState(() => hoyBog().slice(0, 7));
+  const [tesDesde, setTesDesde] = useState(() => `${hoyBog().slice(0, 7)}-01`);
+  const [tesHasta, setTesHasta] = useState(hoyBog);
+  const [tesFiltro, setTesFiltro] = useState<'todos' | 'cargue' | 'dispersion' | 'problemas'>('todos');
+  const [tesQ, setTesQ] = useState('');
+  const [tesMiembro, setTesMiembro] = useState('');
+  const [tesMios, setTesMios] = useState(false);
+  const [tesPagina, setTesPagina] = useState(0);
+  const [tesData, setTesData] = useState<any>(null);
+  const [tesCargando, setTesCargando] = useState(false);
+  const [tesError, setTesError] = useState<string | null>(null);
+  const [tesVer, setTesVer] = useState(0);
   // Comprobante bajo demanda: el listado llega sin las imágenes base64
   // (admin-data las reemplaza por '__stored__' para no pesar megas) y aquí
   // se pide la real solo al abrir el detalle.
@@ -1315,6 +1343,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
   // un rodeo válido.
   const [tesoreriaOk, setTesoreriaOk] = useState(false);
   useEffect(() => { if (activeTab !== 'treasury') setTesoreriaOk(false); }, [activeTab]);
+
+  // Tablero de Tesorería: las cifras las calcula el servidor sobre toda la
+  // base (tesoreria_resumen). Se piden al abrir y cuando cambia un filtro;
+  // lo que se escribe en el buscador espera un momento antes de preguntar.
+  useEffect(() => {
+    if (activeTab !== 'treasury' || !tesoreriaOk) return;
+    let vigente = true;
+    const t = setTimeout(async () => {
+      setTesCargando(true); setTesError(null);
+      const d = await pedirAdmin({ action: 'tesoreria_resumen', desde: tesRango.desde, hasta: tesRango.hasta, filtro: tesFiltro, q: tesQ, miembro: tesMiembro || undefined, mios: tesMios, pagina: tesPagina }).catch(() => null);
+      if (!vigente) return;
+      setTesCargando(false);
+      if (d?.ok) setTesData(d); else setTesError(d?.error ?? 'No se pudo cargar el tablero.');
+    }, tesQ ? 350 : 0);
+    return () => { vigente = false; clearTimeout(t); };
+  }, [activeTab, tesoreriaOk, tesRango, tesFiltro, tesQ, tesMiembro, tesMios, tesPagina, tesVer]);
   const startMfaEnroll = async () => {
     setMfaBusy(true); setMfaMsg(null);
     try {
@@ -2156,6 +2200,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
       const list = [...remotos, ...locales]
         .filter(u => { if (vistos.has(u.id)) return false; vistos.add(u.id); return true; })
         .filter(u => !outOfOperation(u))   // bloqueadas / lista negra no se cargan
+        // Empresas por defecto: son las que más se cargan.
+        .filter(u => carguesTipo === 'todos' || u.role === carguesTipo)
         .slice(0, 40);
       const bal = (u: User | null, code: string) => Number((u?.balances as any)?.[code] ?? 0);
       // En pantalla va el PROVEEDOR y debajo sus servicios: Mouv y Finity
@@ -2226,6 +2272,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
         .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
         .sort((a, b) => fechaCargue(b) - fechaCargue(a))
         .slice(0, 6) : [];
+      // Quién hizo un movimiento manual. El servidor manda nombre y correo solo
+      // al dueño; a los demás miembros, si fue él (esYo).
+      const quienTx = (t: any): string => {
+        const a = t?.por ?? t?.resueltoPor;
+        if (!a) return esDueno ? 'admin (antes del registro)' : 'el equipo';
+        if ('esYo' in a) return a.esYo ? 'ti' : 'el equipo';
+        return String(a.nombre || a.email || 'admin');
+      };
       const CAMPO: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 14, outline: 'none' };
       const ROTULO: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: '#878E88', marginBottom: 7 };
       const bolsas = [
@@ -2239,10 +2293,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
           {/* ── Encabezado: título, aviso temporal plegado y las dos bolsas ── */}
           <div className="flex items-start justify-between flex-wrap" style={{ gap: 14 }}>
             <div>
-              <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Billetera <span style={{ color: '#878E88', fontWeight: 600, fontSize: 15 }}>· COP</span></h2>
+              {/* Cambio rápido de billetera: solo los países del miembro. */}
+              <div style={{ position: 'relative', display: 'inline-block' }}>
+                <button onClick={() => setMenuBilletera(v => !v)} title="Cambiar de billetera" disabled={billeterasDisponibles.length < 2}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', padding: 0, color: '#F4F4F2', cursor: billeterasDisponibles.length < 2 ? 'default' : 'pointer' }}>
+                  <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>Billetera</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12.5, fontWeight: 700, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '3px 9px 3px 8px' }}>
+                    {billeteraPais === 'CO' ? '🇨🇴 COP' : '🇺🇸 USD'}
+                    {billeterasDisponibles.length > 1 && <ChevronDown size={13} style={{ color: '#878E88', transform: menuBilletera ? 'rotate(180deg)' : 'none' }} />}
+                  </span>
+                </button>
+                {menuBilletera && (
+                  <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 20, width: 260, background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 12, padding: 6, boxShadow: '0 18px 40px rgba(0,0,0,0.5)' }}>
+                    {([['CO', '🇨🇴', 'Colombia · COP', 'Mouv y Finity · Bre-B y ACH'], ['US', '🇺🇸', 'Estados Unidos · USD', 'Dólares digitales (USDC)']] as const)
+                      .filter(([k]) => (billeterasDisponibles as readonly string[]).includes(k))
+                      .map(([k, flag, t, sub]) => (
+                        <button key={k} onClick={() => { setBilleteraPais(k); setMenuBilletera(false); }}
+                          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left', background: billeteraPais === k ? 'rgba(74,222,128,0.10)' : 'transparent', color: '#F4F4F2' }}>
+                          <span style={{ fontSize: 18 }}>{flag}</span>
+                          <span style={{ flex: 1 }}>
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{t}</span>
+                            <span style={{ display: 'block', fontSize: 11, color: '#878E88' }}>{sub}</span>
+                          </span>
+                          {billeteraPais === k && <CheckCircle size={14} style={{ color: '#4ADE80' }} />}
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
               {/* El aviso de proceso temporal sigue ahí, plegado: se lee una
                   vez y después solo ocupaba media pantalla. */}
-              <details style={{ marginTop: 4 }}>
+              <br />
+              {billeteraPais === 'CO' && <details style={{ marginTop: 4 }}>
                 <summary style={{ listStyle: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, color: '#FBBF24', fontSize: 12, fontWeight: 600 }}>
                   <Info size={13} /> Cargue manual de saldo (temporal) · ¿qué es?
                 </summary>
@@ -2250,9 +2332,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                   Mientras Mouv apifica el conversor, el pago llega por el grupo cerrado y aquí reflejas el saldo del cliente
                   en la cuenta correspondiente (Saldo Lincoin, Mouv o Finity). Cada cargue queda registrado en el historial del cliente.
                 </p>
-              </details>
+              </details>}
             </div>
-            <div className="flex flex-wrap" style={{ gap: 10 }}>
+            {billeteraPais === 'CO' && <div className="flex flex-wrap" style={{ gap: 10 }}>
               {bolsas.map(b => {
                 const activa = carguesRail === b.rail;
                 return (
@@ -2281,8 +2363,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                   </div>
                 );
               })}
-            </div>
+            </div>}
           </div>
+          {billeteraPais === 'US' ? (
+            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '40px 24px', textAlign: 'center' }}>
+              <p style={{ margin: 0, fontSize: 28 }}>🇺🇸</p>
+              <p style={{ margin: '8px 0 0', fontSize: 16, fontWeight: 800, color: '#F4F4F2' }}>Billetera USD · Estados Unidos</p>
+              <p style={{ margin: '6px auto 0', maxWidth: 440, fontSize: 13, color: '#878E88', lineHeight: 1.55 }}>
+                Aquí va el mismo formulario de cargue, con los destinos y bolsas de USD, cuando ese riel quede conectado.
+              </p>
+              <button onClick={() => setBilleteraPais('CO')} style={{ marginTop: 16, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '9px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Volver a 🇨🇴 COP</button>
+            </div>
+          ) : <>
           {!obligServidor && (
             <p style={{ margin: 0, fontSize: 11.5, color: '#FB923C', lineHeight: 1.45 }}>
               {obligaciones?.parcial
@@ -2309,7 +2401,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
 
               {/* 1 · Cliente: un solo buscador; al elegir queda como ficha */}
               <div>
-                <label style={ROTULO}>Cliente</label>
+                <div className="flex items-center justify-between" style={{ gap: 10, marginBottom: 7 }}>
+                  <label style={{ ...ROTULO, marginBottom: 0 }}>Cliente</label>
+                  {!carguesClient && (
+                    <div style={{ display: 'flex', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: 2 }}>
+                      {([['business', 'Empresas'], ['personal', 'Personas'], ['todos', 'Todos']] as const).map(([k, l]) => (
+                        <button key={k} onClick={() => setCarguesTipo(k)}
+                          style={{ border: 'none', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', background: carguesTipo === k ? '#F4F4F2' : 'transparent', color: carguesTipo === k ? '#0C0E0D' : '#878E88' }}>{l}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {carguesClient ? (
                   <div className="flex items-center justify-between" style={{ ...CAMPO, gap: 10, borderColor: 'rgba(74,222,128,0.45)' }}>
                     <div style={{ minWidth: 0 }}>
@@ -2477,13 +2579,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                 </div>
                 <input type="text" placeholder="Nota (opcional) · Ref. Mouv, motivo del ajuste…" value={carguesNote}
                   onChange={(e) => setCarguesNote(e.target.value)} style={{ ...CAMPO, marginTop: 8, fontSize: 13 }} />
-                {/* Registro histórico: crea el MOVIMIENTO sin tocar el saldo —
-                    para cuadrar cargues viejos que se acreditaron sin fila en
-                    transacciones (el resumen de Movimientos no los veía). */}
-                <label className="flex items-center gap-2 cursor-pointer select-none" style={{ marginTop: 10 }}>
-                  <input type="checkbox" checked={carguesRecordOnly} onChange={e => setCarguesRecordOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
-                  <span style={{ fontSize: 12, color: '#878E88' }}>Solo registrar movimiento histórico (<b>no</b> modifica el saldo ni cobra comisión)</span>
-                </label>
+                {/* "Solo registrar movimiento histórico" se quitó de la pantalla: el
+                    servidor lo sigue aceptando (recordOnly), pero ya no se ofrece. */}
               </div>
 
                   {carguesDir === 'debit' && !carguesRecordOnly && (() => {
@@ -2579,7 +2676,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                         <div style={{ minWidth: 0 }}>
                           <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{railLabelOf(t.rail ?? t.currency ?? 'COP')}</p>
                           <p style={{ margin: '2px 0 0', fontSize: 11, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {f ? new Date(f).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '—'}{t.note ? ` · ${t.note}` : ''}
+                            {f ? new Date(f).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '—'} · <span style={{ color: (t.por as any)?.esYo ? '#4ADE80' : '#878E88' }}>por {quienTx(t)}</span>{t.note ? ` · ${t.note}` : ''}
                           </p>
                         </div>
                         <span style={{ fontSize: 13.5, fontWeight: 800, color: esCredito ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
@@ -2659,8 +2756,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                   <p style={{ fontSize: 12.5, color: '#878E88', padding: '16px 18px', margin: 0 }}>Todavía no se le ha hecho ningún cargue manual.</p>
                 ) : (
                   <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
-                      <thead><tr>{['FECHA', 'RIEL', 'MOVIMIENTO', 'NETO', 'CONTABILIDAD', 'NOTA', ''].map((h, i) => (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}>
+                      <thead><tr>{['FECHA', 'RIEL', 'MOVIMIENTO', 'NETO', 'CONTABILIDAD', 'HECHO POR', 'NOTA', ''].map((h, i) => (
                         <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: 'rgba(244,244,242,0.45)', textAlign: i === 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap' }}>{h}</th>
                       ))}</tr></thead>
                       <tbody>
@@ -2695,6 +2792,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                                     <p style={{ margin: '2px 0 0', fontWeight: 700, color: Number(a.utilityCop) >= 0 ? '#4ADE80' : '#F87171' }}>utilidad {fmt(a.utilityCop)} COP</p>
                                   </>
                                 ) : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
+                              </td>
+                              <td style={{ padding: '10px 18px', fontSize: 12, fontWeight: 700, color: (t.por as any)?.esYo ? '#4ADE80' : '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                {(() => { const q = quienTx(t); return q === 'ti' ? 'Tú' : q === 'el equipo' ? 'Equipo' : q; })()}
                               </td>
                               <td style={{ padding: '10px 18px', fontSize: 11.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.note ?? ''}>{t.note ?? '—'}</td>
                               <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -2795,6 +2895,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
               )}
             </div>
           </details>
+          </>}
 
           {/* Ventana de confirmación del cargue (tema Lincoin).
               En el celular se salía de la pantalla: era una sola columna sin
@@ -2944,130 +3045,111 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
       );
   };
 
+  // ── Tesorería ──────────────────────────────────────────────────────
+  // Panel del dinero en COP: liquidez, lo que pide acción, flujo del periodo,
+  // utilidad, clientes con más movimiento y los movimientos. Las cifras salen
+  // de tesoreria_resumen (toda la base, hora de Colombia), no de la muestra
+  // que el panel tiene en memoria.
+  //
+  // Se quitó: "Registrar movimiento" y las cuentas de tesorería (no había
+  // ninguna registrada), la aprobación de retiros (el tipo `send` ya no se
+  // usa: las salidas son dispersiones), la pestaña cripto y los textos fijos.
   const renderTreasury = () => {
-      // ── Datos REALES para el panel de cabecera de Tesorería ──
-      const nowD = new Date();
-      const isEntrada = (t: any) => /carga|dep[óo]sito|load/i.test(String(t.title ?? t.type ?? ''));
-      // Las transacciones guardan la fecha en DD/MM/YYYY (así la escribe la
-      // base) y otras en ISO. new Date('04/09/2026') lo lee como MM/DD o como
-      // Invalid Date según el caso, y de ahí salían NaN que reventaban el
-      // panel. Se parsea explícitamente y se devuelve null si no se puede.
-      const txDate = (t: any): Date | null => {
-        const v = t?.date ?? t?.createdAt;
-        if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
-        const s = String(v ?? '').trim();
-        if (!s) return null;
-        const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-        if (dmy) {
-          const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
-          return isNaN(d.getTime()) ? null : d;
-        }
-        const d = new Date(s);
-        return isNaN(d.getTime()) ? null : d;
+      const d = tesData;
+      const fmtCop = (n: number) => Math.round(Number(n) || 0).toLocaleString('es-CO');
+      const millones = (n: number) => {
+        const a = Math.abs(Number(n) || 0), signo = n < 0 ? '−' : '';
+        return signo + (a >= 1e9 ? `${(a / 1e9).toLocaleString('es-CO', { maximumFractionDigits: 2 })} mil M` : a >= 1e6 ? `${(a / 1e6).toLocaleString('es-CO', { maximumFractionDigits: 1 })} M` : fmtCop(a));
       };
-      let inflow = 0, outflow = 0, monthVolume = 0, monthOps = 0;
-      for (const t of historyTransactions) {
-        const d = txDate(t);
-        if (!d) continue;
-        if (d.getMonth() !== nowD.getMonth() || d.getFullYear() !== nowD.getFullYear()) continue;
-        const amt = Math.abs(Number(t.amount) || 0);
-        monthVolume += amt; monthOps++;
-        if (isEntrada(t)) inflow += amt; else outflow += amt;
-      }
-      // Flujo diario de los últimos 14 días (entradas vs salidas).
-      const flow14 = new Array(14).fill(0).map(() => ({ in: 0, out: 0 }));
-      for (const t of historyTransactions) {
-        const dt = txDate(t);
-        if (!dt) continue;
-        const daysAgo = Math.floor((Date.now() - dt.getTime()) / 86400000);
-        // OJO: un NaN aquí pasaba las DOS comparaciones y caía en flow14[NaN],
-        // que es undefined — de ahí el "Cannot read properties of undefined".
-        if (!Number.isFinite(daysAgo) || daysAgo < 0 || daysAgo > 13) continue;
-        const slot = flow14[13 - daysAgo];
-        if (!slot) continue;
-        const amt = Math.abs(Number(t.amount) || 0);
-        if (isEntrada(t)) slot.in += amt; else slot.out += amt;
-      }
-      // Retenidos por revisión: retiros > 3× el promedio histórico del cliente.
-      const byUser: Record<string, number[]> = {};
-      const rets = historyTransactions.filter(t => /retiro|withdraw|dispersi[óo]n/i.test(String(t.title ?? t.type ?? '')));
-      for (const w of rets) (byUser[w.userId] ??= []).push(Math.abs(Number(w.amount) || 0));
-      const heldForReview = rets.filter(w => {
-        const arr = byUser[w.userId] || []; if (arr.length < 3) return false;
-        const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
-        return avg > 0 && Math.abs(Number(w.amount) || 0) > avg * 3;
-      }).length;
+      const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+      const corta = (ymd: string) => { const [, m, dd] = ymd.split('-').map(Number); return `${dd} ${MESES[(m || 1) - 1].slice(0, 3)}`; };
+      const sumarDias = (ymd: string, n: number) => new Date(Date.parse(`${ymd}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+      const hoy = hoyBog();
+      const elegir = (r: { desde: string; hasta: string; etiqueta: string }) => { setTesRango(r); setTesMenu(false); };
+      const PRESETS = [
+        { l: 'Hoy', r: { desde: hoy, hasta: hoy, etiqueta: 'Hoy' } },
+        { l: 'Ayer', r: { desde: sumarDias(hoy, -1), hasta: sumarDias(hoy, -1), etiqueta: 'Ayer' } },
+        { l: 'Últimos 7 días', r: { desde: sumarDias(hoy, -6), hasta: hoy, etiqueta: 'Últimos 7 días' } },
+        { l: 'Este mes', r: { desde: `${hoy.slice(0, 7)}-01`, hasta: hoy, etiqueta: 'Este mes' } },
+        { l: 'Mes anterior', r: (() => { const ini = new Date(Date.UTC(Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 2, 1)); const fin = new Date(Date.UTC(Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)) - 1, 0)); return { desde: ini.toISOString().slice(0, 10), hasta: fin.toISOString().slice(0, 10), etiqueta: 'Mes anterior' }; })() },
+      ];
+      const CARD: React.CSSProperties = { background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: 18 };
+      const ROT: React.CSSProperties = { margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: '#878E88' };
+      const FECHA: React.CSSProperties = { flex: 1, minWidth: 0, background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, color: '#F4F4F2', padding: '6px 8px', fontSize: 12, colorScheme: 'dark' as any };
+      const BTN_IR: React.CSSProperties = { background: '#F4F4F2', color: '#0C0E0D', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11.5, fontWeight: 800, cursor: 'pointer' };
+      const CHIP = (activo: boolean): React.CSSProperties => ({ borderRadius: 999, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', background: activo ? '#F4F4F2' : 'transparent', color: activo ? '#0C0E0D' : '#F4F4F2', border: '1px solid rgba(255,255,255,0.14)' });
 
-      const CRYPTO_TYPES = ['otc_withdraw', 'otc_withdraw_request', 'otc_deposit', 'admin_hot_withdrawal', 'otc_convert_request'];
-      const cryptoTxs = historyTransactions.filter(tx => CRYPTO_TYPES.includes(tx.type))
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-      let data = treasuryTab === 'deposits' ? pendingDeposits
-               : treasuryTab === 'withdrawals' ? pendingWithdrawals
-               : treasuryTab === 'crypto' ? [] // handled separately below
-               : historyTransactions;
-
-      if (treasurySearch) {
-          const q = treasurySearch.toLowerCase();
-          data = data.filter(tx => 
-              tx.userName.toLowerCase().includes(q) || 
-              tx.id.toString().includes(q) ||
-              tx.amount.toString().includes(q) ||
-              tx.title.toLowerCase().includes(q)
-          );
-      }
-
-      if (treasurySegment !== 'all') {
-          data = data.filter(tx => tx.userRole === treasurySegment);
-      }
-
-      if (sortConfig) {
-          data = [...data].sort((a, b) => {
-              if (a[sortConfig.key as keyof Transaction] < b[sortConfig.key as keyof Transaction]) {
-                  return sortConfig.direction === 'asc' ? -1 : 1;
-              }
-              if (a[sortConfig.key as keyof Transaction] > b[sortConfig.key as keyof Transaction]) {
-                  return sortConfig.direction === 'asc' ? 1 : -1;
-              }
-              return 0;
-          });
-      }
-
-      const handleSort = (key: string) => {
-          let direction: 'asc' | 'desc' = 'asc';
-          if (sortConfig && sortConfig.key === key && sortConfig.direction === 'asc') {
-              direction = 'desc';
-          }
-          setSortConfig({ key, direction });
-      };
-
-      const totalTreasuryUSD = treasuryAccounts.reduce((acc, account) => {
-          const rateToUSD = getRate(account.currency, 'USD');
-          return acc + (Math.max(0, account.amount) * rateToUSD);
-      }, 0);
-
+      // Liquidez: la misma cuenta que la Billetera (bolsa − comprometido).
+      const obligOf = (code: string) => obligaciones && typeof obligaciones.valor?.[code] === 'number'
+        ? obligaciones.valor[code] : allUsers.reduce((acc, u) => acc + Number((u.balances as any)?.[code] ?? 0), 0);
+      const bolsas = [
+        { n: 'Mouv', icon: Zap, pool: Number(mouvPool?.breb ?? mouvPool?.total ?? 0), oblig: obligOf('COP_BREB'), loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
+        { n: 'Finity', icon: Landmark, pool: Number(finityPool?.cop ?? 0), oblig: obligOf('COP_ACH'), loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
+      ];
+      const comprometido = obligOf('COP_BREB') + obligOf('COP_ACH');
       const pendingRailMoves = (getAllTransactions() as any[]).filter(t => t.type === 'rail_move' && t.status === 'Pendiente');
-      const copBalance = treasuryAccounts.filter(a => a.currency === 'COP').reduce((s, a) => s + Number(a.amount || 0), 0);
-      const usdtBalance = treasuryAccounts.filter(a => a.currency === 'USD' || a.currency === 'USDT').reduce((s, a) => s + Number(a.amount || 0), 0);
+
+      const pr = d?.porResolver;
+      const f = d?.flujo;
+      const neto = f ? f.entradas - f.salidas : 0;
+      const barras: { ent: number; sal: number }[] = f?.barras ?? [];
+      const maxB = Math.max(1, ...barras.flatMap(b => [b.ent, b.sal]));
+      const etiquetaBarra = (i: number) => d?.granularidad === 'hora' ? `${i}:00` : d?.granularidad === 'semana' ? `semana del ${corta(sumarDias(d.desde, i * 7))}` : corta(sumarDias(d?.desde ?? hoy, i));
+      const movs = d?.movimientos;
+      const totalPaginas = movs ? Math.max(1, Math.ceil(movs.total / movs.porPagina)) : 1;
+      const abrirCargue = (id: string) => {
+        const tx = pendingDeposits.find(t => String(t.id) === String(id));
+        if (tx) setSelectedTreasuryTx(tx);
+        else showToast('Ese cargue ya no está pendiente. Actualiza el tablero.');
+      };
+
       return (
-      <div className="space-y-8 animate-in fade-in duration-300">
-          {/* Cabecera del dashboard de Tesorería. COP (Mouv · Bre-B) y USDT
-              (GasFree) son billeteras SEPARADAS — se eligen en el modal. */}
-          <AdminTreasuryPanel
-              pendingLoads={pendingDeposits.length}
-              pendingWithdrawals={pendingWithdrawals.length}
-              monthVolume={monthVolume}
-              monthOps={monthOps}
-              heldForReview={heldForReview}
-              inflow={inflow}
-              outflow={outflow}
-              flow14={flow14}
-              copBalance={copBalance}
-              usdtBalance={usdtBalance}
-              onPickWallet={(w) => navTo(w === 'USDT' ? 'gasfree' : 'cargues')}
-              soloCop={soloTesoreria}
-              onRegisterMovement={() => setShowInternalMovementModal(true)}
-          />
+      <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="flex items-end justify-between flex-wrap" style={{ gap: 12 }}>
+              <div>
+                  <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Tesorería <span style={{ color: '#878E88', fontWeight: 600, fontSize: 15 }}>· COP</span></h2>
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#878E88' }}>
+                      {tesCargando ? 'Actualizando…' : d ? 'Cifras de toda la base, hora de Colombia' : ''}
+                      {d?.parcial && <span style={{ color: '#FB923C' }}> · el periodo es muy grande: las cifras pueden estar incompletas</span>}
+                  </p>
+              </div>
+              <div className="flex items-center" style={{ gap: 8 }}>
+                  <button onClick={() => setTesVer(v => v + 1)} title="Actualizar" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: '#F4F4F2', borderRadius: 10, padding: '9px 11px', cursor: 'pointer' }}>
+                      <RefreshCw size={14} className={tesCargando ? 'animate-spin' : ''} />
+                  </button>
+                  <button onClick={() => navTo('cargues')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#4ADE80', color: '#0C0E0D', border: 'none', borderRadius: 10, padding: '9px 14px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
+                      Registrar cargue <ChevronRight size={15} />
+                  </button>
+              </div>
+          </div>
+          {tesError && <p style={{ margin: 0, fontSize: 12.5, color: '#F87171' }}>{tesError}</p>}
+
+          {/* 1 · Liquidez */}
+          <div className="grid grid-cols-1 lg:grid-cols-3" style={{ gap: 12 }}>
+              {bolsas.map(b => {
+                  const libre = b.pool - b.oblig;
+                  return (
+                  <div key={b.n} style={{ ...CARD, padding: 16 }}>
+                      <div className="flex items-center justify-between">
+                          <span className="flex items-center" style={{ gap: 7, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}><b.icon size={14} style={{ color: '#4ADE80' }} /> {b.n} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· Bre-B y ACH</span></span>
+                          <button onClick={b.reload} disabled={b.loading} title={`Actualizar ${b.n}`} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><RefreshCw size={12} className={b.loading ? 'animate-spin' : ''} /></button>
+                      </div>
+                      {b.error ? <p style={{ margin: '8px 0 0', fontSize: 12, color: '#F87171', fontWeight: 600 }}>{b.error}</p>
+                        : b.loading ? <p style={{ margin: '8px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
+                        : <>
+                            <p style={{ margin: '8px 0 0', fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', color: libre < 0 ? '#F87171' : '#4ADE80' }}>{fmtCop(libre)} <span style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>{libre < 0 ? 'faltante' : 'disponible'}</span></p>
+                            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>Bolsa {fmtCop(b.pool)} − comprometido {fmtCop(b.oblig)}</p>
+                          </>}
+                  </div>
+                  );
+              })}
+              <div style={{ ...CARD, padding: 16 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Comprometido con clientes</span>
+                  <p style={{ margin: '8px 0 0', fontSize: 22, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2' }}>{fmtCop(comprometido)} <span style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>COP</span></p>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>Lo que suman los saldos de los clientes en Mouv y Finity</p>
+              </div>
+          </div>
+
           {/* ── Solicitudes "Saldo Lincoin → ACH" (aprobación manual) ──
               El cliente ya quedó debitado; antes de aprobar, mueve el
               respaldo al proveedor y luego dale Aprobar (acredita su ACH). */}
@@ -3097,291 +3179,219 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
               </div>
           )}
 
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-              <div>
-                  <h2 className="text-2xl font-bold text-[#0C0E0D]">Tesoreria y Finanzas</h2>
-                  <div className="flex items-center gap-2 mt-1">
-                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                      <span className="text-xs font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full">Sistema Operativo</span>
-                      <span className="text-xs text-slate-400 ml-2">{new Date().toLocaleDateString()}</span>
-                  </div>
-              </div>
-              <button 
-                  onClick={() => setShowInternalMovementModal(true)}
-                  className="bg-[#0C0E0D] hover:bg-[#161A17] px-5 py-2.5 rounded-xl font-bold text-sm shadow-lg flex items-center gap-2 transition-all"
-              >
-                  <RefreshCw size={16} /> Registrar Movimiento
-              </button>
-          </div>
-
-          <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-              {treasuryAccounts.map((bal) => (
-                  <div key={bal.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm min-w-[200px] flex flex-col justify-between hover:shadow-md transition-shadow">
-                      <div className="flex justify-between items-start mb-4">
-                          <div className="flex items-center gap-2">
-                              <span className="text-xl font-bold text-slate-700">{bal.flag}</span>
-                              <span className="text-sm font-bold text-slate-700">{bal.country}</span>
+          {/* 2 · Por resolver: solo lo que pide que alguien haga algo */}
+          <div style={CARD}>
+              <div className="flex items-center justify-between" style={{ marginBottom: 6 }}><p style={ROT}>Por resolver</p></div>
+              {!pr ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>{tesCargando ? 'Cargando…' : '—'}</p> : (() => {
+                  const filas: { k: string; icon: React.ElementType; tono: string; titulo: string; det: string; accion: string; onClick: () => void }[] = [];
+                  if (pr.cargues.n > 0) filas.push({ k: 'c', icon: ArrowDownCircle, tono: '#FBBF24',
+                      titulo: `${pr.cargues.n} ${pr.cargues.n === 1 ? 'cargue pendiente' : 'cargues pendientes'} de acreditar · ${fmtCop(pr.cargues.total)} COP`,
+                      det: pr.cargues.primero ? `El más antiguo: ${pr.cargues.primero.cliente} · ${fmtCop(pr.cargues.primero.monto)} COP · ${pr.cargues.primero.proveedor} · ${new Date(pr.cargues.primero.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}` : '',
+                      accion: 'Revisar', onClick: () => pr.cargues.primero && abrirCargue(pr.cargues.primero.id) });
+                  if (pr.procesando.n > 0) filas.push({ k: 'p', icon: Clock, tono: '#FBBF24', titulo: `${pr.procesando.n} ${pr.procesando.n === 1 ? 'dispersión' : 'dispersiones'} en "Procesando" hace más de 30 min`, det: `${fmtCop(pr.procesando.total)} COP`, accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
+                  if (pr.fallidasMes + pr.rechazadasMes > 0) filas.push({ k: 'f', icon: AlertTriangle, tono: '#F87171', titulo: `${pr.fallidasMes} fallidas · ${pr.rechazadasMes} rechazadas este mes`, det: 'Revisa que cada una haya vuelto al saldo del cliente', accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
+                  // Monitoreo del equipo: solo llega para el dueño.
+                  if (esDueno && Array.isArray(pr.fueraDeHorario) && pr.fueraDeHorario.length) {
+                      const quien = Array.from(new Set(pr.fueraDeHorario.map((x: any) => x.quien))).join(', ');
+                      filas.push({ k: 'h', icon: Users, tono: '#60A5FA', titulo: `${pr.fueraDeHorario.length} ${pr.fueraDeHorario.length === 1 ? 'cargue' : 'cargues'} fuera de horario (20:00–06:00) en 7 días`, det: `${quien} · ${fmtCop(pr.fueraDeHorario.reduce((a: number, x: any) => a + x.monto, 0))} COP`, accion: 'Ver cargues',
+                          onClick: () => { const id = pr.fueraDeHorario[0]?.quienId; if (id) setTesMiembro(String(id)); setTesFiltro('cargue'); setTesPagina(0); } });
+                  }
+                  return (<>
+                      {filas.length === 0 && <p style={{ margin: '6px 0 0', fontSize: 12.5, color: '#878E88' }}>Nada pendiente.</p>}
+                      {filas.map((r, i) => (
+                          <div key={r.k} className="flex items-center justify-between" style={{ gap: 12, padding: '11px 0', borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                              <div className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+                                  <span style={{ width: 30, height: 30, borderRadius: 9, display: 'grid', placeItems: 'center', background: `${r.tono}1F`, flexShrink: 0 }}><r.icon size={15} style={{ color: r.tono }} /></span>
+                                  <div style={{ minWidth: 0 }}>
+                                      <p style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{r.titulo}</p>
+                                      {r.det && <p style={{ margin: '2px 0 0', fontSize: 11.5, color: '#878E88' }}>{r.det}</p>}
+                                  </div>
+                              </div>
+                              <button onClick={r.onClick} style={{ flexShrink: 0, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 9, padding: '7px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>{r.accion}</button>
                           </div>
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{bal.currency}</span>
+                      ))}
+                      <div className="flex items-center" style={{ gap: 8, padding: '11px 0 0', borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 12, color: '#878E88' }}>
+                          {pr.trasladosAch > 0
+                            ? <><AlertTriangle size={14} style={{ color: '#FBBF24' }} /> {pr.trasladosAch} {pr.trasladosAch === 1 ? 'traslado' : 'traslados'} a ACH por aprobar (arriba)</>
+                            : <><CheckCircle size={14} style={{ color: '#4ADE80' }} /> Sin traslados a ACH pendientes</>}
                       </div>
-                      <div>
-                          <p className={`text-xl font-bold tracking-tight ${bal.amount < 0 ? 'text-red-600' : 'text-slate-800'}`}>$ {formatMoney(bal.amount, '')}</p>
-                          <p className="text-[10px] text-slate-400 mt-1 truncate">{bal.bank}</p>
-                      </div>
-                  </div>
-              ))}
+                  </>);
+              })()}
           </div>
 
-          <div className="space-y-4">
-              <div className="flex gap-6 border-b border-slate-200">
-                  <button onClick={() => setTreasuryTab('deposits')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'deposits' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-                      Solicitudes Carga <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{pendingDeposits.length}</span>
-                  </button>
-                  <button onClick={() => setTreasuryTab('withdrawals')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'withdrawals' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-                      Solicitudes Retiro <span className="ml-1 bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full text-[10px]">{pendingWithdrawals.length}</span>
-                  </button>
-                  <button onClick={() => setTreasuryTab('history')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'history' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-                      Historial Fiat
-                  </button>
-                  {/* Las operaciones cripto (USDT) no son del rol Tesorería. */}
-                  {!soloTesoreria && <button onClick={() => setTreasuryTab('crypto')} className={`pb-3 text-sm font-bold transition-colors border-b-2 ${treasuryTab === 'crypto' ? 'text-[#0C0E0D] border-[#0C0E0D]' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>
-                      Operaciones Cripto <span className="ml-1 bg-slate-100 text-[#4ADE80] px-1.5 py-0.5 rounded-full text-[10px]">{cryptoTxs.length}</span>
-                  </button>}
-              </div>
-
-              <div className="flex flex-col md:flex-row gap-4 justify-between items-center bg-white p-2 rounded-xl border border-slate-200">
-                  {/* Solo empresas — la fuente ya viene filtrada (isBusinessTx) */}
-                  <div className="flex bg-slate-100 p-1 rounded-lg">
-                      <span style={{ color: '#FFFFFF' }} className="px-4 py-1.5 rounded-md text-xs font-bold bg-[#0C0E0D] shadow-sm">Empresas</span>
-                  </div>
-                  
-                  <div className="relative w-full md:w-64">
-                      <Search className="absolute left-3 top-2.5 text-slate-400" size={14} />
-                      <input 
-                          type="text" 
-                          placeholder="Buscar usuario o ID..." 
-                          value={treasurySearch}
-                          onChange={(e) => setTreasurySearch(e.target.value)}
-                          className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none transition-colors"
-                      />
-                  </div>
-              </div>
-          </div>
-
-          {treasuryTab !== 'crypto' ? (
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                      <thead className="bg-[#F8FAFC] text-slate-500 font-bold uppercase text-[10px] tracking-wider border-b border-slate-200">
-                          <tr>
-                              <th className="px-6 py-4 cursor-pointer hover:bg-slate-100" onClick={() => handleSort('id')}>ID <ArrowUpDown size={10} className="inline ml-1"/></th>
-                              <th className="px-6 py-4">TIPO CLIENTE</th>
-                              <th className="px-6 py-4 cursor-pointer hover:bg-slate-100" onClick={() => handleSort('userName')}>USUARIO <ArrowUpDown size={10} className="inline ml-1"/></th>
-                              <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => handleSort('amount')}>MONTO <ArrowUpDown size={10} className="inline ml-1"/></th>
-                              <th className="px-6 py-4">DETALLES</th>
-                              <th className="px-6 py-4 text-center">ESTADO</th>
-                              <th className="px-6 py-4 text-right">ACCIÓN</th>
-                          </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                          {data.map(tx => (
-                              <tr key={tx.id} className="hover:bg-slate-50 transition-colors group">
-                                  <td className="px-6 py-4 font-mono text-xs text-slate-400">#{tx.id}</td>
-                                  <td className="px-6 py-4">
-                                      {tx.userRole === 'business' ? (
-                                          <span className="flex items-center gap-1 text-slate-600 font-bold text-xs"><Building2 size={14}/> Empresa</span>
-                                      ) : (
-                                          <span className="flex items-center gap-1 text-slate-600 font-bold text-xs"><Users size={14}/> Persona</span>
-                                      )}
-                                  </td>
-                                  <td className="px-6 py-4">
-                                      <div className="flex flex-col">
-                                          <span className="font-bold text-slate-800 text-sm">{tx.userName}</span>
-                                          <span className="text-[10px] text-slate-400">ID: {tx.userId}</span>
-                                          {tx.amount > 5000 && <span className="flex items-center gap-1 text-[9px] text-orange-600 mt-1 font-bold"><AlertTriangle size={10}/> Alto Volumen</span>}
-                                      </div>
-                                  </td>
-                                  <td className="px-6 py-4 text-right">
-                                      <span className={`font-bold text-sm ${tx.type === 'load' ? 'text-green-600' : 'text-slate-800'}`}>
-                                          {tx.type === 'load' ? '+' : '-'} {formatMoney(tx.amount, tx.currency)} <span className="text-[10px] text-slate-400">{tx.currency}</span>
-                                      </span>
-                                  </td>
-                                  <td className="px-6 py-4">
-                                      <div className="text-xs text-slate-600 max-w-[150px] truncate" title={tx.title}>
-                                          {tx.type === 'load' ? tx.method || 'Transferencia' : tx.bank}
-                                      </div>
-                                      <div className="text-[10px] text-slate-400 truncate">{tx.type === 'load' ? 'Depósito' : tx.account}</div>
-                                  </td>
-                                  <td className="px-6 py-4 text-center">
-                                      <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase ${tx.status === 'Completado' ? 'bg-green-100 text-green-700' : tx.status === 'Pendiente' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>
-                                          {tx.status}
-                                      </span>
-                                  </td>
-                                  <td className="px-6 py-4 text-right">
-                                      <button
-                                          onClick={() => setSelectedTreasuryTx(tx)}
-                                          className="text-[#0C0E0D] font-bold text-xs border border-slate-200 bg-slate-50 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-colors"
-                                      >
-                                          Ver / Gestionar
+          {/* 3 · Flujo + 4 · Utilidad y clientes */}
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)] items-start" style={{ gap: 16 }}>
+              <div style={CARD}>
+                  <div className="flex items-center justify-between" style={{ marginBottom: 12, gap: 10 }}>
+                      <p style={ROT}>Flujo</p>
+                      <div style={{ position: 'relative' }}>
+                          <button onClick={() => setTesMenu(v => !v)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '5px 11px', color: '#F4F4F2', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                              <Calendar size={13} style={{ color: '#878E88' }} /> {tesRango.etiqueta} <ChevronDown size={13} style={{ color: '#878E88', transform: tesMenu ? 'rotate(180deg)' : 'none' }} />
+                          </button>
+                          {tesMenu && (
+                              <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 20, width: 280, background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 12, padding: 8, boxShadow: '0 18px 40px rgba(0,0,0,0.5)' }}>
+                                  {PRESETS.map(p => (
+                                      <button key={p.l} onClick={() => elegir(p.r)} className="flex items-center justify-between" style={{ width: '100%', textAlign: 'left', padding: '8px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, color: '#F4F4F2', background: tesRango.etiqueta === p.l ? 'rgba(74,222,128,0.10)' : 'transparent' }}>
+                                          {p.l} {tesRango.etiqueta === p.l && <CheckCircle size={13} style={{ color: '#4ADE80' }} />}
                                       </button>
-                                  </td>
-                              </tr>
-                          ))}
-                          {data.length === 0 && (
-                              <tr>
-                                  <td colSpan={7} className="p-12 text-center text-slate-400">
-                                      <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                                          <Search size={24} className="opacity-50"/>
+                                  ))}
+                                  <div className="flex items-center" style={{ gap: 6, padding: '8px 10px 0', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 6 }}>
+                                      <span style={{ fontSize: 11.5, color: '#878E88', width: 52 }}>Un día</span>
+                                      <input type="date" max={hoy} value={tesDia} onChange={e => setTesDia(e.target.value)} style={FECHA} />
+                                      <button style={BTN_IR} onClick={() => { const [, m, dd] = tesDia.split('-').map(Number); elegir({ desde: tesDia, hasta: tesDia, etiqueta: `${dd} de ${MESES[(m || 1) - 1]}` }); }}>Ver</button>
+                                  </div>
+                                  <div className="flex items-center" style={{ gap: 6, padding: '8px 10px 0', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 6 }}>
+                                      <span style={{ fontSize: 11.5, color: '#878E88', width: 52 }}>Un mes</span>
+                                      <input type="month" max={hoy.slice(0, 7)} value={tesMes} onChange={e => setTesMes(e.target.value)} style={FECHA} />
+                                      <button style={BTN_IR} onClick={() => {
+                                          const [a, m] = tesMes.split('-').map(Number);
+                                          const fin = new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10);
+                                          const nombre = MESES[(m || 1) - 1];
+                                          elegir({ desde: `${tesMes}-01`, hasta: fin > hoy ? hoy : fin, etiqueta: `${nombre[0].toUpperCase()}${nombre.slice(1)} ${a}` });
+                                      }}>Ver</button>
+                                  </div>
+                                  <div style={{ padding: '8px 10px 2px', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 8 }}>
+                                      <span style={{ fontSize: 11.5, color: '#878E88' }}>Rango</span>
+                                      <div className="flex items-center" style={{ gap: 6, marginTop: 5 }}>
+                                          <input type="date" max={hoy} value={tesDesde} onChange={e => setTesDesde(e.target.value)} style={FECHA} />
+                                          <span style={{ color: 'rgba(244,244,242,0.45)' }}>–</span>
+                                          <input type="date" max={hoy} value={tesHasta} onChange={e => setTesHasta(e.target.value)} style={FECHA} />
+                                          <button disabled={tesDesde > tesHasta} style={{ ...BTN_IR, opacity: tesDesde > tesHasta ? 0.4 : 1 }} onClick={() => elegir({ desde: tesDesde, hasta: tesHasta, etiqueta: `${corta(tesDesde)} – ${corta(tesHasta)}` })}>Ver</button>
                                       </div>
-                                      <p>No se encontraron movimientos con los filtros actuales.</p>
+                                  </div>
+                              </div>
+                          )}
+                      </div>
+                  </div>
+                  {!f ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>{tesCargando ? 'Cargando…' : '—'}</p> : <>
+                      <div className="grid grid-cols-3" style={{ gap: 12 }}>
+                          {[
+                              { l: 'Entradas · cargues', v: f.entradas, n: f.nEnt, c: '#4ADE80', i: ArrowDownCircle, neto: false },
+                              { l: 'Salidas · dispersiones', v: f.salidas, n: f.nSal, c: '#F87171', i: ArrowUpCircle, neto: false },
+                              { l: 'Neto', v: neto, n: null, c: neto >= 0 ? '#4ADE80' : '#F87171', i: null, neto: true },
+                          ].map(x => (
+                              <div key={x.l}>
+                                  <p className="flex items-center" style={{ margin: 0, fontSize: 11.5, color: '#878E88', gap: 5 }}>{x.i && <x.i size={12} style={{ color: x.c }} />}{x.l}</p>
+                                  <p style={{ margin: '4px 0 0', fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: x.neto ? x.c : '#F4F4F2' }}>{x.neto && neto > 0 ? '+' : ''}{millones(x.v)}</p>
+                                  {x.n != null && <p style={{ margin: '1px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{fmtCop(x.n)} operaciones</p>}
+                              </div>
+                          ))}
+                      </div>
+                      <div className="flex items-end" style={{ gap: barras.length > 14 ? 4 : 10, height: 110, marginTop: 18 }}>
+                          {barras.map((b, i) => (
+                              <div key={i} className="flex items-end" style={{ flex: 1, gap: 2, height: '100%' }} title={`${etiquetaBarra(i)} · entradas ${fmtCop(b.ent)} · salidas ${fmtCop(b.sal)}`}>
+                                  <div style={{ flex: 1, height: `${(b.ent / maxB) * 100}%`, background: '#4ADE80', borderRadius: '3px 3px 0 0', opacity: 0.85 }} />
+                                  <div style={{ flex: 1, height: `${(b.sal / maxB) * 100}%`, background: 'rgba(248,113,113,0.55)', borderRadius: '3px 3px 0 0' }} />
+                              </div>
+                          ))}
+                      </div>
+                      <div className="flex justify-between" style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 5 }}>
+                          <span>{barras.length ? etiquetaBarra(0) : ''}</span><span>{barras.length ? etiquetaBarra(barras.length - 1) : ''}</span>
+                      </div>
+                      <div className="grid grid-cols-2" style={{ gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                          {['Mouv', 'Finity'].map(n => (
+                              <div key={n} style={{ fontSize: 12, color: '#878E88' }}>
+                                  <b style={{ color: '#F4F4F2' }}>{n}</b> · entra {millones(f.porProveedor?.[n]?.ent ?? 0)} · sale {millones(f.porProveedor?.[n]?.sal ?? 0)}
+                              </div>
+                          ))}
+                      </div>
+                  </>}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <div style={CARD}>
+                      <p style={{ ...ROT, marginBottom: 12 }}>Utilidad del mes</p>
+                      {!d ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>—</p> : <>
+                          <p style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.8px', color: d.utilidadMes.total >= 0 ? '#4ADE80' : '#F87171' }}>{millones(d.utilidadMes.total)} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span></p>
+                          <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88' }}>De la contabilidad de {d.utilidadMes.conContabilidad} cargues{d.utilidadMes.sinContabilidad ? ` · ${d.utilidadMes.sinContabilidad} sin contabilidad` : ''}</p>
+                          <div className="flex" style={{ gap: 14, marginTop: 10, fontSize: 12, color: '#878E88' }}>
+                              {['Mouv', 'Finity'].map(n => <span key={n}>{n} <b style={{ color: '#F4F4F2' }}>{millones(d.utilidadMes.porProveedor?.[n] ?? 0)}</b></span>)}
+                          </div>
+                      </>}
+                  </div>
+                  <div style={CARD}>
+                      <p style={{ ...ROT, marginBottom: 12 }}>Clientes con más movimiento · mes</p>
+                      {!d ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>—</p> : d.topClientes.length === 0 ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Sin movimientos este mes.</p> : d.topClientes.map((t: any, i: number) => (
+                          <div key={t.id} style={{ padding: '8px 0', borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                              <div className="flex justify-between" style={{ gap: 8, fontSize: 12.5 }}>
+                                  <span style={{ fontWeight: 700, color: '#F4F4F2', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.nombre}</span>
+                                  <span style={{ fontWeight: 800, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{millones(t.vol)}</span>
+                              </div>
+                              <div style={{ height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 4, marginTop: 5 }}>
+                                  <div style={{ width: `${(t.vol / d.topClientes[0].vol) * 100}%`, height: '100%', background: '#4ADE80', borderRadius: 4, opacity: 0.8 }} />
+                              </div>
+                              <p style={{ margin: '3px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{t.ops} operaciones</p>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+          </div>
+
+          {/* 5 · Movimientos (paginados en el servidor) */}
+          <div style={{ ...CARD, padding: 0 }}>
+              <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                  <div className="flex flex-wrap" style={{ gap: 6 }}>
+                      {([['todos', 'Todos'], ['cargue', 'Cargues'], ['dispersion', 'Dispersiones'], ['problemas', 'Con problemas']] as const).map(([k, l]) => (
+                          <button key={k} onClick={() => { setTesFiltro(k); setTesPagina(0); }} style={CHIP(tesFiltro === k)}>{l}</button>
+                      ))}
+                  </div>
+                  <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                      {/* Quién lo hizo: el dueño filtra por miembro; los demás, "Mis cargues". */}
+                      {esDueno ? (
+                          <select value={tesMiembro} onChange={e => { setTesMiembro(e.target.value); setTesPagina(0); }}
+                              style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, color: '#F4F4F2', padding: '8px 10px', fontSize: 12.5 }}>
+                              <option value="">Hecho por: todos</option>
+                              {(d?.equipo ?? []).map((m: any) => <option key={m.id} value={m.id}>Hecho por: {m.nombre || m.email}</option>)}
+                          </select>
+                      ) : (
+                          <button onClick={() => { setTesMios(v => !v); setTesPagina(0); }} style={{ ...CHIP(false), ...(tesMios ? { background: '#4ADE80', color: '#0C0E0D', borderColor: '#4ADE80' } : {}) }}>Mis cargues</button>
+                      )}
+                      <div className="relative" style={{ width: 260, maxWidth: '100%' }}>
+                          <Search size={14} style={{ position: 'absolute', left: 11, top: 10, color: '#878E88' }} />
+                          <input value={tesQ} onChange={e => { setTesQ(e.target.value); setTesPagina(0); }} placeholder="Cliente, ID o monto…"
+                              style={{ width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, color: '#F4F4F2', padding: '8px 10px 8px 31px', fontSize: 12.5, outline: 'none' }} />
+                      </div>
+                  </div>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
+                      <thead><tr>{['FECHA', 'CLIENTE', 'TIPO', 'PROVEEDOR', 'HECHO POR', 'MONTO', 'ESTADO'].map((h, i) => (
+                          <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i === 5 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}</tr></thead>
+                      <tbody>
+                          {(movs?.filas ?? []).map((m: any) => {
+                              const colorEstado = m.estado === 'Completado' ? '#4ADE80' : (m.estado === 'Fallido' || m.estado === 'Rechazado') ? '#F87171' : '#FBBF24';
+                              return (
+                              <tr key={m.id} onClick={() => m.tipo === 'Cargue' && m.estado === 'Pendiente' && abrirCargue(m.id)} style={{ cursor: m.tipo === 'Cargue' && m.estado === 'Pendiente' ? 'pointer' : 'default' }}>
+                                  <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                      {new Date(m.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                      <br /><span style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', fontFamily: 'monospace' }}>{String(m.id).slice(0, 8)}</span>
+                                  </td>
+                                  <td style={{ padding: '10px 18px', fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.cliente}</td>
+                                  <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.tipo}</td>
+                                  <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.proveedor}</td>
+                                  <td style={{ padding: '10px 18px', fontSize: 12.5, borderBottom: '1px solid rgba(255,255,255,0.06)', fontWeight: m.hechoPor === 'Cliente' ? 500 : 700, color: m.hechoPor === 'Tú' ? '#4ADE80' : m.hechoPor === 'Cliente' ? 'rgba(244,244,242,0.45)' : '#F4F4F2' }}>{m.hechoPor}</td>
+                                  <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 800, textAlign: 'right', color: m.entrada ? '#4ADE80' : '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{m.entrada ? '+' : '−'}{fmtCop(m.monto)}</td>
+                                  <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                                      <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, padding: '3px 8px', borderRadius: 999, border: `1px solid ${colorEstado}59`, color: colorEstado }}>{String(m.estado).toUpperCase()}</span>
                                   </td>
                               </tr>
-                          )}
+                              );
+                          })}
+                          {movs && movs.filas.length === 0 && <tr><td colSpan={7} style={{ padding: 18, fontSize: 12.5, color: '#878E88' }}>Sin movimientos con ese filtro.</td></tr>}
                       </tbody>
                   </table>
               </div>
-          </div>
-          ) : (
-          /* ── CRYPTO OPERATIONS HISTORY ── */
-          <div className="space-y-4">
-            {/* Summary cards */}
-            {(() => {
-              const completed = cryptoTxs.filter(t => t.status === 'Completado');
-              const deposits   = completed.filter(t => t.type === 'otc_deposit');
-              const userWDs    = completed.filter(t => t.type === 'otc_withdraw');
-              const adminWDs   = completed.filter(t => t.type === 'admin_hot_withdrawal');
-              const totalDep   = deposits.reduce((s, t) => s + t.amount, 0);
-              const totalWD    = userWDs.reduce((s, t) => s + t.amount, 0);
-              const totalAdm   = adminWDs.reduce((s, t) => s + t.amount, 0);
-              const totalFees  = userWDs.reduce((s, t) => s + (t.raw_data?.fee ?? 0), 0);
-              return (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-                    <p className="text-[10px] font-bold text-green-700 uppercase mb-1 flex items-center gap-1"><ArrowDownCircle size={12}/> Depósitos recibidos</p>
-                    <p className="text-2xl font-black text-green-800">{totalDep.toFixed(2)}</p>
-                    <p className="text-xs text-green-600 mt-0.5">{deposits.length} operaciones</p>
+              <div className="flex items-center justify-between" style={{ padding: '12px 18px', fontSize: 12, color: '#878E88' }}>
+                  <span>{movs ? `${movs.total ? movs.pagina * movs.porPagina + 1 : 0}–${Math.min(movs.total, (movs.pagina + 1) * movs.porPagina)} de ${fmtCop(movs.total)}` : ''}</span>
+                  <div className="flex" style={{ gap: 8 }}>
+                      <button disabled={tesPagina === 0} onClick={() => setTesPagina(p => Math.max(0, p - 1))} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: tesPagina === 0 ? 'rgba(244,244,242,0.45)' : '#F4F4F2', borderRadius: 8, padding: '5px 11px', fontWeight: 700, cursor: 'pointer' }}>Anterior</button>
+                      <button disabled={tesPagina + 1 >= totalPaginas} onClick={() => setTesPagina(p => p + 1)} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: tesPagina + 1 >= totalPaginas ? 'rgba(244,244,242,0.45)' : '#F4F4F2', borderRadius: 8, padding: '5px 11px', fontWeight: 700, cursor: 'pointer' }}>Siguiente</button>
                   </div>
-                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
-                    <p className="text-[10px] font-bold text-orange-700 uppercase mb-1 flex items-center gap-1"><ArrowUpCircle size={12}/> Retiros usuarios</p>
-                    <p className="text-2xl font-black text-orange-800">{totalWD.toFixed(2)}</p>
-                    <p className="text-xs text-orange-600 mt-0.5">{userWDs.length} operaciones</p>
-                  </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                    <p className="text-[10px] font-bold text-green-700 uppercase mb-1 flex items-center gap-1"><DollarSign size={12}/> Comisiones cobradas</p>
-                    <p className="text-2xl font-black text-green-800">{totalFees.toFixed(2)}</p>
-                    <p className="text-xs text-green-600 mt-0.5">de retiros procesados</p>
-                  </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                    <p className="text-[10px] font-bold text-slate-700 uppercase mb-1 flex items-center gap-1"><Vault size={12}/> Retiros admin</p>
-                    <p className="text-2xl font-black text-slate-800">{totalAdm.toFixed(2)}</p>
-                    <p className="text-xs text-slate-600 mt-0.5">{adminWDs.length} operaciones</p>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Crypto transactions table */}
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-[#F8FAFC] text-slate-500 font-bold uppercase text-[10px] tracking-wider border-b border-slate-200">
-                    <tr>
-                      <th className="px-4 py-3">FECHA</th>
-                      <th className="px-4 py-3">TIPO</th>
-                      <th className="px-4 py-3">USUARIO</th>
-                      <th className="px-4 py-3">RED / TOKEN</th>
-                      <th className="px-4 py-3 text-right">MONTO</th>
-                      <th className="px-4 py-3 text-right">COMISIÓN</th>
-                      <th className="px-4 py-3">DIRECCIÓN</th>
-                      <th className="px-4 py-3">TX HASH</th>
-                      <th className="px-4 py-3 text-center">ESTADO</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {cryptoTxs.length === 0 && (
-                      <tr><td colSpan={9} className="p-12 text-center text-slate-400">No hay operaciones cripto registradas aún.</td></tr>
-                    )}
-                    {cryptoTxs.map(tx => {
-                      const raw = tx.raw_data ?? {};
-                      const walletKey: string = raw.walletKey ?? tx.currency ?? '';
-                      const [token, net] = walletKey.includes('_') ? walletKey.split('_') : [walletKey, ''];
-                      const netLabel: Record<string, string> = { BSC: 'BSC', TRON: 'TRC-20', BASE: 'Base', MATIC: 'Polygon' };
-                      const typeLabel: Record<string, {label: string; color: string}> = {
-                        otc_deposit:           { label: '↓ Depósito',        color: 'bg-green-100 text-green-700' },
-                        otc_withdraw:          { label: '↑ Retiro usuario',  color: 'bg-orange-100 text-orange-700' },
-                        otc_withdraw_request:  { label: '⏳ Retiro pendiente',color: 'bg-yellow-100 text-yellow-700' },
-                        admin_hot_withdrawal:  { label: '🏦 Retiro admin',   color: 'bg-slate-100 text-slate-700' },
-                        otc_convert_request:   { label: '⇄ Conversión',      color: 'bg-slate-100 text-[#4ADE80]' },
-                      };
-                      const tInfo = typeLabel[tx.type] ?? { label: tx.type, color: 'bg-slate-100 text-slate-600' };
-                      const shortHash = (h: string) => h ? `${h.slice(0,6)}…${h.slice(-4)}` : '—';
-                      const shortAddr = (a: string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : '—';
-                      const isAdmin = tx.userId === 'admin';
-                      return (
-                        <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
-                            {new Date(tx.date).toLocaleDateString('es', { day:'2-digit', month:'short', year:'2-digit' })}
-                            <span className="block text-[10px] text-slate-400">{new Date(tx.date).toLocaleTimeString('es', { hour:'2-digit', minute:'2-digit' })}</span>
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${tInfo.color}`}>{tInfo.label}</span>
-                          </td>
-                          <td className="px-4 py-3">
-                            {isAdmin ? (
-                              <span className="text-xs font-bold text-slate-700 flex items-center gap-1"><Shield size={12} className="text-[#4ADE80]"/> Admin</span>
-                            ) : (
-                              <div>
-                                <p className="text-xs font-bold text-slate-800">{tx.userName || '—'}</p>
-                                <p className="text-[10px] text-slate-400 font-mono">{tx.userId?.slice(0,8)}…</p>
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-black text-slate-800">{token || tx.currency}</span>
-                              {net && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{netLabel[net] ?? net}</span>}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <span className="text-xs font-bold text-slate-800">{tx.amount?.toFixed(4)}</span>
-                            <span className="text-[10px] text-slate-400 ml-1">{token || tx.currency}</span>
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            {raw.fee > 0 ? (
-                              <span className="text-xs font-bold text-green-700">{Number(raw.fee).toFixed(2)} {token}</span>
-                            ) : <span className="text-slate-300">—</span>}
-                          </td>
-                          <td className="px-4 py-3">
-                            {(raw.toAddress || raw.fromAddress) ? (
-                              <span className="text-[11px] font-mono text-slate-600" title={raw.toAddress || raw.fromAddress}>
-                                {shortAddr(raw.toAddress || raw.fromAddress)}
-                              </span>
-                            ) : <span className="text-slate-300">—</span>}
-                          </td>
-                          <td className="px-4 py-3">
-                            {raw.txHash ? (
-                              <span className="text-[11px] font-mono text-[#4ADE80] cursor-pointer hover:underline" title={raw.txHash}
-                                onClick={() => navigator.clipboard.writeText(raw.txHash).then(() => showToast('TxHash copiado'))}>
-                                {shortHash(raw.txHash)}
-                              </span>
-                            ) : <span className="text-slate-300">—</span>}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${tx.status === 'Completado' ? 'bg-green-100 text-green-700' : tx.status === 'Pendiente' ? 'bg-orange-100 text-orange-700' : 'bg-red-100 text-red-700'}`}>
-                              {tx.status}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
               </div>
-            </div>
           </div>
-          )}
       </div>
-  );
+      );
   };
 
   const renderReports = () => {
