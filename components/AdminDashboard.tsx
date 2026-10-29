@@ -104,7 +104,7 @@ import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
-import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock } from 'lucide-react';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
@@ -131,7 +131,7 @@ interface AdminDashboardProps {
 }
 
 // El rol Tesorería ve solo Clientes y Tesorería (con sus Billeteras COP).
-const TABS_TESORERIA = ['clients', 'treasury', 'cargues'];
+const TABS_TESORERIA = ['clients', 'treasury', 'cargues', 'lincoin'];
 
 interface SystemAlert {
     id: string;
@@ -283,7 +283,7 @@ const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
 const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'kumplo'];
 
 const TAB_TITLES: Record<string, string> = {
-  overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera',
+  overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera', lincoin: 'Lincoin',
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
@@ -548,7 +548,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const soloTesoreria = rol === 'tesoreria';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'cargues' : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'cargues' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -1008,8 +1008,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   };
 
   useEffect(() => {
-    if ((activeTab === 'cargues' || activeTab === 'treasury') && !mouvPool) loadMouvPool();
-    if ((activeTab === 'cargues' || activeTab === 'treasury') && !finityPool) loadFinityPool();
+    if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !mouvPool) loadMouvPool();
+    if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !finityPool) loadFinityPool();
     if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -1204,6 +1204,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [cajaMotivo, setCajaMotivo] = useState('');
   const [cajaEditar, setCajaEditar] = useState<{ proveedor: string; monto: string; nota: string } | null>(null);
   const [cajaOcupada, setCajaOcupada] = useState(false);
+  // Tablero de Lincoin (lincoin_resumen): mes elegido, datos y formularios.
+  const [linMes, setLinMes] = useState(() => hoyBog().slice(0, 7));
+  const [linData, setLinData] = useState<any>(null);
+  const [linCargando, setLinCargando] = useState(false);
+  const [linVer, setLinVer] = useState(0);
+  const [linForm, setLinForm] = useState<null | { tipo: 'retiro' | 'egreso' | 'ingreso' | 'aporte'; proveedor: 'Mouv' | 'Finity'; monto: string; fecha: string; descripcion: string; soporte: string | null; soporteNombre: string | null }>(null);
+  const [linAnular, setLinAnular] = useState<{ id: string; motivo: string } | null>(null);
   // Comprobante bajo demanda: el listado llega sin las imágenes base64
   // (admin-data las reemplaza por '__stored__' para no pesar megas) y aquí
   // se pide la real solo al abrir el detalle.
@@ -1376,12 +1383,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     pedirAdmin({ action: 'caja_estado' }).then(d => { if (vigente && d?.ok) setCaja(d); }).catch(() => {});
     return () => { vigente = false; };
   }, [activeTab, cajaVer]);
+  useEffect(() => {
+    if (activeTab !== 'lincoin') return;
+    let vigente = true;
+    const hoy = hoyBog();
+    const [a, m] = linMes.split('-').map(Number);
+    const finMes = new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10);
+    setLinCargando(true);
+    pedirAdmin({ action: 'lincoin_resumen', desde: `${linMes}-01`, hasta: finMes > hoy ? hoy : finMes })
+      .then(d => { if (vigente) { setLinCargando(false); if (d?.ok) setLinData(d); else showToast(d?.error ?? 'No se pudo cargar el tablero de Lincoin.'); } })
+      .catch(() => { if (vigente) setLinCargando(false); });
+    return () => { vigente = false; };
+  }, [activeTab, linMes, linVer]);
   const cajaAccion = async (body: Record<string, unknown>, ok: string) => {
     setCajaOcupada(true);
     const d = await pedirAdmin(body).catch(() => null);
     setCajaOcupada(false);
     if (!d?.ok) { showToast(d?.error ?? 'No se pudo completar.'); return false; }
-    showToast(ok); setCajaVer(v => v + 1); setTesVer(v => v + 1);
+    showToast(ok); setCajaVer(v => v + 1); setTesVer(v => v + 1); setLinVer(v => v + 1);
     return true;
   };
   const startMfaEnroll = async () => {
@@ -3241,8 +3260,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                               <p style={{ margin: '10px 0 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>AHORA</p>
                                               {linea('Bolsa en el proveedor', x.bolsaVivo)}
                                               {linea('− Saldos de los clientes', x.clientesVivo, { signo: '−' })}
-                                              {linea(<>− Lincoin esperado <span style={{ color: 'rgba(244,244,242,0.45)' }}>(apertura + {fmtCop(x.utilidadDesdeApertura)} de utilidad)</span></>, x.lincoinEsperado, { signo: '−' })}
-                                              {linea(<span style={{ color: 'rgba(244,244,242,0.45)' }}>± Retiros de Lincoin y movimientos externos · próximamente</span>, 0, { tenue: true })}
+                                              {linea(<>− Lincoin esperado <span style={{ color: 'rgba(244,244,242,0.45)' }}>(apertura + {fmtCop(x.utilidadDesdeApertura)} de utilidad{x.retirosDesdeApertura ? ` − ${fmtCop(x.retirosDesdeApertura)} de retiros` : ''}{x.externosDesdeApertura ? ` ${x.externosDesdeApertura < 0 ? '−' : '+'} ${fmtCop(Math.abs(x.externosDesdeApertura))} externos` : ''})</span></>, x.lincoinEsperado, { signo: '−' })}
+                                              <button onClick={() => navTo('lincoin')} style={{ background: 'none', border: 'none', padding: '2px 0', color: '#878E88', fontSize: 11.5, textDecoration: 'underline', cursor: 'pointer' }}>Retiros y movimientos externos: ver y registrar en Lincoin</button>
                                               <div className="flex justify-between" style={{ marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
                                                   background: x.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${x.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: x.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
                                                   <span>Diferencia sin explicar</span><span>{x.dif == null ? '—' : signo(x.dif)}</span>
@@ -3597,6 +3616,274 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           <button disabled={cajaOcupada || cajaEditar.monto === ''}
                               onClick={async () => { if (await cajaAccion({ action: 'caja_apertura_set', proveedor: cajaEditar.proveedor, lincoin: Number(cajaEditar.monto), nota: cajaEditar.nota }, 'Saldo de apertura actualizado.')) setCajaEditar(null); }}
                               style={{ flex: 1, background: '#4ADE80', border: 'none', color: '#0C0E0D', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer' }}>{cajaOcupada ? 'Guardando…' : 'Guardar'}</button>
+                      </div>
+                  </div>
+              </div>
+          )}
+      </div>
+      );
+  };
+
+  // ── Lincoin: la caja propia ───────────────────────────────────────
+  // Lo que es de Lincoin dentro de las bolsas, de dónde salen sus utilidades
+  // (por fuente y por día) y los movimientos que hace por fuera de los
+  // cargues: retiros de utilidad, egresos/ingresos externos y aportes. Cada
+  // movimiento ajusta el Lincoin esperado de su bolsa y el cierre de caja.
+  const renderLincoin = () => {
+      const d = linData;
+      const fmt = (n: number) => Math.round(Number(n) || 0).toLocaleString('es-CO');
+      const signo = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${fmt(Math.abs(n))}`;
+      const CARD: React.CSSProperties = { background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: 18 };
+      const ROT: React.CSSProperties = { margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase', color: '#878E88' };
+      const COLORES: Record<string, string> = { Finity: '#4ADE80', Mouv: '#22A35C', 'Saldo Lincoin': '#86EFAC' };
+      const TIPOS: Record<string, { l: string; signo: 1 | -1; desc: string }> = {
+          retiro: { l: 'Retiro de utilidad', signo: -1, desc: 'Lincoin saca su plata de la bolsa' },
+          egreso: { l: 'Egreso externo', signo: -1, desc: 'Salió plata de la bolsa por fuera de Lincoin' },
+          ingreso: { l: 'Ingreso externo', signo: 1, desc: 'Entró plata a la bolsa por fuera de Lincoin' },
+          aporte: { l: 'Aporte de Lincoin', signo: 1, desc: 'Lincoin pone plata en la bolsa' },
+      };
+      const fuentes: any[] = d?.fuentes ?? [];
+      const utilidad = fuentes.reduce((a, f) => a + f.total, 0);
+      const cargues = fuentes.reduce((a, f) => a + f.cargues, 0);
+      const movs: any[] = d?.movimientos ?? [];
+      const vivos = movs.filter(m => !m.anulado);
+      const retiros = vivos.filter(m => m.tipo === 'retiro').reduce((a, m) => a + m.monto, 0);
+      // Saldo por bolsa desde la apertura, con la bolsa y los saldos en vivo.
+      const oblig = (code: string) => obligaciones && typeof obligaciones.valor?.[code] === 'number' ? obligaciones.valor[code] : allUsers.reduce((a, u) => a + Number((u.balances as any)?.[code] ?? 0), 0);
+      const vivo: Record<string, { pool: number | null; clientes: number }> = {
+          Mouv: { pool: mouvPool && !mouvPool.loading && !mouvPool.error ? Number(mouvPool.breb ?? mouvPool.total ?? 0) : null, clientes: oblig('COP_BREB') },
+          Finity: { pool: finityPool && !finityPool.loading && !finityPool.error ? Number(finityPool.cop ?? 0) : null, clientes: oblig('COP_ACH') },
+      };
+      const cajaP: any[] = (d?.caja ?? []).map((c: any) => ({ ...c, dif: c.lincoinEsperado != null && vivo[c.proveedor]?.pool != null ? Math.round((vivo[c.proveedor].pool as number) - vivo[c.proveedor].clientes - c.lincoinEsperado) : null }));
+      const saldoLincoin = cajaP.reduce((a, c) => a + Number(c.lincoinEsperado ?? 0), 0);
+      const difs = cajaP.filter(c => c.apertura);
+      const difTotal = difs.length && difs.every(c => c.dif != null) ? difs.reduce((a, c) => a + c.dif, 0) : null;
+      const dias: string[] = (() => { const [a, m] = linMes.split('-').map(Number); const n = new Date(Date.UTC(a, m, 0)).getUTCDate(); const hoy = hoyBog(); return Array.from({ length: n }, (_, i) => `${linMes}-${String(i + 1).padStart(2, '0')}`).filter(x => x <= hoy); })();
+      const maxDia = Math.max(1, ...dias.map(x => (Object.values(d?.porDia?.[x] ?? {}) as any[]).reduce((a: number, v: any) => a + Math.max(0, Number(v)), 0)));
+      const verSoporte = async (id: string) => {
+          const r = await pedirAdmin({ action: 'caja_movimiento_soporte', id }).catch(() => null);
+          if (!r?.soporte) { showToast('No se pudo abrir el comprobante.'); return; }
+          const w = window.open(); if (w) w.document.write(`<iframe src="${r.soporte}" style="border:0;width:100%;height:100%"></iframe>`);
+      };
+      const nuevo = () => setLinForm({ tipo: 'egreso', proveedor: 'Finity', monto: '', fecha: hoyBog(), descripcion: '', soporte: null, soporteNombre: null });
+      const kpi = (l: string, v: string, sub: string, color = '#F4F4F2') => (
+          <div style={{ ...CARD, padding: 16 }}>
+              <p style={{ margin: 0, fontSize: 12, color: '#878E88' }}>{l}</p>
+              <p style={{ margin: '6px 0 0', fontSize: 21, fontWeight: 800, letterSpacing: '-0.5px', color }}>{v}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{sub}</p>
+          </div>
+      );
+      const CAMPO: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '10px 12px', fontSize: 13, outline: 'none', colorScheme: 'dark' as any };
+      const RF: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: '#878E88', margin: '10px 0 6px' };
+
+      return (
+      <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="flex items-end justify-between flex-wrap" style={{ gap: 12 }}>
+              <div>
+                  <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 15 }}>· caja propia</span></h2>
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#878E88' }}>{linCargando ? 'Actualizando…' : 'Lo que es de Lincoin dentro de las bolsas, de dónde salen sus utilidades y lo que se mueve por fuera'}</p>
+              </div>
+              <div className="flex items-center" style={{ gap: 8 }}>
+                  <input type="month" value={linMes} max={hoyBog().slice(0, 7)} onChange={e => e.target.value && setLinMes(e.target.value)}
+                      style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, fontWeight: 700, colorScheme: 'dark' as any }} />
+                  <button onClick={nuevo} className="inline-flex items-center" style={{ gap: 6, background: '#4ADE80', color: '#0C0E0D', border: 'none', borderRadius: 10, padding: '9px 14px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
+                      <Plus size={15} /> Registrar movimiento
+                  </button>
+              </div>
+          </div>
+
+          <div className="grid grid-cols-2 xl:grid-cols-4" style={{ gap: 12 }}>
+              {kpi('Saldo de Lincoin en bolsas', difs.length ? fmt(saldoLincoin) : '—', difs.length ? 'apertura + utilidad − retiros ± externos' : 'la caja abre hoy a las 23:59', '#4ADE80')}
+              {kpi('Utilidad del periodo', fmt(utilidad), `de ${cargues} cargues`)}
+              {kpi('Retiros de utilidad', fmt(retiros), `${vivos.filter(m => m.tipo === 'retiro').length} en el periodo`)}
+              {kpi('Diferencia sin explicar', difTotal == null ? '—' : signo(difTotal), difTotal == null ? 'cuando abra la caja' : difTotal === 0 ? 'todo cuadra' : 'falta registrar algo', difTotal == null ? 'rgba(244,244,242,0.45)' : difTotal === 0 ? '#4ADE80' : '#FBBF24')}
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] items-start" style={{ gap: 16 }}>
+              <div style={CARD}>
+                  <p style={{ ...ROT, marginBottom: 12 }}>Utilidades por fuente</p>
+                  {fuentes.map((f, i) => (
+                      <div key={f.n} style={{ padding: '9px 0', borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                          <div className="flex items-center justify-between" style={{ gap: 10 }}>
+                              <span className="flex items-center" style={{ gap: 8 }}>
+                                  <span style={{ width: 9, height: 9, borderRadius: 3, background: COLORES[f.n] }} />
+                                  <span><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{f.n}</span><span style={{ display: 'block', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{f.cargues} cargues · {f.conContabilidad} con contabilidad</span></span>
+                              </span>
+                              <span style={{ textAlign: 'right' }}><span style={{ display: 'block', fontSize: 14, fontWeight: 800, color: f.total < 0 ? '#F87171' : '#F4F4F2' }}>{fmt(f.total)}</span><span style={{ display: 'block', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{utilidad > 0 ? Math.round((Math.max(0, f.total) / utilidad) * 100) : 0} %</span></span>
+                          </div>
+                          <div style={{ height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 4, marginTop: 7 }}>
+                              <div style={{ width: `${utilidad > 0 ? (Math.max(0, f.total) / utilidad) * 100 : 0}%`, height: '100%', background: COLORES[f.n], borderRadius: 4 }} />
+                          </div>
+                      </div>
+                  ))}
+                  <p style={{ margin: '14px 0 6px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>PRÓXIMAS FUENTES</p>
+                  {[['Lincoin Risk', 'Venta de consultas a empresas'], ['Mesa OTC', 'Cierres de cambio'], ['Brasil · PIX', 'Gowd'], ['Estados Unidos · USD', 'Dólares digitales (USDC)']].map(([n, sub]) => (
+                      <div key={n} className="flex items-center justify-between" style={{ padding: '7px 0', borderTop: '1px dashed rgba(255,255,255,0.08)' }}>
+                          <span><span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: '#878E88' }}>{n}</span><span style={{ display: 'block', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{sub}</span></span>
+                          <span className="inline-flex items-center" style={{ gap: 5, fontSize: 11, color: 'rgba(244,244,242,0.45)' }}><Lock size={11} /> próximamente</span>
+                      </div>
+                  ))}
+              </div>
+
+              <div style={CARD}>
+                  <p style={{ ...ROT, marginBottom: 12 }}>Utilidad por día</p>
+                  {!d?.porDia ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>{linCargando ? 'Cargando…' : '—'}</p> : <>
+                      <div className="flex items-end" style={{ gap: 4, height: 170 }}>
+                          {dias.map(x => {
+                              const v = d.porDia[x] ?? {};
+                              const neg = Object.values(v).some((y: any) => Number(y) < 0);
+                              return (
+                                  <div key={x} title={`${Number(x.slice(8))} · ${fuentes.map(f => `${f.n} ${fmt(v[f.n] ?? 0)}`).join(' · ')}`} style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column-reverse' }}>
+                                      {fuentes.map(f => { const y = Math.max(0, Number(v[f.n] ?? 0)); return y ? <div key={f.n} style={{ height: `${(y / maxDia) * 100}%`, background: COLORES[f.n], borderRadius: 2, marginTop: 1 }} /> : null; })}
+                                      {neg && <div style={{ height: 3, background: '#F87171', borderRadius: 2 }} />}
+                                  </div>
+                              );
+                          })}
+                      </div>
+                      <div className="flex justify-between" style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 5 }}><span>{dias[0]?.slice(8)}</span><span>{dias[dias.length - 1]?.slice(8)}</span></div>
+                      <div className="flex flex-wrap" style={{ gap: 14, marginTop: 10 }}>
+                          {fuentes.map(f => <span key={f.n} className="inline-flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88' }}><span style={{ width: 9, height: 9, borderRadius: 3, background: COLORES[f.n] }} />{f.n}</span>)}
+                          <span className="inline-flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88' }}><span style={{ width: 9, height: 3, background: '#F87171' }} />día con utilidad negativa</span>
+                      </div>
+                  </>}
+              </div>
+          </div>
+
+          <div style={CARD}>
+              <p style={{ ...ROT, marginBottom: 12 }}>Saldo de Lincoin por bolsa · desde la apertura</p>
+              <div className="grid grid-cols-1 lg:grid-cols-2" style={{ gap: 14 }}>
+                  {cajaP.map(c => {
+                      const fila = (l: React.ReactNode, v: number | null, o: { signo?: string; color?: string; fuerte?: boolean } = {}) => (
+                          <div className="flex justify-between" style={{ padding: '5px 0', fontSize: 12.5, color: '#878E88' }}>
+                              <span>{l}</span><span style={{ fontWeight: o.fuerte ? 800 : 700, color: o.color ?? '#F4F4F2' }}>{v == null ? '—' : `${v === 0 ? '' : (o.signo ?? '')}${fmt(Math.abs(v))}`}</span>
+                          </div>
+                      );
+                      const v = vivo[c.proveedor];
+                      return (
+                          <div key={c.proveedor} style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: 14 }}>
+                              <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                                  <span className="flex items-center" style={{ gap: 7, fontWeight: 800, color: '#F4F4F2' }}>{c.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {c.proveedor}</span>
+                                  {c.dif == null ? null : c.dif === 0
+                                    ? <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={12} /> Cuadra</span>
+                                    : <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#FBBF24' }}><AlertTriangle size={12} /> No cuadra</span>}
+                              </div>
+                              {!c.apertura ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja abre hoy a las 23:59 (o desde Tesorería › Cierre de caja).</p> : <>
+                                  {fila(`Saldo de apertura · ${new Date(c.apertura.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}`, c.apertura.lincoin)}
+                                  {fila('+ Utilidad de los cargues', c.utilidadDesdeApertura, { signo: c.utilidadDesdeApertura < 0 ? '−' : '+', color: '#4ADE80' })}
+                                  {fila('− Retiros de utilidad', c.retirosDesdeApertura, { signo: '−' })}
+                                  {fila('± Movimientos externos y aportes', c.externosDesdeApertura, { signo: c.externosDesdeApertura < 0 ? '−' : '+' })}
+                                  <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)', marginTop: 4, paddingTop: 4 }}>
+                                      {fila('= Lincoin esperado', c.lincoinEsperado, { fuerte: true, color: '#4ADE80' })}
+                                      {fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
+                                  </div>
+                                  <div className="flex justify-between" style={{ marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
+                                      background: c.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${c.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: c.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
+                                      <span>Diferencia sin explicar</span><span>{c.dif == null ? '—' : signo(c.dif)}</span>
+                                  </div>
+                                  {c.dif != null && c.dif !== 0 && <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>}
+                              </>}
+                          </div>
+                      );
+                  })}
+              </div>
+          </div>
+
+          <div style={{ ...CARD, padding: 0 }}>
+              <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}><p style={ROT}>Movimientos de Lincoin · {linMes}</p></div>
+              <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
+                      <thead><tr>{['FECHA', 'TIPO', 'BOLSA', 'DESCRIPCIÓN', 'SOPORTE', 'HECHO POR', 'MONTO', ''].map((h, i) => (
+                          <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i === 6 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>{h}</th>
+                      ))}</tr></thead>
+                      <tbody>
+                          {movs.length === 0 && <tr><td colSpan={8} style={{ padding: 18, fontSize: 12.5, color: '#878E88' }}>No hay movimientos registrados en este mes.</td></tr>}
+                          {movs.map(m => {
+                              const t = TIPOS[m.tipo] ?? { l: m.tipo, signo: 1 };
+                              return (
+                                  <tr key={m.id} style={{ opacity: m.anulado ? 0.5 : 1 }}>
+                                      <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{new Date(`${m.fecha}T12:00:00`).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}</td>
+                                      <td style={{ padding: '10px 18px', fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
+                                          <span className="inline-flex items-center" style={{ gap: 6 }}>{t.signo > 0 ? <ArrowDownCircle size={13} style={{ color: '#4ADE80' }} /> : <ArrowUpCircle size={13} style={{ color: '#F87171' }} />}{t.l}</span>
+                                          {m.anulado && <><br /><span style={{ fontSize: 10.5, color: '#878E88', fontWeight: 500 }}>Anulado por {m.anulado.por} · {m.anulado.motivo}</span></>}
+                                      </td>
+                                      <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.proveedor}</td>
+                                      <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.descripcion}</td>
+                                      <td style={{ padding: '10px 18px', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                                          {m.soporte ? <button onClick={() => verSoporte(m.id)} className="inline-flex items-center" style={{ gap: 5, background: 'none', border: 'none', color: '#878E88', cursor: 'pointer', textDecoration: 'underline', fontSize: 12 }}><Paperclip size={12} />{m.soporte}</button> : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin soporte</span>}
+                                      </td>
+                                      <td style={{ padding: '10px 18px', fontSize: 12.5, fontWeight: 700, color: m.por === 'Tú' ? '#4ADE80' : '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.por}</td>
+                                      <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 800, textAlign: 'right', color: t.signo > 0 ? '#4ADE80' : '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', textDecoration: m.anulado ? 'line-through' : undefined, whiteSpace: 'nowrap' }}>{t.signo > 0 ? '+' : '−'}{fmt(m.monto)}</td>
+                                      <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', textAlign: 'right' }}>
+                                          {esDueno && !m.anulado && <button onClick={() => setLinAnular({ id: m.id, motivo: '' })} style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }}>Anular</button>}
+                                      </td>
+                                  </tr>
+                              );
+                          })}
+                      </tbody>
+                  </table>
+              </div>
+              <p style={{ margin: 0, padding: '12px 18px', fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>Cada movimiento ajusta el Lincoin esperado de su bolsa y la diferencia del cierre de caja. No se borran: el dueño los puede anular con motivo.</p>
+          </div>
+
+          {/* Registrar movimiento */}
+          {linForm && (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setLinForm(null)}>
+                  <div onClick={e => e.stopPropagation()} style={{ width: 460, maxWidth: '100%', maxHeight: 'calc(100dvh - 24px)', overflowY: 'auto', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
+                      <div className="flex items-center justify-between">
+                          <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Registrar movimiento de Lincoin</p>
+                          <button onClick={() => setLinForm(null)} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
+                      </div>
+                      <label style={RF}>Tipo</label>
+                      <div className="grid grid-cols-2" style={{ gap: 6 }}>
+                          {(Object.keys(TIPOS) as ('retiro' | 'egreso' | 'ingreso' | 'aporte')[]).map(k => (
+                              <button key={k} onClick={() => setLinForm(f => f && ({ ...f, tipo: k }))} style={{ textAlign: 'left', padding: '8px 10px', borderRadius: 10, cursor: 'pointer', color: '#F4F4F2', background: linForm.tipo === k ? 'rgba(74,222,128,0.10)' : 'transparent', border: linForm.tipo === k ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
+                                  <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700 }}>{TIPOS[k].l}</span>
+                                  <span style={{ display: 'block', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{TIPOS[k].desc}</span>
+                              </button>
+                          ))}
+                      </div>
+                      <div className="grid grid-cols-2" style={{ gap: 8 }}>
+                          <div><label style={RF}>Bolsa</label>
+                              <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Finity</option><option>Mouv</option></select></div>
+                          <div><label style={RF}>Fecha</label>
+                              <input type="date" max={hoyBog()} value={linForm.fecha} onChange={e => setLinForm(f => f && ({ ...f, fecha: e.target.value }))} style={CAMPO} /></div>
+                      </div>
+                      <label style={RF}>Monto (COP)</label>
+                      <input inputMode="numeric" value={linForm.monto ? Number(linForm.monto).toLocaleString('es-CO') : ''} placeholder="0" onChange={e => setLinForm(f => f && ({ ...f, monto: e.target.value.replace(/\D/g, '') }))} style={{ ...CAMPO, fontSize: 18, fontWeight: 800 }} />
+                      <label style={RF}>Descripción</label>
+                      <input value={linForm.descripcion} onChange={e => setLinForm(f => f && ({ ...f, descripcion: e.target.value }))} placeholder="Ej.: pago directo a proveedor desde Finity" style={CAMPO} />
+                      <label className="inline-flex items-center" style={{ marginTop: 10, gap: 6, border: '1px dashed rgba(255,255,255,0.14)', borderRadius: 10, padding: '8px 12px', color: '#878E88', fontSize: 12, cursor: 'pointer' }}>
+                          <Paperclip size={13} /> {linForm.soporteNombre ? `Adjunto: ${linForm.soporteNombre}` : 'Adjuntar comprobante (opcional)'}
+                          <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }} onChange={async e => {
+                              const file = e.target.files?.[0]; if (!file) return;
+                              if (file.size > 3 * 1024 * 1024) { showToast('El comprobante pesa demasiado (máx. 3 MB).'); return; }
+                              const url = await fileToBase64(file);
+                              setLinForm(f => f && ({ ...f, soporte: url, soporteNombre: file.name }));
+                          }} />
+                      </label>
+                      <div className="flex" style={{ gap: 8, marginTop: 14 }}>
+                          <button onClick={() => setLinForm(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+                          <button disabled={cajaOcupada || !linForm.monto || linForm.descripcion.trim().length < 3}
+                              onClick={async () => { if (await cajaAccion({ action: 'caja_movimiento_crear', ...linForm, monto: Number(linForm.monto) }, 'Movimiento registrado.')) setLinForm(null); }}
+                              style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer', background: !linForm.monto || linForm.descripcion.trim().length < 3 ? 'rgba(255,255,255,0.08)' : '#4ADE80', color: !linForm.monto || linForm.descripcion.trim().length < 3 ? 'rgba(244,244,242,0.45)' : '#0C0E0D' }}>{cajaOcupada ? 'Registrando…' : 'Registrar'}</button>
+                      </div>
+                  </div>
+              </div>
+          )}
+
+          {/* Anular movimiento (solo el dueño) */}
+          {linAnular && (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setLinAnular(null)}>
+                  <div onClick={e => e.stopPropagation()} style={{ width: 400, maxWidth: '100%', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
+                      <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Anular movimiento</p>
+                      <p style={{ margin: '6px 0 10px', fontSize: 12, color: '#878E88' }}>No se borra: queda tachado, deja de contar y se guarda quién, cuándo y por qué.</p>
+                      <textarea value={linAnular.motivo} onChange={e => setLinAnular(a => a && ({ ...a, motivo: e.target.value }))} placeholder="Motivo (obligatorio)"
+                          style={{ width: '100%', boxSizing: 'border-box', minHeight: 64, background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: 10, fontSize: 12.5 }} />
+                      <div className="flex" style={{ gap: 8, marginTop: 10 }}>
+                          <button onClick={() => setLinAnular(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+                          <button disabled={cajaOcupada || linAnular.motivo.trim().length < 5}
+                              onClick={async () => { if (await cajaAccion({ action: 'caja_movimiento_anular', id: linAnular.id, motivo: linAnular.motivo.trim() }, 'Movimiento anulado.')) setLinAnular(null); }}
+                              style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer', background: '#F4F4F2', color: '#0C0E0D', opacity: linAnular.motivo.trim().length < 5 ? 0.4 : 1 }}>{cajaOcupada ? 'Anulando…' : 'Anular'}</button>
                       </div>
                   </div>
               </div>
@@ -5188,11 +5475,12 @@ const renderDesign = () => (
                     const pendTes = pendingDeposits.length + pendingWithdrawals.length;
                     const grupoTesoreria = (
                         <AdminSidebarGrupo icon={Landmark} label="Tesorería"
-                            active={activeTab === 'treasury' || activeTab === 'cargues'}
+                            active={activeTab === 'treasury' || activeTab === 'cargues' || activeTab === 'lincoin'}
                             badge={pendTes > 0 ? pendTes : undefined}
                             items={[
                                 { key: 'cargues', icon: Wallet, label: 'Billetera', active: activeTab === 'cargues', onClick: () => navTo('cargues') },
                                 { key: 'treasury', icon: BarChart3, label: 'Tesorería', active: activeTab === 'treasury', badge: pendTes > 0 ? pendTes : undefined, onClick: () => navTo('treasury') },
+                                { key: 'lincoin', icon: Landmark, label: 'Lincoin', active: activeTab === 'lincoin', onClick: () => navTo('lincoin') },
                             ]} />
                     );
                     const groups: { key: string; title: string; items: React.ReactNode }[] = [
@@ -5360,6 +5648,7 @@ const renderDesign = () => (
                   </div>
                 )}
                 {activeTab === 'marketing' && renderMarketing()}
+                {activeTab === 'lincoin' && renderLincoin()}
                 {activeTab === 'treasury' && (tesoreriaOk ? renderTreasury() : (
                   <div className="py-8">
                     <AdminStepUp

@@ -201,6 +201,18 @@ async function abrirCaja(por: Record<string, unknown> | null): Promise<string[]>
   return abiertas
 }
 
+// Retiros, externos y aportes registrados (caja_movimientos), sin anulados.
+const SIGNO_MOV: Record<string, 1 | -1> = { retiro: -1, egreso: -1, ingreso: 1, aporte: 1 }
+async function movimientosCaja(desdeFecha: string, hastaFecha?: string): Promise<any[]> {
+  let q = db.from('caja_movimientos').select('id, fecha, tipo, proveedor, monto, descripcion, soporte_nombre, por, creado_at, anulado')
+    .gte('fecha', desdeFecha).order('fecha', { ascending: false }).order('creado_at', { ascending: false }).limit(2000)
+  if (hastaFecha) q = q.lte('fecha', hastaFecha)
+  const { data, error } = await q
+  if (error) return []
+  return (data ?? []) as any[]
+}
+const fechaBogota = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 10)
+
 async function estadoCaja() {
   const { data: aps } = await db.from('caja_apertura').select('*')
   const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
@@ -213,14 +225,22 @@ async function estadoCaja() {
     const a = aperturas.get(c.proveedor)
     porProv[c.proveedor] = a ? (String(a.abierta_at) === primera ? utilidad[c.proveedor] : (await utilidadPorProveedor(String(a.abierta_at)))[c.proveedor]) : 0
   }
+  // Movimientos de Lincoin desde la apertura de cada bolsa.
+  const primeraFecha = primera ? fechaBogota(primera) : null
+  const movs = primeraFecha ? (await movimientosCaja(primeraFecha)).filter(m => !m.anulado) : []
   return CAJA.map(c => {
     const a = aperturas.get(c.proveedor)
     const ultima = ((fotos ?? []) as any[]).find(f => f.proveedor === c.proveedor) ?? null
+    const desde = a ? fechaBogota(String(a.abierta_at)) : null
+    const deEsta = desde ? movs.filter(m => m.proveedor === c.proveedor && String(m.fecha) >= desde) : []
+    const retiros = deEsta.filter(m => m.tipo === 'retiro').reduce((acc, m) => acc + Number(m.monto), 0)
+    const externos = deEsta.filter(m => m.tipo !== 'retiro').reduce((acc, m) => acc + (SIGNO_MOV[m.tipo] ?? 0) * Number(m.monto), 0)
     return {
       proveedor: c.proveedor, rail: c.rail,
       apertura: a ? { at: a.abierta_at, bolsa: Number(a.bolsa), clientes: Number(a.clientes), lincoin: Number(a.lincoin), nota: a.nota ?? null, editadoPor: a.editado_por ?? null, editadoAt: a.editado_at ?? null } : null,
       utilidadDesdeApertura: Math.round(porProv[c.proveedor] ?? 0),
-      lincoinEsperado: a ? Math.round(Number(a.lincoin) + (porProv[c.proveedor] ?? 0)) : null,
+      retirosDesdeApertura: Math.round(retiros), externosDesdeApertura: Math.round(externos),
+      lincoinEsperado: a ? Math.round(Number(a.lincoin) + (porProv[c.proveedor] ?? 0) - retiros + externos) : null,
       ultimaFoto: ultima ? { fecha: ultima.fecha, bolsa: ultima.bolsa == null ? null : Number(ultima.bolsa), clientes: Number(ultima.clientes), lincoinEsperado: Number(ultima.lincoin_esperado), diferencia: ultima.diferencia == null ? null : Number(ultima.diferencia) } : null,
     }
   })
@@ -1428,6 +1448,11 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // La caja de Lincoin: verla. Abrirla, corregir la apertura y ocultar un
   // movimiento son del dueño (no figuran acá).
   caja_estado: ['plata.ver', 'tesoreria'],
+  // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
+  // movimiento es del dueño (no figura acá).
+  lincoin_resumen: ['plata.ver', 'tesoreria'],
+  caja_movimiento_soporte: ['plata.ver', 'tesoreria'],
+  caja_movimiento_crear: 'tesoreria',
   reject_rail_move: 'tesoreria',
   otc_ajuste_set: 'plata.mover',
   // Los topes de envío son un control de cumplimiento: los ajusta Compliance
@@ -3105,6 +3130,7 @@ Deno.serve(async (req: Request) => {
         'approve_rail_move', 'reject_rail_move', 'tesoreria_movimiento',
         // La caja: abrirla, corregir la apertura, ocultar un movimiento
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar',
+        'caja_movimiento_crear', 'caja_movimiento_anular',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -4662,6 +4688,95 @@ Deno.serve(async (req: Request) => {
         }
         const { count: ocultos } = await db.from('transactions').select('id', { count: 'exact', head: true }).not('raw_data->oculto', 'is', null)
         return json({ ok: true, proveedores, sospechosas, ocultos: ocultos ?? 0 })
+      }
+
+      // ── Tablero de Lincoin ───────────────────────────────────────────
+      // Utilidades por fuente y por día (del periodo), los movimientos de
+      // Lincoin del periodo y el saldo por bolsa desde la apertura.
+      if (body.action === 'lincoin_resumen') {
+        const esDuenoL = (auth.acceso?.rol ?? 'lectura') === 'dueno'
+        const yoIdL = String(auth.userId ?? '')
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+        const hoy = hoyBogota()
+        const desde = esYmd(body.desde) ? String(body.desde) : `${hoy.slice(0, 7)}-01`
+        const hasta = esYmd(body.hasta) ? String(body.hasta) : hoy
+        if (desde > hasta) return json({ ok: false, error: 'El inicio va después del final.' }, 400)
+        const nDias = Math.round((Date.parse(hasta) - Date.parse(desde)) / 86_400_000) + 1
+        if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
+        const aUtc = (ymd: string, fin = false) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 5 * 3600_000 + (fin ? 86_400_000 : 0)).toISOString()
+        const { filas } = await leerPorPaginas(() => db.from('transactions')
+          .select(`id, created_at, currency, ${SELECT_UTILIDAD}`)
+          .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+          .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 100_000 })
+        const fuente = (c: unknown) => provDeRiel(c) ?? 'Saldo Lincoin'
+        const porFuente: Record<string, { total: number; cargues: number; conContabilidad: number }> = {}
+        const porDia: Record<string, Record<string, number>> = {}
+        for (const t of filas as any[]) {
+          if (!String(t.currency ?? '').toUpperCase().startsWith('COP')) continue
+          const f = fuente(t.currency)
+          const x = (porFuente[f] ??= { total: 0, cargues: 0, conContabilidad: 0 })
+          x.cargues++
+          if (t.oculto) continue
+          if (t.utilidad != null && t.utilidad !== '') x.conContabilidad++
+          const u = utilidadLincoin(t)
+          x.total += u
+          const dia = fechaBogota(String(t.created_at))
+          ;(porDia[dia] ??= {})[f] = ((porDia[dia] ?? {})[f] ?? 0) + u
+        }
+        const movs = await movimientosCaja(desde, hasta)
+        const quien = (a: any) => !a ? '—' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
+        return json({
+          ok: true, desde, hasta,
+          fuentes: ['Finity', 'Mouv', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
+          porDia: nDias <= 92 ? porDia : null,
+          movimientos: movs.map(m => ({ id: m.id, fecha: m.fecha, tipo: m.tipo, proveedor: m.proveedor, monto: Number(m.monto), descripcion: m.descripcion,
+            soporte: m.soporte_nombre ?? null, por: quien(m.por), esMio: String(m.por?.id ?? '') === yoIdL,
+            anulado: m.anulado ? { motivo: m.anulado.motivo, por: quien(m.anulado.por), at: m.anulado.at } : null })),
+          caja: await estadoCaja(),
+        })
+      }
+
+      // Registrar un movimiento de Lincoin (retiro, egreso/ingreso externo o
+      // aporte). El dueño y Tesorería; queda quién lo hizo.
+      if (body.action === 'caja_movimiento_crear') {
+        const tipo = String(body.tipo ?? '')
+        const prov = String(body.proveedor ?? '')
+        const monto = Number(body.monto)
+        const fecha = String(body.fecha ?? '')
+        const descripcion = String(body.descripcion ?? '').trim().slice(0, 300)
+        if (!(tipo in SIGNO_MOV)) return json({ ok: false, error: 'Tipo inválido' }, 400)
+        if (!CAJA.some(c => c.proveedor === prov)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
+        if (!isFinite(monto) || monto <= 0) return json({ ok: false, error: 'Monto inválido' }, 400)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fecha > hoyBogota()) return json({ ok: false, error: 'Fecha inválida' }, 400)
+        if (descripcion.length < 3) return json({ ok: false, error: 'Escribe una descripción.' }, 400)
+        const soporte = typeof body.soporte === 'string' && body.soporte.startsWith('data:') ? body.soporte : null
+        if (soporte && soporte.length > 4_000_000) return json({ ok: false, error: 'El comprobante pesa demasiado (máx. ~3 MB).' }, 400)
+        const por = await autorDe(auth)
+        const { data: ins, error } = await db.from('caja_movimientos').insert({
+          fecha, tipo, proveedor: prov, monto, descripcion, soporte, soporte_nombre: soporte ? String(body.soporteNombre ?? 'comprobante').slice(0, 120) : null, por,
+        }).select('id').single()
+        if (error) return errorGenerico('caja_movimiento_crear', error)
+        await auditAdmin(req, 'caja.movimiento', { id: (ins as any)?.id, tipo, proveedor: prov, monto, fecha, descripcion })
+        return json({ ok: true, id: (ins as any)?.id })
+      }
+
+      // Anular un movimiento de Lincoin (no se borra). Solo el dueño.
+      if (body.action === 'caja_movimiento_anular') {
+        const id = String(body.id ?? '')
+        const motivo = String(body.motivo ?? '').trim().slice(0, 300)
+        if (!UUID_RE.test(id)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        if (motivo.length < 5) return json({ ok: false, error: 'Escribe el motivo.' }, 400)
+        const { data: upd, error } = await db.from('caja_movimientos').update({ anulado: { motivo, por: await autorDe(auth), at: new Date().toISOString() } }).eq('id', id).is('anulado', null).select('id')
+        if (error) return errorGenerico('caja_movimiento_anular', error)
+        if (!upd?.length) return json({ ok: false, error: 'Ese movimiento no existe o ya estaba anulado.' }, 404)
+        await auditAdmin(req, 'caja.movimiento_anulado', { id, motivo })
+        return json({ ok: true })
+      }
+
+      // El comprobante de un movimiento (se pide aparte: no viaja en la lista).
+      if (body.action === 'caja_movimiento_soporte') {
+        const { data } = await db.from('caja_movimientos').select('soporte, soporte_nombre').eq('id', String(body.id ?? '')).maybeSingle()
+        return json({ ok: true, soporte: (data as any)?.soporte ?? null, nombre: (data as any)?.soporte_nombre ?? null })
       }
 
       // Abrir la caja ya (sin esperar la foto de las 23:59). Solo el dueño.
