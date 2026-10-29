@@ -5,6 +5,7 @@ import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
+import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permite, visibleEnPais, ROLES_VALIDOS, type Rol, type Acceso } from '../_shared/equipo.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
@@ -133,6 +134,112 @@ async function obligacionesTodas(): Promise<{ valor: Record<string, number>; par
   }
   obligacionesRespaldo = { at: Date.now(), valor, parcial }
   return obligacionesRespaldo
+}
+
+// ── Caja de Lincoin ──────────────────────────────────────────────────────
+// bolsa del proveedor = saldos de los clientes + lo de Lincoin + (lo que se
+// mueve por fuera) ± diferencia. Ver 2026_zz20_caja_lincoin.sql.
+const CAJA = [{ proveedor: 'Mouv', rail: 'COP_BREB' }, { proveedor: 'Finity', rail: 'COP_ACH' }] as const
+const hoyBogota = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
+const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : null }
+
+// La utilidad de Lincoin en un cargue: la de su contabilidad, MENOS el 0,10 %
+// de Bre-B en Mouv. Ese 0,10 % es un costo de Mouv (lo confirmó
+// cumplimiento el 2026-10-29), no plata de Lincoin; la contabilidad del
+// cargue lo venía sumando como utilidad. Un cargue oculto (raw_data.oculto)
+// o sin contabilidad no suma.
+function utilidadLincoin(t: { currency?: unknown; utilidad?: unknown; feeBreb?: unknown; oculto?: unknown }): number {
+  if (t.oculto) return 0
+  if (t.utilidad == null || t.utilidad === '') return 0
+  const u = Number(t.utilidad)
+  if (!isFinite(u)) return 0
+  return u - (String(t.currency ?? '').toUpperCase() === 'COP_BREB' ? (Number(t.feeBreb) || 0) : 0)
+}
+const SELECT_UTILIDAD = 'utilidad:raw_data->acct->>utilityCop, feeBreb:raw_data->acct->>feeCopBreb, oculto:raw_data->oculto'
+
+async function utilidadPorProveedor(desdeIso: string): Promise<Record<string, number>> {
+  const { filas } = await leerPorPaginas(() => db.from('transactions')
+    .select(`id, currency, ${SELECT_UTILIDAD}`)
+    .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+    .gte('created_at', desdeIso), { tope: 100_000 })
+  const out: Record<string, number> = { Mouv: 0, Finity: 0 }
+  for (const t of filas as any[]) { const p = provDeRiel(t.currency); if (p) out[p] += utilidadLincoin(t) }
+  return out
+}
+
+// Saldo de cada bolsa, leído en el proveedor con la llave de servicio (igual
+// que la pantalla de Billetera: Mouv = Bre-B, Finity = COP).
+async function bolsasProveedores(): Promise<Record<string, number | null>> {
+  const h = { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` }
+  const pedir = (fn: string) => fetch(`${SUPABASE_URL}/functions/v1/${fn}`, { method: 'POST', headers: h, body: JSON.stringify({ action: 'treasury_balances' }), signal: AbortSignal.timeout(25_000) })
+    .then(r => r.json()).catch(() => null)
+  const [m, f] = await Promise.all([pedir('mouv-proxy'), pedir('finity-proxy')])
+  const num = (v: unknown) => { const n = Number(v); return v != null && v !== '' && isFinite(n) ? n : null }
+  return {
+    Mouv: m && !m.error && m.ok !== false ? num(m.breb ?? m.total) : null,
+    Finity: f && !f.error && f.ok !== false ? num(f.cop) : null,
+  }
+}
+
+// Abre la caja de los proveedores que todavía no la tienen: todo lo que
+// sobra hoy en la bolsa se toma como de Lincoin. No toca una apertura que ya
+// existe (para corregirla está caja_apertura_set).
+async function abrirCaja(por: Record<string, unknown> | null): Promise<string[]> {
+  const { data: ya } = await db.from('caja_apertura').select('proveedor')
+  const tienen = new Set(((ya ?? []) as any[]).map(a => String(a.proveedor)))
+  const faltan = CAJA.filter(c => !tienen.has(c.proveedor))
+  if (!faltan.length) return []
+  const [bolsas, oblig] = await Promise.all([bolsasProveedores(), obligacionesTodas()])
+  const abiertas: string[] = []
+  for (const c of faltan) {
+    const bolsa = bolsas[c.proveedor]
+    if (bolsa == null || !oblig || oblig.parcial) continue   // sin cifra confiable no se abre
+    const clientes = Number(oblig.valor[c.rail] ?? 0)
+    const { error } = await db.from('caja_apertura').insert({ proveedor: c.proveedor, bolsa, clientes, lincoin: bolsa - clientes, editado_por: por, editado_at: new Date().toISOString() })
+    if (!error) abiertas.push(c.proveedor)
+  }
+  return abiertas
+}
+
+async function estadoCaja() {
+  const { data: aps } = await db.from('caja_apertura').select('*')
+  const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
+  const { data: fotos } = await db.from('caja_cierres').select('*').order('fecha', { ascending: false }).limit(4)
+  const primera = ((aps ?? []) as any[]).map(a => String(a.abierta_at)).sort()[0]
+  const utilidad = primera ? await utilidadPorProveedor(primera) : { Mouv: 0, Finity: 0 }
+  // La utilidad se cuenta desde la apertura de CADA proveedor.
+  const porProv: Record<string, number> = {}
+  for (const c of CAJA) {
+    const a = aperturas.get(c.proveedor)
+    porProv[c.proveedor] = a ? (String(a.abierta_at) === primera ? utilidad[c.proveedor] : (await utilidadPorProveedor(String(a.abierta_at)))[c.proveedor]) : 0
+  }
+  return CAJA.map(c => {
+    const a = aperturas.get(c.proveedor)
+    const ultima = ((fotos ?? []) as any[]).find(f => f.proveedor === c.proveedor) ?? null
+    return {
+      proveedor: c.proveedor, rail: c.rail,
+      apertura: a ? { at: a.abierta_at, bolsa: Number(a.bolsa), clientes: Number(a.clientes), lincoin: Number(a.lincoin), nota: a.nota ?? null, editadoPor: a.editado_por ?? null, editadoAt: a.editado_at ?? null } : null,
+      utilidadDesdeApertura: Math.round(porProv[c.proveedor] ?? 0),
+      lincoinEsperado: a ? Math.round(Number(a.lincoin) + (porProv[c.proveedor] ?? 0)) : null,
+      ultimaFoto: ultima ? { fecha: ultima.fecha, bolsa: ultima.bolsa == null ? null : Number(ultima.bolsa), clientes: Number(ultima.clientes), lincoinEsperado: Number(ultima.lincoin_esperado), diferencia: ultima.diferencia == null ? null : Number(ultima.diferencia) } : null,
+    }
+  })
+}
+
+// Foto diaria (23:59 de Colombia). Si la caja no se ha abierto, se abre
+// ahora: "la caja empieza hoy".
+async function cajaFoto() {
+  const abiertas = await abrirCaja({ sistema: 'foto diaria' })
+  const [bolsas, oblig, estado] = await Promise.all([bolsasProveedores(), obligacionesTodas(), estadoCaja()])
+  const fecha = hoyBogota()
+  const filas = estado.filter(e => e.apertura).map(e => {
+    const clientes = Number(oblig?.valor?.[e.rail] ?? 0)
+    const bolsa = bolsas[e.proveedor]
+    const esperado = Number(e.lincoinEsperado ?? 0)
+    return { fecha, proveedor: e.proveedor, bolsa, clientes, lincoin_esperado: esperado, diferencia: bolsa == null ? null : Math.round(bolsa - clientes - esperado) }
+  })
+  if (filas.length) await db.from('caja_cierres').upsert(filas, { onConflict: 'fecha,proveedor' })
+  return { ok: true, fecha, abiertas, fotos: filas.length }
 }
 
 // Cifrado de campos sensibles: la implementación vive en _shared para que
@@ -1318,6 +1425,9 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   tesoreria_movimiento: 'tesoreria',
   // El tablero de Tesorería (solo lectura, cifras de toda la base).
   tesoreria_resumen: ['plata.ver', 'tesoreria'],
+  // La caja de Lincoin: verla. Abrirla, corregir la apertura y ocultar un
+  // movimiento son del dueño (no figuran acá).
+  caja_estado: ['plata.ver', 'tesoreria'],
   reject_rail_move: 'tesoreria',
   otc_ajuste_set: 'plata.mover',
   // Los topes de envío son un control de cumplimiento: los ajusta Compliance
@@ -1505,6 +1615,13 @@ Deno.serve(async (req: Request) => {
     let selfServiceBody: any = null
     if (req.method === 'POST') {
       selfServiceBody = await req.json().catch(() => ({}))
+
+      // Foto diaria de la caja: la pide pg_cron (caja_foto) con el secreto
+      // interno, sin sesión. Solo lee saldos y escribe caja_* .
+      if (selfServiceBody.action === 'caja_foto') {
+        if (!(await traeSecretoDeLaBase(req, db))) return json({ error: 'No autorizado' }, 401)
+        return json(await cajaFoto())
+      }
 
       // ── Intento de ingreso FALLIDO ────────────────────────────────────
       // Va SIN autenticación a propósito: quien falla el login justamente no
@@ -2986,6 +3103,8 @@ Deno.serve(async (req: Request) => {
         // Mueven dinero
         'admin_credit_balance', 'admin_credit_crypto',
         'approve_rail_move', 'reject_rail_move', 'tesoreria_movimiento',
+        // La caja: abrirla, corregir la apertura, ocultar un movimiento
+        'caja_abrir', 'caja_apertura_set', 'mov_ocultar',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -4516,6 +4635,76 @@ Deno.serve(async (req: Request) => {
         return json({ success: true, newBalance: newBal })
       }
 
+      // ── Caja de Lincoin ──────────────────────────────────────────────
+      if (body.action === 'caja_estado') {
+        const esDuenoC = (auth.acceso?.rol ?? 'lectura') === 'dueno'
+        const proveedores = await estadoCaja()
+        // Cargues con la contabilidad sospechosa (tasa de venta absurda o
+        // utilidad muy negativa): solo el dueño, para revisarlos u ocultarlos.
+        let sospechosas: unknown[] = []
+        if (esDuenoC) {
+          const { data: sus } = await db.from('transactions')
+            .select('id, created_at, user_id, currency, amount, acct:raw_data->acct')
+            .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+            .is('raw_data->oculto', null).not('raw_data->acct', 'is', null)
+            .order('created_at', { ascending: false }).limit(2000)
+          const malas = ((sus ?? []) as any[]).filter(t => {
+            const a = t.acct ?? {}
+            return (Number(a.sellRate) > 0 && Number(a.sellRate) < 1000) || Number(a.utilityCop) < -1_000_000
+          }).slice(0, 10)
+          const ids = Array.from(new Set(malas.map(t => String(t.user_id))))
+          const nombres: Record<string, string> = {}
+          if (ids.length) {
+            const { data: us } = await db.from('users').select('id, full_name, company_name, email').in('id', ids)
+            for (const u of (us ?? []) as any[]) nombres[String(u.id)] = String(u.company_name || u.full_name || u.email || '—')
+          }
+          sospechosas = malas.map(t => ({ id: t.id, at: t.created_at, cliente: nombres[String(t.user_id)] ?? '—', proveedor: provDeRiel(t.currency) ?? 'Saldo Lincoin', monto: Number(t.amount) || 0, acct: t.acct }))
+        }
+        const { count: ocultos } = await db.from('transactions').select('id', { count: 'exact', head: true }).not('raw_data->oculto', 'is', null)
+        return json({ ok: true, proveedores, sospechosas, ocultos: ocultos ?? 0 })
+      }
+
+      // Abrir la caja ya (sin esperar la foto de las 23:59). Solo el dueño.
+      if (body.action === 'caja_abrir') {
+        const abiertas = await abrirCaja(await autorDe(auth))
+        await auditAdmin(req, 'caja.abierta', { abiertas })
+        return json({ ok: true, abiertas })
+      }
+
+      // Corregir el saldo de apertura de Lincoin en un proveedor (p. ej. con la
+      // cifra de un contador). Solo el dueño; queda quién, cuándo y antes/después.
+      if (body.action === 'caja_apertura_set') {
+        const prov = String(body.proveedor ?? '')
+        const lincoin = Number(body.lincoin)
+        if (!CAJA.some(c => c.proveedor === prov)) return json({ ok: false, error: 'Proveedor inválido' }, 400)
+        if (!isFinite(lincoin)) return json({ ok: false, error: 'Monto inválido' }, 400)
+        const { data: antes } = await db.from('caja_apertura').select('lincoin').eq('proveedor', prov).maybeSingle()
+        if (!antes) return json({ ok: false, error: 'La caja de ese proveedor todavía no está abierta.' }, 404)
+        const { error } = await db.from('caja_apertura').update({ lincoin, nota: String(body.nota ?? '').slice(0, 300) || null, editado_por: await autorDe(auth), editado_at: new Date().toISOString() }).eq('proveedor', prov)
+        if (error) return errorGenerico('caja_apertura_set', error)
+        await auditAdmin(req, 'caja.apertura_corregida', { proveedor: prov, antes: Number((antes as any).lincoin), despues: lincoin, nota: body.nota ?? null })
+        return json({ ok: true })
+      }
+
+      // Ocultar (o volver a mostrar) un movimiento SIN borrarlo: deja de
+      // listarse y su utilidad deja de sumar. Solo el dueño, con motivo.
+      if (body.action === 'mov_ocultar') {
+        const txId = String(body.txId ?? '')
+        if (!UUID_RE.test(txId)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        const ocultar = body.ocultar !== false
+        const motivo = String(body.motivo ?? '').trim().slice(0, 300)
+        if (ocultar && motivo.length < 5) return json({ ok: false, error: 'Escribe el motivo.' }, 400)
+        const { data: tx } = await db.from('transactions').select('raw_data').eq('id', txId).maybeSingle()
+        if (!tx) return json({ ok: false, error: 'No existe ese movimiento.' }, 404)
+        const rd = { ...(((tx as any).raw_data ?? {}) as Record<string, unknown>) }
+        if (ocultar) rd.oculto = { motivo, por: await autorDe(auth), at: new Date().toISOString() }
+        else delete rd.oculto
+        const { error } = await db.from('transactions').update({ raw_data: rd }).eq('id', txId)
+        if (error) return errorGenerico('mov_ocultar', error)
+        await auditAdmin(req, ocultar ? 'mov.oculto' : 'mov.mostrado', { txId, motivo: ocultar ? motivo : null })
+        return json({ ok: true })
+      }
+
       // ── Tablero de Tesorería ─────────────────────────────────────────
       // Antes el tablero sumaba los ~200 movimientos que el panel tiene en
       // memoria, mezclaba COP con USD, decidía "entrada" por el título y
@@ -4545,23 +4734,29 @@ Deno.serve(async (req: Request) => {
         // 1 · Flujo del periodo: entradas (cargues) y salidas (dispersiones)
         // completadas, en COP, por hora / día / semana.
         const { filas: flujo, truncado: flujoTruncado } = await leerPorPaginas(() => db.from('transactions')
-          .select('id, created_at, type, currency, amount, user_id')
-          .in('type', ['load', 'dispersion']).eq('status', 'Completado')
+          .select(`id, created_at, type, currency, amount, user_id, source:raw_data->>source, feeCop:raw_data->>feeCop, ${SELECT_UTILIDAD}`)
+          .in('type', ['load', 'dispersion', 'adjustment']).eq('status', 'Completado')
           .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 60_000 })
         const porHora = nDias === 1, porSemana = nDias > 45
         const nBarras = porHora ? 24 : porSemana ? Math.ceil(nDias / 7) : nDias
         const barras = Array.from({ length: nBarras }, (_, i) => ({ i, ent: 0, sal: 0 }))
         const tot = { entradas: 0, nEnt: 0, salidas: 0, nSal: 0 }
-        const porProv: Record<string, { ent: number; sal: number }> = {}
+        const porProv: Record<string, { ent: number; sal: number; ajustes: number; costo: number; utilidad: number }> = {}
         const inicioMs = Date.parse(`${desde}T00:00:00Z`)
         for (const t of flujo) {
           if (!esCop(t.currency) || !visible(t)) continue
           const monto = Math.abs(Number(t.amount) || 0)
+          // Para el cierre: descuentos/reversas, costo de Mouv y utilidad.
+          if (t.type === 'adjustment') { (porProv[prov(t.currency)] ??= { ent: 0, sal: 0, ajustes: 0, costo: 0, utilidad: 0 }).ajustes += monto; continue }
           const local = Date.parse(t.created_at) - TZ
           const idx = porHora ? new Date(local).getUTCHours() : Math.floor((local - inicioMs) / 86_400_000 / (porSemana ? 7 : 1))
           const b = barras[Math.max(0, Math.min(nBarras - 1, idx))]
-          const p = (porProv[prov(t.currency)] ??= { ent: 0, sal: 0 })
-          if (t.type === 'load') { tot.entradas += monto; tot.nEnt++; b.ent += monto; p.ent += monto }
+          const p = (porProv[prov(t.currency)] ??= { ent: 0, sal: 0, ajustes: 0, costo: 0, utilidad: 0 })
+          if (t.type === 'load') {
+            tot.entradas += monto; tot.nEnt++; b.ent += monto; p.ent += monto
+            if (String(t.currency).toUpperCase() === 'COP_BREB') p.costo += Number(t.feeCop) || 0
+            if (t.source === 'admin_cargue') p.utilidad += utilidadLincoin(t)
+          }
           else { tot.salidas += monto; tot.nSal++; b.sal += monto; p.sal += monto }
         }
 
@@ -4581,7 +4776,7 @@ Deno.serve(async (req: Request) => {
         // 3 · El mes en curso: utilidad (de la contabilidad de cada cargue) y
         // los clientes con más movimiento.
         const { filas: delMes } = await leerPorPaginas(() => db.from('transactions')
-          .select('id, type, currency, amount, user_id, source:raw_data->>source, utilidad:raw_data->acct->>utilityCop')
+          .select(`id, type, currency, amount, user_id, source:raw_data->>source, ${SELECT_UTILIDAD}`)
           .in('type', ['load', 'dispersion']).eq('status', 'Completado').gte('created_at', inicioMes), { tope: 60_000 })
         let utilidad = 0, conAcct = 0, sinAcct = 0
         const utilProv: Record<string, number> = {}
@@ -4589,7 +4784,8 @@ Deno.serve(async (req: Request) => {
         for (const t of delMes as any[]) {
           if (!esCop(t.currency) || !visible(t)) continue
           if (t.type === 'load' && (t.source === 'admin_cargue')) {
-            if (t.utilidad != null && t.utilidad !== '') { const u = Number(t.utilidad) || 0; utilidad += u; conAcct++; utilProv[prov(t.currency)] = (utilProv[prov(t.currency)] ?? 0) + u }
+            if (t.oculto) continue
+            if (t.utilidad != null && t.utilidad !== '') { const u = utilidadLincoin(t); utilidad += u; conAcct++; utilProv[prov(t.currency)] = (utilProv[prov(t.currency)] ?? 0) + u }
             else sinAcct++
           }
           const v = (volCliente[String(t.user_id)] ??= { vol: 0, ops: 0 }); v.vol += Math.abs(Number(t.amount) || 0); v.ops++
@@ -4609,6 +4805,8 @@ Deno.serve(async (req: Request) => {
         // Quién lo hizo: el dueño filtra por miembro; los demás, solo los suyos.
         if (esDueno && /^[0-9a-f-]{36}$/i.test(String(body.miembro ?? ''))) mq = mq.eq('raw_data->por->>id', String(body.miembro))
         if (!esDueno && body.mios === true) mq = mq.eq('raw_data->por->>id', yoId)
+        // Lo oculto no se lista; el dueño puede pedir verlo.
+        mq = esDueno && body.verOcultos === true ? mq.not('raw_data->oculto', 'is', null) : mq.is('raw_data->oculto', null)
         const q = String(body.q ?? '').trim()
         if (q) {
           const soloNum = q.replace(/[.\s,$]/g, '')
@@ -4677,6 +4875,7 @@ Deno.serve(async (req: Request) => {
               tipo: m.type === 'load' ? 'Cargue' : m.type === 'dispersion' ? 'Dispersión' : m.type === 'rail_move' ? 'Traslado a ACH' : 'Ajuste',
               proveedor: prov(m.currency), monto: Number(m.amount) || 0, entrada: m.type === 'load' || (m.type === 'adjustment' && (m.raw_data?.direction ?? 'credit') === 'credit'),
               estado: m.status, hechoPor: hechoPor(m.raw_data, m.type), esMio: String((m.raw_data?.por ?? m.raw_data?.resueltoPor)?.id ?? '') === yoId,
+              ...(esDueno && m.raw_data?.oculto ? { oculto: { motivo: m.raw_data.oculto.motivo, por: m.raw_data.oculto.por?.nombre || m.raw_data.oculto.por?.email || 'admin', at: m.raw_data.oculto.at } } : {}),
             })),
           },
           equipo,
