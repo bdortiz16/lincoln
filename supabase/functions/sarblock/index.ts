@@ -169,9 +169,73 @@ async function topeAgotado(uid: string, c: Config): Promise<boolean> {
   } catch { return false }
 }
 
+// ── El cupo de Sarblock ────────────────────────────────────────────────
+// Sarblock deja 60 llamadas por minuto para TODA la organización (producción
+// y pruebas comparten la llave). El 2026-10-29 los sondeos automáticos de
+// beneficiarios lo agotaron y las consultas que pagaba un cliente en Lincoin
+// Risk fallaban con 429. Ahora:
+//   · cada llamada a Sarblock queda en el log con la acción que la pidió,
+//     para saber quién gasta el cupo;
+//   · un 429 deja una pausa (system_config.sarblock_pausa) durante la cual
+//     lo automático (sondeos, barrido, lecturas de resultado) no llama a
+//     Sarblock, y el cupo queda para lo que pide una persona;
+//   · la consulta de Risk espera lo que pide Sarblock y reintenta una vez.
+let accionEnCurso = ''
+const PAUSA_KEY = 'sarblock_pausa'
+let pausa = { hasta: 0, leido: 0 }
+async function pausadoHasta(): Promise<number> {
+  if (Date.now() - pausa.leido < 5000) return pausa.hasta
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', PAUSA_KEY).maybeSingle()
+    pausa = { hasta: Number(JSON.parse(String((data as any)?.value ?? '{}'))?.hasta ?? 0) || 0, leido: Date.now() }
+  } catch { pausa = { ...pausa, leido: Date.now() } }
+  return pausa.hasta
+}
+const enPausa = async () => (await pausadoHasta()) > Date.now()
+async function marcarPausa(segundos: number) {
+  const hasta = Date.now() + Math.min(Math.max(segundos, 5), 120) * 1000
+  if (hasta <= pausa.hasta) return
+  pausa = { hasta, leido: Date.now() }
+  try { await db.from('system_config').upsert({ key: PAUSA_KEY, value: JSON.stringify({ hasta, por: accionEnCurso }) }, { onConflict: 'key' }) } catch { /* la pausa en memoria igual vale */ }
+}
+const esLimite = (e: unknown) => e instanceof ErrorSarblock && e.status === 429
+const esperar = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+async function fetchContado(url: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(url, init)
+  let ruta = url
+  try { ruta = new URL(url).pathname.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, ':id') } catch { /* tal cual */ }
+  console.log(`[sarblock] api ${init?.method ?? 'GET'} ${ruta} ${r.status} accion=${accionEnCurso}`)
+  if (r.status === 429) {
+    const ra = Number(r.headers.get('retry-after'))
+    await marcarPausa(Number.isFinite(ra) && ra > 0 ? ra : 60)
+  }
+  return r
+}
+
 function cliente(): ClienteSarblock {
   if (!SB_KEY) throw new Error('Falta SARBLOCK_ORG_API_KEY en los secrets.')
-  return new ClienteSarblock(SB_KEY)
+  return new ClienteSarblock(SB_KEY, fetchContado)
+}
+
+// El saldo se lee antes de cada consulta de Risk. Leerlo es gratis en
+// créditos pero no en cupo: se guarda un minuto (solo si alcanza).
+let saldoVisto = { valor: 0, at: 0 }
+async function saldoParaConsultar(sb: ClienteSarblock): Promise<number> {
+  if (saldoVisto.valor > 0 && Date.now() - saldoVisto.at < 60_000) return saldoVisto.valor
+  saldoVisto = { valor: saldoScreening(await sb.consumo()), at: Date.now() }
+  return saldoVisto.valor
+}
+// Lo que pide una persona: si Sarblock está al tope, espera lo que indique
+// (hasta 10 s) y reintenta una vez.
+async function conCupo<T>(fn: () => Promise<T>): Promise<T> {
+  const falta = (await pausadoHasta()) - Date.now()
+  if (falta > 0 && falta <= 10_000) await esperar(falta)
+  try { return await fn() } catch (e) {
+    if (!esLimite(e)) throw e
+    await esperar(Math.min(Math.max(Number((e as ErrorSarblock).retryAfter ?? 5), 1), 10) * 1000)
+    return await fn()
+  }
 }
 
 // ── Lanzar ──────────────────────────────────────────────────────────────
@@ -233,6 +297,8 @@ const MAX_REINTENTOS = 3
 const estable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
   x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : x)
 async function recoger(uid: string) {
+  // En pausa por el cupo, lo automático espera a la próxima vuelta.
+  if (await enPausa()) return { ok: true, cerrados: 0, reintentados: 0, pausado: true }
   const raw = await leerRaw(uid)
   const fichas: Record<string, any> = raw?.tusdatos?.beneficiarios ?? {}
   let cerrados = 0, reintentados = 0
@@ -495,8 +561,8 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     }
     try {
       const sb = cliente()
-      if (saldoScreening(await sb.consumo()) <= 0) throw new Error('caja')
-      const r = await sb.crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` })
+      if ((await conCupo(() => saldoParaConsultar(sb))) <= 0) throw new Error('caja')
+      const r = await conCupo(() => sb.crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
       const { error } = await db.from('risk_consultas').insert({ ...base, check_id: r.id, estado: 'consultando' })
       if (error) throw new Error(error.message)
       await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado, consultaId: id })
@@ -505,6 +571,10 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     } catch (e) {
       await R.mover(db, uid, 'devolucion', 1, 'La consulta no se pudo lanzar: se devuelve', null, id)
       await auditar('sarblock.risk_fallido', { userId: uid, tipo, documento: doc, motivo: String((e as Error)?.message ?? e).slice(0, 300) })
+      if (esLimite(e)) {
+        const seg = Math.max(5, Math.ceil(((await pausadoHasta()) - Date.now()) / 1000))
+        return { ok: false, motivo: `El servicio de consulta está recibiendo muchas solicitudes. Intenta de nuevo en ${seg} segundos. No se usó ninguna consulta.` }
+      }
       return { ok: false, motivo: 'No se pudo consultar en este momento. Intenta de nuevo en unos minutos. No se usó ninguna consulta.' }
     }
   }
@@ -514,7 +584,14 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     if (!q) return { ok: false, motivo: 'No existe esa consulta.' }
     const cq = q as any
     if (cq.estado !== 'consultando') return { ok: true, consulta: vista(cq, cfg, await empresaDe(uid)), saldo: await R.saldoDe(db, uid) }
-    const check = await cliente().leerCheck(String(cq.check_id))
+    // La pantalla pregunta cada pocos segundos: en pausa se le dice que siga
+    // esperando sin gastar cupo.
+    if (await enPausa()) return { ok: true, enCurso: true, consultaId: cq.id }
+    let check: any
+    try { check = await cliente().leerCheck(String(cq.check_id)) } catch (e) {
+      if (esLimite(e)) return { ok: true, enCurso: true, consultaId: cq.id }
+      throw e
+    }
     if (!terminado(check)) return { ok: true, enCurso: true, consultaId: cq.id }
     const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined })
     let cambio: Record<string, unknown>
@@ -587,6 +664,7 @@ Deno.serve(async (req) => {
     const yo = await quienLlama(req)
     const body = await req.json().catch(() => ({})) as Record<string, any>
     const accion = String(body.action ?? '')
+    accionEnCurso = accion
     const uid = String(body.userId ?? yo.userId ?? '')
     const propio = () => !!uid && (yo.esAdmin || yo.userId === uid)
 
@@ -597,6 +675,7 @@ Deno.serve(async (req) => {
       if (!yo.servicio && !(await traeSecretoDeLaBase(req, db))) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
       if (!c.activo) return json({ ok: true, omitido: 'apagado' })
+      if (await enPausa()) return json({ ok: true, omitido: 'pausa por el cupo de Sarblock' })
       const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
       const { data: filas } = await db.from('audit_log').select('metadata')
         .in('action', ['sarblock.lanzado', 'sarblock.consulta']).gte('created_at', desde).order('created_at', { ascending: false }).limit(1000)
@@ -631,6 +710,8 @@ Deno.serve(async (req) => {
       if (!propio()) return json({ error: 'No autorizado' }, 401)
       const c = await leerConfig()
       if (!c.activo || !enLaPrueba(c, uid)) return json({ ok: true, omitido: 'Sarblock no está activo para esta cuenta', pendientes: 0 })
+      // Lo lanza un sondeo automático: en pausa espera a la próxima vuelta.
+      if (await enPausa()) return json({ ok: true, omitido: 'pausa por el cupo de Sarblock', pausado: true })
       const raw = await leerRaw(uid)
       const fichas = raw?.tusdatos?.beneficiarios ?? {}
       const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
