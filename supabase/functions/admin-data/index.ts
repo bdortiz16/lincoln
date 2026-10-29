@@ -1451,6 +1451,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
   lincoin_resumen: ['plata.ver', 'tesoreria'],
+  tesoreria_detalle: ['plata.ver', 'tesoreria'],
   caja_movimiento_soporte: ['plata.ver', 'tesoreria'],
   caja_movimiento_crear: 'tesoreria',
   reject_rail_move: 'tesoreria',
@@ -4818,6 +4819,51 @@ Deno.serve(async (req: Request) => {
         if (error) return errorGenerico('mov_ocultar', error)
         await auditAdmin(req, ocultar ? 'mov.oculto' : 'mov.mostrado', { txId, motivo: ocultar ? motivo : null })
         return json({ ok: true })
+      }
+
+      // Detalle de un movimiento para la ventana de Tesorería: lo que sirve
+      // para entenderlo, sin el raw_data entero. Las cuentas van enmascaradas
+      // y los autores, como en el resto (nombres solo para el dueño).
+      if (body.action === 'tesoreria_detalle') {
+        const id = String(body.id ?? '')
+        if (!UUID_RE.test(id)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        const accD: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const esDuenoD = accD.rol === 'dueno'
+        const yoIdD = String(auth.userId ?? '')
+        const { data: m } = await db.from('transactions').select('id, created_at, type, currency, amount, status, user_id, raw_data').eq('id', id).maybeSingle()
+        if (!m) return json({ ok: false, error: 'No existe ese movimiento.' }, 404)
+        if (!accD.todosLosPaises && !visibleEnPais(paisDeMovimiento(m as any), accD)) return json({ ok: false, error: 'Ese movimiento es de un país que no tienes asignado.' }, 403)
+        const rd = ((m as any).raw_data ?? {}) as Record<string, any>
+        const { data: u } = await db.from('users').select('full_name, company_name, email, tax_id').eq('id', (m as any).user_id).maybeSingle()
+        const enmascarar = (v: unknown) => { const t = String(v ?? '').replace(/\s/g, ''); return t ? (t.length > 4 ? `•••• ${t.slice(-4)}` : t) : null }
+        const autor = (a: any) => !a ? null : esDuenoD ? { quien: String(a.nombre || a.email || 'admin'), at: a.at ?? null } : { quien: String(a.id ?? '') === yoIdD ? 'Tú' : 'Equipo', at: a.at ?? null }
+        const acct = rd.acct && typeof rd.acct === 'object' ? rd.acct : null
+        return json({
+          ok: true,
+          mov: {
+            id: (m as any).id, at: (m as any).created_at, tipo: (m as any).type, riel: (m as any).currency, proveedor: provDeRiel((m as any).currency) ?? 'Saldo Lincoin',
+            monto: Number((m as any).amount) || 0, estado: (m as any).status, titulo: rd.title ?? null, nota: rd.note ?? null, direccion: rd.direction ?? null,
+            cliente: { nombre: (u as any)?.company_name || (u as any)?.full_name || '—', email: (u as any)?.email ?? null, documento: (u as any)?.tax_id ?? null },
+            hechoPor: autor(rd.por), resueltoPor: autor(rd.resueltoPor),
+            oculto: rd.oculto && esDuenoD ? { motivo: rd.oculto.motivo, quien: rd.oculto.por?.nombre || rd.oculto.por?.email || 'admin', at: rd.oculto.at } : (rd.oculto ? { motivo: 'oculto' } : null),
+            cargue: (m as any).type === 'load' ? {
+              bruto: rd.grossCop ?? null, comisionBreb: rd.feeCop ?? null, acreditadoAt: rd.creditedAt ?? null,
+              contabilidad: acct ? { usdtEnvio: acct.usdtGross, usdtLlego: acct.usdtNet, tasaVenta: acct.sellRate, tasaCliente: acct.clientRate, feeAsume: acct.feeBearer,
+                ventaCop: acct.revenueCop, alCliente: acct.copToClient, acreditado: acct.creditedCop, utilidadRegistrada: acct.utilityCop,
+                utilidadLincoin: utilidadLincoin({ currency: (m as any).currency, utilidad: acct.utilityCop, feeBreb: acct.feeCopBreb, oculto: rd.oculto }) } : null,
+              reverso: rd.reverso ?? null,
+            } : null,
+            dispersion: (m as any).type === 'dispersion' ? {
+              beneficiario: rd.beneficiary ?? rd.recipient ?? null, documento: rd.benefDoc ?? rd.documentNumber ?? null,
+              banco: rd.bancoDestino ?? rd.bank ?? null, cuenta: enmascarar(rd.account ?? rd.cuentaBreb),
+              referencia: rd.providerRef ?? rd.providerReference ?? null, estadoProveedor: rd.providerStatus ?? rd.providerState ?? null,
+              motivo: rd.motivoTexto ?? rd.motivo ?? rd.reason ?? null, comision: rd.feeCop ?? null, costoProveedor: rd.costoProveedorCop ?? null,
+              liquidadaAt: rd.settledAt ?? rd.reconciledAt ?? null,
+            } : null,
+            ajuste: (m as any).type === 'adjustment' ? { reversaDe: rd.reversaDe ?? null, automatica: rd.reversaAuto ?? null } : null,
+            traslado: (m as any).type === 'rail_move' ? { aprobadoAt: rd.approvedAt ?? null, rechazadoAt: rd.rejectedAt ?? null, motivoRechazo: rd.rejectReason ?? null } : null,
+          },
+        })
       }
 
       // ── Tablero de Tesorería ─────────────────────────────────────────

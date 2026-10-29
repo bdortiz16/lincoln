@@ -1196,6 +1196,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [tesError, setTesError] = useState<string | null>(null);
   const [tesVer, setTesVer] = useState(0);
   const [tesVerOcultos, setTesVerOcultos] = useState(false);
+  // Ventana de detalle de un movimiento (tesoreria_detalle).
+  const [tesDetalle, setTesDetalle] = useState<{ id: string; cargando: boolean; mov?: any; error?: string } | null>(null);
+  const abrirDetalle = async (id: string) => {
+    setTesDetalle({ id, cargando: true });
+    const d = await pedirAdmin({ action: 'tesoreria_detalle', id }).catch(() => null);
+    setTesDetalle(d?.ok ? { id, cargando: false, mov: d.mov } : { id, cargando: false, error: d?.error ?? 'No se pudo cargar el detalle.' });
+  };
   // Caja de Lincoin (caja_estado): apertura, Lincoin esperado, sospechosas.
   const [caja, setCaja] = useState<any>(null);
   const [cajaVer, setCajaVer] = useState(0);
@@ -3540,7 +3547,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           {(movs?.filas ?? []).map((m: any) => {
                               const colorEstado = m.estado === 'Completado' ? '#4ADE80' : (m.estado === 'Fallido' || m.estado === 'Rechazado') ? '#F87171' : '#FBBF24';
                               return (
-                              <tr key={m.id} onClick={() => m.tipo === 'Cargue' && m.estado === 'Pendiente' && abrirCargue(m.id)} style={{ cursor: m.tipo === 'Cargue' && m.estado === 'Pendiente' ? 'pointer' : 'default' }}>
+                              <tr key={m.id} onClick={() => abrirDetalle(m.id)} className="hover:bg-white/[0.03] transition-colors" style={{ cursor: 'pointer' }}>
                                   <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
                                       {new Date(m.at).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                                       <br /><span style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', fontFamily: 'monospace' }}>{String(m.id).slice(0, 8)}</span>
@@ -3573,6 +3580,91 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </div>
               </div>
           </div>
+          {/* Detalle de un movimiento */}
+          {tesDetalle && (() => {
+              const m = tesDetalle.mov;
+              const TIPO: Record<string, string> = { load: 'Cargue', dispersion: 'Dispersión', adjustment: 'Ajuste', rail_move: 'Traslado a ACH' };
+              const fecha = (v: any) => v ? new Date(v).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+              const num = (v: any) => v == null || v === '' ? '—' : Number(v).toLocaleString('es-CO');
+              const fila = (l: string, v: React.ReactNode, color?: string) => v == null || v === '' || v === '—' ? null : (
+                  <div className="flex justify-between" style={{ gap: 14, padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 12.5 }}>
+                      <span style={{ color: '#878E88', flexShrink: 0 }}>{l}</span><span style={{ color: color ?? '#F4F4F2', fontWeight: 600, textAlign: 'right', wordBreak: 'break-word' }}>{v}</span>
+                  </div>
+              );
+              const sec = (t: string) => <p style={{ margin: '14px 0 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>{t}</p>;
+              const entrada = m && (m.tipo === 'load' || (m.tipo === 'adjustment' && m.direccion !== 'debit'));
+              const colorEstado = !m ? '#878E88' : m.estado === 'Completado' ? '#4ADE80' : (m.estado === 'Fallido' || m.estado === 'Rechazado') ? '#F87171' : '#FBBF24';
+              const c = m?.cargue?.contabilidad;
+              return (
+                  <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => setTesDetalle(null)}>
+                      <div onClick={e => e.stopPropagation()} style={{ width: 480, maxWidth: '100%', maxHeight: 'calc(100dvh - 24px)', overflowY: 'auto', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
+                          <div className="flex items-start justify-between" style={{ gap: 10 }}>
+                              <div style={{ minWidth: 0 }}>
+                                  <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>{m ? `${TIPO[m.tipo] ?? m.tipo} · ${m.cliente.nombre}` : 'Movimiento'}</p>
+                                  <p style={{ margin: '3px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{tesDetalle.id}</p>
+                              </div>
+                              <button onClick={() => setTesDetalle(null)} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
+                          </div>
+                          {tesDetalle.cargando && <p style={{ margin: '14px 0 0', fontSize: 12.5, color: '#878E88' }}>Cargando…</p>}
+                          {tesDetalle.error && <p style={{ margin: '14px 0 0', fontSize: 12.5, color: '#F87171' }}>{tesDetalle.error}</p>}
+                          {m && <>
+                              <div className="flex items-center justify-between" style={{ margin: '14px 0 4px' }}>
+                                  <span style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.6px', color: entrada ? '#4ADE80' : '#F4F4F2' }}>{entrada ? '+' : '−'}{num(m.monto)} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span></span>
+                                  <span style={{ fontSize: 10.5, fontWeight: 700, padding: '3px 9px', borderRadius: 999, border: `1px solid ${colorEstado}59`, color: colorEstado }}>{String(m.estado).toUpperCase()}</span>
+                              </div>
+                              {m.oculto && <p style={{ margin: '6px 0 0', fontSize: 11.5, color: '#FBBF24' }}>Oculto{m.oculto.quien ? ` por ${m.oculto.quien}` : ''} · {m.oculto.motivo}</p>}
+                              {sec('RESUMEN')}
+                              {fila('Fecha', fecha(m.at))}
+                              {fila('Cliente', m.cliente.nombre)}
+                              {fila('Correo', m.cliente.email)}
+                              {fila('Documento', m.cliente.documento)}
+                              {fila('Cuenta', m.proveedor)}
+                              {fila('Hecho por', m.hechoPor ? `${m.hechoPor.quien}${m.hechoPor.at ? ` · ${fecha(m.hechoPor.at)}` : ''}` : (m.tipo === 'dispersion' ? 'El cliente' : null))}
+                              {fila('Resuelto por', m.resueltoPor ? `${m.resueltoPor.quien}${m.resueltoPor.at ? ` · ${fecha(m.resueltoPor.at)}` : ''}` : null)}
+                              {fila('Nota', m.nota)}
+                              {m.cargue && <>
+                                  {(m.cargue.bruto || m.cargue.comisionBreb) && <>{sec('MONTOS')}{fila('Bruto', num(m.cargue.bruto))}{fila('Comisión Bre-B (costo Mouv)', m.cargue.comisionBreb ? `− ${num(m.cargue.comisionBreb)}` : null)}</>}
+                                  {c && <>
+                                      {sec('CONTABILIDAD DE LA OPERACIÓN')}
+                                      {fila('USDT que envió', num(c.usdtEnvio))}
+                                      {fila('USDT que llegaron', num(c.usdtLlego))}
+                                      {fila('A cómo vendí', num(c.tasaVenta))}
+                                      {fila('A cómo le pago', num(c.tasaCliente))}
+                                      {fila('Fee de red lo asume', c.feeAsume === 'lincoin' ? 'Lincoin' : c.feeAsume === 'cliente' ? 'El cliente' : c.feeAsume)}
+                                      {fila('Entró por la venta', num(c.ventaCop))}
+                                      {fila('Se le acreditó', num(c.acreditado ?? c.alCliente))}
+                                      {fila('Utilidad de Lincoin', num(c.utilidadLincoin), Number(c.utilidadLincoin) < 0 ? '#F87171' : '#4ADE80')}
+                                  </>}
+                                  {m.cargue.reverso && fila('Reverso', `${num(m.cargue.reverso.montoCop)} COP`)}
+                              </>}
+                              {m.dispersion && <>
+                                  {sec('DESTINO')}
+                                  {fila('Beneficiario', m.dispersion.beneficiario)}
+                                  {fila('Documento', m.dispersion.documento)}
+                                  {fila('Banco', m.dispersion.banco)}
+                                  {fila('Cuenta', m.dispersion.cuenta)}
+                                  {sec('PROVEEDOR')}
+                                  {fila('Referencia', m.dispersion.referencia)}
+                                  {fila('Estado en el proveedor', m.dispersion.estadoProveedor)}
+                                  {fila('Comisión cobrada', num(m.dispersion.comision))}
+                                  {fila('Costo del proveedor', num(m.dispersion.costoProveedor))}
+                                  {fila('Liquidada', m.dispersion.liquidadaAt ? fecha(m.dispersion.liquidadaAt) : null)}
+                                  {fila('Motivo', m.dispersion.motivo, '#FBBF24')}
+                              </>}
+                              {m.ajuste?.reversaDe && fila('Revierte el cargue', String(m.ajuste.reversaDe).slice(0, 8))}
+                              {m.traslado && <>{fila('Aprobado', m.traslado.aprobadoAt ? fecha(m.traslado.aprobadoAt) : null)}{fila('Rechazado', m.traslado.rechazadoAt ? fecha(m.traslado.rechazadoAt) : null)}{fila('Motivo del rechazo', m.traslado.motivoRechazo)}</>}
+                              <div className="flex" style={{ gap: 8, marginTop: 16 }}>
+                                  {m.tipo === 'load' && m.estado === 'Pendiente' && (
+                                      <button onClick={() => { setTesDetalle(null); abrirCargue(m.id); }} style={{ flex: 1, background: '#4ADE80', color: '#0C0E0D', border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer' }}>Revisar y aprobar</button>
+                                  )}
+                                  <button onClick={() => setTesDetalle(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cerrar</button>
+                              </div>
+                          </>}
+                      </div>
+                  </div>
+              );
+          })()}
+
           {/* Revisar un cargue sospechoso y ocultarlo SIN borrarlo (solo el dueño) */}
           {cajaOcultar && (
               <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setCajaOcultar(null)}>
