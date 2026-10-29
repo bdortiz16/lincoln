@@ -104,7 +104,7 @@ import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { sonarCampana, campanaActiva } from './campanaOtc';
-import { Zap, ArrowLeftRight, ArrowLeft, Info, ChevronRight, Activity, Link2, MessageSquare } from 'lucide-react';
+import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
@@ -224,6 +224,45 @@ const AdminSidebarItem: React.FC<{ icon: React.ElementType; label: string; activ
   </button>
 );
 
+// Acordeón del menú: un renglón que abre sus subsecciones. Se abre solo
+// cuando la pantalla activa es una de las suyas, y se puede plegar a mano.
+const AdminSidebarGrupo: React.FC<{
+  icon: React.ElementType; label: string; active: boolean; badge?: number;
+  items: { key: string; icon: React.ElementType; label: string; active: boolean; badge?: number; onClick: () => void }[];
+}> = ({ icon: Icon, label, active, badge, items }) => {
+  const [abierto, setAbierto] = useState(true);
+  useEffect(() => { if (active) setAbierto(true); }, [active]);
+  return (
+    <div>
+      <button onClick={() => setAbierto(a => !a)} aria-expanded={abierto}
+        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all duration-200 group ${active ? 'text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
+        <div className="flex items-center gap-3">
+          <Icon size={20} className={active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-slate-300'} />
+          <span className="text-sm font-medium">{label}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {!abierto && badge ? (<span className="bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-bold px-2 py-0.5 rounded-full">{badge}</span>) : null}
+          <ChevronDown size={15} className={`text-slate-500 transition-transform duration-200 ${abierto ? 'rotate-180' : ''}`} />
+        </div>
+      </button>
+      {abierto && (
+        <div className="mt-1 ml-[22px] pl-3 border-l border-white/10 space-y-1">
+          {items.map(it => (
+            <button key={it.key} onClick={it.onClick}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-all duration-200 group ${it.active ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
+              <div className="flex items-center gap-2.5">
+                <it.icon size={16} className={it.active ? 'text-[#4ADE80]' : 'text-slate-500 group-hover:text-slate-300'} />
+                <span className="text-[13px] font-medium">{it.label}</span>
+              </div>
+              {it.badge ? (<span className="bg-[#4ADE80] text-[#0C0E0D] text-[10px] font-bold px-2 py-0.5 rounded-full">{it.badge}</span>) : null}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // File helper
 const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -242,7 +281,7 @@ const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
 const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'kumplo'];
 
 const TAB_TITLES: Record<string, string> = {
-  overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Cargues',
+  overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera',
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
   banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
@@ -505,7 +544,7 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol }) => {
   const soloTesoreria = rol === 'tesoreria';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'treasury' : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'cargues' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -971,7 +1010,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Bre-B' : 'ACH');
+  // En pantalla va el proveedor: el saldo COP_BREB es la cuenta en Mouv y COP_ACH la de Finity.
+  const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Mouv' : 'Finity');
 
   // Paso 1: validar y abrir la ventana de confirmación propia.
   // Cuenta de la operación. Se calcula igual que en el servidor solo para
@@ -2164,303 +2204,179 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
       const cargueExceeds = guardActive && cNet > freeForRail + 0.5;
       const cargueShortfall = cargueExceeds ? Math.round(cNet - freeForRail) : 0;
 
+      // ── Vista previa (solo pantalla) ──────────────────────────────
+      // Lo mismo que va a mostrar la confirmación, pero mientras se escribe:
+      // cuánto entra, en qué cuenta y si excede lo disponible en la bolsa.
+      const montoVista = usandoAcct ? (acctCalc.listo ? acctCalc.copToClient : 0) : (Number(carguesAmount) || 0);
+      const netoVista = montoVista - ((carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly) ? Math.round(montoVista * 0.10 / 100) : 0);
+      const excedeVista = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH') && !!poolReady && montoVista > 0 && netoVista > freeForRail + 0.5;
+      const elegirCliente = (u: User) => {
+        setCarguesClientId(u.id); setCarguesMsg(null); setCarguesSearch('');
+        // El cursor sigue al primer dato que falta: la operación o el monto.
+        setTimeout(() => (document.getElementById(usandoAcct ? 'cargue-usdt-enviado' : 'cargue-monto') as HTMLInputElement | null)?.focus(), 0);
+      };
+      // Últimos cargues manuales del cliente elegido, para la columna derecha.
+      const fechaCargue = (t: any): number => {
+        const v = String(t?.creditedAt ?? t?.createdAt ?? t?.created_at ?? t?.date ?? '').trim();
+        const dmy = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        const d = dmy ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])) : new Date(v);
+        return isNaN(d.getTime()) ? 0 : d.getTime();
+      };
+      const ultimosCargues = carguesClient ? (histCargues.movimientos as any[])
+        .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
+        .sort((a, b) => fechaCargue(b) - fechaCargue(a))
+        .slice(0, 6) : [];
+      const CAMPO: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 14, outline: 'none' };
+      const ROTULO: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: '#878E88', marginBottom: 7 };
+      const bolsas = [
+        { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
+          detalle: mouvPool && !mouvPool.loading && !mouvPool.error ? `Bre-B ${mouvPool.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'} · ACH ${mouvPool.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}` : null },
+        { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool, detalle: null },
+      ];
+
       return (
-        <div className="space-y-6 animate-in fade-in duration-300">
-          {/* Se entra por Tesorería → Billeteras → COP, así que el regreso
-              tiene que estar aquí: ya no hay ítem en el menú lateral. */}
-          <button onClick={() => navTo('treasury')}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold"
-            style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }}>
-            <ArrowLeft size={14} /> Tesorería · Billetera COP
-          </button>
-          {/* Aviso: proceso temporal */}
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
-            <Info size={18} className="text-amber-600 mt-0.5 flex-shrink-0" />
+        <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* ── Encabezado: título, aviso temporal plegado y las dos bolsas ── */}
+          <div className="flex items-start justify-between flex-wrap" style={{ gap: 14 }}>
             <div>
-              <p className="text-sm font-bold text-amber-800">Cargue manual de saldo (temporal)</p>
-              <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
-                Mientras Mouv apifica el conversor, el pago llega por el grupo cerrado y aquí reflejas el saldo del cliente
-                en el riel correspondiente. Elige el cliente, el riel (Saldo Lincoin, Bre-B o ACH) y el monto.
-                Cada cargue queda registrado en el historial del cliente.
-              </p>
+              <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Billetera <span style={{ color: '#878E88', fontWeight: 600, fontSize: 15 }}>· COP</span></h2>
+              {/* El aviso de proceso temporal sigue ahí, plegado: se lee una
+                  vez y después solo ocupaba media pantalla. */}
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ listStyle: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, color: '#FBBF24', fontSize: 12, fontWeight: 600 }}>
+                  <Info size={13} /> Cargue manual de saldo (temporal) · ¿qué es?
+                </summary>
+                <p style={{ margin: '8px 0 0', maxWidth: 560, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 12, padding: '10px 14px', fontSize: 12.5, color: '#FCD34D', lineHeight: 1.55 }}>
+                  Mientras Mouv apifica el conversor, el pago llega por el grupo cerrado y aquí reflejas el saldo del cliente
+                  en la cuenta correspondiente (Saldo Lincoin, Mouv o Finity). Cada cargue queda registrado en el historial del cliente.
+                </p>
+              </details>
             </div>
-          </div>
-
-          {/* Saldo REAL disponible en Mouv (la bolsa desde donde se carga) */}
-          <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '18px 22px' }}>
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex items-center gap-3">
-                <div style={{ width: 40, height: 40, borderRadius: 11, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.30)', display: 'grid', placeItems: 'center' }}>
-                  <Wallet size={19} style={{ color: '#4ADE80' }} />
-                </div>
-                <div>
-                  <p style={{ fontSize: 12.5, color: '#878E88', fontWeight: 600 }}>Saldo disponible en Mouv</p>
-                  {mouvPool?.loading ? (
-                    <p style={{ fontSize: 22, fontWeight: 800, color: '#878E88', letterSpacing: '-0.6px' }}>Cargando…</p>
-                  ) : mouvPool?.error ? (
-                    <p style={{ fontSize: 13, color: '#F87171', fontWeight: 600, maxWidth: 520 }}>{mouvPool.error}</p>
-                  ) : (
-                    <p style={{ fontSize: 26, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-1px' }}>
-                      {Math.round(Number(mouvPool?.total ?? 0)).toLocaleString('es-CO')} <span style={{ fontSize: 13, color: '#878E88', fontWeight: 600 }}>COP</span>
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
-                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Zap size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>Bre-B</span></div>
-                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'}</p>
-                </div>
-                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 11, padding: '9px 14px', minWidth: 130 }}>
-                  <div className="flex items-center gap-1.5" style={{ color: '#878E88', marginBottom: 2 }}><Landmark size={12} /><span style={{ fontSize: 11, fontWeight: 600 }}>ACH</span></div>
-                  <p style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>{mouvPool?.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}</p>
-                </div>
-                <button onClick={loadMouvPool} disabled={mouvPool?.loading} title="Actualizar saldo Mouv"
-                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 10, padding: '9px 11px', cursor: 'pointer' }}>
-                  <RefreshCw size={15} className={mouvPool?.loading ? 'animate-spin' : ''} />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Respaldo y utilidad por riel: bolsa del proveedor − comprometido
-              con clientes = disponible para cargar (= utilidad en pesos). */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {([
-              // Dos proveedores, cada uno con Bre-B y ACH: la bolsa de cada uno
-              // respalda la cuenta del cliente en ese proveedor.
-              { rail: 'COP_BREB', label: 'Mouv', servicio: 'Bre-B y ACH', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb,
-                loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
-              { rail: 'COP_ACH', label: 'Finity', servicio: 'Bre-B y ACH', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch,
-                loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
-            ] as const).map(c => (
-              <div key={c.rail} style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: '16px 18px' }}>
-                <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
-                  <div className="flex items-center gap-2" style={{ color: '#F4F4F2' }}>
-                    <c.icon size={15} style={{ color: '#4ADE80' }} />
-                    <div>
-                      <p style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{c.label}</p>
-                      <p style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>{c.servicio}</p>
+            <div className="flex flex-wrap" style={{ gap: 10 }}>
+              {bolsas.map(b => {
+                const activa = carguesRail === b.rail;
+                return (
+                  <div key={b.rail} style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 210 }}>
+                    <div className="flex items-center justify-between" style={{ gap: 10 }}>
+                      <span className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>
+                        <b.icon size={13} style={{ color: '#4ADE80' }} /> {b.label} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· Bre-B y ACH</span>
+                      </span>
+                      <button onClick={b.reload} disabled={b.loading} title={`Actualizar ${b.label}`} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer', padding: 2 }}>
+                        <RefreshCw size={12} className={b.loading ? 'animate-spin' : ''} />
+                      </button>
                     </div>
+                    {b.error ? (
+                      <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#F87171', fontWeight: 600, maxWidth: 260 }}>{b.error}</p>
+                    ) : b.loading ? (
+                      <p style={{ margin: '4px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
+                    ) : (
+                      <>
+                        <p style={{ margin: '3px 0 0', fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: b.free < 0 ? '#F87171' : '#4ADE80' }}>
+                          {Math.round(b.free).toLocaleString('es-CO')} <span style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>{b.free < 0 ? 'faltante (sobre-cargado)' : 'disponible'}</span>
+                        </p>
+                        <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>Bolsa {Math.round(b.pool).toLocaleString('es-CO')} − comprometido {Math.round(b.oblig).toLocaleString('es-CO')}</p>
+                        {b.detalle && <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{b.detalle}</p>}
+                      </>
+                    )}
                   </div>
-                  <button onClick={c.reload} disabled={c.loading} title="Actualizar"
-                    style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', borderRadius: 9, padding: '6px 8px', cursor: 'pointer' }}>
-                    <RefreshCw size={13} className={c.loading ? 'animate-spin' : ''} />
-                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {!obligServidor && (
+            <p style={{ margin: 0, fontSize: 11.5, color: '#FB923C', lineHeight: 1.45 }}>
+              {obligaciones?.parcial
+                ? 'Comprometido con clientes: suma parcial. Falta correr la migración 2026_zz12_escala_100k.sql para sumar todos los saldos en la base.'
+                : resumenUsuarios?.parcial
+                  ? 'Comprometido con clientes: suma solo de los clientes cargados en el panel, puede faltar. No cargues contra este disponible hasta que se actualice.'
+                  : 'Comprometido con clientes: suma de los clientes cargados en el panel.'}
+            </p>
+          )}
+
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] items-start" style={{ gap: 16 }}>
+            {/* ── Formulario: se ve apenas se abre la pantalla ── */}
+            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: 22, display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <div className="flex items-center justify-between flex-wrap" style={{ gap: 10 }}>
+                <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#F4F4F2' }}>Registrar cargue</p>
+                <div style={{ display: 'flex', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: 3 }}>
+                  {(['credit', 'debit'] as const).map(d => (
+                    <button key={d} onClick={() => setCarguesDir(d)} style={{ border: 'none', cursor: 'pointer', borderRadius: 999, padding: '5px 13px', fontSize: 12, fontWeight: 700, background: carguesDir === d ? (d === 'credit' ? '#4ADE80' : '#F87171') : 'transparent', color: carguesDir === d ? '#0C0E0D' : '#878E88' }}>
+                      {d === 'credit' ? 'Acreditar +' : 'Descontar −'}
+                    </button>
+                  ))}
                 </div>
-                {c.error ? (
-                  <p style={{ fontSize: 12, color: '#F87171', fontWeight: 600 }}>{c.error}</p>
-                ) : c.loading ? (
-                  <p style={{ fontSize: 13, color: '#878E88' }}>Cargando…</p>
+              </div>
+
+              {/* 1 · Cliente: un solo buscador; al elegir queda como ficha */}
+              <div>
+                <label style={ROTULO}>Cliente</label>
+                {carguesClient ? (
+                  <div className="flex items-center justify-between" style={{ ...CAMPO, gap: 10, borderColor: 'rgba(74,222,128,0.45)' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>{carguesClient.name} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11.5 }}>· {carguesClient.email}</span></p>
+                      <p style={{ margin: '3px 0 0', fontSize: 11.5, color: '#878E88' }}>
+                        {(['COP', 'COP_BREB', 'COP_ACH'] as const).map((code, i) => (
+                          <React.Fragment key={code}>{i ? ' · ' : ''}{railMeta[code].corto} <b style={{ color: '#F4F4F2' }}>{formatMoney(bal(carguesClient, code), '')}</b></React.Fragment>
+                        ))}
+                      </p>
+                    </div>
+                    <button onClick={() => { setCarguesClientId(null); setCarguesMsg(null); }} title="Cambiar cliente" style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
+                  </div>
                 ) : (
                   <>
-                    <div className="flex items-center justify-between" style={{ padding: '6px 0' }}>
-                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Bolsa en {c.label}</span>
-                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{Math.round(c.pool).toLocaleString('es-CO')} COP</span>
+                    <div className="relative">
+                      <Search size={15} style={{ position: 'absolute', left: 13, top: 13, color: '#878E88' }} />
+                      <input autoFocus type="text" placeholder="Nombre o correo del cliente…" value={carguesSearch}
+                        onChange={(e) => setCarguesSearch(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && list[0]) elegirCliente(list[0]); }}
+                        style={{ ...CAMPO, paddingLeft: 36 }} />
                     </div>
-                    <div className="flex items-center justify-between" style={{ padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      <span style={{ fontSize: 12.5, color: '#878E88' }}>Comprometido con clientes</span>
-                      <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>− {Math.round(c.oblig).toLocaleString('es-CO')} COP</span>
-                    </div>
-                    {!obligServidor && (
-                      <p style={{ fontSize: 11.5, color: '#FB923C', margin: '2px 0 4px', lineHeight: 1.45 }}>
-                        {obligaciones?.parcial
-                          ? 'Suma parcial: falta correr la migración 2026_zz12_escala_100k.sql para sumar todos los saldos en la base.'
-                          : resumenUsuarios?.parcial
-                            ? 'Suma solo de los clientes cargados en el panel: puede faltar. No cargues contra este disponible hasta que se actualice.'
-                            : 'Suma de los clientes cargados en el panel.'}
-                      </p>
-                    )}
-                    <div className="flex items-center justify-between" style={{ padding: '9px 0 2px', borderTop: '1px solid rgba(255,255,255,0.10)', marginTop: 4 }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 700, color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
-                        {c.free < 0 ? '⚠ Faltante (sobre-cargado)' : 'Disponible · utilidad'}
-                      </span>
-                      <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: c.free < 0 ? '#F87171' : '#4ADE80' }}>
-                        {Math.round(c.free).toLocaleString('es-CO')} COP
-                      </span>
+                    <div style={{ marginTop: 6, background: '#121413', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, maxHeight: 280, overflowY: 'auto' }}>
+                      {list.length === 0 && <p style={{ margin: 0, padding: 14, fontSize: 12.5, color: '#878E88' }}>Sin clientes que coincidan.</p>}
+                      {list.map((u, i) => (
+                        <button key={u.id} onClick={() => elegirCliente(u)} className="hover:bg-white/5 transition-colors"
+                          style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 14px', border: 'none', borderTop: i ? '1px solid rgba(255,255,255,0.05)' : 'none', background: 'transparent', cursor: 'pointer', color: '#F4F4F2' }}>
+                          <span style={{ width: 30, height: 30, borderRadius: 999, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{(u.name ?? 'U').slice(0, 2).toUpperCase()}</span>
+                          <span style={{ minWidth: 0, flex: 1 }}>
+                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}>{u.name ?? 'Sin nombre'}</span>
+                            <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</span>
+                          </span>
+                          {i === 0 && carguesSearch.trim() && <span style={{ fontSize: 10, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, padding: '2px 6px' }}>Enter</span>}
+                        </button>
+                      ))}
                     </div>
                   </>
                 )}
               </div>
-            ))}
-          </div>
 
-          {/* Resolver conversión trabada: el USDT llegó al proveedor pero el
-              COP no se acreditó (p. ej. llegó 4.990,50 y el sistema esperaba
-              4.992). Acredita el COP adeudado y cierra el movimiento. */}
-          <details style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16 }}>
-            <summary style={{ padding: '14px 18px', cursor: 'pointer', color: '#F4F4F2', fontSize: 13.5, fontWeight: 700, listStyle: 'none' }}>
-              🛟 Resolver conversión trabada (acreditar COP y cerrar)
-            </summary>
-            <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
-                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Finity. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
-              </p>
-              {carguesClient && (
-                <button onClick={() => listStuck(carguesClient.id)} disabled={stuckBusy}
-                  style={{ alignSelf: 'flex-start', background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', borderRadius: 9, padding: '7px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
-                  🔎 Ver conversiones trabadas de {carguesClient.name?.split(' ')[0] ?? 'este cliente'}
-                </button>
-              )}
-              {Array.isArray(stuckList) && stuckList.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {stuckList.map((s: any) => (
-                    <button key={s.txId} onClick={() => { setStuckPreview(s); setStuckRail((s.currency && ['COP','COP_ACH','COP_BREB'].includes(s.currency)) ? s.currency : 'COP'); setStuckList(null); }}
-                      className="flex items-center justify-between" style={{ textAlign: 'left', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 13px', cursor: 'pointer' }}>
-                      <span style={{ fontSize: 12, color: '#878E88', fontFamily: 'monospace' }}>{String(s.txId).slice(0, 8)}… · {s.status}</span>
-                      <span style={{ fontSize: 13, color: '#4ADE80', fontWeight: 800 }}>+ {Number(s.owedCop).toLocaleString('es-CO')} COP</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {Array.isArray(stuckList) && stuckList.length === 0 && (
-                <p style={{ fontSize: 12, color: '#878E88' }}>Este cliente no tiene conversiones trabadas.</p>
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                <input value={stuckRef} onChange={e => setStuckRef(e.target.value)} placeholder="ID de Lincoin (ej. TX-B385BF)"
-                  style={{ flex: 1, minWidth: 200, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 12px', color: '#F4F4F2', fontSize: 13 }} />
-                <button onClick={previewStuck} disabled={stuckBusy || !stuckRef.trim()}
-                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
-                  {stuckBusy ? 'Buscando…' : 'Buscar'}
-                </button>
-              </div>
-              {stuckPreview && (
-                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Cliente</span><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{stuckPreview.name ?? stuckPreview.email ?? stuckPreview.userId}</span></div>
-                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Estado actual</span><span style={{ color: stuckPreview.status === 'Completado' ? '#4ADE80' : '#F5B44A', fontWeight: 700 }}>{stuckPreview.status}</span></div>
-                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>COP a acreditar</span><span style={{ color: '#4ADE80', fontWeight: 800 }}>+ {Number(stuckPreview.owedCop).toLocaleString('es-CO')} COP</span></div>
-                  <div className="flex items-center justify-between" style={{ fontSize: 12.5, marginTop: 4 }}>
-                    <span style={{ color: '#878E88' }}>Acreditar en</span>
-                    <select value={stuckRail} onChange={e => setStuckRail(e.target.value as any)}
-                      style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 8, padding: '6px 10px', fontSize: 12.5 }}>
-                      <option value="COP">Saldo Lincoin (COP)</option>
-                      <option value="COP_ACH">ACH</option>
-                      <option value="COP_BREB">Bre-B</option>
-                    </select>
-                  </div>
-                  {stuckPreview.status === 'Completado' ? (
-                    <p style={{ fontSize: 12, color: '#4ADE80', fontWeight: 600 }}>Este movimiento ya está Completado — no se vuelve a acreditar.</p>
-                  ) : (
-                    <button onClick={settleStuck} disabled={stuckBusy}
-                      style={{ marginTop: 4, background: '#4ADE80', color: '#0A0C0B', border: 'none', borderRadius: 10, padding: '11px', fontWeight: 800, fontSize: 13.5, cursor: 'pointer' }}>
-                      {stuckBusy ? 'Acreditando…' : 'Acreditar y cerrar'}
-                    </button>
-                  )}
-                </div>
-              )}
-              {stuckMsg && (
-                <p style={{ fontSize: 12.5, fontWeight: 600, color: stuckMsg.ok ? '#4ADE80' : '#F87171' }}>{stuckMsg.text}</p>
-              )}
-            </div>
-          </details>
-
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            {/* Columna izquierda — buscar y elegir cliente */}
-            <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-4">
-              <p className="text-sm font-bold text-slate-800 mb-3">1 · Elegir cliente</p>
-              <div className="relative mb-3">
-                <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
-                <input
-                  type="text"
-                  placeholder="Buscar por nombre o correo..."
-                  value={carguesSearch}
-                  onChange={(e) => setCarguesSearch(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm focus:border-[#0C0E0D] outline-none"
-                />
-              </div>
-              <div className="space-y-1.5 max-h-[420px] overflow-y-auto">
-                {list.length === 0 && (
-                  <p className="text-xs text-slate-400 text-center py-6">Sin clientes que coincidan.</p>
-                )}
-                {list.map(u => {
-                  const active = carguesClient?.id === u.id;
-                  return (
-                    <button
-                      key={u.id}
-                      onClick={() => { setCarguesClientId(u.id); setCarguesMsg(null); }}
-                      className="w-full text-left p-3 rounded-lg transition-colors flex items-center gap-3"
-                      style={{
-                        border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.10)',
-                        background: active ? 'rgba(74,222,128,0.10)' : 'transparent',
-                      }}
-                    >
-                      <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0" style={{ background: 'rgba(255,255,255,0.06)', color: '#F4F4F2' }}>
-                        {(u.name ?? 'U').slice(0, 2).toUpperCase()}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold truncate" style={{ color: '#F4F4F2' }}>{u.name ?? 'Sin nombre'}</p>
-                        <p className="text-xs truncate" style={{ color: '#878E88' }}>{u.email}</p>
-                      </div>
-                      {active && <CheckCircle size={16} className="flex-shrink-0" style={{ color: '#4ADE80' }} />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Columna derecha — form del cargue */}
-            <div className="lg:col-span-3 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-              {!carguesClient ? (
-                <div className="h-full flex flex-col items-center justify-center text-center py-16 text-slate-400">
-                  <Wallet size={30} className="mb-3 opacity-40" />
-                  <p className="text-sm font-medium">Selecciona un cliente a la izquierda</p>
-                  <p className="text-xs mt-1">para aplicarle un cargue de saldo.</p>
-                </div>
-              ) : (
-                <>
-                  {/* Cabecera cliente + saldos actuales */}
-                  <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
-                    <div className="w-11 h-11 rounded-full bg-[#0C0E0D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
-                      {(carguesClient.name ?? 'U').slice(0, 2).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-base font-bold text-slate-800 truncate">{carguesClient.name}</p>
-                      <p className="text-xs text-slate-400 truncate">{carguesClient.email}</p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 py-4">
-                    {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
-                      const M = railMeta[code];
-                      return (
-                        <div key={code} className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-                          <div className="flex items-center gap-1.5 text-slate-500 mb-1"><M.icon size={13} /><span className="text-[11px] font-semibold">{M.corto}</span></div>
-                          <p className="text-sm font-bold text-slate-800">{formatMoney(bal(carguesClient, code), '')}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* 2 · Riel */}
-                  <p className="text-sm font-bold text-slate-800 mb-2 mt-1">2 · Riel destino</p>
-                  <div className="grid grid-cols-3 gap-2 mb-4">
-                    {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
-                      const M = railMeta[code];
-                      const active = carguesRail === code;
-                      return (
-                        <button
-                          key={code}
-                          onClick={() => setCarguesRail(code)}
-                          className="p-3 rounded-lg text-left transition-colors"
-                          style={{
-                            border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)',
-                            background: active ? 'rgba(74,222,128,0.12)' : 'transparent',
-                          }}
-                        >
+              {/* 2 · Destino: dónde queda el saldo del cliente */}
+              <div>
+                <label style={ROTULO}>Destino</label>
+                <div className="grid grid-cols-3" style={{ gap: 8 }}>
+                  {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
+                    const M = railMeta[code];
+                    const active = carguesRail === code;
+                    const libre = code === 'COP_BREB' ? freeBreb : code === 'COP_ACH' ? freeAch : null;
+                    return (
+                      <button key={code} onClick={() => setCarguesRail(code)}
+                        style={{ textAlign: 'left', cursor: 'pointer', borderRadius: 12, padding: '11px 12px', color: '#F4F4F2', background: active ? 'rgba(74,222,128,0.10)' : 'transparent', border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
+                        <span className="flex items-center justify-between">
                           <M.icon size={16} style={{ color: active ? '#4ADE80' : '#878E88' }} />
-                          <p className="text-xs font-bold mt-1.5" style={{ color: '#F4F4F2' }}>{M.label}</p>
-                          <p className="text-[10px] leading-tight mt-0.5" style={{ color: '#878E88' }}>{M.sub}</p>
-                          {active && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 6, fontSize: 10, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={11} /> Seleccionado</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
+                          {active && <CheckCircle size={14} style={{ color: '#4ADE80' }} />}
+                        </span>
+                        <span style={{ display: 'block', marginTop: 7, fontSize: 13.5, fontWeight: 800 }}>{M.label}</span>
+                        <span style={{ display: 'block', fontSize: 11, color: '#878E88' }}>{M.sub}</span>
+                        {libre != null && <span style={{ display: 'block', marginTop: 5, fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>disp. {Math.round(libre).toLocaleString('es-CO')}</span>}
+                        {carguesClient && <span style={{ display: 'block', marginTop: 4, fontSize: 10.5, color: '#878E88' }}>cliente: {formatMoney(bal(carguesClient, code), '')}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-                  {/* 3 · Dirección + monto */}
-                  <p className="text-sm font-bold text-slate-800 mb-2">3 · Movimiento</p>
-                  <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-3">
-                    <button onClick={() => setCarguesDir('credit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'credit' ? 'bg-green-600 text-white' : 'text-slate-500'}`}>Acreditar (+)</button>
-                    <button onClick={() => setCarguesDir('debit')} className={`flex-1 py-1.5 text-sm font-bold rounded transition-colors ${carguesDir === 'debit' ? 'bg-red-500 text-white' : 'text-slate-500'}`}>Descontar (−)</button>
-                  </div>
+              {/* 3 · Monto: desde la operación (por defecto) o a mano */}
+              <div>
+                <label style={ROTULO}>Monto</label>
                   {/* ── Contabilidad de la operación ──────────────────────
                       El COP no se escribe a mano: sale de la operación real.
                       Así la utilidad es un dato del cargue y no "lo que
@@ -2473,10 +2389,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                       </label>
 
                       {acctOn ? (<>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                           <div>
                             <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>USDT que envió</label>
-                            <input inputMode="decimal" placeholder="50000" value={acctUsdtGross}
+                            <input id="cargue-usdt-enviado" inputMode="decimal" placeholder="50000" value={acctUsdtGross}
                               onChange={e => setAcctUsdtGross(e.target.value.replace(/[^\d.]/g, ''))}
                               className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
                               style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
@@ -2542,11 +2458,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                       )}
                     </div>
                   )}
-
-                  <label className="block text-xs font-semibold text-slate-500 mb-1">
-                    {usandoAcct ? 'Monto (COP) — calculado' : 'Monto (COP)'}
-                  </label>
+                <div className="relative">
+                  <span style={{ position: 'absolute', left: 15, top: 13, fontSize: 22, fontWeight: 800, color: '#878E88' }}>$</span>
                   <input
+                    id="cargue-monto"
                     type="text"
                     inputMode="numeric"
                     placeholder="0"
@@ -2555,24 +2470,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                       ? (acctCalc.listo ? acctCalc.copToClient.toLocaleString('es-CO') : '')
                       : (carguesAmount ? Number(carguesAmount).toLocaleString('es-CO') : '')}
                     onChange={(e) => setCarguesAmount(e.target.value.replace(/\D/g, ''))}
-                    className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-lg font-bold text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
-                    style={usandoAcct ? { opacity: 0.75, cursor: 'not-allowed' } : undefined}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && carguesClient && !carguesBusy && carguesAmount) requestCargue(); }}
+                    style={{ ...CAMPO, padding: '12px 60px 12px 34px', fontSize: 24, fontWeight: 800, letterSpacing: '-0.6px', ...(usandoAcct ? { opacity: 0.75, cursor: 'not-allowed' } : {}) }}
                   />
-                  <label className="block text-xs font-semibold text-slate-500 mb-1">Nota (opcional)</label>
-                  <input
-                    type="text"
-                    placeholder="Ref. Mouv, motivo del ajuste..."
-                    value={carguesNote}
-                    onChange={(e) => setCarguesNote(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-800 focus:border-[#0C0E0D] outline-none mb-3"
-                  />
-                  {/* Registro histórico: crea el MOVIMIENTO sin tocar el saldo —
-                      para cuadrar cargues viejos que se acreditaron sin fila en
-                      transacciones (el resumen de Movimientos no los veía). */}
-                  <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                    <input type="checkbox" checked={carguesRecordOnly} onChange={e => setCarguesRecordOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
-                    <span className="text-xs text-slate-500">Solo registrar movimiento histórico (<b>no</b> modifica el saldo ni cobra comisión)</span>
-                  </label>
+                  <span style={{ position: 'absolute', right: 15, top: 18, fontSize: 12, fontWeight: 700, color: '#878E88' }}>{usandoAcct ? 'COP · calculado' : 'COP'}</span>
+                </div>
+                <input type="text" placeholder="Nota (opcional) · Ref. Mouv, motivo del ajuste…" value={carguesNote}
+                  onChange={(e) => setCarguesNote(e.target.value)} style={{ ...CAMPO, marginTop: 8, fontSize: 13 }} />
+                {/* Registro histórico: crea el MOVIMIENTO sin tocar el saldo —
+                    para cuadrar cargues viejos que se acreditaron sin fila en
+                    transacciones (el resumen de Movimientos no los veía). */}
+                <label className="flex items-center gap-2 cursor-pointer select-none" style={{ marginTop: 10 }}>
+                  <input type="checkbox" checked={carguesRecordOnly} onChange={e => setCarguesRecordOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#4ADE80' }} />
+                  <span style={{ fontSize: 12, color: '#878E88' }}>Solo registrar movimiento histórico (<b>no</b> modifica el saldo ni cobra comisión)</span>
+                </label>
+              </div>
 
                   {carguesDir === 'debit' && !carguesRecordOnly && (() => {
                     // Los cargues de este cliente en este saldo, con lo que les
@@ -2619,16 +2531,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
                     </div>
                   )}
 
-                  {/* El 2FA ya NO se pide acá. Se pide en la ventana de
-                      confirmación, DESPUÉS de ver el desglose: un código que
-                      se escribe antes de revisar la cifra autoriza a ciegas. */}
-                  <button
-                    onClick={requestCargue}
-                    disabled={carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
-                    className="w-full py-3 rounded-lg text-sm font-bold text-white bg-[#0C0E0D] hover:bg-[#161A17] disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                  >
-                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}</>}
-                  </button>
+              {/* Resumen en vivo + botón. El 2FA NO se pide acá: se pide en la
+                  ventana de confirmación, DESPUÉS de ver el desglose — un código
+                  que se escribe antes de revisar la cifra autoriza a ciegas. */}
+              <div className="flex items-center justify-between flex-wrap" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 16, gap: 14 }}>
+                <div style={{ fontSize: 12.5, color: '#878E88', lineHeight: 1.6 }}>
+                  {!carguesClient ? 'Elige un cliente para empezar.'
+                    : montoVista <= 0 ? <>{usandoAcct ? 'Completa los datos de la operación' : 'Escribe el monto'} para <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>.</>
+                    : <>
+                        <span style={{ color: '#F4F4F2' }}>{carguesDir === 'credit' ? 'Se acreditan' : 'Se descuentan'} <b>{Math.round(carguesDir === 'credit' ? netoVista : montoVista).toLocaleString('es-CO')} COP</b> a {carguesClient.name} en <b>{railMeta[carguesRail].label}</b></span><br />
+                        {excedeVista
+                          ? <span style={{ color: '#F87171', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}><AlertTriangle size={13} /> Excede lo disponible en {railMeta[carguesRail].label} ({Math.round(freeForRail).toLocaleString('es-CO')} COP)</span>
+                          : carguesRecordOnly ? 'Solo histórico: el saldo no cambia.'
+                          : carguesDir === 'credit' && freeForRail !== Infinity && poolReady ? <>Quedan {Math.round(freeForRail - netoVista).toLocaleString('es-CO')} disponibles en {railMeta[carguesRail].label}</>
+                          : null}
+                      </>}
+                </div>
+                <button
+                  onClick={requestCargue}
+                  disabled={!carguesClient || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
+                  style={{ border: 'none', borderRadius: 12, padding: '12px 22px', fontSize: 14, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
+                    ...((!carguesClient || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)) ? { background: 'rgba(255,255,255,0.08)', color: 'rgba(244,244,242,0.45)', cursor: 'not-allowed' } : { background: '#4ADE80', color: '#0C0E0D' }) }}
+                >
+                  {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}</>}
+                </button>
+              </div>
+            </div>
+
+            {/* ── Columna derecha: últimos cargues del cliente elegido ── */}
+            <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16, padding: 18 }}>
+              <p style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800, color: '#F4F4F2' }}>
+                Últimos cargues {carguesClient && <span style={{ color: '#878E88', fontWeight: 600, fontSize: 12 }}>· {carguesClient.name}</span>}
+              </p>
+              {!carguesClient ? (
+                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Elige un cliente para ver sus cargues manuales.</p>
+              ) : histCargues.cargando && ultimosCargues.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Trayendo el historial…</p>
+              ) : ultimosCargues.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Todavía no se le ha hecho ningún cargue manual.</p>
+              ) : (
+                <>
+                  {ultimosCargues.map((t: any, i: number) => {
+                    const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
+                    const f = fechaCargue(t);
+                    return (
+                      <div key={t.id} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 0', borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{railLabelOf(t.rail ?? t.currency ?? 'COP')}</p>
+                          <p style={{ margin: '2px 0 0', fontSize: 11, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {f ? new Date(f).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '—'}{t.note ? ` · ${t.note}` : ''}
+                          </p>
+                        </div>
+                        <span style={{ fontSize: 13.5, fontWeight: 800, color: esCredito ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                          {esCredito ? '+' : '−'}{Math.round(Number(t.amount) || 0).toLocaleString('es-CO')}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <p style={{ margin: '8px 0 0', fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>El detalle completo, con contabilidad y Revertir, está abajo.</p>
                 </>
               )}
             </div>
@@ -2766,6 +2726,75 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol })
               </div>
             );
           })()}
+
+          {/* Resolver conversión trabada: el USDT llegó al proveedor pero el
+              COP no se acreditó (p. ej. llegó 4.990,50 y el sistema esperaba
+              4.992). Acredita el COP adeudado y cierra el movimiento. */}
+          <details style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16 }}>
+            <summary style={{ padding: '14px 18px', cursor: 'pointer', color: '#F4F4F2', fontSize: 13.5, fontWeight: 700, listStyle: 'none' }}>
+              🛟 Resolver conversión trabada (acreditar COP y cerrar)
+            </summary>
+            <div style={{ padding: '0 18px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>
+                Úsalo cuando el USDT ya llegó al proveedor pero el COP no se acreditó (el cliente quedó debitado sin su COP). Pega el <b style={{ color: '#F4F4F2' }}>ID del movimiento de Lincoin</b> — el que ve el cliente en sus Movimientos (ej. <span style={{ fontFamily: 'monospace' }}>TX-B385BF</span>). <b style={{ color: '#F5B44A' }}>NO</b> es el ID de Finity. O elige un cliente abajo y dale <b style={{ color: '#F4F4F2' }}>“Ver conversiones trabadas”</b>.
+              </p>
+              {carguesClient && (
+                <button onClick={() => listStuck(carguesClient.id)} disabled={stuckBusy}
+                  style={{ alignSelf: 'flex-start', background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', borderRadius: 9, padding: '7px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                  🔎 Ver conversiones trabadas de {carguesClient.name?.split(' ')[0] ?? 'este cliente'}
+                </button>
+              )}
+              {Array.isArray(stuckList) && stuckList.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {stuckList.map((s: any) => (
+                    <button key={s.txId} onClick={() => { setStuckPreview(s); setStuckRail((s.currency && ['COP','COP_ACH','COP_BREB'].includes(s.currency)) ? s.currency : 'COP'); setStuckList(null); }}
+                      className="flex items-center justify-between" style={{ textAlign: 'left', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '10px 13px', cursor: 'pointer' }}>
+                      <span style={{ fontSize: 12, color: '#878E88', fontFamily: 'monospace' }}>{String(s.txId).slice(0, 8)}… · {s.status}</span>
+                      <span style={{ fontSize: 13, color: '#4ADE80', fontWeight: 800 }}>+ {Number(s.owedCop).toLocaleString('es-CO')} COP</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {Array.isArray(stuckList) && stuckList.length === 0 && (
+                <p style={{ fontSize: 12, color: '#878E88' }}>Este cliente no tiene conversiones trabadas.</p>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input value={stuckRef} onChange={e => setStuckRef(e.target.value)} placeholder="ID de Lincoin (ej. TX-B385BF)"
+                  style={{ flex: 1, minWidth: 200, background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 10, padding: '10px 12px', color: '#F4F4F2', fontSize: 13 }} />
+                <button onClick={previewStuck} disabled={stuckBusy || !stuckRef.trim()}
+                  style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '10px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                  {stuckBusy ? 'Buscando…' : 'Buscar'}
+                </button>
+              </div>
+              {stuckPreview && (
+                <div style={{ background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Cliente</span><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{stuckPreview.name ?? stuckPreview.email ?? stuckPreview.userId}</span></div>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>Estado actual</span><span style={{ color: stuckPreview.status === 'Completado' ? '#4ADE80' : '#F5B44A', fontWeight: 700 }}>{stuckPreview.status}</span></div>
+                  <div className="flex justify-between" style={{ fontSize: 12.5 }}><span style={{ color: '#878E88' }}>COP a acreditar</span><span style={{ color: '#4ADE80', fontWeight: 800 }}>+ {Number(stuckPreview.owedCop).toLocaleString('es-CO')} COP</span></div>
+                  <div className="flex items-center justify-between" style={{ fontSize: 12.5, marginTop: 4 }}>
+                    <span style={{ color: '#878E88' }}>Acreditar en</span>
+                    <select value={stuckRail} onChange={e => setStuckRail(e.target.value as any)}
+                      style={{ background: '#121413', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 8, padding: '6px 10px', fontSize: 12.5 }}>
+                      <option value="COP">Saldo Lincoin (COP)</option>
+                      <option value="COP_ACH">ACH</option>
+                      <option value="COP_BREB">Bre-B</option>
+                    </select>
+                  </div>
+                  {stuckPreview.status === 'Completado' ? (
+                    <p style={{ fontSize: 12, color: '#4ADE80', fontWeight: 600 }}>Este movimiento ya está Completado — no se vuelve a acreditar.</p>
+                  ) : (
+                    <button onClick={settleStuck} disabled={stuckBusy}
+                      style={{ marginTop: 4, background: '#4ADE80', color: '#0A0C0B', border: 'none', borderRadius: 10, padding: '11px', fontWeight: 800, fontSize: 13.5, cursor: 'pointer' }}>
+                      {stuckBusy ? 'Acreditando…' : 'Acreditar y cerrar'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {stuckMsg && (
+                <p style={{ fontSize: 12.5, fontWeight: 600, color: stuckMsg.ok ? '#4ADE80' : '#F87171' }}>{stuckMsg.text}</p>
+              )}
+            </div>
+          </details>
 
           {/* Ventana de confirmación del cargue (tema Lincoin).
               En el celular se salía de la pantalla: era una sola columna sin
@@ -4861,10 +4890,10 @@ const renderDesign = () => (
   const closeSidebar = () => setIsSidebarOpen(false);
   const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
   // Cualquier salto a otra pestaña (un aviso, un botón "volver", la billetera
-  // USDT) vuelve a Tesorería si el rol no la tiene. El servidor igual le
+  // USDT) vuelve a la Billetera si el rol no la tiene. El servidor igual le
   // negaría los datos; esto evita que vea una pantalla vacía o con errores.
   useEffect(() => {
-    if (soloTesoreria && !TABS_TESORERIA.includes(activeTab)) setActiveTab('treasury');
+    if (soloTesoreria && !TABS_TESORERIA.includes(activeTab)) setActiveTab('cargues');
   }, [soloTesoreria, activeTab]);
   // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
   // propio header); el resto de secciones mantienen su lienzo claro actual.
@@ -4921,7 +4950,7 @@ const renderDesign = () => (
             </div>
             <div className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
                 {/* Dashboard — fijo arriba, resaltado en verde. El rol Tesorería
-                    no lo tiene: entra directo a Tesorería. */}
+                    no lo tiene: entra directo a la Billetera. */}
                 {!soloTesoreria && <button
                     onClick={() => navTo('overview')}
                     className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors hover:bg-white/5"
@@ -4933,13 +4962,22 @@ const renderDesign = () => (
                 </button>}
 
                 {(() => {
+                    // Tesorería es un acordeón: Billetera primero (los cargues,
+                    // lo que más se usa) y después el tablero de Tesorería.
+                    const pendTes = pendingDeposits.length + pendingWithdrawals.length;
+                    const grupoTesoreria = (
+                        <AdminSidebarGrupo icon={Landmark} label="Tesorería"
+                            active={activeTab === 'treasury' || activeTab === 'cargues'}
+                            badge={pendTes > 0 ? pendTes : undefined}
+                            items={[
+                                { key: 'cargues', icon: Wallet, label: 'Billetera', active: activeTab === 'cargues', onClick: () => navTo('cargues') },
+                                { key: 'treasury', icon: BarChart3, label: 'Tesorería', active: activeTab === 'treasury', badge: pendTes > 0 ? pendTes : undefined, onClick: () => navTo('treasury') },
+                            ]} />
+                    );
                     const groups: { key: string; title: string; items: React.ReactNode }[] = [
                         { key: 'operacion', title: 'Operación', items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
-                            <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
-                            {/* Cargues (COP) y GasFree (USDT) ya NO van sueltos aquí:
-                                se entra por Tesorería → Billeteras, que es donde se
-                                elige con qué moneda se opera. */}
+                            {grupoTesoreria}
                             <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />
                             <AdminSidebarItem icon={Landmark} label="Gowd" active={activeTab === 'gowd'} onClick={() => navTo('gowd')} />
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
@@ -4966,7 +5004,7 @@ const renderDesign = () => (
                     const visibles = soloTesoreria
                         ? [{ key: 'operacion', title: 'Operación', items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
-                            <AdminSidebarItem icon={Landmark} label="Tesorería" active={activeTab === 'treasury' || activeTab === 'cargues'} badge={pendingDeposits.length + pendingWithdrawals.length > 0 ? pendingDeposits.length + pendingWithdrawals.length : undefined} onClick={() => navTo('treasury')} />
+                            {grupoTesoreria}
                           </> }]
                         : groups;
                     // Los grupos ya no se pliegan: todo queda a la vista. El
