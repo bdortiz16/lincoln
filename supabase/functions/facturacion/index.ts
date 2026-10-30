@@ -542,6 +542,25 @@ function dvNit(base: string): number | null {
   const r = suma % 11
   return r > 1 ? 11 - r : r
 }
+// ── La cuenta no se factura a sí misma ─────────────────────────────
+// XATECH tenía facturas a nombre de XATECH: sus pagos propios llevaban a la
+// misma empresa como ordenante, y la factura de la comisión salía a su
+// nombre. Una empresa no se factura a sí misma. Se compara el documento sin
+// dígito de verificación (un NIT llega con o sin DV).
+const baseDoc = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 10 ? d.slice(0, 9) : d }
+// El NIT de la empresa (o el documento de la persona) dueña de la cuenta,
+// con la misma regla que la ficha del cliente en las facturas de Lincoin.
+async function documentosPropios(userId: string): Promise<Set<string>> {
+  const { data: u } = await db.from('users').select('*').eq('id', userId).maybeSingle()
+  const x: any = u ?? {}
+  const rd = (x.raw_data ?? {}) as Record<string, any>
+  const docEmpresa = baseDoc(x.tax_id ?? rd.taxId ?? rd.nit)
+  const docPersona = baseDoc(x.doc_number ?? rd.docNumber)
+  const esEmpresa = !!docEmpresa && (x.role === 'business' || !!(x.company_name ?? rd.companyName))
+  return new Set([docEmpresa, esEmpresa ? '' : docPersona].filter(d => d.length >= 6))
+}
+const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es la misma empresa que factura: una empresa no se factura a sí misma. No se emitió.`
+
 function partirNit(doc: string): { identification: string; check_digit?: string } {
   if (doc.length === 10 && dvNit(doc.slice(0, 9)) === Number(doc[9])) return { identification: doc.slice(0, 9), check_digit: doc[9] }
   if (doc.length === 9) { const dv = dvNit(doc); return dv === null ? { identification: doc } : { identification: doc, check_digit: String(dv) } }
@@ -992,6 +1011,14 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   if ('error' in t) { await marcar({ factura_estado: 'error', factura_error: t.error, factura_tipo: clase }); return { ok: false, error: t.error } }
 
   const cp = contraparteDe(comp, cfg)
+  // A nombre de la misma empresa (un envío a una cuenta propia, un depósito
+  // desde ella): no se emite. Una anulada no se toca.
+  if (!cp.esDefault && (await documentosPropios(userId)).has(baseDoc(cp.identification))) {
+    const e = MSG_MISMA_EMPRESA(cp.identification)
+    if ((comp as any).factura_estado === 'anulada') return { ok: false, error: e }
+    await marcar({ factura_estado: 'omitida', factura_error: e })
+    return { ok: true, estado: 'omitida', aviso: e }
+  }
   // Si el envío no trae la dirección (se hizo antes de que el beneficiario
   // la tuviera), se toma de la lista de beneficiarios, por documento. Así
   // completar la ficha alcanza para emitir de nuevo un envío viejo.
@@ -1358,6 +1385,16 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (!(pct > 0)) return falla('Falta el porcentaje de comisión (Configuración → comisión sobre depósitos, o escribilo al emitir).')
   const identification = String(d.identification ?? '').replace(/\D/g, '')
   if (!identification) return falla('Falta el documento del cliente al que se le factura.')
+  // A nombre de la misma empresa: no se factura. Queda «no aplica» con el
+  // motivo; una anulada (o su reemplazo fallido) no se toca, o se perdería
+  // que estuvo facturada y anulada.
+  if ((await documentosPropios(userId)).has(baseDoc(identification))) {
+    const e = MSG_MISMA_EMPRESA(identification)
+    const conHistoria = (comp as any).factura_estado === 'anulada' || (Array.isArray(detPrevio.anteriores) && detPrevio.anteriores.length > 0)
+    if (conHistoria) return { ok: false, error: e }
+    await marcar({ factura_estado: 'omitida', factura_error: e })
+    return { ok: true, estado: 'omitida', aviso: e }
+  }
 
   const partner = cfg.partner_id || 'Lincoin'
   const t = await tokenDe(userId, cfg)
@@ -1716,6 +1753,9 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
   }
   const duplicadas: any[] = []
   const sinRegistrar: any[] = []
+  // Vigentes a nombre de la misma empresa: se anulan con nota crédito.
+  const propios = await documentosPropios(userId)
+  const aSiMisma: any[] = []
   const deLincoinPorClave = new Map<string, any[]>()
   for (const [lc, fs] of porLc) {
     const c = comps.get(lc)
@@ -1729,6 +1769,8 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
       folio: c.folio, comprobante: lc, transaction_id: c.transaction_id, tipo: DISPARADORES[String(c.tipo)] ?? String(c.tipo),
       monto: c.monto, moneda: c.moneda, fecha: c.emitido_at, estado: c.factura_estado, registrada: c.factura_numero ?? null,
     }
+    const propias = vigentes.filter(f => propios.has(baseDoc(f.cliente)))
+    if (propias.length) aSiMisma.push({ ...mov, facturas: propias })
     if (vigentes.length >= 2) duplicadas.push({ ...mov, facturas: lista })
     else if (vigentes.length === 1 && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
     for (const f of vigentes) {
@@ -1744,7 +1786,7 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
     const pares = deLincoinPorClave.get(`${rf.cliente}|${Math.round(rf.total)}`)
     if (pares?.length) posibles.push({ factura: rf, de_lincoin: pares })
   }
-  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, posibles }
+  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, a_si_misma: aSiMisma, posibles }
 }
 
 // Registra en Lincoin facturas que están en Siigo y Lincoin no tenía (las
@@ -1850,6 +1892,10 @@ async function encolarLote(userId: string, body: any): Promise<any> {
   const cl = body.cliente && typeof body.cliente === 'object' ? body.cliente : null
   const docCl = String(cl?.identification ?? '').replace(/\D/g, '')
   const elegido = docCl.length >= 5 ? { identification: docCl, nombre: String(cl?.nombre ?? '').trim().slice(0, 200), esEmpresa: typeof cl?.esEmpresa === 'boolean' ? cl.esEmpresa : docCl.length === 9 } : null
+  // La misma empresa no se factura a sí misma: ni como cliente elegido ni
+  // como ordenante de un envío.
+  const propios = await documentosPropios(userId)
+  if (elegido && propios.has(baseDoc(elegido.identification))) return { ok: false, error: `${elegido.nombre || elegido.identification} es la misma empresa que factura: una empresa no se factura a sí misma. Elige el cliente por cuenta de quien se hizo el pago.` }
   const omitidos: { id: string; motivo: string }[] = []
   let encolados = 0
   const ahoraIso = new Date().toISOString()
@@ -1887,6 +1933,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
         if (modelo === 'comision' && yaFueAnulada) {
           const ca = det?.comision?.cliente
           if (!ca?.identification) { no('No se sabe a qué cliente iba la factura anulada: emítela desde el movimiento.'); continue }
+          if (propios.has(baseDoc(ca.identification))) { no('La factura anulada iba a nombre de la misma empresa: no se vuelve a emitir.'); continue }
           lote = { modo: 'reemitir', cliente: { identification: String(ca.identification), nombre: String(ca.nombre ?? '') }, pct: Number(det?.comision?.pct) || pct, reemplazo: true }
         } else {
           if (modelo === 'comision' && !salida) { no('En el modelo Comisión los depósitos no llevan factura.'); continue }
@@ -1895,6 +1942,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
           const docO = String(o?.doc ?? '').replace(/\D/g, '')
           const cli = docO ? { identification: docO, nombre: String(o?.nombre ?? ''), esEmpresa: String(o?.docTipo ?? '') === 'NIT' } : elegido
           if (!cli) { no('No tiene ordenante y no se eligió a qué cliente facturarlo.'); continue }
+          if (propios.has(baseDoc(cli.identification))) { no('El ordenante es la misma empresa (un pago propio): no se factura.'); continue }
           if (!(pct > 0)) { no('Falta el porcentaje de comisión.'); continue }
           lote = { modo: 'comision', cliente: cli, pct }
         }
@@ -3128,6 +3176,10 @@ Deno.serve(async (req) => {
         items: Array.isArray(enviado.items) ? enviado.items.map((it: any) => ({ code: it.code ?? null, description: it.description ?? null, quantity: it.quantity ?? null, price: it.price ?? null })) : [],
         total: Array.isArray(enviado.payments) ? enviado.payments.reduce((s: number, p: any) => s + (Number(p.value) || 0), 0) : null,
       } : null
+      // ¿La factura es (o era) a nombre de la misma empresa? Entonces no se
+      // ofrece volver a emitirla, y se dice por qué.
+      const clienteFact = c.factura_detalle?.comision?.cliente?.identification ?? enviado?.customer?.identification ?? null
+      const mismaEmpresa = !!clienteFact && (await documentosPropios(userId)).has(baseDoc(clienteFact))
       return json({
         ok: true,
         comprobante: { folio: c.folio, numero: c.numero, tipo: c.tipo, monto: c.monto, moneda: c.moneda, emitido_at: c.emitido_at },
@@ -3147,7 +3199,8 @@ Deno.serve(async (req) => {
           // Modelo Comisión: un depósito no lleva factura (ni para reemplazar
           // una anulada). La pantalla no ofrece emitirla.
           solo_envios: String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? '')),
-          reemision: !(String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
+          misma_empresa: mismaEmpresa,
+          reemision: !mismaEmpresa && !(String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
             const monto = Number(String(c.monto ?? '0').replace(/,/g, '')) || 0
             const pct = Number(c.factura_detalle.comision.pct) || 0
             const comision = r2(monto * pct / 100)

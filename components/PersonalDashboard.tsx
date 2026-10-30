@@ -4469,7 +4469,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               const rechazoMsgs: string[] = Array.isArray(doc.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];
               // Modelo Comisión: un depósito no lleva factura, ni para
               // reemplazar una anulada. El servidor lo dice en solo_envios.
-              const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado' && !doc.solo_envios;
+              const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado' && !doc.solo_envios && !doc.misma_empresa;
               // Anulada con nota crédito y con a quién facturar: se muestra
               // cómo va a quedar la factura nueva y se pide confirmar.
               const reem: any = doc.estado === 'anulada' || doc.estado === 'error' ? doc.reemision : null;
@@ -4525,6 +4525,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   {(doc.estado === 'error' || doc.estado === 'anulada') && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'error' ? '#F87171' : '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
                   {doc.estado === 'omitida' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
                   {doc.solo_envios && doc.estado === 'anulada' && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>En el modelo Comisión los depósitos no llevan factura: esta queda anulada y no se vuelve a emitir.</p>}
+                  {doc.misma_empresa && doc.estado !== 'omitida' && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'emitida' ? '#FB923C' : '#878E88', lineHeight: 1.45 }}>{doc.estado === 'emitida' ? 'Esta factura está a nombre de la misma empresa que factura: una empresa no se factura a sí misma. Anúlala con una nota crédito en Siigo.' : 'Iba a nombre de la misma empresa que factura: no se vuelve a emitir.'}</p>}
                   {doc.estado === 'emitida' && (
                     <div className="flex" style={{ gap: 8, marginTop: 10 }}>
                       {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Abrir en Siigo</a>}

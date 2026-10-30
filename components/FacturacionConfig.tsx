@@ -42,6 +42,9 @@ const leerOrdenantes = (u: any): Ordenante[] => {
   const l = u?.raw_data?.ordenantes ?? u?.ordenantes;
   return Array.isArray(l) ? l.filter((o: any) => o && o.id && o.doc) : [];
 };
+// Documento sin dígito de verificación, para reconocer a la propia empresa
+// entre los ordenantes (un NIT llega con o sin DV).
+const baseDocOrd = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 10 ? d.slice(0, 9) : d; };
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -106,6 +109,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   const [modeloAbierto, setModeloAbierto] = useState(true);
   const { currentUser, actualizarListaRaw, updateUserRawData } = useDatabase();
   const ordenantes = leerOrdenantes(currentUser);
+  const nitPropio = baseDocOrd((currentUser as any)?.taxId ?? (currentUser as any)?.nit);
   const [nuevoOrd, setNuevoOrd] = useState<{ nombre: string; docTipo: Ordenante['docTipo']; doc: string; correo: string; error: string | null; guardando: boolean }>({ nombre: '', docTipo: 'NIT', doc: '', correo: '', error: null, guardando: false });
   const agregarOrdenante = async () => {
     if (!currentUser?.id) return;
@@ -846,6 +850,10 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
                             <span style={{ minWidth: 0 }}>
                               <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: C.text }}>{o.nombre}</span>
                               <span style={{ display: 'block', fontSize: 11.5, color: C.sub }}>{o.docTipo} {o.doc}{o.correo ? ` · ${o.correo}` : ''}</span>
+                              {/* La misma empresa: sirve para marcar los pagos
+                                  propios, que no se facturan (una empresa no
+                                  se factura a sí misma). */}
+                              {nitPropio.length >= 6 && baseDocOrd(o.doc) === nitPropio && <span style={{ display: 'block', fontSize: 11.5, color: C.ambar, marginTop: 2 }}>Es tu empresa: los envíos con este ordenante son pagos propios y no se facturan.</span>}
                             </span>
                             <button onClick={() => quitarOrdenante(o.id)} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.rojo, background: 'transparent', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer' }}>Quitar</button>
                           </div>

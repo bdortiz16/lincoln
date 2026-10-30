@@ -80,6 +80,10 @@ const pctDeCfg = (cfg: any) => (cfg?.utilidad_pct != null && cfg.utilidad_pct !=
 type ClienteFactura = { identification: string; nombre: string; esEmpresa: boolean };
 // El ordenante del envío (el cliente por cuenta de quien se pagó), si se
 // eligió al enviar: la factura de la comisión va a su nombre.
+// Documento sin dígito de verificación: un NIT llega con o sin DV. Sirve para
+// reconocer a la misma empresa, que no se factura a sí misma.
+const baseDoc = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 10 ? d.slice(0, 9) : d; };
+
 const ordenanteDe = (tx: any): ClienteFactura | null => {
   const o: any = tx?.recipient?.ordenante ?? tx?.raw_data?.recipient?.ordenante ?? tx?.ordenante ?? null;
   const doc = String(o?.doc ?? '').replace(/\D/g, '');
@@ -205,6 +209,8 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
     const r = await llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: String(asiento.tx.id), clienteIdentification: elegido.identification, clienteNombre: elegido.nombre, clienteEsEmpresa: elegido.esEmpresa, comisionPct: p }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setEmitiendo(false);
     if (!r?.ok) { setResultado({ ok: false, texto: r?.error ?? 'No se pudo emitir.' }); return; }
+    // «No aplica» (p. ej. el cliente es la misma empresa): no se emitió nada.
+    if (r.estado === 'omitida') { setResultado({ ok: false, texto: r.aviso ?? 'No se emitió: este movimiento no lleva factura.' }); return; }
     setResultado({ ok: true, texto: `Factura ${r.numero ?? ''} emitida por ${fmtCop2(Number(r.total ?? total))} COP.${r.aviso ? ` ${r.aviso}` : ''}` });
     setTimeout(onEmitida, 900);
   };
@@ -278,8 +284,10 @@ const EmisionLoteModal: React.FC<{
   /** El estado de cada factura según la última lectura de comprobantes, y
    *  cuántas lecturas van (para no confiar en una anterior a encolar). */
   vivo: Record<string, FacturaVivo | undefined>; lecturas: number;
+  /** ¿El documento es de la misma empresa? No se factura a sí misma. */
+  esPropio: (doc?: string | null) => boolean;
   onCerrar: () => void; onEncolado: () => void;
-}> = ({ items, cfg, periodoTxt, vivo, lecturas, onCerrar, onEncolado }) => {
+}> = ({ items, cfg, periodoTxt, vivo, lecturas, esPropio, onCerrar, onEncolado }) => {
   const [marcados, setMarcados] = useState<Set<string>>(() => new Set(items.map(i => i.txId)));
   const [pct, setPct] = useState<string>(pctDeCfg(cfg));
   const [cliente, setCliente] = useState<ClienteFactura | null>(null);
@@ -301,7 +309,8 @@ const EmisionLoteModal: React.FC<{
   const sinOrdenante = porEmitir.filter(i => i.modo === 'comision' && !i.ordenante).length;
   const nReemitir = porEmitir.filter(i => i.modo === 'reemitir').length;
   const faltaItem = nComision > 0 && (!cfg?.item_comision || (mandato && !cfg?.item_terceros));
-  const listo = porEmitir.length > 0 && (sinOrdenante === 0 || !!cliente) && (nComision === 0 || p > 0) && !faltaItem;
+  const clientePropio = !!cliente && esPropio(cliente.identification);
+  const listo = porEmitir.length > 0 && (sinOrdenante === 0 || (!!cliente && !clientePropio)) && (nComision === 0 || p > 0) && !faltaItem;
   // Lo que se va a facturar (solo lo calculable acá: las de comisión).
   const comisionDe = (i: ItemLote) => r2((Number(i.a.monto) || 0) * p / 100);
   const totalDe = (i: ItemLote) => r2((mandato ? Number(i.a.monto) || 0 : 0) + comisionDe(i));
@@ -383,6 +392,7 @@ const EmisionLoteModal: React.FC<{
                   {sinOrdenante === 1 ? 'Uno no tiene ordenante: elige a quién se le factura.' : `${sinOrdenante} no tienen ordenante: elige a quién se les factura.`}
                 </p>
                 <SelectorCliente onCambio={setCliente} />
+                {clientePropio && <p style={{ fontSize: 11.5, color: AMBAR, margin: '8px 0 0', lineHeight: 1.5 }}>{cliente?.nombre || 'Ese cliente'} es la misma empresa que factura: una empresa no se factura a sí misma. Elige el cliente por cuenta de quien se hizo el pago.</p>}
               </>
             )}
             <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE CADA MOVIMIENTO, IVA INCLUIDO)</p>
@@ -680,6 +690,7 @@ const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolea
   );
   const duplicadas: any[] = res?.duplicadas ?? [];
   const sinRegistrar: any[] = res?.sin_registrar ?? [];
+  const aSiMisma: any[] = res?.a_si_misma ?? [];
   const posibles: any[] = res?.posibles ?? [];
   const nAnular = duplicadas.reduce((s, d) => {
     const vig = (d.facturas as FacturaRev[]).filter(f => !f.anulada);
@@ -739,6 +750,19 @@ const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolea
                 </>
               )}
 
+            {aSiMisma.length > 0 && (
+              <>
+                {titulo(`A NOMBRE DE LA MISMA EMPRESA · ${aSiMisma.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas emitidas a la misma empresa que factura (pagos propios con la empresa como ordenante). Una empresa no se factura a sí misma: anúlalas con una nota crédito en Siigo. Lincoin ya no emite estas facturas.</p>
+                {aSiMisma.map(d => (
+                  <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}</p>
+                    {(d.facturas as FacturaRev[]).map(f => fila(f, { txt: 'anular', color: AMBAR }))}
+                  </div>
+                ))}
+              </>
+            )}
+
             {sinRegistrar.length > 0 && (
               <>
                 {titulo(`EN SIIGO Y NO EN LINCOIN · ${sinRegistrar.length}`)}
@@ -786,6 +810,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const { currentUser } = useDatabase();
   // El titular: lo que mandó el servidor (contador) o la propia sesión.
   const ficha = empresa ?? (soloLectura ? null : fichaDeUsuario(currentUser));
+  // La misma empresa no se factura a sí misma: un envío con la propia empresa
+  // como ordenante (un pago propio) no se ofrece para facturar.
+  const nitPropio = baseDoc(ficha?.nit);
+  const esPropio = (doc?: string | null) => nitPropio.length >= 6 && !!doc && baseDoc(doc) === nitPropio;
   const [contadorAbierto, setContadorAbierto] = useState(false);
   const [estadoAbierto, setEstadoAbierto] = useState(false);
   // Terceros: a quién se le envió ('out') o de quién se recibió ('in'), y el
@@ -978,7 +1006,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // Comisión: solo los envíos se facturan (un cargue/depósito no lleva
   // factura en ese modelo). PSP: los depósitos, a mano.
   const botonSegunTipo = (a: Asiento, txId: string) => {
-    if (esComision) return a.dir === 'out' ? botonFacturaComision(a) : null;
+    if (esComision) return a.dir === 'out' && !esPropio(ordenanteDe(a.tx)?.identification) ? botonFacturaComision(a) : null;
     return (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type))) ? botonFacturaComision(a) : botonEmitir(txId);
   };
   // SIN FACTURA: un movimiento completado que se puede facturar y no tiene
@@ -999,6 +1027,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (est === 'emitida' || est === 'en_cola') return null;
     if (est === 'emitiendo' && (!fa?.at || Date.now() - new Date(fa.at).getTime() < 180000)) return null;
     if (esComision) {
+      if (a.dir === 'out' && esPropio(ordenanteDe(a.tx)?.identification)) return null;
       if (est === 'anulada') return a.dir === 'out' ? 'reemitir' : null;
       return a.dir === 'out' && a.moneda === 'COP' ? 'comision' : null;
     }
@@ -1464,7 +1493,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />
       )}
       {lote && cfgFact && (
-        <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} vivo={vivo} lecturas={lecturas} onCerrar={() => { setLote(null); setLoteAbierto(false); setPulsoFolios(v => v + 1); }} onEncolado={() => setPulsoFolios(v => v + 1)} />
+        <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} vivo={vivo} lecturas={lecturas} esPropio={esPropio} onCerrar={() => { setLote(null); setLoteAbierto(false); setPulsoFolios(v => v + 1); }} onEncolado={() => setPulsoFolios(v => v + 1)} />
       )}
       {comisionPara && cfgFact && (
         <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
@@ -1786,7 +1815,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
                                   emitir al mismo cliente, con el cálculo vigente.
                                   Solo un envío: un depósito no lleva factura. */}
-                              {fa.estado === 'anulada' && esComision && a.dir === 'out' && completado && facturacionActiva && txId && !soloLectura
+                              {fa.estado === 'anulada' && esComision && a.dir === 'out' && !esPropio(ordenanteDe(a.tx)?.identification) && completado && facturacionActiva && txId && !soloLectura
                                 ? <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
                                     title="Emite una factura nueva al mismo cliente de la anulada: terceros por el valor completo + la comisión"
                                     style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>
