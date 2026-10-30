@@ -133,8 +133,15 @@ function mensajeFalloBreb2(fb: ResultadoBreb2, debitado: boolean): string {
   const errText = `${provMsg ?? ''} ${(() => { try { return JSON.stringify(fb.body ?? '') } catch { return '' } })()}`.toLowerCase()
   const llaveMala = fb.paso === 'crear' && /key|llave|not\s*found|no existe|inv[aá]lid|no.{0,3}activ/.test(errText)
   const motivo = motivoParaCliente(provMsg)
+  // Falla DEL PROVEEDOR (error de su servidor, credencial rechazada, tiempo de
+  // espera o límite): no es la llave. Antes se le decía al cliente "revisa la
+  // llave" (visto el 2026-10-30: cuatro HTTP 500 de Finity seguidos).
+  const st = Number(fb.httpStatus ?? 0)
+  const fallaProveedor = st >= 500 || st === 401 || st === 403 || st === 408 || st === 429
   const base = fb.mensaje
-    ?? (llaveMala
+    ?? (fallaProveedor
+      ? 'Bre-B · Cuenta 2 tiene una falla en este momento, así que no salió nada. Envíalo por ACH o inténtalo de nuevo en unos minutos. Tu saldo fue devuelto.'
+      : llaveMala
       ? 'La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave exacta y vuelve a intentarlo. Tu saldo fue devuelto.'
       : motivo
         ? `No pudimos completar el envío Bre-B: ${motivo}. Tu saldo fue devuelto.`

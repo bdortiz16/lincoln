@@ -4938,6 +4938,17 @@ Deno.serve(async (req: Request) => {
           db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'dispersion').eq('status', 'Rechazado').gte('created_at', inicioMes),
         ])
         const cargesPend = ((pendCargues.data ?? []) as any[]).filter(visible)
+        // Bre-B · Cuenta 2 (Finity) caído: fallas DEL PROVEEDOR (5xx, 401/403,
+        // 408, 429) al crear el envío en la última hora. Con dos o más, el
+        // equipo lo ve en "Por resolver" sin esperar a que un cliente avise.
+        let breb2Caido: { fallos: number; ultimo: string; status: number } | null = null
+        try {
+          const { data: fallas } = await db.from('audit_log').select('created_at, metadata')
+            .eq('action', 'finity.payout_breb2.no_creada').gte('created_at', new Date(Date.now() - 3600_000).toISOString())
+            .order('created_at', { ascending: false }).limit(50)
+          const deProveedor = ((fallas ?? []) as any[]).filter(f => { const st = Number(f?.metadata?.httpStatus ?? 0); return st >= 500 || [401, 403, 408, 429].includes(st) })
+          if (deProveedor.length >= 2) breb2Caido = { fallos: deProveedor.length, ultimo: deProveedor[0].created_at, status: Number(deProveedor[0].metadata?.httpStatus ?? 0) }
+        } catch { /* sin auditoría, sin aviso */ }
         const procVis = ((procesando.data ?? []) as any[]).filter(visible)
 
         // 3 · El mes en curso: utilidad (de la contabilidad de cada cargue) y
@@ -5031,6 +5042,7 @@ Deno.serve(async (req: Request) => {
             trasladosAch: railPend.count ?? 0,
             procesando: { n: procVis.length, total: procVis.reduce((s, c: any) => s + Math.abs(Number(c.amount) || 0), 0) },
             fallidasMes: fallidas.count ?? 0, rechazadasMes: rechazadas.count ?? 0,
+            breb2Caido,
             fueraDeHorario,
           },
           utilidadMes: { total: Math.round(utilidad), conContabilidad: conAcct, sinContabilidad: sinAcct, porProveedor: utilProv },

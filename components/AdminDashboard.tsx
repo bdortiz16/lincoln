@@ -3363,6 +3363,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       titulo: `${pr.cargues.n} ${pr.cargues.n === 1 ? 'cargue pendiente' : 'cargues pendientes'} de acreditar · ${fmtCop(pr.cargues.total)} COP`,
                       det: pr.cargues.primero ? `El más antiguo: ${pr.cargues.primero.cliente} · ${fmtCop(pr.cargues.primero.monto)} COP · ${pr.cargues.primero.proveedor} · ${new Date(pr.cargues.primero.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}` : '',
                       accion: 'Revisar', onClick: () => pr.cargues.primero && abrirCargue(pr.cargues.primero.id) });
+                  // Bre-B · Cuenta 2 con fallas del proveedor en la última hora.
+                  if (pr.breb2Caido) filas.push({ k: 'b2', icon: AlertTriangle, tono: '#F87171',
+                      titulo: `Bre-B · Cuenta 2 con fallas: ${pr.breb2Caido.fallos} errores de Finity en la última hora`,
+                      det: `Último ${new Date(pr.breb2Caido.ultimo).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} · HTTP ${pr.breb2Caido.status}${pr.breb2Caido.status === 401 ? ' (credencial rechazada)' : pr.breb2Caido.status >= 500 ? ' (error del servidor de Finity)' : ''}. Los clientes deben enviar por ACH.`,
+                      accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
                   if (pr.procesando.n > 0) filas.push({ k: 'p', icon: Clock, tono: '#FBBF24', titulo: `${pr.procesando.n} ${pr.procesando.n === 1 ? 'dispersión' : 'dispersiones'} en "Procesando" hace más de 30 min`, det: `${fmtCop(pr.procesando.total)} COP`, accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
                   if (pr.fallidasMes + pr.rechazadasMes > 0) filas.push({ k: 'f', icon: AlertTriangle, tono: '#F87171', titulo: `${pr.fallidasMes} fallidas · ${pr.rechazadasMes} rechazadas este mes`, det: 'Revisa que cada una haya vuelto al saldo del cliente', accion: 'Ver en Fallos', onClick: () => navTo('fallos') });
                   // Contabilidad sospechosa (tasa de venta absurda o utilidad muy
