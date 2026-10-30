@@ -463,15 +463,22 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
     return true;
   };
   const abrirEnviar = () => { if (puedeEnviar()) enviarRef.current?.abrir(); };
-  // Operadores envían solo por Bre-B (Cuenta 2) o a otro usuario Lincoin.
-  const METODOS_OPERADOR = ['breb2', 'pay'] as const;
+  // Operadores envían por Bre-B (Cuenta 2), por ACH a una cuenta de banco o
+  // a otro usuario Lincoin. Los dos rieles a banco salen por Finity; el
+  // servidor (mouv-proxy, payout_ach / payout_breb2) aplica la autorización
+  // de la empresa, el tope mensual y el saldo único. ACH estaba apagado solo
+  // aquí, en la pantalla.
+  const METODOS_OPERADOR = ['breb2', 'ach', 'pay'] as const;
   // Desde Beneficiarios: abre Enviar con el beneficiario cargado, igual que
-  // en Empresas, ya por Bre-B. Solo falta el monto. A una cuenta de banco
-  // no se envía desde aquí.
+  // en Empresas, por el riel que le corresponde (llave → Bre-B, cuenta de
+  // banco → ACH). Solo falta el monto.
   const enviarAContacto = (c: MouvContact) => {
-    if (c.destKind !== 'breb') { avisar('Desde tu cuenta los envíos salen por Bre-B. Inscribe la llave Bre-B de esta persona para enviarle.', true); return; }
+    // Una billetera (USD) no es destino de un operador: su cuenta es en pesos.
+    if ((c as any).accountKind === 'wallet') { avisar('Desde tu cuenta los envíos van a llaves Bre-B y a cuentas de banco en Colombia.', true); return; }
     setVista('inicio');
-    enviarRef.current?.abrir({ ...prefillDeContacto(c), metodo: 'breb2', rail: 'COP_ACH' });
+    enviarRef.current?.abrir(c.destKind === 'breb'
+      ? { ...prefillDeContacto(c), metodo: 'breb2', rail: 'COP_ACH' }
+      : { ...prefillDeContacto(c), metodo: 'ach', rail: 'COP_ACH' });
   };
   const callGasfree = (payload: Record<string, unknown>) => llamarFuncion('gasfree', payload, 90000);
   const cerrarPanel = () => setPanel(null);
@@ -624,7 +631,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
           {/* Tu cuenta */}
           <Tarjeta style={{ padding: '6px 16px' }}>
             <Fila primera icono={User} titulo="Detalles de mi cuenta" sub={`ID Lincoin ${codigo}${autorizada ? ` · ${autorizada.nombre}` : ''}`} onClick={() => setPanel('perfil')} />
-            <Fila icono={Users} titulo="Beneficiarios" sub={contactos.length ? `${contactos.length} guardado(s)` : 'Llaves Bre-B de a quién le envías'} onClick={() => setVista('beneficiarios')} />
+            <Fila icono={Users} titulo="Beneficiarios" sub={contactos.length ? `${contactos.length} guardado(s)` : 'Llaves Bre-B y cuentas de banco de a quién le envías'} onClick={() => setVista('beneficiarios')} />
             <Fila icono={BarChart3} titulo="Tope mensual" sub={topeTxt} onClick={() => setPanel('limites')} />
             <Fila icono={Shield} titulo="Seguridad" sub={mfaActivo ? 'Verificación en dos pasos activa' : 'Activa la verificación en dos pasos'} onClick={abrirSeguridad} derecha={mfaActivo ? <Pill verde>ACTIVA</Pill> : undefined} />
           </Tarjeta>
@@ -705,7 +712,7 @@ export const PersonaDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout 
               <Rotulo>PREGUNTAS FRECUENTES</Rotulo>
               {[
                 ['¿Cómo recibo dinero?', 'Copia tu ID Lincoin (en Recibir) y dáselo a la empresa o a la persona Lincoin que te va a enviar. Te llega al instante y sin comisión. También puedes depositar desde tu banco por PSE.'],
-                ['¿Cómo envío a otro banco?', 'Primero inscribe a la persona en Beneficiarios con su llave Bre-B. Después toca Enviar, escribe el monto y elige Bre-B: llega en segundos a cualquier banco.'],
+                ['¿Cómo envío a otro banco?', 'Primero inscribe a la persona en Beneficiarios con su llave Bre-B o con su cuenta de banco. Después toca Enviar, escribe el monto y elige Bre-B (llega en segundos a cualquier banco) o ACH (llega en el siguiente ciclo ACH, de lunes a viernes sin festivos).'],
                 ['¿Por qué no puedo enviarle a alguien que acabo de inscribir?', 'Cuando inscribes a alguien revisamos que el envío sea seguro. Suele tardar cerca de un minuto; cuando termina ya le puedes enviar.'],
                 ['¿Quién aprueba mi cuenta y fija mi tope?', 'Tu empresa te acepta como su cliente, y el equipo de cumplimiento de Lincoin revisa tus documentos, aprueba tu cuenta y fija tu tope mensual. Si necesitas uno más alto, escríbenos a soporte.'],
                 ['¿Puedo cambiar de empresa?', 'Sí. En Detalles de mi cuenta escribes el ID de la nueva empresa y mandas tus datos; cuando ella apruebe, reemplaza a la anterior. Nunca te quedas sin empresa por el camino.'],
