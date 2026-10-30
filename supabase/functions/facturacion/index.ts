@@ -390,14 +390,36 @@ async function traerCatalogos(token: string, partner: string) {
 // disparadores marcados emitían factura de venta.
 // Envíos que factura el modelo Comisión (los mismos que ofrece Configuración).
 const ENVIOS_COMISION = ['dispersion', 'send', 'pay_sent']
+// Los modelos de MANDATO: por cada envío, una factura de venta con dos
+// ítems: ingresos recibidos para terceros por el valor transferido completo
+// (sin IVA) y la comisión con el IVA incluido (base + IVA = comisión). Solo
+// envíos. Comisión la factura al ORDENANTE; PSP / pasarela, al BENEFICIARIO
+// (a quien se le transfiere). Antes PSP era otra cosa (documento soporte por
+// motivo y comisión a mano en depósitos); Lincoin lo redefinió así.
+const esMandato = (cfg: any) => ['comision', 'psp'].includes(String(cfg?.modelo ?? ''))
+
+// «Retefuente comisiones 11 %» del catálogo de la cuenta (en el Siigo de
+// MEXITECH, el impuesto 41). Se busca por tipo y nombre en lo que devolvió
+// GET /v1/taxes; si no aparece así, el 41 si es una retención.
+function retencionComisiones(cfg: any): { id: number; name: string; percentage: number } | null {
+  const lista: any[] = Array.isArray(cfg?.catalogos?.impuestos) ? cfg.catalogos.impuestos : []
+  const esRetencion = (t: any) => /retefuente|retenci/i.test(`${t?.type ?? ''} ${t?.name ?? ''}`)
+  const t = lista.find(x => esRetencion(x) && /comisi/i.test(String(x?.name ?? '')) && Math.abs((Number(x?.percentage) || 0) - 11) < 0.01)
+    ?? lista.find(x => Number(x?.id) === 41 && esRetencion(x))
+  return t ? { id: Number(t.id), name: String(t.name ?? ''), percentage: Number(t.percentage) || 11 } : null
+}
+// Con retención, ¿el pago que valida Siigo es el total menos la retención?
+// Se aprende de la primera respuesta de Siigo (null = todavía no se sabe).
+let siigoPagoNeto: boolean | null = null
+
 function documentosDe(cfg: any): Record<string, 'FV' | 'DS'> {
-  // MODELO COMISIÓN: solo se facturan envíos. Una configuración guardada
-  // cuando el modelo facturaba depósitos (Depósitos, Pagos recibidos) dejaba
-  // TODOS los envíos en "no aplica": en XATECH ningún envío se facturaba solo
-  // al completarse, y la pantalla de Configuración ya no mostraba esas
-  // casillas para corregirlo. Ahora solo cuentan los envíos marcados y, si no
-  // hay ninguno marcado, se facturan todos los envíos.
-  if (String(cfg?.modelo ?? '') === 'comision') {
+  // MODELO COMISIÓN (y PSP): solo se facturan envíos. Una configuración
+  // guardada cuando el modelo facturaba depósitos (Depósitos, Pagos
+  // recibidos) dejaba TODOS los envíos en "no aplica": en XATECH ningún envío
+  // se facturaba solo al completarse, y la pantalla de Configuración ya no
+  // mostraba esas casillas para corregirlo. Ahora solo cuentan los envíos
+  // marcados y, si no hay ninguno marcado, se facturan todos los envíos.
+  if (esMandato(cfg)) {
     const marcados = Object.keys(documentosGuardados(cfg)).filter(k => ENVIOS_COMISION.includes(k))
     return Object.fromEntries((marcados.length ? marcados : ENVIOS_COMISION).map(k => [k, 'FV' as const]))
   }
@@ -923,7 +945,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   // por la comisión (% de Configuración), IVA INCLUIDO (base + IVA = la
   // comisión), a la contraparte del movimiento. La arma emitirComision, que
   // lee el IVA del ítem en vivo y reintenta con la tarifa que aplica Siigo.
-  if (String(cfg.modelo ?? '') === 'comision') {
+  if (esMandato(cfg)) {
     if (!opts.forzar && !regla) {
       await marcar({ factura_estado: 'omitida', factura_error: `El tipo "${DISPARADORES[tipo] ?? tipo}" no cobra comisión (Configuración → qué movimientos cobran comisión).` })
       return { ok: true, estado: 'omitida' }
@@ -947,7 +969,17 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
         pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true,
       })
     }
-    // A quién: al ordenante (el cliente por cuenta de quien se pagó), que se
+    // A quién. PSP / pasarela: al BENEFICIARIO, con el nombre y documento
+    // con que se le envió (el pago es por cuenta suya).
+    if (esSalida && String(cfg.modelo) === 'psp') {
+      const ben = contraparteDe(comp, cfg)
+      if (ben.esDefault) {
+        const e = 'El envío no trae el documento del beneficiario, y en PSP la factura va a su nombre. Revisá el beneficiario en la lista y emití de nuevo.'
+        await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
+      }
+      return emitirComision(userId, String((comp as any).transaction_id), { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa, auto: !opts.forzar })
+    }
+    // Comisión: al ordenante (el cliente por cuenta de quien se pagó), que se
     // elige al enviar y viaja en raw_data.recipient.ordenante.
     const rdC: any = (comp as any)?.detalle?.raw_data ?? {}
     const ord: any = rdC?.recipient?.ordenante ?? rdC?.ordenante ?? null
@@ -959,19 +991,11 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
       }
       return emitirComision(userId, String((comp as any).transaction_id), { identification: docOrd, nombre: String(ord?.nombre ?? ''), esEmpresa: String(ord?.docTipo ?? '') === 'NIT', auto: !opts.forzar })
     }
-    // Solo envíos: en el modelo Comisión un cargue o depósito no se factura.
+    // Solo envíos: en Comisión y en PSP un cargue o depósito no se factura.
     {
-      const e = 'En el modelo Comisión solo se facturan los envíos; los cargues y depósitos no llevan factura.'
+      const e = `En el modelo ${String(cfg.modelo) === 'psp' ? 'PSP / pasarela' : 'Comisión'} solo se facturan los envíos; los cargues y depósitos no llevan factura.`
       await marcar({ factura_estado: 'omitida', factura_error: e }); return { ok: true, estado: 'omitida' }
     }
-  }
-  // PSP: un depósito no se factura por el monto. Se factura la COMISIÓN, a
-  // mano, porque hay que elegir a qué cliente (el que mandó la plata) va la
-  // factura. Eso lo hace «Emitir factura» en Contabilidad (emitir_comision).
-  if (String(cfg.modelo ?? '') === 'psp' && !esSalida) {
-    const e = 'En PSP los depósitos se facturan a mano: la factura es por tu comisión (IVA incluido) y hay que elegir el cliente. Usá «Emitir factura» en el movimiento.'
-    if (!opts.forzar) { await marcar({ factura_estado: 'omitida', factura_error: e }); return { ok: true, estado: 'omitida' } }
-    return { ok: false, error: e }
   }
   let clase: 'FV' | 'DS' = regla ?? (esSalida ? 'DS' : 'FV')
   // El documento soporte siempre es UN ítem por el monto total (el del
@@ -1358,7 +1382,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // Solo envíos, también al reemplazar una anulada: en el modelo Comisión un
   // depósito no lleva factura (antes un depósito anulado se podía volver a
   // facturar, y aparecía en «Emitir en lote»).
-  if (String(cfg.modelo ?? '') === 'comision' && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
+  if (esMandato(cfg) && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
     return { ok: false, error: 'En el modelo Comisión solo se facturan los envíos; los cargues y depósitos no llevan factura.' }
   }
   // Lo que ya pasó con este movimiento (facturas anuladas, sus notas
@@ -1468,7 +1492,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // total diera el monto exacto: así la factura decía que se transfirió
   // menos de lo que se transfirió, y la comisión quedaba descontada en vez
   // de cobrada aparte. En PSP (depósito a mano) sigue solo la comisión.
-  const mandato = String(cfg.modelo ?? '') === 'comision'
+  const mandato = esMandato(cfg)
   const itemTerceros = String(cfg.item_terceros ?? '').trim()
   if (mandato && !itemTerceros) return falla('Falta elegir en Configuración el ítem de ingresos recibidos para terceros (sin IVA).')
   if (mandato) {
@@ -1506,19 +1530,36 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // porque su total es otro ("The total invoice calculated is X"), de ese X
   // se deduce la tarifa real, se recalcula la base para que base + IVA siga
   // dando la comisión, y se reintenta una vez.
+  // RETENCIÓN EN LA FUENTE (PSP / pasarela): si el cliente es persona
+  // jurídica con NIT colombiano, la comisión lleva «Retefuente comisiones
+  // 11 %», calculada solo sobre la base de la comisión, nunca sobre los
+  // terceros (2.440.000 al 0,6 %: base 12.302,52 → retención 1.353,28).
+  // Persona natural o del exterior: sin retención. Si el catálogo guardado
+  // no la trae, no se emite: saldría sin la retención que corresponde.
+  const pideRetencion = String(cfg.modelo ?? '') === 'psp' && cp.esEmpresa && /^\d{9}$/.test(cp.identification)
+  const ret = pideRetencion ? retencionComisiones(cfg) : null
+  if (pideRetencion && !ret) return falla('El cliente es persona jurídica y la comisión lleva «Retefuente comisiones 11 %», pero esa retención no está en el catálogo de tu Siigo guardado en Lincoin. Actualizá los catálogos en Configuración («Guardar y probar conexión») y emití de nuevo.')
+  // El pago, cuando Siigo dijo cuál es el total que espera (con retención).
+  let pagoSegunSiigo: number | null = null
   const armar = (tarifa: number) => {
     const base = r2(comision / (1 + tarifa))
     const ivaV = r2(base * tarifa)
     // Mandato: los terceros son el monto transferido, completo; la comisión
     // (base + IVA) va aparte y se suma.
     const terceros = mandato ? r2(monto) : 0
-    const total = r2(terceros + base + ivaV)
+    const bruto = r2(terceros + base + ivaV)
+    const retV = ret ? r2(base * ret.percentage / 100) : 0
+    // Con retención, el pago es lo que el cliente transfiere (total menos la
+    // retención), salvo que Siigo haya dicho que espera otra cifra.
+    const total = retV ? r2(pagoSegunSiigo ?? (siigoPagoNeto === false ? bruto : bruto - retV)) : bruto
     // El impuesto va SIEMPRE en la línea cuando hay tarifa: Siigo no aplica
     // por su cuenta el IVA del producto en una factura por API (con 60.000
-    // calculó el total sin IVA y rechazó el pago).
+    // calculó el total sin IVA y rechazó el pago). Los terceros van sin
+    // `taxes` (sin IVA 0 %).
+    const taxesComision = [...(iva && tarifa > 0 ? [{ id: iva.id }] : []), ...(ret ? [{ id: ret.id }] : [])]
     const items = [
       ...(mandato ? [{ code: itemTerceros, description: descTerceros, quantity: 1, price: terceros, ...(terceroLinea ? { customer: terceroLinea } : {}) }] : []),
-      { code: item, description: descripcion, quantity: 1, price: base, ...(iva && tarifa > 0 ? { taxes: [{ id: iva.id }] } : {}) },
+      { code: item, description: descripcion, quantity: 1, price: base, ...(taxesComision.length ? { taxes: taxesComision } : {}) },
     ]
     const cuerpo = {
       document: { id: Number(cfg.document_id) }, date: hoy,
@@ -1528,7 +1569,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
       observations, items,
       payments: [{ id: Number(cfg.payment_id), value: total, due_date: hoy }],
     }
-    return { base, ivaV, total, terceros, cuerpo }
+    return { base, ivaV, total, terceros, cuerpo, retV, bruto }
   }
   // Automática (modelo Comisión): la pausa se revisa de nuevo justo antes de
   // mandar la factura a Siigo.
@@ -1603,7 +1644,15 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (!r.ok) {
     const m = /total invoice calculated is\s*([\d.,]+)/i.exec(motivoDe(r))
     const totalSiigo = m ? Number(m[1].replace(/,/g, '')) : NaN
-    if (Number.isFinite(totalSiigo) && arm.base > 0) {
+    if (Number.isFinite(totalSiigo) && arm.retV > 0 && (Math.abs(totalSiigo - arm.bruto) < 1 || Math.abs(totalSiigo - (arm.bruto - arm.retV)) < 1)) {
+      // Con retención: Siigo dice si el pago va con o sin descontarla. Se
+      // manda su cifra (un rechazo por total no crea nada) y se recuerda.
+      siigoPagoNeto = Math.abs(totalSiigo - arm.bruto) >= 1
+      pagoSegunSiigo = totalSiigo
+      arm = armar(tarifa)
+      r = await siigo('POST', '/v1/invoices', { token: t.token, partner, body: arm.cuerpo, ms: 70000 })
+      intentos.push({ ruta: '/v1/invoices', status: r.status, respuesta: r.data ?? r.texto, enviado: arm.cuerpo, tarifa, nota: `Pago ajustado al total que calculó Siigo con la retención (${totalSiigo})` })
+    } else if (Number.isFinite(totalSiigo) && arm.base > 0 && !arm.retV) {
       const tarifaReal = Math.round(((totalSiigo - arm.terceros) / arm.base - 1) * 10000) / 10000
       // Nunca se cae a "sin IVA" si el ítem tiene IVA: eso facturaría la
       // comisión entera como base (60.000 sin impuesto). Solo se ajusta a
@@ -1633,7 +1682,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     await marcar({ factura_estado: 'pendiente', factura_error: espera, factura_tipo: 'FV', factura_detalle: { enviado: cuerpo, intentos } })
     return { ok: false, error: espera, reintento: true }
   }
-  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
+  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, ...(ret ? { retencion: { id: ret.id, nombre: ret.name, pct: ret.percentage, valor: arm.retV } } : {}), cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
   const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
   delete historia.intento
@@ -1642,7 +1691,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     factura_proveedor: 'siigo', factura_id: resp.id != null ? String(resp.id) : null,
     factura_numero: numero, factura_cufe: resp.stamp?.cufe ?? null, factura_url: resp.public_url ?? null,
     factura_at: new Date().toISOString(),
-    factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } },
+    factura_detalle: { enviado: cuerpo, respuesta: resp, respuesta_creacion: resp, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, ...(ret ? { retencion: { id: ret.id, nombre: ret.name, pct: ret.percentage, valor: arm.retV } } : {}), cliente: { identification: cp.identification, nombre: cp.nombre } } },
   })
   return { ok: true, estado: 'emitida', tipo: 'FV', numero, total, base, iva: ivaV, comision, tarifa, cufe: resp.stamp?.cufe ?? null, url: resp.public_url ?? null, ...(notaTercero ? { aviso: notaTercero } : {}) }
 }
@@ -1824,7 +1873,7 @@ async function registrarDeSiigo(userId: string, pedidas: any[]): Promise<any> {
     if ((Array.isArray(det.anteriores) ? det.anteriores : []).some((a: any) => String(a?.id) === p.id)) { errores.push(`${c.numero}: la factura ${f.name ?? p.id} es la anulada de este movimiento.`); continue }
     const numero = f.name ?? (f.number != null ? `${f.prefix ?? ''}${f.number}` : null) ?? p.id
     const { lote: _sale, intento: _int, ...resto } = det
-    const comision = det.comision || String(cfg.modelo ?? '') === 'comision'
+    const comision = det.comision || esMandato(cfg)
       ? { comision: { ...(det.comision ?? {}), total: Number(f.total) || det.comision?.total, cliente: { ...(det.comision?.cliente ?? {}), identification: String(f.customer?.identification ?? det.comision?.cliente?.identification ?? '') } } }
       : {}
     const u = await actualizarSiAlguna('comprobantes', {
@@ -1927,23 +1976,32 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       const det: any = comp.factura_detalle ?? {}
       const salida = SALIDAS.includes(String(tx.type))
       let lote: Record<string, unknown>
-      if (modelo === 'comision' || (modelo === 'psp' && !salida)) {
+      if (esMandato(cfg)) {
         const yaFueAnulada = est === 'anulada' || (est === 'error' && Array.isArray(det.anteriores) && det.anteriores.length > 0)
         if (!/^COP/i.test(String(tx.currency ?? ''))) { no('La factura en Siigo va en pesos y la operación no es en COP.'); continue }
-        if (modelo === 'comision' && yaFueAnulada && !salida) { no('En el modelo Comisión los depósitos no llevan factura: la anulada queda anulada.'); continue }
-        if (modelo === 'comision' && yaFueAnulada) {
+        if (yaFueAnulada && !salida) { no(`En el modelo ${modelo === 'psp' ? 'PSP' : 'Comisión'} los depósitos no llevan factura: la anulada queda anulada.`); continue }
+        if (yaFueAnulada) {
           const ca = det?.comision?.cliente
           if (!ca?.identification) { no('No se sabe a qué cliente iba la factura anulada: emítela desde el movimiento.'); continue }
           if (propios.has(baseDoc(ca.identification))) { no('La factura anulada iba a nombre de la misma empresa: no se vuelve a emitir.'); continue }
           lote = { modo: 'reemitir', cliente: { identification: String(ca.identification), nombre: String(ca.nombre ?? '') }, pct: Number(det?.comision?.pct) || pct, reemplazo: true }
         } else {
-          if (modelo === 'comision' && !salida) { no('En el modelo Comisión los depósitos no llevan factura.'); continue }
+          if (!salida) { no(`En el modelo ${modelo === 'psp' ? 'PSP' : 'Comisión'} los depósitos no llevan factura.`); continue }
           const rd: any = tx.raw_data ?? {}
-          const o: any = salida ? (rd?.recipient?.ordenante ?? rd?.ordenante ?? null) : null
-          const docO = String(o?.doc ?? '').replace(/\D/g, '')
-          const cli = docO ? { identification: docO, nombre: String(o?.nombre ?? ''), esEmpresa: String(o?.docTipo ?? '') === 'NIT' } : elegido
+          let cli: { identification: string; nombre: string; esEmpresa: boolean } | null
+          if (modelo === 'psp') {
+            // PSP: al beneficiario del envío, con el documento con que se le
+            // envió. Sin documento no hay a quién facturar.
+            const ben = contraparteDe({ detalle: { raw_data: rd }, tipo: tx.type }, cfg)
+            if (ben.esDefault) { no('El envío no trae el documento del beneficiario, y en PSP la factura va a su nombre.'); continue }
+            cli = { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa }
+          } else {
+            const o: any = rd?.recipient?.ordenante ?? rd?.ordenante ?? null
+            const docO = String(o?.doc ?? '').replace(/\D/g, '')
+            cli = docO ? { identification: docO, nombre: String(o?.nombre ?? ''), esEmpresa: String(o?.docTipo ?? '') === 'NIT' } : elegido
+          }
           if (!cli) { no('No tiene ordenante y no se eligió a qué cliente facturarlo.'); continue }
-          if (propios.has(baseDoc(cli.identification))) { no('El ordenante es la misma empresa (un pago propio): no se factura.'); continue }
+          if (propios.has(baseDoc(cli.identification))) { no(modelo === 'psp' ? 'El beneficiario es la misma empresa (un pago a una cuenta propia): no se factura.' : 'El ordenante es la misma empresa (un pago propio): no se factura.'); continue }
           if (!(pct > 0)) { no('Falta el porcentaje de comisión.'); continue }
           lote = { modo: 'comision', cliente: cli, pct }
         }
@@ -2859,7 +2917,7 @@ Deno.serve(async (req) => {
       // por cada entrada marcada; PSP → documento soporte por cada salida.
       if (Array.isArray(c.operaciones) && (fila.modelo === 'rotacion' || fila.modelo === 'psp' || fila.modelo === 'comision')) {
         const d: Record<string, string> = {}
-        for (const k of c.operaciones) if (typeof k === 'string' && k in DISPARADORES) d[k] = fila.modelo === 'psp' ? 'DS' : 'FV'
+        for (const k of c.operaciones) if (typeof k === 'string' && k in DISPARADORES) d[k] = 'FV'
         fila.documentos = d
         fila.disparadores = Object.keys(d)
       }
@@ -2924,7 +2982,9 @@ Deno.serve(async (req) => {
         if (!modelo) faltan.push('el modelo de negocio')
         // Los motivos que emiten documento soporte necesitan su ítem, y el
         // comprobante DS aunque el modelo sea rotación.
-        const motivosCfg: Record<string, any> = actual.motivos && typeof actual.motivos === 'object' ? actual.motivos : {}
+        // En los modelos de mandato los motivos de envío no aplican (un PSP
+        // de antes guardaba motivos con documento soporte).
+        const motivosCfg: Record<string, any> = !esMandato(actual) && actual.motivos && typeof actual.motivos === 'object' ? actual.motivos : {}
         const motivosDS = Object.entries(motivosCfg).filter(([, v]) => v?.emite === 'DS')
         const motivosFV = Object.entries(motivosCfg).filter(([, v]) => v?.emite === 'FV')
         if (motivosDS.length) clases.add('DS')
@@ -2937,15 +2997,11 @@ Deno.serve(async (req) => {
           if (!(Number(actual.utilidad_pct) > 0)) faltan.push('el porcentaje de utilidad')
           if (!actual.item_terceros) faltan.push('el ítem de servicio para terceros')
           if (!actual.item_comision) faltan.push('el ítem de comisión')
-        } else if (modelo === 'comision') {
+        } else if (modelo === 'comision' || modelo === 'psp') {
           if (!(Number(actual.utilidad_pct) > 0)) faltan.push('el porcentaje de comisión')
           if (!actual.item_comision) faltan.push('el ítem de comisión')
           if (!actual.item_terceros) faltan.push('el ítem de ingresos recibidos para terceros')
           if (!Object.keys(reglas).length) faltan.push('qué movimientos cobran comisión')
-        } else if (modelo === 'psp') {
-          // En PSP el ítem va por motivo: basta con que un motivo emita
-          // documento soporte con su ítem (ya validado arriba).
-          if (!motivosDS.length && !motivosFV.length) faltan.push('al menos un motivo de envío con documento soporte o factura')
         } else {
           const items = Array.isArray(actual.items) ? actual.items : []
           if (!items.length && !actual.product_code) faltan.push('al menos un ítem')
@@ -3247,9 +3303,9 @@ Deno.serve(async (req) => {
           // así va a quedar: terceros por el monto completo + la comisión.
           // Modelo Comisión: un depósito no lleva factura (ni para reemplazar
           // una anulada). La pantalla no ofrece emitirla.
-          solo_envios: String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? '')),
+          solo_envios: esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? '')),
           misma_empresa: mismaEmpresa,
-          reemision: !mismaEmpresa && !(String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
+          reemision: !mismaEmpresa && !(esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
             const monto = Number(String(c.monto ?? '0').replace(/,/g, '')) || 0
             const pct = Number(c.factura_detalle.comision.pct) || 0
             const comision = r2(monto * pct / 100)

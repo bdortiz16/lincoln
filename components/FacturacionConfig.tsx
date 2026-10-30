@@ -178,17 +178,14 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     // depósitos no tiene ningún envío marcado; el servidor entonces factura
     // todos los envíos, y así se muestra (antes salían las casillas vacías).
     const enviosGuardados = Object.keys(docs).filter(k => SALIDAS.includes(k));
-    const operaciones = modelo === 'comision'
+    const operaciones = modelo === 'comision' || modelo === 'psp'
       ? (enviosGuardados.length ? enviosGuardados : [...SALIDAS])
-      : Object.keys(docs).length ? Object.keys(docs)
-      : modelo === 'psp' ? ['dispersion'] : ['load', 'pay_received'];
+      : Object.keys(docs).length ? Object.keys(docs) : ['load', 'pay_received'];
     // El IVA por defecto: el del catálogo que diga 19 %, si hay.
     const iva19 = (c.catalogos?.impuestos ?? []).find((t: any) => Number(t.percentage) === 19);
-    // Por motivo del envío. Si nunca se configuró, en PSP arranca con "pago
-    // a proveedores → documento soporte con el ítem de terceros".
-    const motivos = c.motivos && typeof c.motivos === 'object'
-      ? { ...c.motivos }
-      : modelo === 'psp' ? { proveedores: { emite: 'DS', item: c.item_terceros ?? '' } } : {};
+    // Por motivo del envío: solo en rotación. En Comisión y PSP (mandato)
+    // no aplican; un PSP de antes los traía con documento soporte.
+    const motivos = modelo !== 'comision' && modelo !== 'psp' && c.motivos && typeof c.motivos === 'object' ? { ...c.motivos } : {};
     setForm({
       username: c.username ?? '', partner_id: c.partner_id ?? '',
       modelo, utilidad_pct: c.utilidad_pct ?? '', item_terceros: c.item_terceros ?? '', item_comision: c.item_comision ?? '',
@@ -214,17 +211,24 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
   const elegirModelo = (m: 'rotacion' | 'psp' | 'comision') => setForm((f: any) => {
     // Comisión: una factura por la comisión de cada movimiento marcado. Los
     // motivos de envío no aplican (no sale documento por el monto).
-    if (m === 'comision') {
+    if (m === 'comision' || m === 'psp') {
       // Solo envíos: la factura de mandato es por plata que sale a terceros.
-      // Un cargue/depósito no se factura en este modelo.
+      // Un cargue/depósito no se factura en estos modelos.
       const actuales = (f.operaciones ?? []).filter((k: string) => SALIDAS.includes(k));
-      return { ...f, modelo: m, operaciones: actuales.length ? actuales : [...SALIDAS], motivos: {} };
-    }
-    // En PSP el documento soporte lo decide el MOTIVO de cada envío, así
-    // que todas las salidas quedan en juego; en rotación, las entradas.
-    if (m === 'psp') {
-      const motivos = Object.keys(f.motivos ?? {}).length ? f.motivos : { proveedores: { emite: 'DS', item: f.item_terceros ?? '' } };
-      return { ...f, modelo: m, operaciones: [...SALIDAS], motivos };
+      const base = { ...f, modelo: m, operaciones: actuales.length ? actuales : [...SALIDAS], motivos: {} };
+      if (m === 'comision') return base;
+      // PSP: lo que pidió Lincoin, si está en el Siigo de la cuenta y no se
+      // eligió otra cosa: terceros TERC, comisión COM-INT al 0,6 % y pago por
+      // transferencia débito.
+      const hay = (code: string) => (cat?.productos ?? []).some((x: any) => String(x.code) === code);
+      const transferencia = (cat?.pagos ?? []).find((x: any) => /transferencia\s*d[eé]bito/i.test(String(x.name ?? '')));
+      return {
+        ...base,
+        item_terceros: f.item_terceros || (hay('TERC') ? 'TERC' : ''),
+        item_comision: f.item_comision || (hay('COM-INT') ? 'COM-INT' : ''),
+        utilidad_pct: f.utilidad_pct || 0.6,
+        payment_id: f.payment_id || (transferencia ? transferencia.id : ''),
+      };
     }
     const actuales = (f.operaciones ?? []).filter((k: string) => ENTRADAS.includes(k));
     return { ...f, modelo: m, operaciones: actuales.length ? actuales : ['load', 'pay_received'] };
@@ -325,6 +329,13 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
   // el elegido acá (se manda en la línea para que aplique).
   const iva = ivaComisionProd ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null);
   const tarifa = iva ? iva.percentage / 100 : 0;
+  // PSP: «Retefuente comisiones 11 %» del catálogo de Siigo, para clientes
+  // persona jurídica con NIT colombiano (misma búsqueda que el servidor).
+  const retencion = (() => {
+    const esRet = (t: any) => /retefuente|retenci/i.test(`${t?.type ?? ''} ${t?.name ?? ''}`);
+    const t = impuestos.find((x: any) => esRet(x) && /comisi/i.test(String(x?.name ?? '')) && Math.abs((Number(x?.percentage) || 0) - 11) < 0.01) ?? impuestos.find((x: any) => Number(x?.id) === 41 && esRet(x));
+    return t ? { id: Number(t.id), name: String(t.name ?? ''), percentage: Number(t.percentage) || 11 } : null;
+  })();
   // Por motivo del envío: qué sale y con qué ítem.
   const motivos: Record<string, { emite: string; item?: string | null }> = form.motivos ?? {};
   const motivosDS = MOTIVOS_ENVIO.filter(m => motivos[m.v]?.emite === 'DS');
@@ -334,23 +345,24 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
   // Solo el documento soporte exige ítem sin IVA; la factura de venta lleva
   // el IVA del ítem (incluido en el monto del envío).
   const motivosConIva = motivosDS.filter(m => motivos[m.v]?.item && ivaDelProducto(String(motivos[m.v].item)));
-  // Hay documento soporte si el modelo es PSP o si algún motivo lo emite.
-  const usaDS = modelo === 'psp' || motivosDS.length > 0;
+  // Comisión y PSP: el mismo modelo de mandato (cambia a quién se factura).
+  const mandato = modelo === 'comision' || modelo === 'psp';
+  // Hay documento soporte si algún motivo lo emite (solo en rotación).
+  const usaDS = !mandato && motivosDS.length > 0;
   const faltantes = [
     !credOk ? 'credenciales' : '',
     !modelo ? 'el modelo de negocio' : '',
     modelo === 'rotacion' && !ops.length ? 'qué entradas facturan' : '',
-    modelo === 'psp' && !motivosDoc.length ? 'al menos un motivo de envío con documento soporte o factura' : '',
-    modelo === 'comision' && !ops.length ? 'qué movimientos cobran comisión' : '',
+    mandato && !ops.length ? 'qué movimientos cobran comisión' : '',
     modelo === 'comision' && !ordenantes.length ? 'al menos un ordenante' : '',
-    modelo === 'comision' && !(utilidad > 0) ? 'el porcentaje de comisión' : '',
-    modelo === 'comision' && !form.item_comision ? 'el ítem de comisión' : '',
-    modelo === 'comision' && !form.item_terceros ? 'el ítem de ingresos recibidos para terceros' : '',
-    modelo === 'comision' && ivaTerceros ? 'un ítem de ingresos para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
-    modelo === 'comision' && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
-    modelo === 'comision' && !iva ? 'el IVA de la comisión (el ítem no trae impuesto)' : '',
-    modelo === 'comision' && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
-    motivosFV.length && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura de venta' : '',
+    mandato && !(utilidad > 0) ? 'el porcentaje de comisión' : '',
+    mandato && !form.item_comision ? 'el ítem de comisión' : '',
+    mandato && !form.item_terceros ? 'el ítem de ingresos recibidos para terceros' : '',
+    mandato && ivaTerceros ? 'un ítem de ingresos para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
+    mandato && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
+    mandato && !iva ? 'el IVA de la comisión (el ítem no trae impuesto)' : '',
+    mandato && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
+    !mandato && motivosFV.length && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura de venta' : '',
     modelo === 'rotacion' && !(utilidad > 0) ? 'el porcentaje de utilidad' : '',
     modelo === 'rotacion' && !form.item_terceros ? 'el ítem de servicio para terceros' : '',
     modelo === 'rotacion' && ivaTerceros ? 'un ítem de servicio para terceros SIN IVA (el elegido tiene IVA en Siigo)' : '',
@@ -358,8 +370,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     modelo === 'rotacion' && !form.item_comision ? 'el ítem de comisión' : '',
     modelo === 'rotacion' && prodComision && prodComision.active === false ? 'un ítem de comisión activo en Siigo' : '',
     modelo === 'rotacion' && !(form.document_id && form.seller_id && form.payment_id) ? 'el comprobante, vendedor y forma de pago de la factura' : '',
-    motivosSinItem.length ? `el ítem de: ${motivosSinItem.map(m => m.l).join(', ')}` : '',
-    motivosConIva.length ? `un ítem SIN IVA para: ${motivosConIva.map(m => m.l).join(', ')}` : '',
+    !mandato && motivosSinItem.length ? `el ítem de: ${motivosSinItem.map(m => m.l).join(', ')}` : '',
+    !mandato && motivosConIva.length ? `un ítem SIN IVA para: ${motivosConIva.map(m => m.l).join(', ')}` : '',
     usaDS && !(form.ds_document_id && form.ds_payment_id) ? 'el comprobante y forma de pago del documento soporte' : '',
   ].filter(Boolean);
   const listo = faltantes.length === 0;
@@ -399,19 +411,6 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
   // saldría la factura. Y el total deja de cuadrar, en ámbar.
   const tarifaTerceros = ivaTerceros ? ivaTerceros.percentage / 100 : 0;
   const ejemplo = (() => {
-    if (modelo === 'psp') {
-      // El ejemplo del PSP: el primer motivo con documento soporte.
-      const m0 = motivosDoc[0];
-      const item0 = m0 ? String(motivos[m0.v]?.item ?? '') : '';
-      const iva0 = item0 ? ivaDelProducto(item0) : null;
-      const esFV0 = !!m0 && motivos[m0.v]?.emite === 'FV';
-      // Factura: IVA incluido en el monto. Documento soporte: sobre el monto
-      // (y por eso se avisa, porque debería ir sin IVA).
-      const t0 = iva0 ? iva0.percentage / 100 : 0;
-      const base0 = esFV0 ? r2(EJEMPLO / (1 + t0)) : EJEMPLO;
-      const ivaT = r2(base0 * t0);
-      return { lineas: [{ n: nombreProducto(item0) || 'Servicio para terceros', v: base0, iva: ivaT, rotulo: iva0 ? `${iva0.name || 'IVA'} ${iva0.percentage} %` : 'sin IVA' }], total: r2(base0 + ivaT), motivo: m0?.l };
-    }
     if (modelo !== 'rotacion') return null;
     const util = r2(EJEMPLO * utilidad / 100);
     const base = r2(util / (1 + tarifa));
@@ -523,17 +522,14 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
               {motivosFV.length > 0 && (
                 <p style={lineaResumen}>Envíos con factura de venta: {motivosFV.map(m => `${m.l} → ${nombreProducto(String(motivos[m.v]?.item ?? '')) || '—'}`).join(' · ')}</p>
               )}
-              {modelo === 'psp' && !motivosDoc.length && <p style={{ ...lineaResumen, color: C.ambar }}>Ningún motivo de envío emite documento todavía.</p>}
-              {modelo === 'comision' && (
+              {mandato && (
                 <>
                   <p style={lineaResumen}>Comisión <b style={{ color: C.text }}>{utilidad || 0} %</b> IVA incluido por cada: {ops.map(k => disparadores[k] ?? k).join(', ') || '—'}</p>
-                  <p style={lineaResumen}>Terceros <b style={{ color: C.text }}>{nombreProducto(form.item_terceros) || '—'}</b> (sin IVA) · Comisión <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · envíos: factura al ordenante · depósitos: a quien mandó la plata</p>
-                  <p style={lineaResumen}>Ordenantes: {ordenantes.length ? ordenantes.map(o => o.nombre).join(' · ') : '—'}</p>
+                  <p style={lineaResumen}>Terceros <b style={{ color: C.text }}>{nombreProducto(form.item_terceros) || '—'}</b> (sin IVA) · Comisión <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · {modelo === 'psp' ? 'factura al beneficiario del envío' : 'factura al ordenante del envío'} · los depósitos no se facturan</p>
+                  {modelo === 'psp' && <p style={lineaResumen}>Cliente persona jurídica con NIT colombiano: {retencion ? <>la comisión lleva <b style={{ color: C.text }}>{retencion.name || 'Retefuente comisiones'} {retencion.percentage} %</b> sobre su base</> : <span style={{ color: C.ambar }}>la retención «Retefuente comisiones 11 %» no está en el catálogo de Siigo (actualizalo)</span>}</p>}
+                  {modelo === 'comision' && <p style={lineaResumen}>Ordenantes: {ordenantes.length ? ordenantes.map(o => o.nombre).join(' · ') : '—'}</p>}
                   <p style={lineaResumen}>Comprobante FV: {nombreDoc(cat?.documentos, form.document_id)} · vendedor {nombreVendedor(form.seller_id)} · pago {nombrePago(cat?.pagos, form.payment_id)}</p>
                 </>
-              )}
-              {modelo === 'psp' && (
-                <p style={lineaResumen}>Depósitos (a mano): comisión <b style={{ color: C.text }}>{utilidad || '—'} %</b> IVA incluido · ítem <b style={{ color: C.text }}>{nombreProducto(form.item_comision) || '—'}</b>{iva ? ` (${iva.name || 'IVA'} ${iva.percentage} %)` : ''} · comprobante FV: {nombreDoc(cat?.documentos, form.document_id)}</p>
               )}
               {usaDS && <p style={lineaResumen}>Comprobante DS: {nombreDoc(cat?.documentos_ds, form.ds_document_id)} · pago {nombrePago(cat?.pagos_ds, form.ds_payment_id)}</p>}
               {!listo && <p style={{ ...lineaResumen, color: C.ambar }}>Falta: {faltantes.join(', ')}.</p>}
@@ -576,7 +572,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                       {cfg?.activo ? 'Activa: cada operación completada emite su documento' : 'Pausada: no se emite ningún documento'}
                     </p>
                     <p style={{ fontSize: 11.5, color: C.sub, margin: '4px 0 0' }}>
-                      {cfg?.modelo === 'rotacion' ? 'Modelo: rotación de capital' : cfg?.modelo === 'psp' ? 'Modelo: PSP / pasarela' : 'Sin modelo elegido'}
+                      {cfg?.modelo === 'rotacion' ? 'Modelo: rotación de capital' : cfg?.modelo === 'psp' ? 'Modelo: PSP / pasarela' : cfg?.modelo === 'comision' ? 'Modelo: Comisión' : 'Sin modelo elegido'}
                       {cfg?.resumen && cfg.resumen.comprobantes > 0 ? ` · ${cfg.resumen.emitidas} emitidos · ${cfg.resumen.errores} con error` : ''}
                     </p>
                   </div>
@@ -656,8 +652,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                     'Recibís plata de terceros, la rotás y cobrás una comisión. Por cada entrada se emite una factura de venta con dos ítems que suman exacto lo recibido: el servicio para terceros (sin IVA) y tu comisión (con IVA).',
                     'Con 15.000.000 y 1 % de utilidad: terceros 14.850.000 · comisión 126.050,42 + IVA 23.949,58 · total 15.000.000.')}
                   {tarjetaModelo('psp', 'PSP / pasarela',
-                    'Pagás a terceros por cuenta de un cliente. Según el motivo de cada envío, se emite un documento soporte o una factura de venta al beneficiario por el monto total, con el ítem de Siigo que ligues a ese motivo. Por cada depósito que recibís, facturás a mano tu comisión (IVA incluido) al cliente que te mandó la plata: elegís el cliente y se emite.',
-                    'Envío de 15.000.000: documento soporte al beneficiario por 15.000.000. Depósito de 10.000.000 con 0,6 %: factura de 60.000 (base 50.420,17 + IVA 9.579,83).')}
+                    'Pago a terceros: la factura de mandato va al beneficiario, el mismo al que se le transfiere. Dos ítems: ingresos recibidos para terceros por el valor pagado (sin IVA) y tu comisión con el IVA incluido. Si el beneficiario es persona jurídica con NIT colombiano, la comisión lleva la retención en la fuente por comisiones (11 %) sobre su base.',
+                    'Pago de 2.440.000 con 0,6 %: terceros 2.440.000 + comisión 12.302,52 + IVA 2.337,48 = 2.454.640. A una persona jurídica: retención 1.353,28.')}
                   {tarjetaModelo('comision', 'Comisión',
                     'Factura de mandato a nombre del ordenante, con dos ítems: ingresos recibidos para terceros por el valor transferido completo (sin IVA) y tu comisión aparte, con el IVA incluido en ella: base + IVA = comisión exacta.',
                     'Transferencia de 10.000.000 con 1 %: terceros 10.000.000 + comisión 84.033,61 + IVA 15.966,39 = 10.100.000.')}
@@ -666,7 +662,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
 
               {/* 3. Parámetros del modelo */}
               {modelo && (
-                <Seccion n="3" t={modelo === 'rotacion' ? 'Cómo se arma la factura' : modelo === 'comision' ? 'Cómo se arma la factura de comisión' : 'Cómo se arma el documento soporte'}>
+                <Seccion n="3" t={modelo === 'rotacion' ? 'Cómo se arma la factura' : 'Cómo se arma la factura de comisión'}>
                   {!cat && <p style={{ fontSize: 12.5, color: C.ambar, margin: '0 0 12px' }}>Conectá la cuenta de Siigo primero: los ítems, impuestos y comprobantes se eligen de lo que devuelva tu Siigo.</p>}
                   <p style={{ fontSize: 12, color: C.sub, margin: '0 0 12px', lineHeight: 1.55 }}>
                     Los ítems son productos o servicios que creás en tu Siigo (Inventario → Productos). Acá solo se elige cuál es cuál.
@@ -769,16 +765,16 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
 
                   {/* Envíos, por motivo. En PSP es lo central; en rotación,
                       opcional: un envío puede necesitar documento soporte. */}
-                  {modelo !== 'comision' && (<>
-                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 4px' }}>{modelo === 'psp' ? 'ENVÍOS: QUÉ SALE SEGÚN EL MOTIVO' : 'ENVÍOS: DOCUMENTO SOPORTE SEGÚN EL MOTIVO (OPCIONAL)'}</p>
+                  {modelo === 'rotacion' && (<>
+                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 4px' }}>ENVÍOS: DOCUMENTO SOPORTE SEGÚN EL MOTIVO (OPCIONAL)</p>
                   <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
                     Al confirmar cada envío se pregunta el motivo, y se le manda al banco con la orden. Acá decidís, motivo por motivo, si sale documento soporte o factura de venta al beneficiario por el monto total, y con qué ítem de tu Siigo.
                   </p>
                   {tablaMotivos}
                   </>)}
 
-                  {/* Comisión: qué movimientos la cobran. */}
-                  {modelo === 'comision' && (
+                  {/* Comisión y PSP: qué envíos la cobran. */}
+                  {mandato && (
                     <>
                       <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '16px 0 8px' }}>QUÉ ENVÍOS COBRAN COMISIÓN</p>
                       <p style={{ fontSize: 11.5, color: C.sub, margin: '-4px 0 8px', lineHeight: 1.5 }}>Solo los envíos se facturan. Los cargues y depósitos no generan factura en este modelo.</p>
@@ -796,16 +792,15 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                   {/* PSP: la factura de comisión por cada depósito. Es a mano
                       (hay que elegir el cliente), pero el porcentaje, el ítem
                       y el comprobante se dejan listos acá. */}
-                  {(modelo === 'psp' || modelo === 'comision') && (
+                  {mandato && (
                     <>
-                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>{modelo === 'comision' ? 'FACTURA DE COMISIÓN POR MOVIMIENTO (AUTOMÁTICA)' : 'DEPÓSITOS: FACTURA DE COMISIÓN (A MANO)'}</p>
+                      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>FACTURA DE COMISIÓN POR ENVÍO (AUTOMÁTICA)</p>
                       <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
-                        {modelo === 'comision'
-                          ? <>Cada movimiento completado de los tipos marcados emite una factura de mandato a nombre del ordenante (en depósitos, de quien mandó la plata), con dos ítems: <b style={{ color: C.text }}>ingresos recibidos para terceros</b> por el <b style={{ color: C.text }}>valor transferido completo</b> (sin IVA) y tu <b style={{ color: C.text }}>comisión con el IVA incluido</b>, aparte. 10.000.000 con 1 %: terceros 10.000.000 + comisión 84.033,61 + IVA 15.966,39 = 10.100.000. Si una factura debe ir a otro cliente o con otro porcentaje, se emite a mano desde el movimiento.</>
-                          : <>Un depósito no se factura por el monto: se factura tu comisión al cliente que te mandó la plata, y ese cliente se elige al emitir (Contabilidad → «Emitir factura» en el depósito). El porcentaje es <b style={{ color: C.text }}>con IVA incluido</b>: con 10.000.000 y 0,6 % la factura es de 60.000 en total, no 60.000 + IVA.</>}
+                        Cada envío completado de los tipos marcados emite una factura de mandato a nombre {modelo === 'psp' ? <>del <b style={{ color: C.text }}>beneficiario</b> (a quien se le transfiere, con su cédula o NIT)</> : <>del <b style={{ color: C.text }}>ordenante</b></>}, con dos ítems: <b style={{ color: C.text }}>ingresos recibidos para terceros</b> por el <b style={{ color: C.text }}>valor transferido completo</b> (sin IVA, la línea va sin impuestos) y tu <b style={{ color: C.text }}>comisión con el IVA incluido</b>, aparte. 10.000.000 con 1 %: terceros 10.000.000 + comisión 84.033,61 + IVA 15.966,39 = 10.100.000. Si una factura debe ir a otro cliente o con otro porcentaje, se emite a mano desde el movimiento.
+                        {modelo === 'psp' && <> Si el beneficiario es <b style={{ color: C.text }}>persona jurídica con NIT colombiano</b>, la comisión lleva además la <b style={{ color: C.text }}>retención en la fuente por comisiones (11 %)</b>, solo sobre la base de la comisión (nunca sobre los terceros). A una persona natural o del exterior, sin retención.</>}
                       </p>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                        {modelo === 'comision' && (
+                        {mandato && (
                           <div>
                             <Campo rot="ÍTEM · INGRESOS RECIBIDOS PARA TERCEROS" ayuda="El producto de Siigo para el dinero del mandante. Tiene que estar SIN IVA en Siigo.">
                               {select('item_terceros', productos, 'Siigo no devolvió productos')}
@@ -814,7 +809,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                             {prodTerceros && !ivaTerceros && prodTerceros.active !== false && <p style={{ fontSize: 11.5, color: C.verde, margin: '6px 0 0', lineHeight: 1.5 }}>Sin IVA en Siigo, activo. Correcto.</p>}
                           </div>
                         )}
-                        <Campo rot={modelo === 'comision' ? 'COMISIÓN POR MOVIMIENTO (%)' : 'COMISIÓN SOBRE DEPÓSITOS (%)'} ayuda={modelo === 'comision' ? 'Porcentaje sobre el monto de cada movimiento, IVA incluido: 1, 0,5, 0,1…' : 'Porcentaje sobre el depósito, IVA incluido. Se puede cambiar al emitir.'}>
+                        <Campo rot="COMISIÓN POR ENVÍO (%)" ayuda="Porcentaje sobre el monto de cada envío, IVA incluido: 1, 0,6, 0,1…">
                           <input type="number" min={0} max={100} step={0.01} value={form.utilidad_pct ?? ''} onChange={e => set('utilidad_pct', e.target.value)} placeholder="0,6" inputMode="decimal" style={entrada} />
                         </Campo>
                         <div>
@@ -835,9 +830,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                         <div style={{ marginTop: 12, padding: '10px 14px', borderRadius: 12, border: `1px solid ${C.bordeSuave}`, background: C.elevado }}>
                           {(() => {
                             const M = 10_000_000; const com = r2(M * utilidad / 100); const b = r2(com / (1 + tarifa)); const iv = r2(b * tarifa);
-                            if (modelo === 'comision') return (
+                            if (mandato) return (
                               <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.6 }}>
-                                Movimiento de {fmtCop(M)} · comisión {utilidad} % = <b>{fmtCop(com)}</b>: {nombreProducto(form.item_terceros) || 'ingresos para terceros'} {fmtCop(r2(M - b - iv))} + {nombreProducto(form.item_comision) || 'comisión'} {fmtCop(b)} + {iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA'} {fmtCop(iv)} = <b style={{ color: C.verde }}>{fmtCop(r2(M - b - iv) + b + iv)}</b>.
+                                Envío de {fmtCop(M)} · comisión {utilidad} % = <b>{fmtCop(com)}</b>: {nombreProducto(form.item_terceros) || 'ingresos para terceros'} {fmtCop(M)} (sin IVA) + {nombreProducto(form.item_comision) || 'comisión'} {fmtCop(b)} + {iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA'} {fmtCop(iv)} = <b style={{ color: C.verde }}>{fmtCop(r2(M + b + iv))}</b>.
+                                {modelo === 'psp' && (retencion
+                                  ? <> A una persona jurídica con NIT colombiano: {retencion.name || 'retención'} {retencion.percentage} % sobre {fmtCop(b)} = <b>{fmtCop(r2(b * retencion.percentage / 100))}</b>; neto a pagar {fmtCop(r2(M + b + iv - r2(b * retencion.percentage / 100)))}.</>
+                                  : <span style={{ color: C.ambar }}> La retención «Retefuente comisiones 11 %» no está en el catálogo de Siigo guardado: «Actualizar catálogos» antes de facturar a personas jurídicas.</span>)}
                                 {!iva && <span style={{ color: C.ambar }}> Sin IVA en el ítem de comisión: la comisión saldría sin impuesto.</span>}
                               </p>
                             );
@@ -858,7 +856,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                     <>
                       <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 4px' }}>ORDENANTES</p>
                       <p style={{ fontSize: 12, color: C.sub, margin: '0 0 10px', lineHeight: 1.55 }}>
-                        El ordenante es el cliente por cuenta de quien haces el pago. Al hacer cada transferencia se pregunta el ordenante, y la factura de la comisión sale a su nombre. En los depósitos, la factura va a quien mandó la plata.
+                        El ordenante es el cliente por cuenta de quien haces el pago. Al hacer cada transferencia se pregunta el ordenante, y la factura de la comisión sale a su nombre. Los depósitos no se facturan.
                       </p>
                       <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
                         {ordenantes.map(o => (
@@ -1003,9 +1001,9 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                     <Campo rot="SERVICIO PARA TERCEROS" ayuda="Podés usar {contraparte}, {numero}, {monto}, {fecha}, {tipo}.">
                       <input value={form.desc_terceros ?? ''} onChange={e => set('desc_terceros', e.target.value)} placeholder="Servicio para terceros · {contraparte} · Comprobante Lincoin {numero}" style={entrada} />
                     </Campo>
-                    {(modelo === 'rotacion' || modelo === 'psp') && (
+                    {modelo === 'rotacion' && (
                       <Campo rot="COMISIÓN" ayuda="También {utilidad}, el porcentaje.">
-                        <input value={form.desc_comision ?? ''} onChange={e => set('desc_comision', e.target.value)} placeholder={modelo === 'psp' ? 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}' : 'Comisión {utilidad} % · Comprobante Lincoin {numero}'} style={entrada} />
+                        <input value={form.desc_comision ?? ''} onChange={e => set('desc_comision', e.target.value)} placeholder="Comisión {utilidad} % · Comprobante Lincoin {numero}" style={entrada} />
                       </Campo>
                     )}
                   </div>
@@ -1041,14 +1039,17 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
               )}
 
               {/* 4. A nombre de quién, y cuándo */}
-              <Seccion n="4" t={modelo === 'psp' ? 'A nombre de quién sale, y cuándo' : 'A nombre de quién sale, DIAN y correo'}>
+              <Seccion n="4" t="A nombre de quién sale, DIAN y correo">
                 <div style={{ padding: '11px 14px', borderRadius: 10, border: `1px solid ${C.bordeSuave}`, background: C.elevado, marginBottom: 12 }}>
                   <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.6 }}>
-                    {modelo === 'psp' || (modelo === 'rotacion' && motivosDS.length > 0) ? (
+                    {modelo === 'rotacion' && motivosDS.length > 0 ? (
                       <><b>Documento soporte:</b> a nombre del <b>beneficiario del envío</b>, con el nombre y el documento con que se le envió. Nada se escribe a mano. </>
                     ) : null}
                     {modelo === 'psp' ? (
-                      <><b>Factura de comisión por depósitos:</b> a mano, al cliente que elijas al emitir, por la comisión con IVA incluido. </>
+                      <><b>Factura de mandato:</b> a nombre del <b>beneficiario del envío</b>, con la cédula o el NIT con que se le envió. Nada se escribe a mano. </>
+                    ) : null}
+                    {modelo === 'comision' ? (
+                      <><b>Factura de mandato:</b> a nombre del <b>ordenante</b> que se elige al hacer cada envío. </>
                     ) : null}
                     {modelo === 'rotacion' ? (
                       <><b>Factura de venta:</b> a nombre de <b>quien pagó</b>, con el documento que trae la operación. </>
@@ -1083,7 +1084,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                     </select>
                   </Campo>
                 </div>
-                {modelo !== 'psp' && (
+                {(
                   <div style={{ display: 'grid', gap: 10, marginTop: 14 }}>
                     {chk('stamp', 'Enviar la factura a la DIAN (factura electrónica)', 'Apagado, Siigo la guarda sin validarla ante la DIAN.')}
                     {chk('mail', 'Que Siigo mande la factura por correo al cliente')}

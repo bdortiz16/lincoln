@@ -88,6 +88,32 @@ type ClienteFactura = { identification: string; nombre: string; esEmpresa: boole
 // reconocer a la misma empresa, que no se factura a sí misma.
 const baseDoc = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 10 ? d.slice(0, 9) : d; };
 
+// PSP / pasarela: la factura va al BENEFICIARIO del envío (a quien se le
+// transfiere), con el documento con que se le envió. Misma lectura que el
+// servidor (contraparteDe).
+const beneficiarioDe = (tx: any): ClienteFactura | null => {
+  const rd: any = tx?.raw_data ?? tx ?? {};
+  const rc: any = tx?.recipient ?? rd?.recipient ?? {};
+  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '');
+  if (!doc) return null;
+  const tipo = String(rd.docType ?? rd.documentType ?? rd.beneficiaryDocType ?? rc.documentType ?? rc.docType ?? '').toUpperCase();
+  const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.recipientName ?? rc.holderName ?? rc.name ?? '').trim();
+  return { identification: doc, nombre: nombre || doc, esEmpresa: tipo === 'NIT' || (!tipo && doc.length === 9) };
+};
+// Los modelos de mandato (factura de terceros + comisión con IVA incluido):
+// Comisión, al ordenante; PSP, al beneficiario.
+const esModeloMandato = (modelo: unknown) => modelo === 'comision' || modelo === 'psp';
+// PSP: con un cliente persona jurídica con NIT colombiano, la comisión lleva
+// «Retefuente comisiones 11 %» sobre su base (misma búsqueda que el servidor).
+const retencionDelCatalogo = (cfg: any): { id: number; name: string; percentage: number } | null => {
+  const lista: any[] = cfg?.catalogos?.impuestos ?? [];
+  const esRet = (t: any) => /retefuente|retenci/i.test(`${t?.type ?? ''} ${t?.name ?? ''}`);
+  const t = lista.find(x => esRet(x) && /comisi/i.test(String(x?.name ?? '')) && Math.abs((Number(x?.percentage) || 0) - 11) < 0.01) ?? lista.find(x => Number(x?.id) === 41 && esRet(x));
+  return t ? { id: Number(t.id), name: String(t.name ?? ''), percentage: Number(t.percentage) || 11 } : null;
+};
+const llevaRetencion = (modelo: unknown, cli: ClienteFactura | null) => modelo === 'psp' && !!cli?.esEmpresa && /^\d{9}$/.test(baseDoc(cli.identification));
+const clienteDeEnvio = (tx: any, modelo: unknown): ClienteFactura | null => modelo === 'psp' ? beneficiarioDe(tx) : ordenanteDe(tx);
+
 const ordenanteDe = (tx: any): ClienteFactura | null => {
   const o: any = tx?.recipient?.ordenante ?? tx?.raw_data?.recipient?.ordenante ?? tx?.ordenante ?? null;
   const doc = String(o?.doc ?? '').replace(/\D/g, '');
@@ -182,8 +208,9 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   const fact = useFacturacion();
   const monto = Number(asiento.monto) || 0;
   const [pct, setPct] = useState<string>(pctDeCfg(cfg));
-  // Si el envío ya trae su ordenante (se eligió al enviar), viene puesto.
-  const ordTx = useMemo(() => ordenanteDe(asiento.tx), [asiento.tx]);
+  // Si el envío ya trae a quién facturar, viene puesto: el ordenante elegido
+  // al enviar (Comisión) o el beneficiario (PSP).
+  const ordTx = useMemo(() => clienteDeEnvio(asiento.tx, cfg?.modelo), [asiento.tx, cfg?.modelo]);
   const [elegido, setElegido] = useState<ClienteFactura | null>(ordTx);
   const [emitiendo, setEmitiendo] = useState(false);
   const [resultado, setResultado] = useState<{ ok: boolean; texto: string } | null>(null);
@@ -203,11 +230,14 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   // Modelo Comisión = factura de mandato: ítem 1 ingresos para terceros por
   // el monto completo transferido (sin IVA) + ítem 2 comisión con IVA
   // incluido. El total es el monto más la comisión.
-  const mandato = String(cfg?.modelo ?? '') === 'comision';
+  const mandato = esModeloMandato(cfg?.modelo);
   const itemTerceros = String(cfg?.item_terceros ?? '');
   const prodTerceros = (cfg?.catalogos?.productos ?? []).find((x: any) => String(x.code) === itemTerceros) ?? null;
   const terceros = mandato ? r2(monto) : 0;
   const total = r2(terceros + base + ivaV);
+  const conRetencion = llevaRetencion(cfg?.modelo, elegido);
+  const retCat = conRetencion ? retencionDelCatalogo(cfg) : null;
+  const retV = retCat ? r2(base * retCat.percentage / 100) : 0;
   const faltaItem = !item || (mandato && !itemTerceros);
   const emitir = async () => {
     if (!elegido || !(p > 0) || faltaItem) return;
@@ -238,7 +268,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
         </div>
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
-        <SelectorCliente inicial={ordTx} notaInicial="Ordenante elegido al hacer el envío." onCambio={setElegido} />
+        <SelectorCliente inicial={ordTx} notaInicial={cfg?.modelo === 'psp' ? 'Beneficiario del envío (a quien se le transfirió).' : 'Ordenante elegido al hacer el envío.'} onCambio={setElegido} />
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE {asiento.dir === 'in' ? 'EL DEPÓSITO' : 'EL MOVIMIENTO'}, IVA INCLUIDO)</p>
         <div className="flex items-center" style={{ gap: 10 }}>
@@ -253,7 +283,10 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
           {fila(`${mandato ? '2 · Comisión, base gravable' : 'Base gravable'} (${prod?.name ?? (item || 'ítem de comisión')})`, `${fmtCop2(base)} COP`)}
           {fila(iva ? `${iva.name || 'IVA'} ${iva.percentage} %` : 'IVA (el ítem no tiene impuesto en Siigo)', `${fmtCop2(ivaV)} COP`)}
           {fila('Total de la factura', `${fmtCop2(total)} COP`, true)}
+          {retCat && fila(`${retCat.name || 'Retefuente comisiones'} ${retCat.percentage} % sobre la base de la comisión`, `−${fmtCop2(retV)} COP`)}
+          {retCat && fila('Neto a pagar', `${fmtCop2(r2(total - retV))} COP`, true)}
         </div>
+        {conRetencion && !retCat && <p style={{ fontSize: 11.5, color: '#F59E0B', margin: '8px 0 0', lineHeight: 1.5 }}>El cliente es persona jurídica y la comisión lleva «Retefuente comisiones 11 %», pero no está en el catálogo de Siigo guardado. Actualizá los catálogos en Configuración antes de emitir.</p>}
         {mandato && <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>Factura de mandato: el valor transferido completo ({fmtCop2(monto)} COP) más tu comisión (base + IVA) = {fmtCop2(total)} COP. Los ingresos para terceros no son ingreso propio y van sin IVA.</p>}
         <p style={{ fontSize: 11, color: C.tenue, margin: '8px 0 0', lineHeight: 1.5 }}>La comisión no es {fmtCop2(comision)} + IVA: la base se calcula para que base + IVA dé la comisión. Siigo liquida el IVA con la tarifa del ítem; puede haber un centavo de redondeo.</p>
 
@@ -306,7 +339,9 @@ const EmisionLoteModal: React.FC<{
   const [aviso, setAviso] = useState<string | null>(null);
   const [deteniendo, setDeteniendo] = useState(false);
   const p = Number(String(pct).replace(',', '.')) || 0;
-  const mandato = String(cfg?.modelo ?? '') === 'comision';
+  const mandato = esModeloMandato(cfg?.modelo);
+  // PSP: cada factura va al beneficiario del envío; no se elige cliente.
+  const esPspLote = cfg?.modelo === 'psp';
   const estadoDe = (txId: string) => vivo[txId]?.estado ?? null;
   const yaSalio = (i: ItemLote) => estadoDe(i.txId) === 'emitida';
   // Lo marcado que falta emitir: en una segunda vuelta (tras corregir el
@@ -317,7 +352,7 @@ const EmisionLoteModal: React.FC<{
   const nReemitir = porEmitir.filter(i => i.modo === 'reemitir').length;
   const faltaItem = nComision > 0 && (!cfg?.item_comision || (mandato && !cfg?.item_terceros));
   const clientePropio = !!cliente && esPropio(cliente.identification);
-  const listo = porEmitir.length > 0 && (sinOrdenante === 0 || (!!cliente && !clientePropio)) && (nComision === 0 || p > 0) && !faltaItem;
+  const listo = porEmitir.length > 0 && (sinOrdenante === 0 || esPspLote || (!!cliente && !clientePropio)) && (nComision === 0 || p > 0) && !faltaItem;
   // Lo que se va a facturar (solo lo calculable acá: las de comisión).
   const comisionDe = (i: ItemLote) => r2((Number(i.a.monto) || 0) * p / 100);
   const totalDe = (i: ItemLote) => r2((mandato ? Number(i.a.monto) || 0 : 0) + comisionDe(i));
@@ -391,7 +426,12 @@ const EmisionLoteModal: React.FC<{
 
         {nComision > 0 && enConfig && (
           <>
-            {sinOrdenante > 0 && (
+            {sinOrdenante > 0 && esPspLote && (
+              <p style={{ fontSize: 11.5, color: AMBAR, margin: '14px 0 0', lineHeight: 1.5 }}>
+                {sinOrdenante === 1 ? 'Un envío no trae' : `${sinOrdenante} envíos no traen`} el documento del beneficiario: en PSP la factura va a su nombre, así que {sinOrdenante === 1 ? 'no se puede facturar' : 'no se pueden facturar'}. Completá el beneficiario en la lista y emití de nuevo.
+              </p>
+            )}
+            {sinOrdenante > 0 && !esPspLote && (
               <>
                 <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>
@@ -1019,7 +1059,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const esPsp = String(cfgFact?.modelo ?? '') === 'psp';
   const botonFacturaComision = (a: Asiento) => (
     <button onClick={() => setComisionPara(a)}
-      title="Factura de venta por tu comisión sobre este depósito (IVA incluido), al cliente que elijas"
+      title={esPsp ? 'Factura de mandato al beneficiario: el valor transferido más tu comisión (IVA incluido)' : 'Factura de mandato: el valor transferido más tu comisión (IVA incluido), al cliente que elijas'}
       style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer' }}>
       Emitir factura
     </button>
@@ -1027,11 +1067,15 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // Modelo Comisión: cualquier movimiento se factura a mano con el mismo
   // modal (elegir cliente y porcentaje), por si la automática no aplicaba.
   const esComision = String(cfgFact?.modelo ?? '') === 'comision';
-  // Comisión: solo los envíos se facturan (un cargue/depósito no lleva
-  // factura en ese modelo). PSP: los depósitos, a mano.
+  // Comisión y PSP son el mismo modelo de mandato; cambia a quién se le
+  // factura: al ordenante (Comisión) o al beneficiario del envío (PSP).
+  const esMandato = esComision || esPsp;
+  const clienteDe = (tx: any) => clienteDeEnvio(tx, cfgFact?.modelo);
+  // Solo los envíos se facturan (un cargue/depósito no lleva factura en
+  // estos modelos).
   const botonSegunTipo = (a: Asiento, txId: string) => {
-    if (esComision) return a.dir === 'out' && !esPropio(ordenanteDe(a.tx)?.identification) ? botonFacturaComision(a) : null;
-    return (esPsp && a.dir === 'in' && ENTRA.has(String(a.tx?.type))) ? botonFacturaComision(a) : botonEmitir(txId);
+    if (esMandato) return a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) ? botonFacturaComision(a) : null;
+    return botonEmitir(txId);
   };
   // SIN FACTURA: un movimiento completado que se puede facturar y no tiene
   // factura emitida (ni una saliendo ahora). Devuelve cómo se emitiría en
@@ -1050,12 +1094,11 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const est = fa?.estado ?? null;
     if (est === 'emitida' || est === 'en_cola') return null;
     if (est === 'emitiendo' && (!fa?.at || Date.now() - new Date(fa.at).getTime() < 180000)) return null;
-    if (esComision) {
-      if (a.dir === 'out' && esPropio(ordenanteDe(a.tx)?.identification)) return null;
+    if (esMandato) {
+      if (a.dir === 'out' && esPropio(clienteDe(a.tx)?.identification)) return null;
       if (est === 'anulada') return a.dir === 'out' ? 'reemitir' : null;
       return a.dir === 'out' && a.moneda === 'COP' ? 'comision' : null;
     }
-    if (esPsp && a.dir === 'in') return 'comision';
     return 'directo';
   };
 
@@ -1167,7 +1210,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       const modo = modoLote(a);
       if (!modo || vistos.has(txId)) continue;
       vistos.add(txId);
-      out.push({ a, txId, modo, ordenante: modo === 'comision' && a.dir === 'out' ? ordenanteDe(a.tx) : null });
+      out.push({ a, txId, modo, ordenante: modo === 'comision' && a.dir === 'out' ? clienteDe(a.tx) : null });
     }
     return out;
   };
@@ -1841,7 +1884,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
                                   emitir al mismo cliente, con el cálculo vigente.
                                   Solo un envío: un depósito no lleva factura. */}
-                              {fa.estado === 'anulada' && esComision && a.dir === 'out' && !esPropio(ordenanteDe(a.tx)?.identification) && completado && facturacionActiva && txId && !soloLectura
+                              {fa.estado === 'anulada' && esMandato && a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) && completado && facturacionActiva && txId && !soloLectura
                                 ? <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
                                     title="Emite una factura nueva al mismo cliente de la anulada: terceros por el valor completo + la comisión"
                                     style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>
