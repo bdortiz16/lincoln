@@ -838,7 +838,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // factura emitida (ni una saliendo ahora). Devuelve cómo se emitiría en
   // lote, con la misma regla de los botones de cada fila; null = nada que
   // emitir. En el modelo Comisión solo cuentan los envíos en pesos (un
-  // depósito "no aplica") y las anuladas, que se vuelven a emitir.
+  // depósito "no aplica") y los envíos anulados, que se vuelven a emitir. Un
+  // depósito anulado queda anulado: aparecía en el lote como «Volver a
+  // emitir» (la FV-2-725 de XATECH, un depósito de 72 M).
   const modoLote = (a: Asiento): ModoLote | null => {
     if (a.estado !== 'Completado' || a.tipo === 'Conversión') return null;
     const tipoTx = String(a.tx?.type ?? '');
@@ -850,7 +852,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (est === 'emitida' || est === 'en_cola') return null;
     if (est === 'emitiendo' && (!fa?.at || Date.now() - new Date(fa.at).getTime() < 180000)) return null;
     if (esComision) {
-      if (est === 'anulada') return 'reemitir';
+      if (est === 'anulada') return a.dir === 'out' ? 'reemitir' : null;
       return a.dir === 'out' && a.moneda === 'COP' ? 'comision' : null;
     }
     if (esPsp && a.dir === 'in') return 'comision';
@@ -1627,8 +1629,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                                 : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
                               {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
-                                  emitir al mismo cliente, con el cálculo vigente. */}
-                              {fa.estado === 'anulada' && esComision && completado && facturacionActiva && txId && !soloLectura
+                                  emitir al mismo cliente, con el cálculo vigente.
+                                  Solo un envío: un depósito no lleva factura. */}
+                              {fa.estado === 'anulada' && esComision && a.dir === 'out' && completado && facturacionActiva && txId && !soloLectura
                                 ? <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
                                     title="Emite una factura nueva al mismo cliente de la anulada: terceros por el valor completo + la comisión"
                                     style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>

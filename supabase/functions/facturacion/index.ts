@@ -144,6 +144,9 @@ const clientesEnSiigo = new Map<string, number>()
 const productosSiigo = new Map<string, { hasta: number; r: Resp }>()
 const siigoVisto = (m: Map<string, number>, k: string) => (m.get(k) ?? 0) > Date.now()
 
+const MSG_RESOLUCION_DIAN = 'La resolución de facturación de la DIAN del comprobante de Siigo venció o se le acabó el rango de numeración (Siigo: invalid_dian_resolution). No se creó ninguna factura. Hay que cargar la resolución nueva en Siigo (o elegir en Configuración otro comprobante de factura con resolución vigente) y después volver a emitir desde «Sin factura».'
+const esErrorResolucion = (e: unknown) => /invalid_dian_resolution/i.test(String(e ?? ''))
+
 // El motivo de Siigo, en una línea legible.
 function motivoDe(r: Resp): string {
   if (r.status === 0) return /abort/i.test(r.texto)
@@ -151,6 +154,10 @@ function motivoDe(r: Resp): string {
     : `No se pudo llegar a Siigo: ${r.texto}`
   const d = r.data
   const errs = Array.isArray(d?.Errors) ? d.Errors : Array.isArray(d?.errors) ? d.errors : null
+  // La resolución de facturación de la DIAN venció o se le acabó el rango de
+  // numeración (XATECH, 2026-10-30, después de la FV-2-1000). No es de
+  // Lincoin ni se arregla reintentando: se dice qué hacer, en español.
+  if (errs?.some((e: any) => /invalid_dian_resolution/i.test(String(e?.Code ?? e?.code ?? '')))) return MSG_RESOLUCION_DIAN
   if (errs?.length) return `HTTP ${r.status}: ${errs.map((e: any) => [e.Code ?? e.code, e.Message ?? e.message, e.Params?.join?.(',') ?? e.params?.join?.(',')].filter(Boolean).join(' · ')).join(' | ')}`.slice(0, 600)
   const m = d?.message ?? d?.Message ?? d?.error ?? d?.error_description
   return `HTTP ${r.status}${m ? `: ${String(m).slice(0, 400)}` : r.texto ? `: ${r.texto.slice(0, 300)}` : ''}`
@@ -845,6 +852,10 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
     // También si el reemplazo ya se intentó y falló (queda en error, con la
     // anulada en el historial): se reintenta igual, no como movimiento nuevo.
     const yaFueAnulada = (comp as any).factura_estado === 'anulada' || ((comp as any).factura_estado === 'error' && Array.isArray(detAnt?.anteriores) && detAnt.anteriores.length > 0)
+    // Un DEPÓSITO no se factura en este modelo, tampoco para reemplazar una
+    // anulada (la FV-2-725 de XATECH era un depósito: anulada queda). No se
+    // toca su estado: marcarla "no aplica" borraría que estuvo anulada.
+    if (opts.forzar && yaFueAnulada && !esSalida) return { ok: false, error: 'En el modelo Comisión los depósitos no llevan factura: la anulada queda anulada.' }
     if (opts.forzar && yaFueAnulada && clienteAnt?.identification) {
       return emitirComision(userId, String((comp as any).transaction_id), {
         identification: String(clienteAnt.identification), nombre: clienteAnt.nombre ? String(clienteAnt.nombre) : undefined,
@@ -1230,9 +1241,10 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', c.folio).maybeSingle()
   if (!comp) return { ok: false, error: 'comprobante_no_encontrado' }
   if ((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero) return { ok: false, error: `Este movimiento ya tiene la factura ${(comp as any).factura_numero}.` }
-  // Reemplazo de una factura anulada: el movimiento ya se facturó una vez y
-  // se vuelve a facturar igual (aunque hoy la regla diga "solo envíos").
-  if (!d.reemplazo && String(cfg.modelo ?? '') === 'comision' && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
+  // Solo envíos, también al reemplazar una anulada: en el modelo Comisión un
+  // depósito no lleva factura (antes un depósito anulado se podía volver a
+  // facturar, y aparecía en «Emitir en lote»).
+  if (String(cfg.modelo ?? '') === 'comision' && !['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(String((tx as any).type))) {
     return { ok: false, error: 'En el modelo Comisión solo se facturan los envíos; los cargues y depósitos no llevan factura.' }
   }
   // Lo que ya pasó con este movimiento (facturas anuladas, sus notas
@@ -1614,6 +1626,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       if (modelo === 'comision' || (modelo === 'psp' && !salida)) {
         const yaFueAnulada = est === 'anulada' || (est === 'error' && Array.isArray(det.anteriores) && det.anteriores.length > 0)
         if (!/^COP/i.test(String(tx.currency ?? ''))) { no('La factura en Siigo va en pesos y la operación no es en COP.'); continue }
+        if (modelo === 'comision' && yaFueAnulada && !salida) { no('En el modelo Comisión los depósitos no llevan factura: la anulada queda anulada.'); continue }
         if (modelo === 'comision' && yaFueAnulada) {
           const ca = det?.comision?.cliente
           if (!ca?.identification) { no('No se sabe a qué cliente iba la factura anulada: emítela desde el movimiento.'); continue }
@@ -1649,7 +1662,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
 
 // Emite UN comprobante de la cola. Devuelve qué pasó para la cuenta de la
 // vuelta; el resultado de verdad queda en el comprobante.
-async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error' | 'espera' | 'otro'> {
+async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error' | 'espera' | 'otro' | 'resolucion'> {
   const det: any = f.factura_detalle ?? {}
   const lote: any = det.lote ?? {}
   const pasadas = Number(lote.pasadas ?? 0) + 1
@@ -1676,6 +1689,7 @@ async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error'
   } catch (e) { r = { ok: false, error: String((e as Error)?.message ?? e) } }
   if (r?.ok && (r.estado === 'emitida' || r.numero)) return 'emitida'
   if (r?.reintento) return 'espera'
+  if (!r?.ok && esErrorResolucion(r?.error)) return 'resolucion'
   // Frenada por el límite de consultas de Siigo: no se creó nada (un 429 se
   // rechaza antes de procesar). Vuelve a la cola y se reintenta en un minuto,
   // en vez de quedar en error como las 36 de un lote de XATECH.
@@ -1733,6 +1747,15 @@ async function procesarCola(userId: string): Promise<{ emitidas: number; errores
     const r = await emitirDeCola(userId, lista)
     if (r === 'emitida') out.emitidas++
     else if (r === 'error') out.errores++
+    else if (r === 'resolucion') {
+      // La resolución DIAN está vencida o agotada: TODAS las que siguen van a
+      // fallar igual. Salen de la cola con el motivo, sin llamar a Siigo, y
+      // la cola para. Se vuelven a emitir desde «Sin factura» cuando esté
+      // cargada la resolución nueva.
+      out.errores++
+      await cancelarCola(userId, MSG_RESOLUCION_DIAN)
+      break
+    }
     await guardarSistema(claveCola(userId), String(Date.now()))
     if (Date.now() - inicio < COLA_VUELTA_MS) await new Promise(res => setTimeout(res, COLA_PAUSA_MS))
   }
@@ -1768,14 +1791,19 @@ async function reanudarCola(userId: string): Promise<boolean> {
 }
 
 // Detener: lo que sigue en cola vuelve a como estaba antes de encolarlo.
-async function cancelarCola(userId: string): Promise<number> {
+// Con `motivo` (la cola se cortó sola, p. ej. por la resolución DIAN), las que
+// no tenían factura quedan en error con ese motivo, a la vista en «Sin
+// factura»; una anulada vuelve a anulada, o se perdería que estuvo anulada.
+async function cancelarCola(userId: string, motivo?: string): Promise<number> {
   let n = 0
   for (let vuelta = 0; vuelta < 10; vuelta++) {
     const { data } = await db.from('comprobantes').select('folio, factura_detalle').eq('user_id', userId).eq('factura_estado', 'en_cola').limit(200)
     const filas = (data ?? []) as any[]
     for (const f of filas) {
       const { lote, ...resto } = (f.factura_detalle ?? {}) as any
-      const { data: u } = await db.from('comprobantes').update({ factura_estado: lote?.estado_previo ?? null, factura_error: lote?.error_previo ?? null, factura_detalle: resto })
+      const previo = lote?.estado_previo ?? null
+      const conMotivo = !!motivo && previo !== 'anulada'
+      const { data: u } = await db.from('comprobantes').update({ factura_estado: conMotivo ? 'error' : previo, factura_error: conMotivo ? motivo : lote?.error_previo ?? null, factura_detalle: resto })
         .eq('folio', f.folio).eq('factura_estado', 'en_cola').select('folio')
       if (u?.length) n++
     }
@@ -2849,7 +2877,10 @@ Deno.serve(async (req) => {
           mal_calculada: facturaMalCalculada(c),
           // Se puede volver a emitir al mismo cliente de la factura anulada, y
           // así va a quedar: terceros por el monto completo + la comisión.
-          reemision: (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
+          // Modelo Comisión: un depósito no lleva factura (ni para reemplazar
+          // una anulada). La pantalla no ofrece emitirla.
+          solo_envios: String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? '')),
+          reemision: !(String(cfg?.modelo ?? '') === 'comision' && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
             const monto = Number(String(c.monto ?? '0').replace(/,/g, '')) || 0
             const pct = Number(c.factura_detalle.comision.pct) || 0
             const comision = r2(monto * pct / 100)

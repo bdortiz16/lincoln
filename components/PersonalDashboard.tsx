@@ -4467,7 +4467,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 : doc.estado === 'omitida' ? { l: 'NO APLICA', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
                 : { l: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
               const rechazoMsgs: string[] = Array.isArray(doc.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];
-              const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado';
+              // Modelo Comisión: un depósito no lleva factura, ni para
+              // reemplazar una anulada. El servidor lo dice en solo_envios.
+              const puedeReemitir = (doc.estado === 'anulada' || doc.estado === 'error') && tx.status === 'Completado' && !doc.solo_envios;
               // Anulada con nota crédito y con a quién facturar: se muestra
               // cómo va a quedar la factura nueva y se pide confirmar.
               const reem: any = doc.estado === 'anulada' || doc.estado === 'error' ? doc.reemision : null;
@@ -4522,6 +4524,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   )}
                   {(doc.estado === 'error' || doc.estado === 'anulada') && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'error' ? '#F87171' : '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
                   {doc.estado === 'omitida' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {doc.solo_envios && doc.estado === 'anulada' && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>En el modelo Comisión los depósitos no llevan factura: esta queda anulada y no se vuelve a emitir.</p>}
                   {doc.estado === 'emitida' && (
                     <div className="flex" style={{ gap: 8, marginTop: 10 }}>
                       {doc.url && <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center hover:bg-white/[0.09] transition-colors" style={{ gap: 6, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 600, color: '#F4F4F2', background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.11)', textDecoration: 'none' }}><ExternalLink size={13} /> Abrir en Siigo</a>}
