@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ShieldAlert, RefreshCw, FileText, Send, ChevronDown, Search, Download } from 'lucide-react';
+import { ShieldAlert, RefreshCw, FileText, ChevronDown, Search, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 
 // ─────────────────────────────────────────────────────────────
@@ -131,12 +131,6 @@ export const AdminCompliance: React.FC = () => {
     } catch { setMsg({ ok: false, texto: 'No se pudo abrir el reporte.' }); }
   };
 
-  const mandarAKumplo = async (c: any) => {
-    setMsg(null);
-    const r = await call({ action: 'enviar_kumplo', userId: c.userId, documento: c.esTitular ? '' : c.documento });
-    setMsg({ ok: !!r?.ok, texto: r?.ok ? 'Enviado a Kumplo.' : (r?.motivo ?? r?.respuesta ?? 'No se pudo enviar.') });
-    if (r?.ok) cargar();
-  };
 
   const reintentar = async (c: any) => {
     setMsg(null);
@@ -459,10 +453,6 @@ export const AdminCompliance: React.FC = () => {
                         <button onClick={() => reintentar(c)} className="cmp-foco hover:bg-white/[0.09] transition-colors"
                           style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
                           Reintentar consulta
-                        </button>
-                        <button onClick={() => mandarAKumplo(c)} className="cmp-foco hover:bg-white/[0.09] transition-colors"
-                          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
-                          <Send size={12} /> Enviar a Kumplo
                         </button>
                       </div>
                       <p style={{ fontSize: 11, color: C.dim, margin: '8px 0 0' }}>Toda decisión queda en auditoría con tu usuario.</p>

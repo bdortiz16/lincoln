@@ -61,7 +61,6 @@ import {
   Archive,
   MessageSquare
 } from 'lucide-react';
-import { KumploUserCard } from './KumploUserCard';
 
 const SUPABASE_URL_PD = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SUPABASE_ANON_PD = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -3566,11 +3565,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       </div>
                   </div>
 
-                  {/* KUMPLO — acá el titular conecta su cuenta pegando el
-                      código de su empresa y ve si la conexión quedó hecha.
-                      Va en la columna, entre Seguridad y Límites: es una
-                      sección más de Ajustes, no un anuncio. */}
-                  {currentUser?.id && <KumploUserCard userId={currentUser.id} />}
+                  {/* (Aquí iba la tarjeta para conectar Kumplo: se retiró el
+                      2026-10-30, el AML de beneficiarios lo hace Sarblock.) */}
 
                   {/* LÍMITES */}
                   <div style={card}>

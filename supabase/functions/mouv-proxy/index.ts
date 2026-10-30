@@ -3756,42 +3756,9 @@ serve(async (req: Request) => {
           // control AML" y no quedaba rastro de que hubiera pasado.
           await logAudit(userId, 'tusdatos.gate_error', { documento: docDest, error: String((e as any)?.message ?? e) })
         }
-        try {
-          const { data: cfgRow } = await db.from('system_config').select('value').eq('key', 'kumplo_config').maybeSingle()
-          const cfg = (cfgRow as any)?.value ? JSON.parse((cfgRow as any).value) : null
-          // Con la aprobación de cumplimiento vigente, el veredicto viejo de
-          // Kumplo (respaldo) no la contradice.
-          if (cfg?.activo && cfg?.bloquearEnAlto !== false && !aprobadoAml) {
-            const b = (rawU?.kumplo?.beneficiarios ?? {})[docDest]
-            // Un veredicto DE VERDAD: o Kumplo dijo operable sí/no, o dio un
-            // nivel de riesgo real. 'desconocido' NO es un veredicto — es
-            // justamente que no pudieron determinarlo, y antes contaba como
-            // uno: bastaba que el campo existiera para que el envío se
-            // bloqueara diciendo que la persona estaba restringida por
-            // cumplimiento sin que nadie la hubiera juzgado.
-            // Y tampoco se confía en un 'operable' guardado junto a un riesgo
-            // 'desconocido': esas fichas las escribió la versión que deducía el
-            // veredicto, y ese false no lo dijo Kumplo. Se vuelven a consultar.
-            const hayVeredicto = !!b && String(b.riesgo ?? '') !== 'desconocido' && (
-              typeof b.operable === 'boolean' ||
-              ['bajo', 'medio', 'alto'].includes(String(b.riesgo ?? ''))
-            )
-            if (hayVeredicto && String(b.estado ?? '') !== 'procesando') {
-              const puede = cfg.soloBloquearAlto ? b.riesgo !== 'alto' : b.operable !== false
-              if (!puede) {
-                await logAudit(userId, 'kumplo.envio_bloqueado', { documento: docDest, riesgo: b.riesgo, estado: b.estado })
-                return json(403, {
-                  error: 'beneficiario_no_operable',
-                  message: b.riesgo === 'alto'
-                    ? 'No se puede transferir a este beneficiario: la verificación de cumplimiento lo marcó como riesgo alto.'
-                    : b.riesgo === 'desconocido'
-                      ? 'No pudimos validar el documento de este beneficiario. Revísalo o comunícate con soporte.'
-                      : 'Este beneficiario está en revisión de cumplimiento. Todavía no se le puede transferir.',
-                })
-              }
-            }
-          }
-        } catch { /* la prueba nunca frena un envío legítimo */ }
+        // (Aquí iba el bloqueo de respaldo por el veredicto de Kumplo. Kumplo se
+        // retiró de Lincoin el 2026-10-30: el control de beneficiarios es el
+        // de Sarblock, arriba.)
       }
       benefDocCupo = docDest
       try {

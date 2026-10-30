@@ -90,7 +90,6 @@ import { AdminAccessPolicy } from './AdminAccessPolicy';
 import { AdminPasskeys } from './AdminPasskeys';
 import { AdminStepUp } from './AdminStepUp';
 import { AdminLoginAlerts } from './AdminLoginAlerts';
-import { AdminKumplo } from './AdminKumplo';
 import { AdminTusdatos } from './AdminTusdatos';
 import { AdminCompliance } from './AdminCompliance';
 import { AdminLincoinRisk } from './AdminLincoinRisk';
@@ -280,7 +279,8 @@ const fileToBase64 = (file: File): Promise<string> => {
 // Las dos secciones que agrupan varias pantallas. El orden es el de las
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
-const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'kumplo'];
+// 'kumplo' salió el 2026-10-30: Kumplo se retiró de Lincoin.
+const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera', lincoin: 'Lincoin',
@@ -5767,7 +5767,6 @@ const renderDesign = () => (
                     no queden al fondo de la bandeja de casos. */}
                 {activeTab === 'cupos' && <div className="animate-in fade-in duration-300"><AdminCupos /></div>}
                 {activeTab === 'operadores' && <div className="animate-in fade-in duration-300"><AdminOperadores onCambio={() => setOperadoresVer(v => v + 1)} /></div>}
-                {activeTab === 'kumplo' && <div className="animate-in fade-in duration-300"><AdminKumplo /></div>}
                 {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
                 {/* Sarblock: ventas de Lincoin Risk, historiales de todas las
                     empresas y la AML de beneficiarios. Trae su propio lienzo

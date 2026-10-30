@@ -665,9 +665,9 @@ export const ContactsSection: React.FC<{
         );
     };
 
-    // La columna AML solo existe si el titular conectó su cuenta de Kumplo.
-    // A quien no la conectó esa verificación no le aplica, y una columna
-    // vacía en todas las filas es peor que no tenerla.
+    // La columna AML existe cuando la verificación de beneficiarios corre para
+    // esta cuenta (Sarblock) o ya hay resultados guardados. Sin eso, una
+    // columna vacía en todas las filas es peor que no tenerla.
     const COLS = amlActivo
         ? 'minmax(230px,1.4fr) 128px 146px minmax(150px,1fr) 106px 78px'
         : 'minmax(230px,1.4fr) 146px minmax(150px,1fr) 110px 82px';
