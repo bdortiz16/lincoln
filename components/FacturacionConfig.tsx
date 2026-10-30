@@ -155,9 +155,14 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     const modelo = c.modelo === 'rotacion' || c.modelo === 'psp' || c.modelo === 'comision' ? c.modelo : '';
     setModeloAbierto(!modelo);
     const docs = c.documentos && typeof c.documentos === 'object' ? c.documentos : {};
-    const operaciones = Object.keys(docs).length
-      ? Object.keys(docs)
-      : modelo === 'psp' ? ['dispersion'] : modelo === 'comision' ? [...SALIDAS] : ['load', 'pay_received'];
+    // Comisión: solo envíos. Una configuración de cuando el modelo facturaba
+    // depósitos no tiene ningún envío marcado; el servidor entonces factura
+    // todos los envíos, y así se muestra (antes salían las casillas vacías).
+    const enviosGuardados = Object.keys(docs).filter(k => SALIDAS.includes(k));
+    const operaciones = modelo === 'comision'
+      ? (enviosGuardados.length ? enviosGuardados : [...SALIDAS])
+      : Object.keys(docs).length ? Object.keys(docs)
+      : modelo === 'psp' ? ['dispersion'] : ['load', 'pay_received'];
     // El IVA por defecto: el del catálogo que diga 19 %, si hay.
     const iva19 = (c.catalogos?.impuestos ?? []).find((t: any) => Number(t.percentage) === 19);
     // Por motivo del envío. Si nunca se configuró, en PSP arranca con "pago

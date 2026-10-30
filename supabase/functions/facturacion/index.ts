@@ -380,7 +380,22 @@ async function traerCatalogos(token: string, partner: string) {
 // ── Qué documento sale por cada tipo de operación ─────────────────
 // Lo nuevo (`documentos`) manda. Si no está, la regla vieja: los
 // disparadores marcados emitían factura de venta.
+// Envíos que factura el modelo Comisión (los mismos que ofrece Configuración).
+const ENVIOS_COMISION = ['dispersion', 'send', 'pay_sent']
 function documentosDe(cfg: any): Record<string, 'FV' | 'DS'> {
+  // MODELO COMISIÓN: solo se facturan envíos. Una configuración guardada
+  // cuando el modelo facturaba depósitos (Depósitos, Pagos recibidos) dejaba
+  // TODOS los envíos en "no aplica": en XATECH ningún envío se facturaba solo
+  // al completarse, y la pantalla de Configuración ya no mostraba esas
+  // casillas para corregirlo. Ahora solo cuentan los envíos marcados y, si no
+  // hay ninguno marcado, se facturan todos los envíos.
+  if (String(cfg?.modelo ?? '') === 'comision') {
+    const marcados = Object.keys(documentosGuardados(cfg)).filter(k => ENVIOS_COMISION.includes(k))
+    return Object.fromEntries((marcados.length ? marcados : ENVIOS_COMISION).map(k => [k, 'FV' as const]))
+  }
+  return documentosGuardados(cfg)
+}
+function documentosGuardados(cfg: any): Record<string, 'FV' | 'DS'> {
   const d = cfg?.documentos
   if (d && typeof d === 'object' && !Array.isArray(d)) {
     const out: Record<string, 'FV' | 'DS'> = {}
