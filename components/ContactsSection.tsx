@@ -839,7 +839,8 @@ export const ContactsSection: React.FC<{
             if (r?.found === false) {
                 setBrebLookup({ loading: false, found: false, msg: 'La llave no existe o no está activa.' });
             } else {
-                setBrebLookup({ loading: false, msg: 'No se pudo consultar la llave ahora. Puedes escribir el nombre manualmente.' });
+                // El servidor dice por qué (p. ej. directorio Bre-B caído).
+                setBrebLookup({ loading: false, msg: r?.message || 'No se pudo consultar la llave ahora. Puedes escribir el nombre manualmente.' });
             }
         } catch {
             setBrebLookup({ loading: false, msg: 'No se pudo consultar la llave ahora.' });

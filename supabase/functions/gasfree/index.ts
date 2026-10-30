@@ -487,6 +487,47 @@ async function tokenBalance(address: string, contract: string, decimals: number)
   return direct
 }
 
+// Igual que tokenBalance, pero distingue "saldo 0" de "no se pudo leer": si
+// las tres vías fallan (TronGrid limitando o caído) devuelve null. Lo usa
+// my_status, que el panel consulta cada 15 s: un 0 falso seguido de la
+// lectura normal se veía como un depósito nuevo y le salía al cliente la
+// celebración "+0,90 USDT" una y otra vez por un sobrante viejo (XATECH).
+async function tokenBalanceOrNull(address: string, contract: string, decimals: number): Promise<number | null> {
+  let leyo = false
+  const direct = await tokenBalanceOnDebug(address, contract, decimals, CFG.tronHost)
+  if (!direct.error) { leyo = true; if (direct.balance > 0) return direct.balance }
+  try {
+    const r = await fetch(`${CFG.tronHost}/v1/accounts/${address}`, { headers: tgHeaders() })
+    const d = r.ok ? await r.json() : null
+    if (Array.isArray(d?.data)) {
+      leyo = true
+      const list: Record<string, string>[] = d.data[0]?.trc20 ?? []
+      for (const o of list) {
+        const v = o?.[contract]
+        if (v != null) { const b = Number(BigInt(String(v))) / Math.pow(10, decimals); if (isFinite(b) && b > 0) return b }
+      }
+    }
+  } catch { /* best-effort */ }
+  try {
+    const url = `${CFG.tronHost}/v1/accounts/${address}/transactions/trc20?limit=200&contract_address=${contract}`
+    const r = await fetch(url, { headers: tgHeaders() })
+    const d = r.ok ? await r.json() : null
+    if (Array.isArray(d?.data)) {
+      leyo = true
+      let net = 0n
+      for (const t of d.data) {
+        if ((t?.type ?? 'Transfer') !== 'Transfer') continue
+        const v = BigInt(String(t?.value ?? '0'))
+        if (t?.to === address) net += v
+        else if (t?.from === address) net -= v
+      }
+      const b = Number(net) / Math.pow(10, decimals)
+      if (isFinite(b) && b > 0) return b
+    }
+  } catch { /* best-effort */ }
+  return leyo ? 0 : null
+}
+
 // Lista TODOS los TRC-20 que hay en una dirección en un host TronGrid dado.
 async function scanTrc20On(address: string, host: string): Promise<{ contract: string; amount: string }[]> {
   try {
@@ -1723,7 +1764,7 @@ async function myStatus(userId: string) {
   const { token } = await gfConfig()
   const acct = await gfAccount(eoa)
   const dec = Number(token.decimal ?? 6)
-  const balance = acct.gasFreeAddress ? await tokenBalance(acct.gasFreeAddress, token.tokenAddress, dec) : 0
+  const balance = acct.gasFreeAddress ? await tokenBalanceOrNull(acct.gasFreeAddress, token.tokenAddress, dec) : 0
   const activateFeeUsdt = Number(token.activateFee ?? 0) / Math.pow(10, dec)
   const transferFeeUsdt = Number(token.transferFee ?? 0) / Math.pow(10, dec)
   // Guardar la dirección en el perfil — es SIEMPRE la misma (determinista),

@@ -1062,6 +1062,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // Una sola cuenta Bre-B habilitada: se elige al tocar Bre-B,
                           // sin preguntar "¿desde qué cuenta?".
                           const brebUnica = BREB_CUENTAS.length === 1 ? BREB_CUENTAS[0] : null;
+                          // La plata está en Saldo Lincoin y no en los rieles: Bre-B y ACH
+                          // salen apagados sin decir por qué, y el cliente creía que la
+                          // app "no dejaba enviar" (30 oct, $35 M en Saldo Lincoin y
+                          // $66.958 en ACH). Se le dice qué hacer.
+                          const achM = METHODS.find(m => m.key === 'ach');
+                          const achAlcanza = !!achM && getBalance(achM.rail) >= amtStep2 + achM.fee;
+                          const moverPrimero = !saldoUnificado && amtStep2 > 0 && !brebAlcanza && !achAlcanza
+                              && getBalance('COP') >= amtStep2;
                           const radio = (on: boolean) => <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: on ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />;
                           return (
                           <div className="space-y-4">
@@ -1144,6 +1152,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               </div>
                               {/* Mover entre cuentas — fila secundaria, no es un envío.
                                   Operadores tienen un solo saldo: no hay entre qué mover. */}
+                              {moverPrimero && (
+                                  <div role="note" style={{ background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 10, padding: '10px 13px', fontSize: 12.5, lineHeight: 1.5, color: '#F4F4F2' }}>
+                                      Tu saldo está en <b>Saldo Lincoin</b>. Para enviar por Bre-B o ACH, primero muévelo con <b>Mover entre mis cuentas</b>.
+                                  </div>
+                              )}
                               {!saldoUnificado && (
                               <button
                                   onClick={() => { setIsSendModalOpen(false); setSendStep(1); setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}
