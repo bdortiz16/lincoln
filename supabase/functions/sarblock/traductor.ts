@@ -20,7 +20,10 @@ export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string;
 
 // Qué versión de la matriz decidió esta ficha. Si la matriz cambia, se sabe
 // con qué regla se juzgó cada caso.
-export const CRITERIO = 'lincoin-v2-2026-10-27';
+// v3 (2026-10-30): un "pedir revisión" de Sarblock que solo se debe a una
+// fuente caída, sin ninguna coincidencia, ya no sube a riesgo medio; y se
+// marca cuando la Registraduría no encontró el documento.
+export const CRITERIO = 'lincoin-v3-2026-10-30';
 
 export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string };
 
@@ -104,6 +107,8 @@ export type Ficha = {
   validado?: boolean;
   hallazgo?: boolean;
   categoria?: 'alto' | 'medio' | 'bajo' | 'ninguno' | 'sin_validar';
+  documentoNoEncontrado?: boolean   // la Registraduría no encontró el documento
+  incompleta?: boolean              // alguna fuente no respondió (resultado parcial)
   operable?: boolean;
   bloqueo?: string;
   criterio?: string;
@@ -207,11 +212,18 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const soloIdentidad = /spoof/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0;
   const ignorarSarblock = soloIdentidad && !suplantacion;
   const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
+  // "Revisar" solo porque una fuente no respondió, sin ninguna coincidencia:
+  // no es un hallazgo. Antes subía a riesgo medio una consulta limpia pero
+  // incompleta (visto el 2026-10-30: 0 coincidencias, 1 fuente caída → "medio").
+  const soloFuenteCaida = /provider_error|unavailable/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0 && Number(s.totalHits ?? 0) === 0;
+  // La Registraduría no encontró el documento: no se sabe de quién son los
+  // antecedentes (suele ser un tipo o número mal escrito).
+  const documentoNoEncontrado = String(id?.vitalStatus ?? '').toUpperCase() === 'NOT_FOUND' || undefined;
   let categoria = ignorarSarblock ? ('ninguno' as Ficha['categoria']) : (CATEGORIA[String(s.riskLevel ?? '')] ?? undefined);
   // La decisión explícita de Sarblock manda sobre su nivel: BLOCK es alto y
   // HOLD_FOR_REVIEW es al menos medio.
   if (!ignorarSarblock && (s.shouldBlock === true || accion === 'BLOCK')) categoria = 'alto';
-  else if (accion === 'HOLD_FOR_REVIEW' && (categoria === 'bajo' || categoria === 'ninguno' || !categoria)) categoria = 'medio';
+  else if (accion === 'HOLD_FOR_REVIEW' && !soloFuenteCaida && (categoria === 'bajo' || categoria === 'ninguno' || !categoria)) categoria = 'medio';
   // Y la matriz de Lincoin sube el nivel si encontró algo más grave.
   if (altos > 0) categoria = 'alto';
   else if (medios > 0 && categoria !== 'alto') categoria = 'medio';
@@ -230,7 +242,7 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
         ? String(s.blockReason || 'Coincidencia en una lista restrictiva.')
         : medios > 0
           ? `En revisión de cumplimiento: ${motivosTexto('medio').join(' · ')}`
-          : accion === 'HOLD_FOR_REVIEW' ? 'Sarblock pidió revisión de cumplimiento.' : undefined;
+          : accion === 'HOLD_FOR_REVIEW' && !soloFuenteCaida ? 'Sarblock pidió revisión de cumplimiento.' : undefined;
 
   return {
     ...base,
@@ -240,6 +252,8 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     nombreCoincide,
     ...(nombreIncompleto ? { nombreIncompleto, nombreInscrito: declarado } : {}),
     validado: id ? id.validated === true : undefined,
+    ...(documentoNoEncontrado ? { documentoNoEncontrado } : {}),
+    ...(check.aggregateOutcome === 'PARTIAL' ? { incompleta: true } : {}),
     hallazgo: Number(s.matchedLists ?? coinciden.length) > 0,
     categoria,
     operable,

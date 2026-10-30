@@ -65,7 +65,31 @@ Deno.test('OFAC: alto, no operable, con el motivo', () => {
   assert(f.bloqueo?.startsWith('Riesgo alto: Coincidencia en lista restrictiva: OFAC SDN'));
   assertEquals(f.altos, 1);
   assertEquals(f.hallazgos?.[0], { nivel: 'alto', codigo: 'lista_restrictiva', texto: 'Coincidencia en lista restrictiva: OFAC SDN (Ada Lovelace)', fuente: 'OFAC SDN' });
-  assertEquals(f.criterio, 'lincoin-v2-2026-10-27');
+  assertEquals(f.criterio, 'lincoin-v3-2026-10-30');
+});
+
+Deno.test('revisión solo por una fuente caída, sin coincidencias: NO es riesgo medio', () => {
+  // Caso real del 2026-10-30: 0 coincidencias, 1 fuente caída, Sarblock pide
+  // revisión (provider_error). Antes salía "riesgo medio".
+  const f = traducir(check({
+    identity: { validated: true, declaredName: 'ADA LOVELACE', verifiedName: 'ADA LOVELACE', spoofSuspected: false },
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'NONE', shouldBlock: false, blockReason: 'provider_error', matchedLists: 0, totalHits: 0, unavailableLists: 1 },
+    aggregateOutcome: 'PARTIAL',
+  }), benef);
+  assert(f.categoria !== 'medio');
+  assertEquals(f.operable, true);
+  assertEquals(f.incompleta, true);
+  assertEquals(f.bloqueo, undefined);
+});
+
+Deno.test('documento no encontrado en la Registraduría: se marca y no es riesgo medio', () => {
+  const f = traducir(check({
+    identity: { validated: false, vitalStatus: 'NOT_FOUND', declaredName: null, verifiedName: null, spoofSuspected: false },
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'NONE', shouldBlock: false, blockReason: 'provider_error', matchedLists: 0, totalHits: 0, unavailableLists: 1 },
+    aggregateOutcome: 'PARTIAL',
+  }), { documento: '9003978390', tipoDocumento: 'CC' });
+  assertEquals(f.documentoNoEncontrado, true);
+  assertEquals(f.categoria, 'sin_validar');
 });
 
 Deno.test('PEP: medio, sigue operable (la revisión la decide la config)', () => {
@@ -447,7 +471,7 @@ Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a S
     criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
   const nueva = rejuzgar(vieja, { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
   assertEquals(nueva?.operable, true);
-  assertEquals(nueva?.criterio, 'lincoin-v2-2026-10-27');
+  assertEquals(nueva?.criterio, 'lincoin-v3-2026-10-30');
 });
 
 // ── Lincoin Risk prepago ────────────────────────────────────────────────

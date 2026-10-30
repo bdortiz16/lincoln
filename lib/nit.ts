@@ -65,3 +65,16 @@ export function nitSinDv(numero: string): string {
     if (d.length !== 10) return d;
     return digitoVerificacionNit(d.slice(0, 9)) === Number(d[9]) ? d.slice(0, 9) : d;
 }
+
+// ¿Persona o empresa? Por la forma del número (la misma regla que aplica el
+// servidor en Lincoin Risk antes de cobrar). Solo orienta: el cliente elige.
+// 'seguro' = sin duda razonable: un NIT de empresa con su dígito de
+// verificación correcto, o una cédula nueva de 10 dígitos que empieza por 1.
+export function tipoProbable(numero: string): { tipo: 'empresa' | 'persona' | null; seguro: boolean; nit?: string } {
+    const d = String(numero ?? '').replace(/\D/g, '');
+    if (/^[89]\d{9}$/.test(d) && digitoVerificacionNit(d.slice(0, 9)) === Number(d[9])) return { tipo: 'empresa', seguro: true, nit: `${d.slice(0, 9)}-${d[9]}` };
+    if (/^[89]\d{8}$/.test(d)) return { tipo: 'empresa', seguro: false, nit: `${d}-${digitoVerificacionNit(d)}` };
+    if (/^1\d{9}$/.test(d)) return { tipo: 'persona', seguro: true };
+    if (/^\d{6,8}$/.test(d)) return { tipo: 'persona', seguro: false };
+    return { tipo: null, seguro: false };
+}

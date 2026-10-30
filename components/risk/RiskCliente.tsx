@@ -10,6 +10,7 @@ import { descargarReporteLincoin } from '../reporte/ReporteLincoin';
 import { MapaColombia } from './MapaColombia';
 import { llamarFuncion } from '../../lib/edge';
 import { lugaresDeDespachos, mapaDePersonas } from '../../lib/ubicacion';
+import { tipoProbable } from '../../lib/nit';
 
 // Va con el token de la sesión: la función sabe de qué cuenta es sin que la
 // pantalla mande un userId (y no se puede pedir el de otra).
@@ -45,8 +46,10 @@ export const ESTILOS = `
 
 // ── Veredicto ───────────────────────────────────────────────────────────
 type Tono = { t: string; c: string; corto: string; txt: string };
-const veredicto = (f: any, nombre: string): Tono => {
+const veredicto = (f: any, nombre: string, estado?: string): Tono => {
   if (!f) return { t: '—', c: C.sub, corto: '—', txt: '' };
+  // La Registraduría no encontró el documento: no hubo revisión real.
+  if (estado === 'no_verificado' || (f.documentoNoEncontrado && !f.hallazgo)) return { t: 'No se pudo verificar', corto: 'Sin verificar', c: C.sub, txt: 'No encontramos ese documento en la Registraduría. Revisa el tipo y el número.' + (estado === 'no_verificado' ? ' Te devolvimos la consulta.' : '') };
   if (f.nombreCoincide === false) return { t: 'El nombre no corresponde', corto: 'Revisar', c: C.rojo, txt: f.bloqueo };
   if (f.operable === false || f.categoria === 'alto') return { t: 'Riesgo alto', corto: 'Alto', c: C.rojo, txt: 'No se recomienda operar con esta persona.' };
   if (f.categoria === 'medio') return { t: 'Riesgo medio', corto: 'Medio', c: C.ambar, txt: 'Hay hallazgos que conviene revisar antes de operar.' };
@@ -118,10 +121,13 @@ export const Resultado: React.FC<{ consulta: any; compacto?: boolean; acciones?:
   const lugares = useMemo(() => lugaresDeDespachos(consulta.despachos), [consulta.despachos]);
   // Si hay incidencias se muestran de una: es lo primero que hay que leer.
   const [verPorque, setVerPorque] = useState((f?.hallazgos ?? []).length > 0 || !compacto);
-  const nombre = consulta.nombreOficial || consulta.nombreEscrito || 'Sin nombre';
-  const v = veredicto(f, nombre.split(' ')[0]);
+  const nombre = consulta.nombreOficial || consulta.nombreEscrito || (consulta.estado === 'no_verificado' || f?.documentoNoEncontrado ? 'Documento no encontrado' : 'Sin nombre');
+  const v = veredicto(f, nombre.split(' ')[0], consulta.estado);
   const fuentes: any[] = f?.sarblock?.catalog ?? [];
+  // Antes decía "27 fuentes revisadas" aunque 22 no se hubieran revisado.
   const limpias = fuentes.filter(x => x.status === 'CLEAR' || x.status === 'VERIFIED').length;
+  const noAplicaron = fuentes.filter(x => x.status === 'SKIPPED' || x.status === 'NOT_FOUND').length;
+  const noDisponibles = fuentes.filter(x => x.status === 'UNAVAILABLE' || x.status === 'ERROR').length;
   const motivos: any[] = f?.hallazgos ?? [];
   const descargar = async () => {
     setPdf(true);
@@ -150,8 +156,9 @@ export const Resultado: React.FC<{ consulta: any; compacto?: boolean; acciones?:
         </div>
       </div>
       <div style={{ padding: compacto ? '14px 20px' : '16px 24px', display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 12.5, color: C.sub }}>
-        <span><b style={{ color: C.texto }}>{fuentes.length}</b> fuentes revisadas</span>
         <span><b style={{ color: C.texto }}>{limpias}</b> sin novedad</span>
+        {noAplicaron > 0 && <span><b style={{ color: C.texto }}>{noAplicaron}</b> no aplicaron</span>}
+        {noDisponibles > 0 && <span><b style={{ color: C.ambar }}>{noDisponibles}</b> {noDisponibles === 1 ? 'no respondió' : 'no respondieron'}</span>}
         {motivos.length > 0 && <span><b style={{ color: v.c }}>{motivos.length}</b> {motivos.length === 1 ? 'hallazgo' : 'hallazgos'}</span>}
       </div>
       {motivos.length > 0 && (
@@ -358,11 +365,19 @@ export const RiskCliente: React.FC = () => {
   useEffect(() => { const t = setTimeout(cargarHist, 220); return () => clearTimeout(t); }, [cargarHist]);
   useEffect(() => () => { if (sondeo.current) clearInterval(sondeo.current); }, []);
 
-  // El tipo se detecta solo: un guion o 9 dígitos que empiezan por 8 o 9
-  // son un NIT. Siempre se puede cambiar a mano.
+  // El tipo se PRESELECCIONA por la forma del número (lib/nit tipoProbable:
+  // un NIT con su dígito de verificación, 9 dígitos que empiezan por 8 o 9, o
+  // un guion = empresa), pero siempre se elige a mano. Si lo elegido no
+  // cuadra con el número, se avisa; el servidor vuelve a preguntar antes de
+  // cobrar. Visto el 2026-10-30: un NIT de 10 dígitos (con DV) quedaba en
+  // "Persona" y la consulta se gastó sin resultado.
   const digitos = doc.replace(/\D/g, '');
-  const pareceNit = /-/.test(doc) || (/^[89]\d{8}$/.test(digitos));
+  const probable = tipoProbable(doc);
+  const pareceNit = /-/.test(doc) || probable.tipo === 'empresa';
   const esEmpresa = empresaForzada ?? pareceNit;
+  const choca = probable.tipo !== null && empresaForzada !== null && (probable.tipo === 'empresa') !== empresaForzada;
+  const [confirmar, setConfirmar] = useState<null | { tipo: 'empresa' | 'persona'; motivo: string }>(null);
+  useEffect(() => { setConfirmar(null); }, [doc, esEmpresa, tipoDoc]);
   // Mientras se escribe: ¿ya está consultada? Si sí y está vigente, se
   // muestra de una y no hace falta volver a consultar.
   useEffect(() => {
@@ -381,11 +396,13 @@ export const RiskCliente: React.FC = () => {
   };
   const listo = digitos.length >= 5 && autorizado && (!esEmpresa || nombre.trim().length >= 3) && (cuenta?.saldo ?? 0) > 0;
 
-  const consultar = async () => {
+  const consultar = async (confirmarTipo = false) => {
     if (!listo || fase === 'consultando') return;
-    setError(null); setActual(null); setFase('consultando');
-    const r = await llamar('risk_consultar', { tipoPersona: esEmpresa ? 'juridica' : 'natural', tipoDocumento: esEmpresa ? 'NIT' : tipoDoc, documento: doc, nombre, autorizado });
+    setError(null); setActual(null); setConfirmar(null); setFase('consultando');
+    const r = await llamar('risk_consultar', { tipoPersona: esEmpresa ? 'juridica' : 'natural', tipoDocumento: esEmpresa ? 'NIT' : tipoDoc, documento: doc, nombre, autorizado, confirmarTipo });
     refrescar();
+    // El servidor vio que el número no cuadra con el tipo: pregunta antes de cobrar.
+    if (r?.confirmarTipo) { setConfirmar({ tipo: r.confirmarTipo, motivo: r.motivo }); setFase('form'); return; }
     if (!r?.ok) { setError({ t: r?.motivo ?? 'No se pudo consultar.', sinSaldo: r?.sinSaldo }); setFase('form'); return; }
     const terminar = (c: any) => { setActual(c); setFase('resultado'); cargarHist(); refrescar(); };
     if (r.existente) setAviso('Ya la tenías consultada y sigue vigente: no se usó ninguna consulta.');
@@ -435,7 +452,7 @@ export const RiskCliente: React.FC = () => {
                 placeholder="Cédula o NIT de la persona o empresa" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.texto, fontSize: 16, fontFamily: 'inherit', padding: '10px 0' }} />
               {vigenteYa
                 ? <button onClick={verExistente} style={{ ...BTN, height: 42 }}>Ver consulta</button>
-                : <button onClick={consultar} disabled={!listo} style={{ ...BTN, height: 42, opacity: listo ? 1 : 0.35, cursor: listo ? 'pointer' : 'not-allowed' }}>{existente ? 'Consultar de nuevo' : 'Consultar'}</button>}
+                : <button onClick={() => consultar()} disabled={!listo} style={{ ...BTN, height: 42, opacity: listo ? 1 : 0.35, cursor: listo ? 'pointer' : 'not-allowed' }}>{existente ? 'Consultar de nuevo' : 'Consultar'}</button>}
             </div>
 
             {existente && (
@@ -464,14 +481,34 @@ export const RiskCliente: React.FC = () => {
                       <option value="CC">Cédula</option><option value="CE">Cédula de extranjería</option><option value="PPT">PPT</option><option value="PP">Pasaporte</option>
                     </select>
                   )}
-                  {pareceNit && empresaForzada === null && <span style={{ fontSize: 11.5, color: C.tenue }}>Parece un NIT</span>}
+                  {empresaForzada === null && probable.seguro && <span style={{ fontSize: 11.5, color: C.tenue }}>{probable.tipo === 'empresa' ? `Detectamos un NIT de empresa (${probable.nit})` : 'Detectamos una cédula'}</span>}
+                  {empresaForzada === null && !probable.seguro && pareceNit && <span style={{ fontSize: 11.5, color: C.tenue }}>Parece un NIT</span>}
                 </div>
+                {/* Lo elegido a mano no cuadra con el número: se avisa, sin cambiar nada. */}
+                {choca && (
+                  <div className="lr-entra" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 12, padding: '9px 12px' }}>
+                    <span style={{ fontSize: 12.5, color: '#FCD34D' }}>⚠ Este número parece {probable.tipo === 'empresa' ? `un NIT de empresa${probable.nit ? ` (${probable.nit})` : ''}` : 'una cédula de persona'}.</span>
+                    <button onClick={() => setEmpresaForzada(probable.tipo === 'empresa')} className="lr-chip" style={{ padding: '5px 12px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', background: 'transparent', color: C.texto, border: '1px solid rgba(255,255,255,0.2)' }}>
+                      Cambiar a {probable.tipo === 'empresa' ? 'Empresa' : 'Persona'}
+                    </button>
+                  </div>
+                )}
                 <input value={nombre} onChange={e => setNombre(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') consultar(); }}
                   placeholder={esEmpresa ? 'Razón social (obligatoria)' : 'Nombre completo (opcional, confirma que el documento es suyo)'} style={INP} />
                 <label style={{ display: 'flex', gap: 9, alignItems: 'flex-start', fontSize: 12, color: C.sub, lineHeight: 1.45, cursor: 'pointer' }}>
                   <input type="checkbox" checked={autorizado} onChange={e => setAutorizado(e.target.checked)} style={{ width: 15, height: 15, marginTop: 1, accentColor: '#4ADE80', flexShrink: 0 }} />
                   Tengo autorización del titular o una finalidad legítima de debida diligencia.
                 </label>
+              </div>
+            )}
+            {/* El servidor pidió confirmar el tipo antes de cobrar. */}
+            {confirmar && (
+              <div className="lr-entra" style={{ marginTop: 14, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 12, padding: '12px 14px' }}>
+                <p style={{ margin: 0, fontSize: 13, color: '#FCD34D', lineHeight: 1.5 }}>{confirmar.motivo} No se ha usado ninguna consulta.</p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  <button onClick={() => { setEmpresaForzada(confirmar.tipo === 'empresa'); setConfirmar(null); }} style={{ ...BTN, height: 34, fontSize: 12.5 }}>Cambiar a {confirmar.tipo === 'empresa' ? 'Empresa' : 'Persona'}</button>
+                  <button onClick={() => consultar(true)} style={{ ...BTN2, height: 34, fontSize: 12.5 }}>Consultar igual como {esEmpresa ? 'empresa' : 'persona'}</button>
+                </div>
               </div>
             )}
             {error && (

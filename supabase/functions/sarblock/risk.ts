@@ -245,3 +245,23 @@ export async function resumen(db: any, cfg: ConfigRisk) {
     comprasProveedor: cajas.map(c => ({ id: c.id, at: c.at, unidades: c.unidades, costoTotal: Number(c.costo_total), nota: c.nota, por: c.por })),
   }
 }
+
+// ── ¿Persona o empresa? ──────────────────────────────────────────────────
+// Por la forma del número. Solo AVISA: el cliente elige. 'seguro' es cuando
+// no hay duda razonable (un NIT de empresa con su dígito de verificación
+// correcto, o una cédula nueva de 10 dígitos que empieza por 1).
+const PESOS_DV = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71]
+export function dvNit(base: string): number {
+  let suma = 0
+  for (let i = 0; i < base.length; i++) suma += Number(base[base.length - 1 - i]) * PESOS_DV[i]
+  const r = suma % 11
+  return r > 1 ? 11 - r : r
+}
+export function tipoProbable(documento: string): { tipo: 'empresa' | 'persona' | null; seguro: boolean; nit?: string } {
+  const d = String(documento ?? '').replace(/\D/g, '')
+  if (/^[89]\d{9}$/.test(d) && dvNit(d.slice(0, 9)) === Number(d[9])) return { tipo: 'empresa', seguro: true, nit: `${d.slice(0, 9)}-${d[9]}` }
+  if (/^[89]\d{8}$/.test(d)) return { tipo: 'empresa', seguro: false, nit: `${d}-${dvNit(d)}` }
+  if (/^1\d{9}$/.test(d)) return { tipo: 'persona', seguro: true }
+  if (/^\d{6,8}$/.test(d)) return { tipo: 'persona', seguro: false }
+  return { tipo: null, seguro: false }
+}
