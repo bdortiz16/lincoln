@@ -969,6 +969,8 @@ async function detalle(c: Config, reportId: string) {
 // sirve autenticado y mandar megas en base64 por esta función es pedir un
 // tiempo de espera agotado.
 async function enviarAKumplo(c: Config, ficha: Ficha, empresaId: string, crudo: unknown) {
+  // Kumplo se retiró de Lincoin el 2026-10-30: ya no se le envía nada.
+  if (true) return { ok: false, motivo: 'Kumplo fue retirado de Lincoin.' }
   if (!c.enviarAKumplo || !KUMPLO_KEY || !c.kumploBaseUrl || !c.kumploRutaResultado) return { ok: false, motivo: 'envío a Kumplo apagado o sin configurar' }
   const url = `${c.kumploBaseUrl.replace(/\/+$/, '')}${c.kumploRutaResultado.startsWith('/') ? '' : '/'}${c.kumploRutaResultado}`
   try {

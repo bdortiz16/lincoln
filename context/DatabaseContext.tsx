@@ -1082,17 +1082,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       body: JSON.stringify({ action: 'notify_login', userId: uid }),
     }).catch(() => { /* el aviso nunca puede estorbar el ingreso */ });
 
-    // ── Alta en Kumplo + consulta AML ────────────────────────────────────
-    // Va acá y no en el registro porque al inscribirse todavía no siempre hay
-    // sesión abierta, y sin sesión el servidor no puede saber de quién se
-    // trata. Además así quedan cubiertas las cuentas que ya existían antes de
-    // la integración. El servidor decide: si está apagada, o si esta cuenta no
-    // entra en la prueba, no hace nada. Y si ya tiene id, no repite el alta.
-    fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/kumplo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: 'inscribir', userId: uid }),
-    }).catch(() => { /* una prueba de cumplimiento no puede romper el ingreso */ });
+    // (Aquí se daba de alta a la cuenta en Kumplo en cada ingreso. Kumplo se
+    // retiró de Lincoin el 2026-10-30: el AML lo hace Sarblock.)
   }, [currentUser?.id]);
 
   // ¿El SERVIDOR reconoce esta sesión como verificada con 2FA? La marca

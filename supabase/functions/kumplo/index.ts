@@ -515,6 +515,13 @@ Deno.serve(async (req: Request) => {
   try {
     const body = await req.json().catch(() => ({} as any))
     const accion = String(body.action ?? '')
+
+    // ── KUMPLO RETIRADO (2026-10-30) ─────────────────────────────────────
+    // Lincoin dejó de usar Kumplo: el AML de beneficiarios lo hace Sarblock.
+    // La función queda como fachada mientras se limpia el resto (bloque 3):
+    // responde "retirado" a todo y no llama a Kumplo. Lo que hay debajo
+    // queda sin uso hasta que se borre.
+    if (accion) return json({ ok: false, retirado: true, motivo: 'Kumplo fue retirado de Lincoin.' })
     const yo = await quienLlama(req)
 
     // ── Configuración (solo admin) ───────────────────────────────────────
