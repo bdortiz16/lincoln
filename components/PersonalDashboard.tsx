@@ -1274,6 +1274,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // la CELEBRACIÓN TEMPRANA: apenas el saldo sube (segundos después de que
   // envían), sale el cuadro verde, sin esperar la acreditación completa.
   const gasfreeBalPrevRef = useRef<number | null>(null);
+  // Primera lectura más baja, pendiente de confirmar en la siguiente.
+  const gasfreeBajadaRef = useRef<number | null>(null);
   const lastCelebrationRef = useRef<{ amount: number; at: number } | null>(null);
   // ¿Ya se celebró este depósito hace un momento (misma plata, < 3 min)?
   // Evita el cuadro verde DOBLE: uno al detectar la llegada y otro al
@@ -1298,8 +1300,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               showDepositReceived(delta);   // cuadro esquina: "Recibido → acreditando…"
               lastCelebrationRef.current = { amount: delta, at: Date.now() };
           }
-          if (bal != null) gasfreeBalPrevRef.current = bal;
-          setGasfreeBal(bal);
+          // Una bajada solo mueve la base de la celebración si se repite en la
+          // lectura siguiente. Una lectura fallida de TronGrid (0 por un
+          // instante) seguida de la normal se veía como "subió" y le salía al
+          // cliente "+0,90 USDT" una y otra vez por un sobrante viejo (XATECH).
+          if (bal != null) {
+              if (prev != null && bal < prev - 0.001 && gasfreeBajadaRef.current == null) {
+                  gasfreeBajadaRef.current = bal;
+              } else {
+                  gasfreeBalPrevRef.current = bal;
+                  gasfreeBajadaRef.current = null;
+              }
+          }
+          // Sin lectura (null) se conserva el saldo que ya se mostraba.
+          if (bal != null || gasfreeBalPrevRef.current == null) setGasfreeBal(bal);
       } finally {
           setGasfreeBalChecked(true);
       }
