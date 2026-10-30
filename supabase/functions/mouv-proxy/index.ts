@@ -427,7 +427,7 @@ function brebTypeToMouv(t: string, keyValue?: string): 'PHONE' | 'EMAIL' | 'ALPH
 // (nombre/documento), su banco, el keyType autoritativo y la LLAVE que sí
 // funcionó (matchedKey) para usarla también en el envío.
 async function mouvResolveBrebKey(rawKey: string, keyType?: string): Promise<{
-  found: boolean; matchedKey: string; fullName?: string; idValue?: string; keyType?: string; bank?: string; raw?: any;
+  found: boolean; matchedKey: string; fullName?: string; idValue?: string; keyType?: string; bank?: string; raw?: any; caido?: boolean;
 }> {
   const key = String(rawKey ?? '').trim()
   const kt = String(keyType ?? '').trim().toLowerCase()
@@ -440,11 +440,18 @@ async function mouvResolveBrebKey(rawKey: string, keyType?: string): Promise<{
     for (const v of [d10, `+57${d10}`, `57${d10}`]) if (!variants.includes(v)) variants.push(v)
   }
   let lastRaw: any = null
+  // ¿Mouv contestó de verdad alguna vez? Si todas las variantes fallaron por
+  // el proveedor (sin respuesta, 5xx, 401/403, 408, 429), "no encontrada"
+  // sería mentira: al cliente le salía "La llave no existe" con el
+  // directorio caído (MEXITECH, 30 oct) y terminaba inscribiendo por ACH.
+  let respondio = false
   for (const kv of variants) {
     try {
       const rk = await mouvFetch('/transfers/resolve-key', { method: 'POST', body: JSON.stringify({ keyValue: kv }) })
       const rd: any = rk.data ?? {}
       lastRaw = rd
+      const fallaProveedor = rk.status === 0 || rk.status >= 500 || [401, 403, 408, 429].includes(rk.status)
+      if (!fallaProveedor) respondio = true
       if (!rk.ok) continue
       const rec = rd.recipient ?? rd.holder ?? {}
       const fullName = pick(rec.fullName, rec.name, rec.holderName, rd.fullName, rd.name)
@@ -459,7 +466,7 @@ async function mouvResolveBrebKey(rawKey: string, keyType?: string): Promise<{
       }
     } catch { /* siguiente variante */ }
   }
-  return { found: false, matchedKey: key, raw: lastRaw }
+  return { found: false, matchedKey: key, raw: lastRaw, caido: !respondio }
 }
 
 // El id que Mouv le pone a la operación, sacado de su respuesta al ENVIAR.
@@ -2091,6 +2098,7 @@ serve(async (req: Request) => {
       await logAudit(duenoBreb, 'mouv.breb_consulta', { tipo: String((payload as any).keyType ?? '') })
     }
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
+    if (!rr.found && rr.caido) return json(200, { ok: false, error: 'directorio_caido', message: 'El directorio Bre-B no responde en este momento. Intenta de nuevo en unos minutos o envía por ACH.' })
     if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.' })
     return json(200, { ok: true, found: true, matchedKey: rr.matchedKey, fullName: rr.fullName ?? null, idValue: rr.idValue ?? null, keyType: rr.keyType ?? null, bank: rr.bank ?? null })
   }
