@@ -250,17 +250,29 @@ async function finityFetch(path: string, init: RequestInit = {}): Promise<Respon
 // backend del portal prod.finity.com.co:444, que expone rutas que la API
 // de socios api.finity.com.co no tiene).
 async function finityFetchAbs(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = await getFinityToken()
-  return fetch(url, {
+  const pedir = async () => fetch(url, {
     ...init,
     headers: {
       accept: 'application/json',
       'content-type': 'application/json',
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${await getFinityToken()}`,
       ...(init.headers ?? {}),
     },
     signal: init.signal ?? AbortSignal.timeout(15000),
   })
+  const res = await pedir()
+  // Token rechazado ("Invalid or expired token"): el token vive en la memoria
+  // de ESTA instancia y no se renovaba hasta vencer. Si Finity deja un solo
+  // token activo por credencial, otra instancia que pide uno nuevo deja el
+  // nuestro inválido (visto el 2026-10-30: 401 en dos envíos Bre-B · Cuenta 2
+  // seguidos). Un 401 no procesó nada, así que se pide otro y se reintenta
+  // UNA vez. Con un cuerpo de un solo uso (stream) no se puede repetir.
+  if (res.status === 401 && (init.body == null || typeof init.body === 'string')) {
+    console.warn('[finity] 401: se renueva el token y se reintenta una vez')
+    tokenCache = null
+    return pedir()
+  }
+  return res
 }
 
 // ─── Login del PORTAL de Finity (prod.finity.com.co:444) ───
