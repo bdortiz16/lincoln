@@ -1822,6 +1822,13 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                 Emitir en lote · {nLote}
               </button>
             )}
+            {/* Apagada, no se emite nada (ni a mano ni en lote): se dice dónde
+                se enciende, en vez de que los botones simplemente no estén. */}
+            {!soloLectura && !!cfgFact && facturacionActiva === false && (
+              <span style={{ fontSize: 12, color: AMBAR, lineHeight: 1.4, maxWidth: 340 }}>
+                La facturación está apagada: para emitir (una por una o en lote), actívala arriba con «Automática apagada».
+              </span>
+            )}
             {((!soloLectura && !!cfgFact) || (soloLectura && Object.values(folios).some((f: any) => !!f?.factura?.numero))) && (
               <button onClick={() => setDupAbierto(true)}
                 title="Busca en Siigo movimientos con más de una factura vigente y facturas que Lincoin no tiene registradas"
