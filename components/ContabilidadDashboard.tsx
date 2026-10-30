@@ -102,6 +102,15 @@ const beneficiarioDe = (tx: any): ClienteFactura | null => {
 };
 // Los modelos de mandato (factura de terceros + comisión con IVA incluido):
 // Comisión, al ordenante; PSP, al beneficiario.
+// El tercero del movimiento: a quién se le envió o de quién llegó (misma
+// lectura que contraparteDe en el servidor). Si es la misma empresa (un envío
+// a una cuenta propia, un cargue desde ella), es utilidad o gasto de la
+// empresa y lo registra su contador: no se factura en ningún modelo.
+const docContraparte = (tx: any): string => {
+  const rd: any = tx?.raw_data ?? tx ?? {};
+  const rc: any = tx?.recipient ?? rd?.recipient ?? {};
+  return String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '');
+};
 const esModeloMandato = (modelo: unknown) => modelo === 'comision' || modelo === 'psp';
 // PSP: con un cliente persona jurídica con NIT colombiano, la comisión lleva
 // «Retefuente comisiones 11 %» sobre su base (misma búsqueda que el servidor).
@@ -801,10 +810,10 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
             {aSiMisma.length > 0 && (
               <>
                 {titulo(`A NOMBRE DE LA MISMA EMPRESA · ${aSiMisma.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
-                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas emitidas a la misma empresa que factura (pagos propios con la empresa como ordenante). Una empresa no se factura a sí misma: anúlalas con una nota crédito en Siigo. Lincoin ya no emite estas facturas.</p>
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas de movimientos con la misma empresa: a su nombre (pagos propios con la empresa como ordenante) o de envíos a una cuenta propia. Esas salidas son utilidades o gastos de la empresa y las registra su contador: anúlalas con una nota crédito en Siigo. Lincoin ya no emite estas facturas, en ningún modelo.</p>
                 {aSiMisma.map(d => (
                   <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
-                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}</p>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.cuenta_propia ? ' · cuenta propia' : ''}</p>
                     {(d.facturas as FacturaRev[]).map(f => fila(f, { txt: 'anular', color: AMBAR }))}
                   </div>
                 ))}
@@ -867,6 +876,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // como ordenante (un pago propio) no se ofrece para facturar.
   const nitPropio = baseDoc(ficha?.nit);
   const esPropio = (doc?: string | null) => nitPropio.length >= 6 && !!doc && baseDoc(doc) === nitPropio;
+  const movPropio = (tx: any) => esPropio(docContraparte(tx));
   const [contadorAbierto, setContadorAbierto] = useState(false);
   const [estadoAbierto, setEstadoAbierto] = useState(false);
   // Terceros: a quién se le envió ('out') o de quién se recibió ('in'), y el
@@ -1074,6 +1084,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // Solo los envíos se facturan (un cargue/depósito no lleva factura en
   // estos modelos).
   const botonSegunTipo = (a: Asiento, txId: string) => {
+    if (movPropio(a.tx)) return null;
     if (esMandato) return a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) ? botonFacturaComision(a) : null;
     return botonEmitir(txId);
   };
@@ -1089,7 +1100,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const tipoTx = String(a.tx?.type ?? '');
     if (!SALE.has(tipoTx) && !ENTRA.has(tipoTx)) return null;
     const txId = String(a.tx?.id ?? '');
-    if (!txId) return null;
+    if (!txId || movPropio(a.tx)) return null;
     const fa = folios[txId]?.factura;
     const est = fa?.estado ?? null;
     if (est === 'emitida' || est === 'en_cola') return null;
@@ -1877,7 +1888,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad|esperar/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
-                            <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
+                            <span style={{ color: C.tenue }} title={f && movPropio(a.tx) ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : undefined}>{f && facturacionActiva ? (movPropio(a.tx) ? 'no aplica · cuenta propia' : 'pendiente') : '—'}</span>
                             {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                           </span>
                         );
@@ -1891,7 +1902,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
                                   emitir al mismo cliente, con el cálculo vigente.
                                   Solo un envío: un depósito no lleva factura. */}
-                              {fa.estado === 'anulada' && esMandato && a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) && completado && facturacionActiva && txId && !soloLectura
+                              {fa.estado === 'anulada' && esMandato && a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) && !movPropio(a.tx) && completado && facturacionActiva && txId && !soloLectura
                                 ? <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
                                     title="Emite una factura nueva al mismo cliente de la anulada: terceros por el valor completo + la comisión"
                                     style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>

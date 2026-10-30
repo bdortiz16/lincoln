@@ -589,7 +589,16 @@ async function documentosPropios(userId: string): Promise<Set<string>> {
   const esEmpresa = !!docEmpresa && (x.role === 'business' || !!(x.company_name ?? rd.companyName))
   return new Set([docEmpresa, esEmpresa ? '' : docPersona].filter(d => d.length >= 6))
 }
-const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es la misma empresa que factura: una empresa no se factura a sí misma. No se emitió.`
+const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es la misma empresa que factura: una empresa no se factura a sí misma (un pago propio es gasto de la empresa y lo registra su contador). No se emitió.`
+// El MOVIMIENTO es con la misma empresa: un envío a una cuenta propia, o un
+// cargue desde ella. No es una operación con un tercero: esas salidas son
+// utilidades o gastos de la empresa y las registra su contador. No llevan
+// factura en ningún modelo. En Comisión antes solo se miraba al ordenante, y
+// un envío a la cuenta propia con un ordenante de otro cliente se facturaba.
+const MSG_CUENTA_PROPIA = (doc: string, salida: boolean) => salida
+  ? `El envío es a una cuenta de la misma empresa (${doc}): es utilidad o gasto de la empresa y lo registra su contador. No se emite factura.`
+  : `El ingreso llega de una cuenta de la misma empresa (${doc}): es un movimiento propio y lo registra su contador. No se emite factura.`
+const esDePropios = (cp: { esDefault: boolean; identification: string }, propios: Set<string>) => !cp.esDefault && propios.has(baseDoc(cp.identification))
 
 function partirNit(doc: string): { identification: string; check_digit?: string } {
   if (doc.length === 10 && dvNit(doc.slice(0, 9)) === Number(doc[9])) return { identification: doc.slice(0, 9), check_digit: doc[9] }
@@ -1045,8 +1054,8 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   const cp = contraparteDe(comp, cfg)
   // A nombre de la misma empresa (un envío a una cuenta propia, un depósito
   // desde ella): no se emite. Una anulada no se toca.
-  if (!cp.esDefault && (await documentosPropios(userId)).has(baseDoc(cp.identification))) {
-    const e = MSG_MISMA_EMPRESA(cp.identification)
+  if (esDePropios(cp, await documentosPropios(userId))) {
+    const e = MSG_CUENTA_PROPIA(cp.identification, esSalida)
     if ((comp as any).factura_estado === 'anulada') return { ok: false, error: e }
     await marcar({ factura_estado: 'omitida', factura_error: e })
     return { ok: true, estado: 'omitida', aviso: e }
@@ -1417,15 +1426,21 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (!(pct > 0)) return falla('Falta el porcentaje de comisión (Configuración → comisión sobre depósitos, o escribilo al emitir).')
   const identification = String(d.identification ?? '').replace(/\D/g, '')
   if (!identification) return falla('Falta el documento del cliente al que se le factura.')
-  // A nombre de la misma empresa: no se factura. Queda «no aplica» con el
-  // motivo; una anulada (o su reemplazo fallido) no se toca, o se perdería
-  // que estuvo facturada y anulada.
-  if ((await documentosPropios(userId)).has(baseDoc(identification))) {
-    const e = MSG_MISMA_EMPRESA(identification)
-    const conHistoria = (comp as any).factura_estado === 'anulada' || (Array.isArray(detPrevio.anteriores) && detPrevio.anteriores.length > 0)
-    if (conHistoria) return { ok: false, error: e }
-    await marcar({ factura_estado: 'omitida', factura_error: e })
-    return { ok: true, estado: 'omitida', aviso: e }
+  // Con la misma empresa: no se factura. Ni si el envío fue a una cuenta
+  // propia (aunque el ordenante sea otro cliente), ni si el cliente de la
+  // factura es la empresa. Queda «no aplica» con el motivo; una anulada (o su
+  // reemplazo fallido) no se toca, o se perdería que estuvo facturada y anulada.
+  {
+    const propios = await documentosPropios(userId)
+    const mov = contraparteDe(comp, cfg)
+    const e = esDePropios(mov, propios) ? MSG_CUENTA_PROPIA(mov.identification, SALIDAS.includes(String((tx as any).type)))
+      : propios.has(baseDoc(identification)) ? MSG_MISMA_EMPRESA(identification) : null
+    if (e) {
+      const conHistoria = (comp as any).factura_estado === 'anulada' || (Array.isArray(detPrevio.anteriores) && detPrevio.anteriores.length > 0)
+      if (conHistoria) return { ok: false, error: e }
+      await marcar({ factura_estado: 'omitida', factura_error: e })
+      return { ok: true, estado: 'omitida', aviso: e }
+    }
   }
 
   const partner = cfg.partner_id || 'Lincoin'
@@ -1803,7 +1818,7 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
   const lcs = [...porLc.keys()]
   const comps = new Map<string, any>()
   for (let i = 0; i < lcs.length; i += 200) {
-    const { data, error } = await db.from('comprobantes').select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_id, factura_numero, factura_detalle')
+    const { data, error } = await db.from('comprobantes').select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, detalle, factura_estado, factura_id, factura_numero, factura_detalle')
       .eq('user_id', userId).in('numero', lcs.slice(i, i + 200))
     if (error) return { ok: false, error: error.message }
     for (const c of (data ?? []) as any[]) comps.set(String(c.numero), c)
@@ -1826,10 +1841,14 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
       folio: c.folio, comprobante: lc, transaction_id: c.transaction_id, tipo: DISPARADORES[String(c.tipo)] ?? String(c.tipo),
       monto: c.monto, moneda: c.moneda, fecha: c.emitido_at, estado: c.factura_estado, registrada: c.factura_numero ?? null,
     }
-    const propias = vigentes.filter(f => propios.has(baseDoc(f.cliente)))
-    if (propias.length) aSiMisma.push({ ...mov, facturas: propias })
+    // Un envío a una cuenta propia facturado a otro cliente (el ordenante, en
+    // Comisión) también sobra: el movimiento es utilidad o gasto de la empresa.
+    const cuentaPropia = esDePropios(contraparteDe(c, cfg), propios)
+    const propias = cuentaPropia ? vigentes : vigentes.filter(f => propios.has(baseDoc(f.cliente)))
+    if (propias.length) aSiMisma.push({ ...mov, cuenta_propia: cuentaPropia, facturas: propias })
     if (vigentes.length >= 2) duplicadas.push({ ...mov, facturas: lista })
-    else if (vigentes.length === 1 && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
+    // Una que se tiene que anular (a la misma empresa) no se ofrece registrar.
+    else if (vigentes.length === 1 && !propias.length && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
     for (const f of vigentes) {
       const k = `${f.cliente}|${Math.round(f.total)}`
       deLincoinPorClave.set(k, [...(deLincoinPorClave.get(k) ?? []), { ...f, comprobante: lc }])
@@ -1982,6 +2001,9 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       if (est === 'emitiendo' && Date.parse(String(comp.factura_at ?? '')) > Date.now() - 180000) { no('Se está emitiendo ahora.'); continue }
       const det: any = comp.factura_detalle ?? {}
       const salida = SALIDAS.includes(String(tx.type))
+      // Con una cuenta de la misma empresa: no se factura en ningún modelo.
+      const mov = contraparteDe({ detalle: { raw_data: tx.raw_data ?? {} }, tipo: tx.type }, cfg)
+      if (esDePropios(mov, propios)) { no(MSG_CUENTA_PROPIA(mov.identification, salida)); continue }
       let lote: Record<string, unknown>
       if (esMandato(cfg)) {
         const yaFueAnulada = est === 'anulada' || (est === 'error' && Array.isArray(det.anteriores) && det.anteriores.length > 0)
@@ -2008,7 +2030,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
             cli = docO ? { identification: docO, nombre: String(o?.nombre ?? ''), esEmpresa: String(o?.docTipo ?? '') === 'NIT' } : elegido
           }
           if (!cli) { no('No tiene ordenante y no se eligió a qué cliente facturarlo.'); continue }
-          if (propios.has(baseDoc(cli.identification))) { no(modelo === 'psp' ? 'El beneficiario es la misma empresa (un pago a una cuenta propia): no se factura.' : 'El ordenante es la misma empresa (un pago propio): no se factura.'); continue }
+          if (propios.has(baseDoc(cli.identification))) { no('El ordenante es la misma empresa (un pago propio, gasto de la empresa que registra su contador): no se factura.'); continue }
           if (!(pct > 0)) { no('Falta el porcentaje de comisión.'); continue }
           lote = { modo: 'comision', cliente: cli, pct }
         }
@@ -3292,8 +3314,11 @@ Deno.serve(async (req) => {
       } : null
       // ¿La factura es (o era) a nombre de la misma empresa? Entonces no se
       // ofrece volver a emitirla, y se dice por qué.
+      // También si el movimiento es con una cuenta propia (utilidad o gasto
+      // de la empresa), aunque la factura haya salido a nombre de otro.
       const clienteFact = c.factura_detalle?.comision?.cliente?.identification ?? enviado?.customer?.identification ?? null
-      const mismaEmpresa = !!clienteFact && (await documentosPropios(userId)).has(baseDoc(clienteFact))
+      const propiosDoc = await documentosPropios(userId)
+      const mismaEmpresa = (!!clienteFact && propiosDoc.has(baseDoc(clienteFact))) || esDePropios(contraparteDe(c, cfg ?? {}), propiosDoc)
       return json({
         ok: true,
         comprobante: { folio: c.folio, numero: c.numero, tipo: c.tipo, monto: c.monto, moneda: c.moneda, emitido_at: c.emitido_at },
