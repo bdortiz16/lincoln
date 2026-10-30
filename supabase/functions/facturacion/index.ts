@@ -616,14 +616,23 @@ function dvNit(base: string): number | null {
 const baseDoc = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 10 ? d.slice(0, 9) : d }
 // El NIT de la empresa (o el documento de la persona) dueña de la cuenta,
 // con la misma regla que la ficha del cliente en las facturas de Lincoin.
-async function documentosPropios(userId: string): Promise<Set<string>> {
+// La razón social sin tildes, puntos ni sigla societaria: «MEXITECH
+// SOLUTIONS S.A.S» y «Mexitech Solutions SAS» son la misma.
+const nombreBase = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+  .replace(/[^A-Z0-9 ]+/g, ' ').replace(/\b(S ?A ?S|S ?A|LTDA|LIMITADA|E ?U|S EN C|S ?C ?A)\b/g, ' ').replace(/\s+/g, ' ').trim()
+type Propios = Set<string> & { nombres?: Set<string> }
+async function documentosPropios(userId: string): Promise<Propios> {
   const { data: u } = await db.from('users').select('*').eq('id', userId).maybeSingle()
   const x: any = u ?? {}
   const rd = (x.raw_data ?? {}) as Record<string, any>
   const docEmpresa = baseDoc(x.tax_id ?? rd.taxId ?? rd.nit)
   const docPersona = baseDoc(x.doc_number ?? rd.docNumber)
   const esEmpresa = !!docEmpresa && (x.role === 'business' || !!(x.company_name ?? rd.companyName))
-  return new Set([docEmpresa, esEmpresa ? '' : docPersona].filter(d => d.length >= 6))
+  const s: Propios = new Set([docEmpresa, esEmpresa ? '' : docPersona].filter(d => d.length >= 6))
+  // Solo la razón social de una EMPRESA: el nombre de una persona se repite.
+  const nombre = esEmpresa ? nombreBase(x.company_name ?? rd.companyName) : ''
+  s.nombres = new Set(nombre.length >= 4 ? [nombre] : [])
+  return s
 }
 const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es la misma empresa que factura: una empresa no se factura a sí misma (un pago propio es gasto de la empresa y lo registra su contador). No se emitió.`
 // El MOVIMIENTO es con la misma empresa: un envío a una cuenta propia, o un
@@ -631,10 +640,15 @@ const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es
 // utilidades o gastos de la empresa y las registra su contador. No llevan
 // factura en ningún modelo. En Comisión antes solo se miraba al ordenante, y
 // un envío a la cuenta propia con un ordenante de otro cliente se facturaba.
-const MSG_CUENTA_PROPIA = (doc: string, salida: boolean) => salida
+const MSG_CUENTA_PROPIA = (cp: Contraparte, salida: boolean, doc = cp.esDefault ? String(cp.nombreMov ?? '') : cp.identification) => salida
   ? `El envío es a una cuenta de la misma empresa (${doc}): es utilidad o gasto de la empresa y lo registra su contador. No se emite factura.`
   : `El ingreso llega de una cuenta de la misma empresa (${doc}): es un movimiento propio y lo registra su contador. No se emite factura.`
-const esDePropios = (cp: { esDefault: boolean; identification: string }, propios: Set<string>) => !cp.esDefault && propios.has(baseDoc(cp.identification))
+// Con documento, manda el documento. Sin él (un Bre-B por llave que no
+// guardó ninguno: «MEXITECH SOLUTIONS S.A.S», sin NIT, se ofrecía facturar),
+// la razón social de la empresa.
+const esDePropios = (cp: Contraparte, propios: Propios) => cp.esDefault
+  ? !!cp.nombreMov && !!propios.nombres?.has(nombreBase(cp.nombreMov))
+  : propios.has(baseDoc(cp.identification))
 
 // ── Ajustes de saldo: no se facturan ──────────────────────────────
 // Un ajuste de saldo lo hace Lincoin para corregir un error del admin al
@@ -667,7 +681,7 @@ function partirNit(doc: string): { identification: string; check_digit?: string 
 // rechaza el documento soporte si el tercero no tiene país ("Falta o es
 // inválido el país del tercero", regla vista en DS-1-10).
 type Direccion = { address: string; city: { country_code: string; state_code: string; city_code: string } }
-type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null; email?: string | null }
+type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null; email?: string | null; nombreMov?: string }
 // Sin calle no se inventa una: Siigo exige texto en address y la DIAN solo
 // valida el país, así que va dicho tal cual.
 const SIN_CALLE = 'Sin direccion informada'
@@ -830,7 +844,9 @@ async function lugarDeExpedicion(userId: string, documento: string): Promise<{ c
 function contraparteDe(comp: any, cfg: any): Contraparte {
   const rd = comp?.detalle?.raw_data ?? {}
   const rc = rd.recipient ?? {}
-  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '')
+  // benefDoc: el documento del beneficiario que mouv-proxy guarda aunque el
+  // envío no lo traiga (un Bre-B por llave: el inscrito o el de la llave).
+  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? rd.benefDoc ?? '').replace(/\D/g, '')
   const tipoDoc = String(rd.docType ?? rd.documentType ?? rd.beneficiaryDocType ?? rc.documentType ?? rc.docType ?? '').toUpperCase()
   const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? rc.holderName ?? rc.name ?? comp?.contraparte ?? '').trim()
   if (doc) {
@@ -843,7 +859,7 @@ function contraparteDe(comp: any, cfg: any): Contraparte {
     const partes = esEmpresa ? partirNit(doc) : { identification: doc }
     return { ...partes, nombre: nombre || doc, esDefault: false, esEmpresa, direccion: direccionDe(rd) }
   }
-  return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true, esEmpresa: false, direccion: null }
+  return { identification: String(cfg.cliente_default_nit || '222222222222').replace(/\D/g, ''), nombre: cfg.cliente_default_nombre || 'Consumidor final', esDefault: true, esEmpresa: false, direccion: null, nombreMov: nombre }
 }
 
 const SIN_DIRECCION = (cp: Contraparte, donde: string) =>
@@ -1050,6 +1066,17 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
         pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true,
       })
     }
+    // Un envío a una cuenta de la misma empresa no se factura. Se mira antes
+    // de exigir el documento del beneficiario o el ordenante: sin documento
+    // (Bre-B por llave) se reconoce por la razón social, y no es un error.
+    if (esSalida && !yaFueAnulada) {
+      const mov = contraparteDe(comp, cfg)
+      if (esDePropios(mov, await documentosPropios(userId))) {
+        const e = MSG_CUENTA_PROPIA(mov, true)
+        await marcar({ factura_estado: 'omitida', factura_error: e })
+        return { ok: true, estado: 'omitida', aviso: e }
+      }
+    }
     // A quién. PSP / pasarela: al BENEFICIARIO, con el nombre y documento
     // con que se le envió (el pago es por cuenta suya).
     if (esSalida && String(cfg.modelo) === 'psp') {
@@ -1120,7 +1147,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   // A nombre de la misma empresa (un envío a una cuenta propia, un depósito
   // desde ella): no se emite. Una anulada no se toca.
   if (esDePropios(cp, await documentosPropios(userId))) {
-    const e = MSG_CUENTA_PROPIA(cp.identification, esSalida)
+    const e = MSG_CUENTA_PROPIA(cp, esSalida)
     if ((comp as any).factura_estado === 'anulada') return { ok: false, error: e }
     await marcar({ factura_estado: 'omitida', factura_error: e })
     return { ok: true, estado: 'omitida', aviso: e }
@@ -1509,7 +1536,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   {
     const propios = await documentosPropios(userId)
     const mov = contraparteDe(comp, cfg)
-    const e = esDePropios(mov, propios) ? MSG_CUENTA_PROPIA(mov.identification, SALIDAS.includes(String((tx as any).type)))
+    const e = esDePropios(mov, propios) ? MSG_CUENTA_PROPIA(mov, SALIDAS.includes(String((tx as any).type)))
       : propios.has(baseDoc(identification)) ? MSG_MISMA_EMPRESA(identification) : null
     if (e) {
       const conHistoria = (comp as any).factura_estado === 'anulada' || (Array.isArray(detPrevio.anteriores) && detPrevio.anteriores.length > 0)
@@ -2104,7 +2131,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       if (porAjuste) { no(porAjuste); continue }
       // Con una cuenta de la misma empresa: no se factura en ningún modelo.
       const mov = contraparteDe({ detalle: { raw_data: tx.raw_data ?? {} }, tipo: tx.type }, cfg)
-      if (esDePropios(mov, propios)) { no(MSG_CUENTA_PROPIA(mov.identification, salida)); continue }
+      if (esDePropios(mov, propios)) { no(MSG_CUENTA_PROPIA(mov, salida)); continue }
       let lote: Record<string, unknown>
       if (esMandato(cfg)) {
         const yaFueAnulada = est === 'anulada' || (est === 'error' && Array.isArray(det.anteriores) && det.anteriores.length > 0)

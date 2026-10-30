@@ -94,14 +94,14 @@ const baseDoc = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); 
 const beneficiarioDe = (tx: any): ClienteFactura | null => {
   const rd: any = tx?.raw_data ?? tx ?? {};
   const rc: any = tx?.recipient ?? rd?.recipient ?? {};
-  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '');
+  // benefDoc: el documento que guarda un Bre-B por llave aunque el envío no
+  // lo traiga.
+  const doc = String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rc.documentNumber ?? rc.docNumber ?? rd.benefDoc ?? '').replace(/\D/g, '');
   if (!doc) return null;
   const tipo = String(rd.docType ?? rd.documentType ?? rd.beneficiaryDocType ?? rc.documentType ?? rc.docType ?? '').toUpperCase();
   const nombre = String(rd.beneficiary ?? rd.beneficiaryName ?? rd.recipientName ?? rc.holderName ?? rc.name ?? '').trim();
   return { identification: doc, nombre: nombre || doc, esEmpresa: tipo === 'NIT' || (!tipo && doc.length === 9) };
 };
-// Los modelos de mandato (factura de terceros + comisión con IVA incluido):
-// Comisión, al ordenante; PSP, al beneficiario.
 // El tercero del movimiento: a quién se le envió o de quién llegó (misma
 // lectura que contraparteDe en el servidor). Si es la misma empresa (un envío
 // a una cuenta propia, un cargue desde ella), es utilidad o gasto de la
@@ -109,8 +109,17 @@ const beneficiarioDe = (tx: any): ClienteFactura | null => {
 const docContraparte = (tx: any): string => {
   const rd: any = tx?.raw_data ?? tx ?? {};
   const rc: any = tx?.recipient ?? rd?.recipient ?? {};
-  return String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '');
+  return String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? rd.benefDoc ?? '').replace(/\D/g, '');
 };
+const nombreContraparte = (tx: any): string => {
+  const rd: any = tx?.raw_data ?? tx ?? {};
+  const rc: any = tx?.recipient ?? rd?.recipient ?? {};
+  return String(rd.beneficiary ?? rd.beneficiaryName ?? rd.senderName ?? rd.recipientName ?? rc.holderName ?? rc.name ?? '');
+};
+// La razón social sin tildes, puntos ni sigla societaria (misma regla que el
+// servidor): «MEXITECH SOLUTIONS S.A.S» y «Mexitech Solutions SAS» son la misma.
+const nombreBase = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
+  .replace(/[^A-Z0-9 ]+/g, ' ').replace(/\b(S ?A ?S|S ?A|LTDA|LIMITADA|E ?U|S EN C|S ?C ?A)\b/g, ' ').replace(/\s+/g, ' ').trim();
 // Un ajuste de saldo (Lincoin corrige un error del admin al cargar) y el
 // cargue que un ajuste revirtió completo no se facturan en ningún modelo
 // (misma regla que el servidor, motivoAjuste).
@@ -118,6 +127,8 @@ const sinFacturaAjuste = (tx: any): 'ajuste' | 'revertido' | null => {
   if (String(tx?.type ?? '') === 'adjustment') return 'ajuste';
   return (tx?.raw_data?.reverso ?? tx?.reverso)?.anulado === true ? 'revertido' : null;
 };
+// Los modelos de mandato (factura de terceros + comisión con IVA incluido):
+// Comisión, al ordenante; PSP, al beneficiario.
 const esModeloMandato = (modelo: unknown) => modelo === 'comision' || modelo === 'psp';
 // PSP: con un cliente persona jurídica con NIT colombiano, la comisión lleva
 // «Retefuente comisiones 11 %» sobre su base (misma búsqueda que el servidor).
@@ -897,7 +908,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // como ordenante (un pago propio) no se ofrece para facturar.
   const nitPropio = baseDoc(ficha?.nit);
   const esPropio = (doc?: string | null) => nitPropio.length >= 6 && !!doc && baseDoc(doc) === nitPropio;
-  const movPropio = (tx: any) => esPropio(docContraparte(tx));
+  // Con documento, manda el documento; sin él (un Bre-B por llave que no
+  // guardó ninguno), la razón social de la empresa.
+  const nombrePropio = nitPropio.length >= 6 ? nombreBase(ficha?.nombre) : '';
+  const movPropio = (tx: any) => {
+    const doc = docContraparte(tx);
+    if (doc) return esPropio(doc);
+    return nombrePropio.length >= 4 && nombreBase(nombreContraparte(tx)) === nombrePropio;
+  };
   // Por qué un movimiento no lleva factura, aunque sea de los que se facturan.
   const noAplicaPor = (tx: any): string | null => {
     if (movPropio(tx)) return 'cuenta propia';
@@ -1924,7 +1942,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                             <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
                               {fa.estado === 'anulada'
                                 ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
-                                : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? 'no aplica' : fa.estado}</span>}
+                                : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? (noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : 'no aplica') : fa.estado}</span>}
                               {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
                                   emitir al mismo cliente, con el cálculo vigente.
@@ -1938,7 +1956,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                                 : completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                             </span>
                             {/* El porqué, a la vista: "no aplica" sin motivo obliga a adivinar. */}
-                            {fa.estado === 'omitida' && fa.error && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{fa.error}</span>}
+                            {/* Con una cuenta propia o un ajuste, ese es el motivo, aunque el
+                                guardado sea otro (p. ej. «Facturación automática no activa»). */}
+                            {fa.estado === 'omitida' && (noAplicaPor(a.tx) || fa.error) && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no lleva factura.' : fa.error}</span>}
                           </span>
                         );
                         // "DS" delante cuando lo que salió fue un documento
