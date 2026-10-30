@@ -528,6 +528,18 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     const juridica = body.tipoPersona === 'juridica'
     const tipo = juridica ? 'NIT' : String(body.tipoDocumento ?? 'CC').toUpperCase()
     const nombre = String(body.nombre ?? '').trim() || undefined
+    // El tipo lo elige el cliente; si el número dice claramente otra cosa, se
+    // le pregunta ANTES de cobrar (visto el 2026-10-30: un NIT consultado como
+    // cédula gastó una consulta sin resultado). Si confirma, se consulta igual.
+    if (body.confirmarTipo !== true) {
+      const probable = R.tipoProbable(String(body.documento ?? ''))
+      if (probable.seguro && !juridica && tipo === 'CC' && probable.tipo === 'empresa') {
+        return { ok: false, confirmarTipo: 'empresa', nit: probable.nit, motivo: `Este número parece un NIT de empresa (${probable.nit}). Si lo consultas como cédula, la consulta se gasta sin resultado.` }
+      }
+      if (probable.seguro && juridica && probable.tipo === 'persona') {
+        return { ok: false, confirmarTipo: 'persona', motivo: 'Este número parece una cédula de persona, no un NIT de empresa.' }
+      }
+    }
     const sujeto = sujetoDe(tipo, String(body.documento ?? ''), nombre)
     if (!sujeto) return { ok: false, motivo: juridica ? 'Escribe el NIT y la razón social.' : 'Revisa el tipo y el número de documento.' }
     const doc = sujeto.idNumber
@@ -594,9 +606,15 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     }
     if (!terminado(check)) return { ok: true, enCurso: true, consultaId: cq.id }
     const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined })
+    // Una persona cuyo documento la Registraduría no encontró, sin ninguna
+    // coincidencia: no hubo revisión real (no se sabe de quién serían los
+    // antecedentes). Queda "no verificado" y se le devuelve la consulta.
+    const noVerificado = ficha.estado === 'finalizado' && cq.tipo_persona === 'natural' && ficha.documentoNoEncontrado === true && !ficha.hallazgo
     let cambio: Record<string, unknown>
     if (ficha.estado !== 'finalizado') {
       cambio = { estado: 'fallida', actualizado_at: new Date().toISOString() }
+    } else if (noVerificado) {
+      cambio = { estado: 'no_verificado', ficha, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null, riesgos: [], despachos: [], actualizado_at: new Date().toISOString() }
     } else {
       cambio = { estado: 'lista', ficha, nombre_oficial: ficha.nombreReal ?? null, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null,
         riesgos: R.tiposDeRiesgo(ficha), despachos: R.despachos(ficha), actualizado_at: new Date().toISOString() }
@@ -607,6 +625,7 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     const cerrada = (upd as any[])?.[0]
     if (cerrada) {
       if (ficha.estado !== 'finalizado') await R.mover(db, uid, 'devolucion', 1, 'Consulta fallida: se devuelve la consulta', null, cq.id)
+      else if (noVerificado) await R.mover(db, uid, 'devolucion', 1, 'Documento no encontrado en la Registraduría: se devuelve la consulta', null, cq.id)
       else await padronGuardar(db, cq.tipo_documento, cq.documento, ficha, uid, 'manual')
       await auditar('sarblock.risk_manual', { userId: uid, tipo: cq.tipo_documento, documento: cq.documento, deCache: false, categoria: ficha.categoria ?? null, consultaId: cq.id, estado: cambio.estado })
     }
