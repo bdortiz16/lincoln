@@ -570,9 +570,15 @@ async function vincularAjuste(ajusteId: string, cargueId: string | null, adminId
   // Primero se RESERVA el ajuste (solo si sigue suelto o ya era de este
   // cargue): el mismo débito no puede quedar en dos cargues a la vez.
   const { noRevierte: _n, noRevierteAt: _na, noRevierteBy: _nb, ...rdALimpio } = rdA
-  const { data: reservado } = await db.from('transactions')
-    .update({ raw_data: { ...rdALimpio, reversaDe: String(c.id), reversaAuto: auto } })
-    .eq('id', a.id).or(`raw_data->>reversaDe.is.null,raw_data->>reversaDe.eq.${String(c.id)}`).select('id')
+  // Sin `or` en el UPDATE: PostgREST (antes de la 14.x, issue #3707) falla con
+  // «column … does not exist» en un UPDATE con or=(…) que devuelve filas, y
+  // la reserva no se lograba nunca. Se prueba suelto y, si no, ya de este
+  // cargue; cada UPDATE es atómico.
+  const patchA = { raw_data: { ...rdALimpio, reversaDe: String(c.id), reversaAuto: auto } }
+  let { data: reservado, error: eRes } = await db.from('transactions').update(patchA).eq('id', a.id).is('raw_data->>reversaDe', null).select('id')
+  if (!eRes && (!Array.isArray(reservado) || !reservado.length)) {
+    ({ data: reservado, error: eRes } = await db.from('transactions').update(patchA).eq('id', a.id).eq('raw_data->>reversaDe', String(c.id)).select('id'))
+  }
   if (!Array.isArray(reservado) || !reservado.length) return OTRO_CAMBIO
   const okC = await escribirCargue(String(c.id), rdC, { ...rdC, reverso: { ajustes: [...otros, { id: a.id, montoCop: Number(a.amount) || 0, at: a.created_at, ...(auto ? { auto: true } : {}) }], montoCop: monto, anulado, vinculadoPor: adminId, vinculadoAt: ahora } })
   if (!okC) {

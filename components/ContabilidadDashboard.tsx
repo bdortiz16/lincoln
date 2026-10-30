@@ -636,6 +636,152 @@ const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ c
   );
 };
 
+// Revisión de facturas duplicadas en Siigo: el mismo movimiento facturado
+// dos veces (la contadora de XATECH las encontró, de intentos que Siigo creó
+// sin contestar a tiempo). Solo lee Siigo: la duplicada se anula con nota
+// crédito en Siigo, y eso lo decide la contadora. Las que Siigo tiene y
+// Lincoin no se pueden registrar, para que «Emitir» no las vuelva a mandar.
+type FacturaRev = { id: string; numero: string; fecha: string | null; total: number; cliente: string; anulada: boolean; notas_credito: string[]; registrada?: boolean; anterior?: boolean; comprobante?: string };
+const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolean; onCerrar: () => void; onCambio: () => void }> = ({ empresaId, soloLectura, onCerrar, onCambio }) => {
+  const [dias, setDias] = useState(30);
+  const [cargando, setCargando] = useState(false);
+  const [res, setRes] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [registrando, setRegistrando] = useState(false);
+  const [regMsg, setRegMsg] = useState<string | null>(null);
+  const revisar = async (d: number) => {
+    setDias(d); setCargando(true); setError(null);
+    const r: any = await llamarFuncion('facturacion', { action: 'duplicadas', dias: d, ...(empresaId ? { empresaId } : {}) }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setCargando(false);
+    if (!r?.ok) { setError(String(r?.error ?? 'No se pudo revisar.')); return; }
+    setRes(r);
+  };
+  useEffect(() => { revisar(30); }, []);
+  const registrar = async () => {
+    const facturas = ((res?.sin_registrar ?? []) as any[]).map(s => ({ folio: s.folio, factura_id: s.factura?.id }));
+    if (!facturas.length) return;
+    setRegistrando(true); setRegMsg(null);
+    const r: any = await llamarFuncion('facturacion', { action: 'duplicadas_registrar', facturas }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setRegistrando(false);
+    if (!r?.ok) { setRegMsg(String(r?.error ?? 'No se pudieron registrar.')); return; }
+    const n = (r.registradas ?? []).length;
+    setRegMsg(`${n === 1 ? 'Quedó registrada 1 factura' : `Quedaron registradas ${n} facturas`} en Lincoin.${r.errores?.length ? ` No se pudo con: ${r.errores.join(' · ')}` : ''}`);
+    onCambio();
+    revisar(dias);
+  };
+  const monto = (v: unknown) => fmtMon(Number(String(v ?? '0').replace(/,/g, '')) || 0, 'COP');
+  const fecha = (s: string | null) => s ? String(s).slice(0, 10) : '—';
+  const titulo = (txt: string) => <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>{txt}</p>;
+  const fila = (f: FacturaRev, rotulo: { txt: string; color: string }) => (
+    <div key={f.id} className="flex items-center justify-between" style={{ gap: 10, padding: '5px 0', fontSize: 12 }}>
+      <span style={{ color: f.anulada ? C.tenue : C.text, fontVariantNumeric: 'tabular-nums', textDecoration: f.anulada ? 'line-through' : 'none' }}>{f.numero} · {fecha(f.fecha)} · {monto(f.total)}</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: rotulo.color, whiteSpace: 'nowrap' }}>{rotulo.txt}</span>
+    </div>
+  );
+  const duplicadas: any[] = res?.duplicadas ?? [];
+  const sinRegistrar: any[] = res?.sin_registrar ?? [];
+  const posibles: any[] = res?.posibles ?? [];
+  const nAnular = duplicadas.reduce((s, d) => {
+    const vig = (d.facturas as FacturaRev[]).filter(f => !f.anulada);
+    return s + vig.length - 1;
+  }, 0);
+
+  return (
+    <div className="fixed inset-0 z-[110] p-4" style={{ background: 'rgba(4,5,4,0.85)', display: 'grid', placeItems: 'center' }} onClick={() => { if (!registrando) onCerrar(); }}>
+      <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 680, maxHeight: '92vh', overflowY: 'auto', background: '#0C0E0D', border: `1px solid rgba(255,255,255,0.12)`, borderRadius: 18, fontFamily: FONT, padding: '20px 22px' }}>
+        <div className="flex items-start justify-between" style={{ gap: 12 }}>
+          <div>
+            <p style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: 0 }}>Facturas duplicadas en Siigo</p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>Se agrupan las facturas de Siigo por el comprobante Lincoin que llevan en la observación: un movimiento con dos facturas vigentes está duplicado.</p>
+          </div>
+          <button onClick={() => { if (!registrando) onCerrar(); }} aria-label="Cerrar" style={{ width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.borde}`, background: 'transparent', color: C.sub, fontSize: 16, cursor: 'pointer', flexShrink: 0 }}>×</button>
+        </div>
+        <div className="flex items-center flex-wrap" style={{ gap: 6, marginTop: 14 }}>
+          <span style={{ fontSize: 12, color: C.sub, marginRight: 4 }}>Revisar los últimos</span>
+          {[30, 90, 180].map(d => (
+            <button key={d} onClick={() => revisar(d)} disabled={cargando || registrando} aria-pressed={dias === d}
+              style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, padding: '5px 11px', borderRadius: 999, cursor: 'pointer', color: dias === d ? C.text : C.sub, background: dias === d ? 'rgba(74,222,128,0.10)' : 'transparent', border: `1px solid ${dias === d ? 'rgba(74,222,128,0.40)' : C.borde}`, opacity: cargando ? 0.6 : 1 }}>{d} días</button>
+          ))}
+        </div>
+
+        {cargando && <p style={{ fontSize: 12.5, color: C.sub, margin: '16px 0 0' }}>Leyendo las facturas y notas crédito de Siigo… puede tardar un minuto.</p>}
+        {error && !cargando && <p style={{ fontSize: 12.5, color: ROJO, margin: '16px 0 0', lineHeight: 1.5 }}>{error}</p>}
+
+        {res && !cargando && (
+          <>
+            <p style={{ fontSize: 12, color: C.sub, margin: '14px 0 0', lineHeight: 1.5 }}>
+              Se revisaron {Number(res.revisadas ?? 0).toLocaleString('es-CO')} facturas de Siigo desde el {fecha(res.desde)}.
+              {!res.completo && ' Son demasiadas para una sola revisión: se leyeron las primeras 6.000. Elige un periodo más corto.'}
+            </p>
+
+            {titulo(duplicadas.length ? `DUPLICADAS · ${duplicadas.length} MOVIMIENTO${duplicadas.length === 1 ? '' : 'S'}` : 'DUPLICADAS')}
+            {duplicadas.length === 0
+              ? <p style={{ fontSize: 12.5, color: C.entra, margin: 0 }}>Ningún movimiento tiene dos facturas vigentes en este periodo.</p>
+              : (
+                <>
+                  <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>
+                    Hay que anular {nAnular === 1 ? '1 factura' : `${nAnular} facturas`} con una nota crédito en Siigo (Ventas → Nota crédito, sobre la factura marcada «anular»). La que dice «queda» es la que Lincoin tiene registrada (si no tiene ninguna, la primera que salió); esa no se anula. Después vuelve a revisar: la anulada aparece tachada.
+                  </p>
+                  {duplicadas.map(d => {
+                    const fs = d.facturas as FacturaRev[];
+                    // La que queda: la registrada en Lincoin; si ninguna lo
+                    // está, la primera que salió.
+                    const queda = fs.find(f => !f.anulada && f.registrada) ?? fs.find(f => !f.anulada);
+                    return (
+                      <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                        <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}</p>
+                        {fs.map(f => fila(f, f.anulada
+                          ? { txt: `anulada${f.notas_credito.length ? ` · ${f.notas_credito.join(', ')}` : ''}`, color: C.tenue }
+                          : f.id === queda?.id ? { txt: f.registrada ? 'queda · registrada en Lincoin' : 'queda · la primera', color: C.entra } : { txt: 'anular', color: AMBAR }))}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+
+            {sinRegistrar.length > 0 && (
+              <>
+                {titulo(`EN SIIGO Y NO EN LINCOIN · ${sinRegistrar.length}`)}
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Están emitidas en Siigo con la marca del movimiento, pero Lincoin no las tiene registradas: si se vuelven a emitir, saldrían duplicadas. Registrarlas no cambia nada en Siigo.</p>
+                {sinRegistrar.map(s => (
+                  <div key={s.comprobante} className="flex items-center justify-between" style={{ gap: 10, padding: '5px 0', fontSize: 12, borderBottom: `1px solid ${C.borde}` }}>
+                    <span style={{ color: C.text }}>{s.comprobante} · {s.tipo} · {monto(s.monto)}</span>
+                    <span style={{ color: C.sub, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{s.factura?.numero} · {fecha(s.factura?.fecha)}</span>
+                  </div>
+                ))}
+                {!soloLectura && (
+                  <button onClick={registrar} disabled={registrando} className="lincoin-btn-white"
+                    style={{ marginTop: 10, fontFamily: FONT, padding: '9px 14px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, border: 'none', cursor: 'pointer', opacity: registrando ? 0.6 : 1 }}>
+                    {registrando ? 'Registrando…' : `Registrarlas en Lincoin · ${sinRegistrar.length}`}
+                  </button>
+                )}
+              </>
+            )}
+            {regMsg && <p style={{ fontSize: 12, color: C.sub, margin: '8px 0 0', lineHeight: 1.5 }}>{regMsg}</p>}
+
+            {posibles.length > 0 && (
+              <>
+                {titulo(`POSIBLES DUPLICADAS SIN MARCA · ${posibles.length}`)}
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas hechas fuera de Lincoin (sin el comprobante en la observación) con el mismo cliente y el mismo total que una de Lincoin. Pueden ser del mismo movimiento facturado a mano en Siigo: revísalas.</p>
+                {posibles.map((p, i) => (
+                  <div key={`${p.factura?.id}-${i}`} style={{ padding: '5px 0', fontSize: 12, borderBottom: `1px solid ${C.borde}` }}>
+                    <span style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{p.factura?.numero} · {fecha(p.factura?.fecha)} · {monto(p.factura?.total)} · cliente {p.factura?.cliente}</span>
+                    <span style={{ color: C.sub }}> — igual a {(p.de_lincoin as FacturaRev[]).map(f => `${f.numero} (${f.comprobante})`).join(', ')}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </>
+        )}
+
+        <div className="flex" style={{ gap: 10, marginTop: 18 }}>
+          <button onClick={onCerrar} disabled={registrando} style={{ flex: 1, fontFamily: FONT, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.borde}`, cursor: 'pointer' }}>Cerrar</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null, empresa = null }) => {
   const { currentUser } = useDatabase();
   // El titular: lo que mandó el servidor (contador) o la propia sesión.
@@ -734,6 +880,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const enCola = useMemo(() => (Object.values(folios) as FolioFila[]).filter(f => f.factura?.estado === 'en_cola').length, [folios]);
   const emitiendoAhora = useMemo(() => (Object.values(folios) as FolioFila[]).some(f => f.factura?.estado === 'emitiendo' && f.factura.at && Date.now() - new Date(f.factura.at).getTime() < 300000), [folios]);
   const [loteAbierto, setLoteAbierto] = useState(false);
+  const [dupAbierto, setDupAbierto] = useState(false);
   useEffect(() => {
     if (!userId || soloLectura || comprobantesExternos) return;
     if (!enCola && !emitiendoAhora && !loteAbierto) return;
@@ -1310,6 +1457,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </div>
       </div>
       {configAbierta && !soloLectura && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
+      {dupAbierto && <DuplicadasModal empresaId={soloLectura ? userId : null} soloLectura={soloLectura} onCerrar={() => setDupAbierto(false)} onCambio={() => setFoliosVersion(v => v + 1)} />}
       {contadorAbierto && !soloLectura && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} />}
       {estadoAbierto && (
         <EstadoCuentaHoja estado={ec} ficha={ficha} periodoTxt={periodoTxt} desdeTxt={desdeTxt} hastaTxt={hastaTxt}
@@ -1574,6 +1722,13 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                 title="Emitir en Siigo, una por una, las facturas de los movimientos sin factura de lo que está filtrado"
                 style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 9, padding: '9px 13px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                 Emitir en lote · {nLote}
+              </button>
+            )}
+            {((!soloLectura && !!cfgFact) || (soloLectura && Object.values(folios).some((f: any) => !!f?.factura?.numero))) && (
+              <button onClick={() => setDupAbierto(true)}
+                title="Busca en Siigo movimientos con más de una factura vigente y facturas que Lincoin no tiene registradas"
+                style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 13px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Revisar duplicadas
               </button>
             )}
           <input value={busca} onChange={e => { setBusca(e.target.value); setLimite(25); }} placeholder="Buscar por contraparte, comprobante o referencia" style={{ fontFamily: FONT, fontSize: 13, color: C.text, background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: '9px 12px', outline: 'none', width: 300, maxWidth: '100%' }} />

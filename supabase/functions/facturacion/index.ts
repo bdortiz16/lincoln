@@ -810,6 +810,71 @@ const REINTENTOS_DUPLICADO = 4
 // En la cola del lote, una duplicada se reintenta pasado este tiempo.
 const ESPERA_DUPLICADO_MS = 90_000
 
+// ¿Un envío anterior de este comprobante pudo crear la factura sin que
+// Lincoin se enterara? Sin respuesta (0: se cortó a los 70 s), un error de
+// Siigo (5xx) o un "duplicado" (409, que puede ser la de este mismo
+// movimiento, creada en el intento que no contestó). Un 4xx de validación no
+// crea nada. Antes, con cualquiera de estos el comprobante quedaba en error
+// o pendiente y el siguiente intento mandaba otra: la contadora de XATECH
+// encontró facturas duplicadas.
+const envioIncierto = (det: any) => Array.isArray(det?.intentos) && det.intentos.some((i: any) => {
+  if (i?.ruta && i.ruta !== '/v1/invoices') return false
+  const s = Number(i?.status)
+  return s === 0 || s >= 500 || s === 409
+})
+
+// La marca "Lincoin LC-…" es con lo que se encuentra la factura en Siigo
+// cuando no llegó la respuesta. Siigo guarda 500 caracteres de observación:
+// se recorta el texto libre, nunca la marca (un texto de observaciones largo
+// la dejaba afuera y la factura ya creada no se encontraba).
+function observacionConMarca(antes: unknown[], marca: string, despues: unknown[] = []): string {
+  const fijo = [marca, ...despues.filter(Boolean).map(String)].join(' · ')
+  const libre = antes.filter(Boolean).map(String).join(' · ')
+  if (!libre) return fijo.slice(0, 500)
+  const cabe = 500 - fijo.length - 3
+  return cabe > 0 ? `${libre.slice(0, cabe)} · ${fijo}` : fijo.slice(0, 500)
+}
+
+// CANDADO SIN `or`. PostgREST (antes de la 14.x, issue #3707) falla con
+// «column comprobantes.factura_estado does not exist» en un UPDATE con
+// or=(…) que devuelve filas: vuelve a aplicar el `or` sobre lo devuelto. El
+// candado de la factura usaba ese `or` y, con el error, seguía de largo: no
+// bloqueaba nada ni marcaba 'emitiendo', y dos emisiones a la vez del mismo
+// movimiento (el «ponerse al día» del cron y el de la pantalla, la cola y un
+// clic) mandaban dos facturas a la DIAN. Ahora se prueba condición por
+// condición con filtros simples —cada UPDATE es atómico: si dos compiten,
+// uno solo lo toma— y un error NO deja seguir.
+async function actualizarSiAlguna(tabla: string, patch: Record<string, unknown>, base: (q: any) => any, alternativas: ((q: any) => any)[], col: string): Promise<{ tomado: boolean; error?: string }> {
+  for (const alt of alternativas) {
+    const { data, error } = await alt(base(db.from(tabla).update(patch))).select(col)
+    if (error) return { tomado: false, error: error.message }
+    if (Array.isArray(data) && data.length) return { tomado: true }
+  }
+  return { tomado: false }
+}
+// Desde qué estados se puede tomar un comprobante para emitir. Desde la cola,
+// solo si sigue en cola (un «Detener» justo antes la devolvió a como estaba).
+// Un 'emitiendo' de más de 3 min se da por caído.
+const ESTADOS_EMITIBLES = ['error', 'omitida', 'pendiente', 'anulada', 'en_cola']
+function candadoFactura(desdeCola: boolean): ((q: any) => any)[] {
+  const hace3 = new Date(Date.now() - 180000).toISOString()
+  const caido = (q: any) => q.eq('factura_estado', 'emitiendo').lt('factura_at', hace3)
+  return desdeCola
+    ? [(q: any) => q.eq('factura_estado', 'en_cola'), caido]
+    : [(q: any) => q.is('factura_estado', null), (q: any) => q.in('factura_estado', ESTADOS_EMITIBLES), caido]
+}
+const MSG_SIN_CANDADO = (e: string) => `No se pudo apartar el comprobante para emitir (${e}). No se mandó nada a Siigo: intenta de nuevo en un momento.`
+
+// Desde cuándo buscar en Siigo la factura de un comprobante: una semana antes
+// del último intento, pero nunca antes de que existiera el comprobante.
+function desdeParaBuscar(comp: any): string {
+  const intentos = [comp?.factura_detalle?.intento?.at, comp?.factura_at].map(x => Date.parse(String(x ?? ''))).filter(Number.isFinite)
+  let desde = (intentos.length ? Math.min(...intentos) : Date.now()) - 7 * 86400000
+  const creado = Date.parse(String(comp?.emitido_at ?? ''))
+  if (Number.isFinite(creado)) desde = Math.max(desde, creado)
+  return new Date(desde).toISOString()
+}
+
 // ── Emitir la factura de UN comprobante ──────────────────────────
 async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boolean } = {}): Promise<any> {
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', folio).maybeSingle()
@@ -954,7 +1019,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   if (errorItems) { await marcar({ factura_estado: 'error', factura_error: errorItems, factura_tipo: clase }); return { ok: false, error: errorItems } }
   if (!items.length) { const e = 'No hay ítems configurados para el documento (Configuración → ítems).'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
   if (total <= 0) { const e = 'Los ítems suman cero: revisá el valor de cada uno en Configuración.'; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
-  const observations = [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`].filter(Boolean).join(' · ').slice(0, 500)
+  const observations = observacionConMarca([cfg.observaciones], `Comprobante Lincoin ${(comp as any).numero}`)
   const cuerpo = clase === 'FV'
     ? {
       document: { id: Number(cfg.document_id) },
@@ -1007,20 +1072,41 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
     await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar el documento a Siigo.' })
     return { ok: true, estado: 'omitida' }
   }
+  // Un intento anterior que quedó a medias o sin respuesta clara: Siigo pudo
+  // haber creado la factura. Antes de mandar otra se busca en Siigo por la
+  // marca del comprobante; si está, se registra esa. (Solo factura de venta:
+  // el documento soporte se consulta por otra ruta.)
+  if (clase === 'FV') {
+    const detD: any = (comp as any).factura_detalle ?? {}
+    const aMedias = (comp as any).factura_estado === 'emitiendo' && !(Date.parse(String((comp as any).factura_at ?? '')) > Date.now() - 180000)
+    if (aMedias || envioIncierto(detD)) {
+      const idents = [...new Set([detD?.enviado?.customer?.identification, cp.identification].map(x => String(x ?? '').replace(/\D/g, '')).filter(Boolean))]
+      const excluir = new Set<string>((Array.isArray(detD.anteriores) ? detD.anteriores : []).map((a: any) => String(a?.id ?? '')).filter(Boolean))
+      if ((comp as any).factura_estado === 'anulada' && (comp as any).factura_id) excluir.add(String((comp as any).factura_id))
+      const b = await facturaDelComprobanteEnSiigo(userId, t.token, partner, idents, desdeParaBuscar(comp), String((comp as any).numero ?? ''), null, excluir)
+      if (!b.ok) return { ok: false, error: `Un intento anterior de esta factura no tuvo respuesta clara de Siigo y pudo haberse creado. No se pudo revisar en Siigo (${b.motivo ?? 'sin respuesta'}), así que no se reenvió para no duplicarla. Intenta en unos minutos.` }
+      if (b.factura) {
+        const f0 = b.factura
+        const numero0 = f0.name ?? (f0.number != null ? `${f0.prefix ?? ''}${f0.number}` : null) ?? String(f0.id ?? '')
+        const { lote: _sale, ...restoD } = detD
+        await marcar({
+          factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV', factura_proveedor: 'siigo',
+          factura_id: f0.id != null ? String(f0.id) : null, factura_numero: numero0, factura_cufe: f0.stamp?.cufe ?? null, factura_url: f0.public_url ?? null,
+          factura_at: new Date().toISOString(), factura_detalle: { ...restoD, respuesta: f0, adoptada: true },
+        })
+        return { ok: true, estado: 'emitida', tipo: 'FV', numero: numero0, adoptada: true, aviso: 'Ya estaba emitida en Siigo: se registró esa, no se emitió otra.' }
+      }
+    }
+  }
   // CANDADO, igual que en emitirComision: el automático y un «reintentar» a
   // mano (o un segundo aviso de la misma operación) no pueden mandar dos
   // documentos a la DIAN por el mismo comprobante. Un 'emitiendo' de más de
   // 3 min se da por caído.
   {
-    const hace3 = new Date(Date.now() - 180000).toISOString()
-    const { data: tomado, error: eLock } = await db.from('comprobantes')
-      .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: new Date().toISOString() })
-      .eq('folio', folio)
-      .or(opts.desdeCola ? `factura_estado.eq.en_cola,and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})` : `factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada,en_cola),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
-      .select('folio')
-    if (!eLock && Array.isArray(tomado) && tomado.length === 0) {
-      return { ok: false, error: 'Este documento ya se está emitiendo o ya salió. Espera un momento y recarga.' }
-    }
+    const lock = await actualizarSiAlguna('comprobantes', { factura_estado: 'emitiendo', factura_error: null, factura_at: new Date().toISOString() },
+      q => q.eq('folio', folio), candadoFactura(!!opts.desdeCola), 'folio')
+    if (lock.error) return { ok: false, error: MSG_SIN_CANDADO(lock.error) }
+    if (!lock.tomado) return { ok: false, error: 'Este documento ya se está emitiendo o ya salió. Espera un momento y recarga.' }
   }
   const RUTAS_DS = ['/v1/purchase-support-documents', '/v1/purchases']
   const intentos: { ruta: string; status: number; respuesta: any }[] = []
@@ -1252,6 +1338,10 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const detPrevio = ((comp as any).factura_detalle ?? {}) as Record<string, unknown>
   const historia: Record<string, unknown> = {}
   if (Array.isArray(detPrevio.anteriores)) historia.anteriores = detPrevio.anteriores
+  // A quién y cuándo se intentó mandar tampoco se pierde con un error: si
+  // Siigo no contestó, el próximo intento busca la factura con esto. Se borra
+  // cuando la factura queda registrada.
+  if (detPrevio.intento) historia.intento = detPrevio.intento
   const marcar = async (patch: Record<string, unknown>) => {
     const p = patch.factura_detalle && typeof patch.factura_detalle === 'object' ? { ...patch, factura_detalle: { ...(patch.factura_detalle as Record<string, unknown>), ...historia } } : patch
     await db.from('comprobantes').update({ ...p, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
@@ -1369,9 +1459,9 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   }
   const descripcion = plantilla(cfg.desc_comision || (mandato ? 'Comisión por intermediación en recaudo y dispersión' : 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}')).slice(0, 500)
   const descTerceros = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros').slice(0, 500)
-  const observations = (mandato
-    ? [cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros por cuenta del mandante; no constituyen ingreso propio (art. 29 ET). Ítem 2: comisión por intermediación en recaudo y dispersión de pagos, gravada con IVA.`, `Operación según liquidación Lincoin ${(comp as any).numero}`]
-    : [cfg.observaciones, `Comprobante Lincoin ${(comp as any).numero}`, `Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`]).filter(Boolean).join(' · ').slice(0, 500)
+  const observations = mandato
+    ? observacionConMarca([cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros por cuenta del mandante; no constituyen ingreso propio (art. 29 ET). Ítem 2: comisión por intermediación en recaudo y dispersión de pagos, gravada con IVA.`], `Operación según liquidación Lincoin ${(comp as any).numero}`)
+    : observacionConMarca([cfg.observaciones], `Comprobante Lincoin ${(comp as any).numero}`, [`Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`])
   // La tarifa que manda es la que SIIGO aplica al ítem, no la del catálogo
   // guardado (puede estar viejo, o Siigo no devolver el impuesto en la lista
   // de productos). Se arma con la del catálogo; si Siigo rechaza el pago
@@ -1412,30 +1502,44 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // la función se cortó): Siigo pudo haber creado la factura. Antes de
   // reenviar se busca en Siigo; si está, se adopta y no se manda otra a la
   // DIAN. Si no se puede preguntar, no se reenvía.
-  const hace3 = new Date(Date.now() - 180000).toISOString()
   const intentoPrevio: any = (detPrevio as any)?.intento ?? null
   // (Si se encoló estando así, la marca de la cola dice cómo estaba.)
   const quedoAMedias = ((comp as any).factura_estado === 'emitiendo' && !(Date.parse(String((comp as any).factura_at ?? '')) > Date.now() - 180000))
     || ((comp as any).factura_estado === 'en_cola' && (detPrevio as any)?.lote?.estado_previo === 'emitiendo')
-  if (quedoAMedias) {
+  // Lo mismo si un intento anterior quedó sin respuesta clara (Siigo no
+  // contestó, 5xx, "duplicado"): quedó en error o pendiente, pero la factura
+  // pudo haberse creado. Se busca por la marca, a nombre del cliente de ese
+  // intento y del de ahora (en «Corregir y reintentar» se puede elegir otro).
+  if (quedoAMedias || envioIncierto(detPrevio)) {
     const identV = String(intentoPrevio?.cliente ?? cp.identification)
     const totalV = Number.isFinite(Number(intentoPrevio?.total)) ? Number(intentoPrevio.total) : armar(tarifaCatalogo).total
-    const b = await facturaDelComprobanteEnSiigo(userId, t.token, partner, identV, String(intentoPrevio?.at ?? (comp as any).factura_at ?? ''), String((comp as any).numero ?? ''), totalV)
+    const idents = [...new Set([intentoPrevio?.cliente, (detPrevio as any)?.enviado?.customer?.identification, cp.identification].map(x => String(x ?? '').replace(/\D/g, '')).filter(Boolean))]
+    // Las anuladas de este movimiento llevan la misma marca: no cuentan.
+    const excluir = new Set<string>((Array.isArray(detPrevio.anteriores) ? detPrevio.anteriores as any[] : []).map((a: any) => String(a?.id ?? '')).filter(Boolean))
+    if ((comp as any).factura_estado === 'anulada' && (comp as any).factura_id) excluir.add(String((comp as any).factura_id))
+    // Por total, solo para el que quedó a medias (las facturas viejas podían
+    // tener la marca recortada); si no, dos envíos iguales al mismo cliente
+    // se confundirían.
+    const b = await facturaDelComprobanteEnSiigo(userId, t.token, partner, idents, desdeParaBuscar(comp), String((comp as any).numero ?? ''), quedoAMedias ? totalV : null, excluir)
     if (!b.ok) {
-      const e = 'Esta factura quedó a medias y no se pudo revisar en Siigo si ya salió. No se reenvió para no duplicarla: revísala en Siigo Nube (Ventas → Facturas) o intenta en unos minutos.'
+      const e = quedoAMedias
+        ? 'Esta factura quedó a medias y no se pudo revisar en Siigo si ya salió. No se reenvió para no duplicarla: revísala en Siigo Nube (Ventas → Facturas) o intenta en unos minutos.'
+        : `Un intento anterior de esta factura no tuvo respuesta clara de Siigo y pudo haberse creado. No se pudo revisar en Siigo (${b.motivo ?? 'sin respuesta'}), así que no se reenvió para no duplicarla. Intenta en unos minutos.`
       // Desde la cola: vuelve a 'emitiendo' (no a error), para que el
       // próximo intento también revise en Siigo antes de mandar nada.
-      if ((comp as any).factura_estado === 'en_cola') await db.from('comprobantes').update({ factura_estado: 'emitiendo', factura_error: e }).eq('folio', c.folio).eq('factura_estado', 'en_cola')
+      if (quedoAMedias && (comp as any).factura_estado === 'en_cola') await db.from('comprobantes').update({ factura_estado: 'emitiendo', factura_error: e }).eq('folio', c.folio).eq('factura_estado', 'en_cola')
       return { ok: false, error: e }
     }
     if (b.factura) {
       const f0 = b.factura
       const numero0 = f0.name ?? (f0.number != null ? `${f0.prefix ?? ''}${f0.number}` : null) ?? String(f0.id ?? '')
+      const identF = String(f0.customer?.identification ?? identV)
+      delete historia.intento
       await marcar({
         factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV', factura_proveedor: 'siigo',
         factura_id: f0.id != null ? String(f0.id) : null, factura_numero: numero0, factura_cufe: f0.stamp?.cufe ?? null, factura_url: f0.public_url ?? null,
         factura_at: new Date().toISOString(),
-        factura_detalle: { respuesta: f0, adoptada: true, comision: { pct, comision, total: Number(f0.total) || totalV, cliente: { identification: identV, nombre: cp.nombre } } },
+        factura_detalle: { respuesta: f0, adoptada: true, comision: { pct, comision, total: Number(f0.total) || totalV, cliente: { identification: identF, ...(identF === cp.identification ? { nombre: cp.nombre } : {}) } } },
       })
       return { ok: true, estado: 'emitida', tipo: 'FV', numero: numero0, adoptada: true, aviso: 'Ya estaba emitida en Siigo: se registró esa, no se emitió otra.' }
     }
@@ -1447,16 +1551,11 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // anota a quién y por cuánto, para poder buscarla si este intento se corta.
   {
     const ahoraLock = new Date().toISOString()
-    const { data: tomado, error: eLock } = await db.from('comprobantes')
-      .update({ factura_estado: 'emitiendo', factura_error: null, factura_at: ahoraLock, factura_detalle: { ...detPrevio, intento: { cliente: cp.identification, total: armar(tarifaCatalogo).total, at: ahoraLock } } })
-      .eq('folio', c.folio)
-      // Desde la cola, solo si sigue en cola: un «Detener» justo antes la
-      // devolvió a como estaba, y no se emite.
-      .or(d.cola ? `factura_estado.eq.en_cola,and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})` : `factura_estado.is.null,factura_estado.in.(error,omitida,pendiente,anulada,en_cola),and(factura_estado.eq.emitiendo,factura_at.lt.${hace3})`)
-      .select('folio')
-    if (!eLock && Array.isArray(tomado) && tomado.length === 0) {
-      return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Espera un momento y recarga.' }
-    }
+    historia.intento = { cliente: cp.identification, total: armar(tarifaCatalogo).total, at: ahoraLock }
+    const lock = await actualizarSiAlguna('comprobantes', { factura_estado: 'emitiendo', factura_error: null, factura_at: ahoraLock, factura_detalle: { ...detPrevio, intento: historia.intento } },
+      q => q.eq('folio', c.folio), candadoFactura(!!d.cola), 'folio')
+    if (lock.error) return { ok: false, error: MSG_SIN_CANDADO(lock.error) }
+    if (!lock.tomado) return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Espera un momento y recarga.' }
   }
   const intentos: any[] = []
   let tarifa = tarifaCatalogo
@@ -1499,6 +1598,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
   const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
+  delete historia.intento
   await marcar({
     factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV',
     factura_proveedor: 'siigo', factura_id: resp.id != null ? String(resp.id) : null,
@@ -1516,27 +1616,184 @@ async function emitirComision(userId: string, txId: string, d: { identification:
 // comprobante en la observación ("Lincoin LC-000978"); si ninguna la lleva
 // (la observación se recorta a 500 caracteres), una del mismo total que
 // ningún otro comprobante tenga registrada. ok:false = no se pudo preguntar.
-async function facturaDelComprobanteEnSiigo(userId: string, token: string, partner: string, identificacion: string, desdeIso: string, numero: string, total: number | null): Promise<{ ok: boolean; factura: any | null }> {
+// Se busca a nombre de cada cliente dado (el del intento anterior y el de
+// ahora) y no cuentan las de `excluir` (las anuladas de este movimiento, que
+// llevan la misma marca).
+const llevaMarca = (x: any, numero: string) => {
+  if (!numero) return false
+  const marca = `Lincoin ${numero}`
+  const o = String(x?.observations ?? '')
+  const i = o.indexOf(marca)
+  return i >= 0 && !/\d/.test(o.charAt(i + marca.length))
+}
+async function facturaDelComprobanteEnSiigo(userId: string, token: string, partner: string, identificaciones: string | string[], desdeIso: string, numero: string, total: number | null, excluir: Set<string> = new Set()): Promise<{ ok: boolean; factura: any | null; motivo?: string }> {
   const d = new Date(Date.parse(desdeIso) || Date.now())
   const desde = new Date(d.getTime() - 86400000).toISOString().slice(0, 10)
-  const lista: any[] = []
-  for (let page = 1; page <= 5; page++) {
-    const r = await siigo('GET', `/v1/invoices?customer_identification=${encodeURIComponent(identificacion)}&date_start=${desde}&page=${page}&page_size=100`, { token, partner, ms: 30000 })
-    if (!r.ok) return { ok: false, factura: null }
-    const res: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
-    lista.push(...res)
-    if (!res.length || page * 100 >= Number(r.data?.pagination?.total_results ?? 0)) break
+  const idents = [...new Set((Array.isArray(identificaciones) ? identificaciones : [identificaciones]).filter(Boolean))]
+  const delCliente: any[] = []
+  for (const identificacion of idents) {
+    for (let page = 1; page <= 10; page++) {
+      const r = await siigo('GET', `/v1/invoices?customer_identification=${encodeURIComponent(identificacion)}&date_start=${desde}&page=${page}&page_size=100`, { token, partner, ms: 30000 })
+      if (!r.ok) return { ok: false, factura: null, motivo: motivoDe(r) }
+      const res: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+      delCliente.push(...res.filter(x => !x?.customer?.identification || String(x.customer.identification) === identificacion))
+      if (!res.length || page * 100 >= Number(r.data?.pagination?.total_results ?? 0)) break
+    }
   }
-  const delCliente = lista.filter(x => !x?.customer?.identification || String(x.customer.identification) === identificacion)
-  const marca = `Lincoin ${numero}`
-  const conMarca = numero ? delCliente.find(x => { const o = String(x?.observations ?? ''); const i = o.indexOf(marca); return i >= 0 && !/\d/.test(o.charAt(i + marca.length)) }) : null
+  const libres = delCliente.filter(x => !(x?.id != null && excluir.has(String(x.id))))
+  // Si hay varias con la marca (ya se duplicó), la primera que salió.
+  const conMarca = libres.filter(x => llevaMarca(x, numero))
+    .sort((a, b) => String(a?.date ?? '').localeCompare(String(b?.date ?? '')) || (Number(a?.number) || 0) - (Number(b?.number) || 0))[0]
   if (conMarca) return { ok: true, factura: conMarca }
   if (total == null || !Number.isFinite(total)) return { ok: true, factura: null }
-  const mismos = delCliente.filter(x => x?.id != null && Math.abs(Number(x?.total) - total) < 1)
+  // Una con la marca de OTRO comprobante es de ese otro, aunque el total sea igual.
+  const mismos = libres.filter(x => x?.id != null && Math.abs(Number(x?.total) - total) < 1 && !/Lincoin LC-\d/.test(String(x?.observations ?? '')))
   if (!mismos.length) return { ok: true, factura: null }
   const { data: usadas } = await db.from('comprobantes').select('factura_id').eq('user_id', userId).in('factura_id', mismos.map(x => String(x.id)))
   const ya = new Set(((usadas ?? []) as any[]).map(u => String(u.factura_id)))
   return { ok: true, factura: mismos.find(x => !ya.has(String(x.id))) ?? null }
+}
+
+// ── Facturas duplicadas en Siigo ───────────────────────────────────────
+// La contadora de XATECH encontró facturas duplicadas: el mismo movimiento
+// facturado dos veces (un intento que Siigo creó sin contestar a tiempo, y
+// el reintento). Se leen las facturas de Siigo desde una fecha y se agrupan
+// por la marca del comprobante ("Lincoin LC-000123"):
+// - dos o más vigentes (sin nota crédito que las cubra) con la misma marca:
+//   duplicada; queda la registrada en Lincoin y la otra se anula en Siigo;
+// - una vigente que Lincoin no tiene registrada: el próximo «Emitir» la
+//   duplicaría; se puede registrar;
+// - sin marca, del mismo cliente y total que una de Lincoin: posible
+//   duplicada (una hecha a mano en Siigo por un movimiento que Lincoin
+//   también facturó). Solo para revisar.
+// Solo lee Siigo: anular es con nota crédito, y lo hace la contadora.
+const MARCA_LC = /Lincoin (LC-\d+)/
+const resumenFactura = (f: any, notas: Map<string, NotaCredito[]>) => {
+  const ns = notas.get(String(f?.id)) ?? []
+  const total = Number(f?.total) || 0
+  return {
+    id: String(f?.id ?? ''), numero: String(f?.name ?? `${f?.prefix ?? ''}${f?.number ?? ''}`), fecha: f?.date ?? null, total,
+    cliente: String(f?.customer?.identification ?? ''),
+    anulada: ns.length > 0 && r2(ns.reduce((a, n) => a + n.total, 0)) >= total - 1,
+    notas_credito: ns.map(n => n.nombre),
+  }
+}
+async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return { ok: false, error: t.error }
+  const partner = cfg.partner_id || 'Lincoin'
+  const nDias = Math.min(Math.max(Math.round(Number(dias)) || 30, 1), 180)
+  const desde = new Date(Date.now() - nDias * 86400000).toISOString().slice(0, 10)
+  const facturas: any[] = []
+  let completo = true
+  for (let page = 1; ; page++) {
+    // Tope: 6.000 facturas por revisión (cada página cuenta para el límite).
+    if (page > 60) { completo = false; break }
+    const r = await siigo('GET', `/v1/invoices?date_start=${desde}&page=${page}&page_size=100`, { token: t.token, partner, ms: 30000 })
+    if (!r.ok) return { ok: false, error: `No se pudieron leer las facturas de Siigo — ${motivoDe(r)}` }
+    const res: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+    facturas.push(...res)
+    if (!res.length || page * 100 >= Number(r.data?.pagination?.total_results ?? 0)) break
+  }
+  let notas: Map<string, NotaCredito[]>
+  try { notas = await notasCreditoDesde(t.token, partner, desde) }
+  catch (e) { return { ok: false, error: String((e as Error)?.message ?? e) } }
+
+  const porLc = new Map<string, any[]>()
+  for (const f of facturas) {
+    const m = MARCA_LC.exec(String(f?.observations ?? ''))
+    if (m) porLc.set(m[1], [...(porLc.get(m[1]) ?? []), f])
+  }
+  const lcs = [...porLc.keys()]
+  const comps = new Map<string, any>()
+  for (let i = 0; i < lcs.length; i += 200) {
+    const { data, error } = await db.from('comprobantes').select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_id, factura_numero, factura_detalle')
+      .eq('user_id', userId).in('numero', lcs.slice(i, i + 200))
+    if (error) return { ok: false, error: error.message }
+    for (const c of (data ?? []) as any[]) comps.set(String(c.numero), c)
+  }
+  const duplicadas: any[] = []
+  const sinRegistrar: any[] = []
+  const deLincoinPorClave = new Map<string, any[]>()
+  for (const [lc, fs] of porLc) {
+    const c = comps.get(lc)
+    // Una marca de otra cuenta (o de un comprobante que no existe) no es nuestra.
+    if (!c) continue
+    const anteriores = new Set((Array.isArray(c.factura_detalle?.anteriores) ? c.factura_detalle.anteriores : []).map((a: any) => String(a?.id ?? '')))
+    const lista = fs.map(f => ({ ...resumenFactura(f, notas), registrada: String(f?.id) === String(c.factura_id ?? ''), anterior: anteriores.has(String(f?.id)) }))
+      .sort((a, b) => String(a.fecha ?? '').localeCompare(String(b.fecha ?? '')) || a.numero.localeCompare(b.numero, 'es', { numeric: true }))
+    const vigentes = lista.filter(f => !f.anulada)
+    const mov = {
+      folio: c.folio, comprobante: lc, transaction_id: c.transaction_id, tipo: DISPARADORES[String(c.tipo)] ?? String(c.tipo),
+      monto: c.monto, moneda: c.moneda, fecha: c.emitido_at, estado: c.factura_estado, registrada: c.factura_numero ?? null,
+    }
+    if (vigentes.length >= 2) duplicadas.push({ ...mov, facturas: lista })
+    else if (vigentes.length === 1 && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
+    for (const f of vigentes) {
+      const k = `${f.cliente}|${Math.round(f.total)}`
+      deLincoinPorClave.set(k, [...(deLincoinPorClave.get(k) ?? []), { ...f, comprobante: lc }])
+    }
+  }
+  const posibles: any[] = []
+  for (const f of facturas) {
+    if (MARCA_LC.test(String(f?.observations ?? ''))) continue
+    const rf = resumenFactura(f, notas)
+    if (rf.anulada) continue
+    const pares = deLincoinPorClave.get(`${rf.cliente}|${Math.round(rf.total)}`)
+    if (pares?.length) posibles.push({ factura: rf, de_lincoin: pares })
+  }
+  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, posibles }
+}
+
+// Registra en Lincoin facturas que están en Siigo y Lincoin no tenía (las
+// "sin registrar" de la revisión), para que no se vuelvan a emitir. Todo se
+// revisa de nuevo acá: que la factura exista, lleve la marca de ESE
+// comprobante, no esté anulada y el comprobante no tenga ya otra.
+async function registrarDeSiigo(userId: string, pedidas: any[]): Promise<any> {
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return { ok: false, error: t.error }
+  const partner = cfg.partner_id || 'Lincoin'
+  const lista = (Array.isArray(pedidas) ? pedidas : []).slice(0, 200).map(p => ({ folio: Number(p?.folio), id: String(p?.factura_id ?? '') })).filter(p => Number.isFinite(p.folio) && p.id)
+  const registradas: string[] = []
+  const errores: string[] = []
+  const leidas: { p: { folio: number; id: string }; comp: any; f: any }[] = []
+  for (const p of lista) {
+    const { data: comp } = await db.from('comprobantes').select('*').eq('folio', p.folio).eq('user_id', userId).maybeSingle()
+    if (!comp) { errores.push(`Folio ${p.folio}: no es un comprobante de esta cuenta.`); continue }
+    const r = await siigo('GET', `/v1/invoices/${encodeURIComponent(p.id)}`, { token: t.token, partner, ms: 30000 })
+    if (!r.ok) { errores.push(`${(comp as any).numero}: no se pudo leer la factura en Siigo — ${motivoDe(r)}`); continue }
+    if (!llevaMarca(r.data, String((comp as any).numero ?? ''))) { errores.push(`${(comp as any).numero}: la factura ${r.data?.name ?? p.id} no lleva la marca de este comprobante.`); continue }
+    leidas.push({ p, comp, f: r.data })
+  }
+  if (!leidas.length) return { ok: true, registradas, errores }
+  const masVieja = leidas.map(x => String(x.f?.date ?? '')).filter(Boolean).sort()[0] ?? new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10)
+  let notas: Map<string, NotaCredito[]>
+  try { notas = await notasCreditoDesde(t.token, partner, masVieja) }
+  catch (e) { return { ok: false, error: String((e as Error)?.message ?? e), registradas, errores } }
+  for (const { p, comp, f } of leidas) {
+    const c: any = comp
+    const det: any = c.factura_detalle ?? {}
+    if (resumenFactura(f, notas).anulada) { errores.push(`${c.numero}: la factura ${f.name ?? p.id} está anulada con nota crédito.`); continue }
+    if ((Array.isArray(det.anteriores) ? det.anteriores : []).some((a: any) => String(a?.id) === p.id)) { errores.push(`${c.numero}: la factura ${f.name ?? p.id} es la anulada de este movimiento.`); continue }
+    const numero = f.name ?? (f.number != null ? `${f.prefix ?? ''}${f.number}` : null) ?? p.id
+    const { lote: _sale, intento: _int, ...resto } = det
+    const comision = det.comision || String(cfg.modelo ?? '') === 'comision'
+      ? { comision: { ...(det.comision ?? {}), total: Number(f.total) || det.comision?.total, cliente: { ...(det.comision?.cliente ?? {}), identification: String(f.customer?.identification ?? det.comision?.cliente?.identification ?? '') } } }
+      : {}
+    const u = await actualizarSiAlguna('comprobantes', {
+      factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV', factura_proveedor: 'siigo',
+      factura_id: String(f.id), factura_numero: numero, factura_cufe: f.stamp?.cufe ?? null, factura_url: f.public_url ?? null,
+      factura_at: new Date().toISOString(),
+      factura_detalle: { ...resto, respuesta: f, adoptada: true, adoptada_por: 'revision_duplicadas', ...comision },
+    }, q => q.eq('folio', c.folio).eq('user_id', userId), [(q: any) => q.is('factura_estado', null), (q: any) => q.in('factura_estado', ESTADOS_EMITIBLES)], 'folio')
+    if (u.tomado) registradas.push(`${c.numero} → ${numero}`)
+    else errores.push(u.error ? `${c.numero}: no se pudo guardar (${u.error}).` : `${c.numero}: ya tiene factura o se está emitiendo; no se cambió.`)
+  }
+  return { ok: true, registradas, errores }
 }
 
 // ── Cola de emisión (lote) ─────────────────────────────────────────────
@@ -2156,15 +2413,15 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   }
   {
     const hace3 = new Date(Date.now() - 180000).toISOString()
-    const { data: tomado, error: eLock } = await db.from('facturas_lincoin')
-      .update({ estado: 'emitiendo', error: null, updated_at: ahora() })
-      .eq('id', fila.id)
-      // 'incierta' y el 'emitiendo' viejo solo llegan acá después de verificar
-      // en Siigo que la factura NO existe (arriba).
-      .or(`estado.in.(${ESTADOS_REEMITIBLES}${porVerificar ? ',incierta' : ''}),and(estado.eq.emitiendo,updated_at.lt.${hace3})`)
-      .select('id')
-    if (eLock) return { ok: false, error: `No se pudo tomar la factura: ${eLock.message}` }
-    if (!Array.isArray(tomado) || !tomado.length) return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Recargá la lista.' }
+    // Sin `or` (ver actualizarSiAlguna): con él, este candado fallaba siempre.
+    // 'incierta' y el 'emitiendo' viejo solo llegan acá después de verificar
+    // en Siigo que la factura NO existe (arriba).
+    const lock = await actualizarSiAlguna('facturas_lincoin', { estado: 'emitiendo', error: null, updated_at: ahora() }, q => q.eq('id', fila.id), [
+      (q: any) => q.in('estado', [...ESTADOS_REEMITIBLES.split(','), ...(porVerificar ? ['incierta'] : [])]),
+      (q: any) => q.eq('estado', 'emitiendo').lt('updated_at', hace3),
+    ], 'id')
+    if (lock.error) return { ok: false, error: `No se pudo tomar la factura: ${lock.error}` }
+    if (!lock.tomado) return { ok: false, error: 'Esta factura ya se está emitiendo o ya salió. Recargá la lista.' }
   }
   const intentos: any[] = []
   let tarifa = iva.percentage / 100
@@ -2446,11 +2703,12 @@ Deno.serve(async (req) => {
     let userId = yo.userId
 
     // Contador con acceso aprobado: puede CONSULTAR el documento de un
-    // movimiento de la empresa (nada más). El vínculo se lee de la fila de
-    // la empresa, que solo escribe la función `contador`.
+    // movimiento de la empresa y la revisión de duplicadas (nada más, todo
+    // de solo lectura). El vínculo se lee de la fila de la empresa, que solo
+    // escribe la función `contador`.
     const empresaPedida = String(body.empresaId ?? '')
     if (empresaPedida && empresaPedida !== userId) {
-      if (accion !== 'documento' && accion !== 'documento_pdf') return json({ ok: false, error: 'no_autorizado' }, 403)
+      if (accion !== 'documento' && accion !== 'documento_pdf' && accion !== 'duplicadas') return json({ ok: false, error: 'no_autorizado' }, 403)
       if (!(await esContadorDe(userId, empresaPedida))) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
       userId = empresaPedida
     }
@@ -2723,6 +2981,15 @@ Deno.serve(async (req) => {
     }
     if (accion === 'lote_cancelar') {
       return json({ ok: true, cancelados: await cancelarCola(userId) })
+    }
+
+    // ── Revisar facturas duplicadas en Siigo (solo lee) y registrar las
+    //    que Siigo tiene y Lincoin no, para que no se vuelvan a emitir.
+    if (accion === 'duplicadas') {
+      return json(await revisarDuplicadas(userId, Number(body.dias ?? 30)))
+    }
+    if (accion === 'duplicadas_registrar') {
+      return json(await registrarDeSiigo(userId, body.facturas))
     }
 
     // ── El documento de UN movimiento, para verlo desde el detalle ──────
