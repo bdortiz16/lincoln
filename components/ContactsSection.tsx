@@ -468,7 +468,17 @@ export const ContactsSection: React.FC<{
     // NIT; el beneficiario se inscribe con el DV pegado (9009691858). Sin
     // esto la pantalla no la encontraba: mostraba "consultando" para siempre
     // y seguía pidiendo la verificación cada minuto.
-    const fichaAml = (doc: string) => amlBenef[doc] ?? (esNitEmpresa(doc) ? amlBenef[nitSinDv(doc)] : undefined);
+    // De las dos (con DV: la de la época de TusDatos; base: la de Sarblock)
+    // manda la vigente y, si las dos lo están, la más reciente — la misma
+    // regla que el servidor. Antes mandaba siempre la del número exacto, y
+    // una ficha vieja o archivada tapaba a la nueva.
+    const fichaAml = (doc: string) => {
+        const a = amlBenef[doc];
+        const b = esNitEmpresa(doc) ? amlBenef[nitSinDv(doc)] : undefined;
+        const vig = (f: any) => !!f && String(f.estado ?? '') !== 'archivado';
+        if (vig(a) && vig(b)) return (Date.parse(String(b.at ?? '')) || 0) > (Date.parse(String(a.at ?? '')) || 0) ? b : a;
+        return vig(a) ? a : vig(b) ? b : (a ?? b);
+    };
     // La columna aparece si la verificación corre para esta cuenta O si ya hay
     // resultados guardados. Lo segundo importa: apagar la integración no debe
     // hacer desaparecer veredictos que ya se consultaron y ya están frenando
@@ -1435,7 +1445,10 @@ export const ContactsSection: React.FC<{
         // de documento equivocado—, pero antes su consulta se ARCHIVA en el
         // servidor: el registro no se pierde y la inscripción nueva arranca
         // limpia. Si no se pudo archivar, no se borra.
-        if (target && amlEsEvidencia(target)) {
+        // También un NOMBRE INCORRECTO: se borra para inscribirlo de nuevo con
+        // el nombre bueno, y si su ficha no se archiva, la inscripción nueva
+        // caía en ella con el nombre viejo y el bloqueo viejo (caso Mexite).
+        if (target && (amlEsEvidencia(target) || amlDe(target)?.nombreCoincide === false)) {
             const doc = String(target.docNumber ?? '').replace(/\D/g, '');
             const otroConMismoDoc = contacts.some(x => x.id !== target.id && String(x.docNumber ?? '').replace(/\D/g, '') === doc);
             if (doc && !otroConMismoDoc) {

@@ -117,6 +117,14 @@ async function guardarFicha(uid: string, doc: string, ficha: Record<string, unkn
   await setRawPath(db, uid, ['tusdatos', 'beneficiarios', doc], ficha, false)
 }
 const soloDigitos = (s: unknown) => String(s ?? '').replace(/\D/g, '')
+// De dos fichas del MISMO documento (un NIT: la de TusDatos quedó por el
+// número con DV, la de Sarblock va por los 9 dígitos base), la que manda:
+// la vigente; si las dos lo están, la más reciente. Antes mandaba siempre la
+// del número exacto, y una ficha vieja tapaba a la nueva.
+const vigenteF = (f: any) => !!f && f.estado !== 'archivado'
+const fichaQueManda = (a: any, b: any) =>
+  vigenteF(a) && vigenteF(b) ? ((Date.parse(String(b.at ?? '')) || 0) > (Date.parse(String(a.at ?? '')) || 0) ? b : a)
+    : vigenteF(a) ? a : vigenteF(b) ? b : (a ?? b)
 // ¿Es el mismo nombre escrito? (sin tildes, mayúsculas ni signos). Ojo: esto
 // no decide si el nombre corresponde al documento —eso es compararNombres—,
 // solo si el cliente escribió lo mismo que la ficha ya tiene.
@@ -262,15 +270,35 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
         return { ok: true, documento: doc, yaExistia: true, rejuzgado: true }
       }
     }
-    return { ok: true, documento: doc, yaExistia: true }
+    // Una ficha que NO se puede rejuzgar gratis —la de la época de TusDatos,
+    // o una de Sarblock sin el resultado guardado— con OTRO nombre: TusDatos
+    // ya no corre, así que nadie la volvía a juzgar y el bloqueo por nombre
+    // quedaba para siempre aunque el cliente corrigiera el nombre (caso
+    // Mexite, 2026-10-30). Se consulta de nuevo: del padrón si está, si no
+    // una consulta nueva. Solo si se sabe con qué nombre se juzgó: una ficha
+    // vieja sin ese dato no dispara consultas en masa.
+    const reconsultar = !!nuevo && previa.estado === 'finalizado' && !!previa.nombreInscrito && !mismoNombre(nuevo, previa.nombreInscrito)
+    if (!reconsultar) return { ok: true, documento: doc, yaExistia: true }
+    await auditar('sarblock.reconsulta_por_nombre', { userId: uid, documento: doc, antes: previa.nombreInscrito ?? null, ahora: nuevo, proveedorAnterior: previa.proveedor ?? 'tusdatos' })
   }
   // Lincoin Risk: otra cuenta ya consultó a esta persona en los últimos 90
   // días. Se reutiliza sin costo (y no cuenta para el tope); el nombre se
   // compara contra el oficial con lo que escribió ESTA cuenta.
+  // Un NIT: la ficha nueva va por los 9 dígitos base; la de la época de
+  // TusDatos quedó por el número con DV y, si no se archiva, la pantalla, el
+  // envío y la bandeja siguen leyendo el veredicto viejo.
+  const archivarLaConDv = async () => {
+    const conDv = soloDigitos(d.documento)
+    const vieja = conDv && conDv !== doc ? raw?.tusdatos?.beneficiarios?.[conDv] : null
+    if (!vigenteF(vieja)) return
+    await guardarFicha(uid, conDv, { ...vieja, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: `reemplazada por la consulta de Sarblock del NIT ${doc}` })
+    await auditar('sarblock.ficha_con_dv_archivada', { userId: uid, documento: conDv, nit: doc })
+  }
   const enPadron = await padronBuscar(db, d.tipoDocumento, doc)
   if (enPadron) {
     const ficha = fichaParaCuenta(enPadron.ficha, d.nombre, { documento: doc, tipoDocumento: d.tipoDocumento, dePadron: true, padronAt: enPadron.consultado_at })
     await guardarFicha(uid, doc, conDecision(ficha, previa))
+    await archivarLaConDv()
     await anotarUso(db, d.tipoDocumento, doc, uid)
     await auditar('sarblock.reutilizado', { userId: uid, documento: doc, categoria: ficha.categoria })
     return { ok: true, documento: doc, reutilizado: true }
@@ -279,6 +307,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   try {
     const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: claveIdempotencia(uid, doc) })
     await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: d.tipoDocumento, nombre: d.nombre, checkId: r.id }) }, previa))
+    await archivarLaConDv()
     await auditar('sarblock.lanzado', { userId: uid, documento: doc, checkId: r.id })
     return { ok: true, documento: doc, checkId: r.id }
   } catch (e) {
@@ -716,15 +745,20 @@ Deno.serve(async (req) => {
       const fichas = raw?.tusdatos?.beneficiarios ?? {}
       const contactos: any[] = Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []
       const limite = Math.max(1, Math.min(10, Number(body.limite ?? 4) || 4))
-      // Un NIT con DV pegado tiene su ficha por los 9 dígitos base.
-      const fichaDe = (x: any) => fichas[soloDigitos(x.docNumber)] ?? fichas[docPadron(String(x.docNumber), String(x.docType ?? 'CC'))]
-      // Ficha de Sarblock con OTRO nombre que el inscrito: se borró y se
-      // volvió a inscribir corregido. lanzar() lo vuelve a juzgar gratis. Si
+      // Un NIT con DV pegado tiene su ficha por los 9 dígitos base. Si en una
+      // de las dos llaves quedó una ficha ARCHIVADA (la del beneficiario
+      // borrado) y en la otra la vigente, manda la vigente.
+      const fichaDe = (x: any) => fichaQueManda(fichas[soloDigitos(x.docNumber)], fichas[docPadron(String(x.docNumber), String(x.docType ?? 'CC'))])
+      // Ficha con OTRO nombre que el inscrito: se borró y se volvió a
+      // inscribir corregido. lanzar() la vuelve a juzgar (gratis si es de
+      // Sarblock; con una consulta nueva si es de la época de TusDatos). Si
       // otro contacto con el mismo documento sí tiene el nombre de la ficha,
       // no se toca (si no, dos contactos se la quitarían cada vuelta).
       const renombrado = (x: any) => {
         const f = fichaDe(x)
-        if (!f || f.proveedor !== 'sarblock' || f.estado !== 'finalizado' || !x.name || mismoNombre(x.name, f.nombreInscrito)) return false
+        if (!f || f.estado !== 'finalizado' || !x.name || mismoNombre(x.name, f.nombreInscrito)) return false
+        // Las de TusDatos solo si se sabe con qué nombre se juzgaron.
+        if (f.proveedor !== 'sarblock' && !f.nombreInscrito) return false
         const d = soloDigitos(x.docNumber)
         return !contactos.some((o: any) => soloDigitos(o?.docNumber) === d && mismoNombre(o?.name, f.nombreInscrito))
       }
@@ -760,10 +794,13 @@ Deno.serve(async (req) => {
       // Un NIT llega con el DV pegado y la ficha está por los 9 dígitos base:
       // sin esto no se archivaba, y al volver a inscribirlo se reutilizaba
       // la ficha vieja con el nombre viejo.
+      // Se archivan LAS DOS si están: la de la época de TusDatos (con DV) y
+      // la de Sarblock (base). Con una sola, la otra seguía mandando.
       const fichas = (await leerRaw(uid))?.tusdatos?.beneficiarios ?? {}
-      const doc = fichas[soloDigitos(body.documento)] ? soloDigitos(body.documento) : normDoc(body.documento)
-      const f = fichas[doc]
-      if (f) await guardarFicha(uid, doc, { ...f, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: String(body.motivo ?? '').slice(0, 300) || null })
+      for (const doc of new Set([soloDigitos(body.documento), normDoc(body.documento)])) {
+        const f = doc ? fichas[doc] : null
+        if (vigenteF(f)) await guardarFicha(uid, doc, { ...f, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: String(body.motivo ?? '').slice(0, 300) || null })
+      }
       return json({ ok: true })
     }
 

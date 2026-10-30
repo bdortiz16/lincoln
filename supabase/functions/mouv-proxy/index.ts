@@ -3670,7 +3670,15 @@ serve(async (req: Request) => {
             // La ficha de un NIT está por sus 9 dígitos base (así la guarda
             // Sarblock); el beneficiario puede venir con el DV pegado.
             const fichasAml = (rawU?.tusdatos?.beneficiarios ?? {}) as Record<string, any>
-            const f = fichasAml[docDest] ?? fichasAml[normDoc(docDest)]
+            // De las dos (con DV: la de la época de TusDatos; base: la de
+            // Sarblock) manda la vigente y, si las dos lo están, la más
+            // reciente — la misma regla que la pantalla. Antes mandaba la del
+            // número exacto, y una ficha vieja o archivada tapaba a la nueva.
+            const fA = fichasAml[docDest], fB = fichasAml[normDoc(docDest)]
+            const vigF = (x: any) => !!x && x.estado !== 'archivado'
+            const f = vigF(fA) && vigF(fB)
+              ? ((Date.parse(String(fB.at ?? '')) || 0) > (Date.parse(String(fA.at ?? '')) || 0) ? fB : fA)
+              : vigF(fA) ? fA : vigF(fB) ? fB : (fA ?? fB)
             if (f?.nombreReal) nombresTitular.push(String(f.nombreReal))
             const cat = String(f?.categoria ?? '')
             const cerrado = f?.estado === 'finalizado'
