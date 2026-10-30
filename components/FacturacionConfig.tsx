@@ -12,9 +12,13 @@
 //         una comisión. Por cada entrada, una factura de venta con dos ítems
 //         que suman exacto lo recibido: servicio para terceros (sin IVA) y
 //         comisión (con IVA).
-//       · PSP — paga a terceros por cuenta de alguien. Por cada salida, un
-//         documento soporte al beneficiario por el monto total, con el ítem
-//         de servicio para terceros, sin IVA.
+//       · COMISIÓN — por cada envío, una FACTURA DE VENTA de mandato al
+//         ordenante: ingresos para terceros por el valor transferido (sin
+//         IVA) + la comisión con el IVA incluido.
+//       · PSP / PASARELA — la misma factura de venta de mandato, pero al
+//         BENEFICIARIO (a quien se le transfiere). No es documento soporte.
+//         A una persona jurídica con NIT colombiano, la comisión lleva la
+//         retención en la fuente por comisiones (11 %) sobre su base.
 //    3. Los parámetros del modelo: utilidad, qué producto de Siigo es cada
 //       ítem, IVA, qué operaciones, y los comprobantes de su Siigo.
 //    4. Contraparte, DIAN y correo.
