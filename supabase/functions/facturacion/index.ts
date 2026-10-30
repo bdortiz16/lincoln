@@ -93,7 +93,30 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; servic
 // Devuelve SIEMPRE qué pasó: estado HTTP y cuerpo. Un error tragado acá se
 // convierte en "no se facturó" sin motivo, que es lo que se quiere evitar.
 type Resp = { ok: boolean; status: number; data: any; texto: string }
+// LÍMITE DE CONSULTAS DE SIIGO. Siigo contesta 429 «requests_limit · Rate
+// limit is exceeded. Try again in N seconds» cuando se le pregunta mucho en
+// poco tiempo. Con la emisión en lote se llegaba rápido (cada factura son
+// varias consultas) y 36 facturas quedaron en error al buscar al cliente.
+// Ahora se espera lo que Siigo pide y se reintenta una vez; mientras tanto,
+// las demás consultas de esta instancia también esperan. Un 429 se rechaza
+// antes de procesar nada, así que reintentar (incluso un POST) no duplica.
+let siigoEsperarHasta = 0
+const SIIGO_ESPERA_MAX_MS = 20_000
+function esperaDe429(r: Resp, retryAfter: string | null): number {
+  const m = /try again in\s*(\d+)\s*sec/i.exec(r.texto) ?? /(\d+)\s*seconds?/i.exec(String(retryAfter ?? ''))
+  const seg = m ? Number(m[1]) : Number(retryAfter) || 15
+  return Math.min(Math.max((seg + 1) * 1000, 2000), SIIGO_ESPERA_MAX_MS)
+}
 async function siigo(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token?: string; partner?: string; body?: unknown; ms?: number }): Promise<Resp> {
+  for (let intento = 0; ; intento++) {
+    const espera = siigoEsperarHasta - Date.now()
+    if (espera > 0) await new Promise(r => setTimeout(r, Math.min(espera, SIIGO_ESPERA_MAX_MS)))
+    const { r, retryAfter } = await siigoUnaVez(metodo, ruta, opts)
+    if (r.status !== 429 || intento >= 1) return r
+    siigoEsperarHasta = Date.now() + esperaDe429(r, retryAfter)
+  }
+}
+async function siigoUnaVez(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token?: string; partner?: string; body?: unknown; ms?: number }): Promise<{ r: Resp; retryAfter: string | null }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
   if (opts.partner) headers['Partner-Id'] = opts.partner
   if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`
@@ -107,11 +130,19 @@ async function siigo(metodo: 'GET' | 'POST' | 'PUT', ruta: string, opts: { token
     const texto = await r.text().catch(() => '')
     let data: any = null
     try { data = texto ? JSON.parse(texto) : null } catch { data = null }
-    return { ok: r.ok, status: r.status, data, texto: texto.slice(0, 2000) }
+    return { r: { ok: r.ok, status: r.status, data, texto: texto.slice(0, 2000) }, retryAfter: r.headers.get('retry-after') }
   } catch (e) {
-    return { ok: false, status: 0, data: null, texto: (e as Error)?.message ?? 'red' }
+    return { r: { ok: false, status: 0, data: null, texto: (e as Error)?.message ?? 'red' }, retryAfter: null }
   }
 }
+
+// Lo ya confirmado en Siigo, mientras viva la instancia: que un cliente
+// existe y el ítem (con su IVA). Ahorra consultas en los lotes.
+const SIIGO_CACHE_CLIENTE_MS = 30 * 60_000
+const SIIGO_CACHE_PRODUCTO_MS = 10 * 60_000
+const clientesEnSiigo = new Map<string, number>()
+const productosSiigo = new Map<string, { hasta: number; r: Resp }>()
+const siigoVisto = (m: Map<string, number>, k: string) => (m.get(k) ?? 0) > Date.now()
 
 // El motivo de Siigo, en una línea legible.
 function motivoDe(r: Resp): string {
@@ -1224,17 +1255,24 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // En paralelo: ¿el cliente ya existe en Siigo? y el ítem en vivo. La
   // dirección (que puede pedir el RUES, lento) solo se busca si hay que
   // CREAR al cliente: uno que ya existe no la necesita para la factura.
+  // Lo ya confirmado en Siigo (el cliente existe, el ítem y su IVA) no se
+  // vuelve a preguntar en cada factura de un lote: el ordenante suele ser el
+  // mismo en todas, y cada consulta cuenta para el límite por minuto.
+  const cliYaVisto = siigoVisto(clientesEnSiigo, `${userId}|${cp.identification}`)
+  const prodGuardado = productosSiigo.get(`${userId}|${item}`)
   const [buscaCli, rpProd] = await Promise.all([
-    siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token: t.token, partner }),
-    siigo('GET', `/v1/products?code=${encodeURIComponent(item)}`, { token: t.token, partner }),
+    cliYaVisto ? Promise.resolve(null) : siigo('GET', `/v1/customers?identification=${encodeURIComponent(cp.identification)}`, { token: t.token, partner }),
+    prodGuardado && prodGuardado.hasta > Date.now() ? Promise.resolve(prodGuardado.r) : siigo('GET', `/v1/products?code=${encodeURIComponent(item)}`, { token: t.token, partner }),
   ])
-  const listaCli: any[] = Array.isArray(buscaCli.data?.results) ? buscaCli.data.results : Array.isArray(buscaCli.data) ? buscaCli.data : []
-  const yaExiste = buscaCli.ok && listaCli.some(x => String(x?.identification ?? '') === cp.identification)
+  if (rpProd.ok) productosSiigo.set(`${userId}|${item}`, { hasta: Date.now() + SIIGO_CACHE_PRODUCTO_MS, r: rpProd })
+  const listaCli: any[] = !buscaCli ? [] : Array.isArray(buscaCli.data?.results) ? buscaCli.data.results : Array.isArray(buscaCli.data) ? buscaCli.data : []
+  const yaExiste = cliYaVisto || (!!buscaCli?.ok && listaCli.some(x => String(x?.identification ?? '') === cp.identification))
   if (!yaExiste) {
     cp.direccion = await direccionDelBeneficiario(userId, cp.identification, cfg, cp.esEmpresa)
     const cli = await asegurarCliente(t.token, partner, cfg, cp, 'Customer')
     if (!cli.ok) return falla(cli.error)
   }
+  clientesEnSiigo.set(`${userId}|${cp.identification}`, Date.now() + SIIGO_CACHE_CLIENTE_MS)
 
   const monto = Number(String((comp as any).monto ?? '0').replace(/,/g, ''))
   if (!Number.isFinite(monto) || monto <= 0) return falla(`Monto inválido en el comprobante: ${(comp as any).monto}`)
@@ -1294,7 +1332,9 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   if (mandato) {
     const benef = contraparteDe(comp, cfg)
     if (!benef.esDefault && benef.identification && benef.identification !== cp.identification) {
-      const cliB = await asegurarCliente(t.token, partner, cfg, benef, 'Customer')
+      const claveB = `${userId}|${benef.identification}`
+      const cliB = siigoVisto(clientesEnSiigo, claveB) ? { ok: true as const } : await asegurarCliente(t.token, partner, cfg, benef, 'Customer')
+      if (cliB.ok) clientesEnSiigo.set(claveB, Date.now() + SIIGO_CACHE_CLIENTE_MS)
       if (cliB.ok) terceroLinea = { identification: benef.identification, branch_office: 0 }
       else notaTercero = `No se pudo registrar en Siigo al beneficiario ${benef.nombre} (${benef.identification}) como tercero de la línea: ${cliB.error}`
       ctx.beneficiario = benef.nombre
@@ -1485,7 +1525,14 @@ const COLA_VUELTA_MS = 90_000
 const COLA_LATIDO_MS = 150_000
 // Cada vez que la cola toma un comprobante cuenta una pasada; con muchas, se
 // deja (error, o sin marca de cola) para que la cola siempre termine.
-const COLA_MAX_PASADAS = REINTENTOS_DUPLICADO + 2
+const COLA_MAX_PASADAS = 12
+// Si Siigo frena por el límite de consultas (429), la factura vuelve a la cola
+// y se reintenta pasado un minuto (la ventana del límite), hasta estas veces.
+const COLA_MAX_LIMITES = 6
+const COLA_ESPERA_LIMITE_MS = 60_000
+const esLimiteSiigo = (e: unknown) => /HTTP 429|requests_limit|rate limit/i.test(String(e ?? ''))
+// Pausa entre una factura y la siguiente: reparte las consultas en el minuto.
+const COLA_PAUSA_MS = 1_500
 const SALIDAS = ['dispersion', 'send', 'pay_sent', 'otc_withdraw']
 const claveCola = (userId: string) => `facturacion_cola:${userId}`
 
@@ -1614,6 +1661,20 @@ async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error'
   } catch (e) { r = { ok: false, error: String((e as Error)?.message ?? e) } }
   if (r?.ok && (r.estado === 'emitida' || r.numero)) return 'emitida'
   if (r?.reintento) return 'espera'
+  // Frenada por el límite de consultas de Siigo: no se creó nada (un 429 se
+  // rechaza antes de procesar). Vuelve a la cola y se reintenta en un minuto,
+  // en vez de quedar en error como las 36 de un lote de XATECH.
+  if (!r?.ok && esLimiteSiigo(r?.error) && Number(lote.limites ?? 0) < COLA_MAX_LIMITES) {
+    const { data: tras } = await db.from('comprobantes').select('factura_estado, factura_detalle').eq('folio', f.folio).maybeSingle()
+    const est = String((tras as any)?.factura_estado ?? '')
+    if (est === 'error' || est === 'en_cola') {
+      await db.from('comprobantes').update({
+        factura_estado: 'en_cola', factura_error: 'Siigo pidió esperar (límite de consultas por minuto). Se reintenta sola en un momento.',
+        factura_detalle: { ...((tras as any)?.factura_detalle ?? {}), lote: { ...lote, pasadas, limites: Number(lote.limites ?? 0) + 1, no_antes: Date.now() + COLA_ESPERA_LIMITE_MS } },
+      }).eq('folio', f.folio).eq('factura_estado', est)
+      return 'espera'
+    }
+  }
   // Si contestó sin tomarla (operación no completada, falta configuración),
   // sigue 'en_cola': pasa a error con el motivo, o la cola la repetiría.
   const { data: ahora } = await db.from('comprobantes').select('factura_estado').eq('folio', f.folio).maybeSingle()
@@ -1658,6 +1719,7 @@ async function procesarCola(userId: string): Promise<{ emitidas: number; errores
     if (r === 'emitida') out.emitidas++
     else if (r === 'error') out.errores++
     await guardarSistema(claveCola(userId), String(Date.now()))
+    if (Date.now() - inicio < COLA_VUELTA_MS) await new Promise(res => setTimeout(res, COLA_PAUSA_MS))
   }
   out.quedan = (await pendientesDeCola(userId)).length
   if (out.quedan > 0) out.relevo = await relevarCola(userId)

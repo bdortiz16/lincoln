@@ -318,7 +318,7 @@ const EmisionLoteModal: React.FC<{
     if (fase === 'cola' && enviados.has(i.txId)) {
       if (rechazados[i.txId]) return { rot: 'no se encoló', color: ROJO, detalle: rechazados[i.txId] };
       if (!fiable) return { rot: 'en cola', color: C.sub, cola: true };
-      if (e === 'en_cola') return /duplicad/i.test(v?.error ?? '') ? { rot: 'en espera', color: AMBAR, detalle: v?.error ?? undefined, cola: true } : { rot: 'en cola', color: C.sub, cola: true };
+      if (e === 'en_cola') return /duplicad|esperar/i.test(v?.error ?? '') ? { rot: 'en espera', color: AMBAR, detalle: v?.error ?? undefined, cola: true } : { rot: 'en cola', color: C.sub, cola: true };
       if (e === 'emitiendo') return { rot: 'emitiendo…', color: C.text, cola: true };
     }
     if (e === 'emitida') return { rot: v?.numero ?? 'emitida', color: C.entra, mono: true };
@@ -1612,7 +1612,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         // 'emitiendo' de más de 3 min = se cayó a mitad: se ofrece otra vez.
                         const emitiendoSiigo = fa?.estado === 'emitiendo' && (!fa.at || Date.now() - new Date(fa.at).getTime() < 180000);
                         if (emitiendoSiigo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
-                        if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
+                        if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad|esperar/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
                             <span style={{ color: C.tenue }}>{f && facturacionActiva ? 'pendiente' : '—'}</span>
