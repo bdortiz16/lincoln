@@ -27,7 +27,7 @@
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { llamarFuncion } from '../lib/edge';
+import { useEmpresaFacturacion, useFacturacion, useOrdenantesEmpresa } from '../lib/facturacionEmpresa';
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 import { MUNICIPIOS } from '../lib/municipios';
 import { useDatabase } from '../context/DatabaseContext';
@@ -94,7 +94,11 @@ const fmtCop = (n: number) => n.toLocaleString('es-CO', { minimumFractionDigits:
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const EJEMPLO = 15_000_000;
 
-export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
+// `nitEmpresa`: el NIT de la empresa cuando la configura su contador (la
+// sesión es la del contador, no la de la empresa).
+export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: string | null }> = ({ onCerrar, nitEmpresa }) => {
+  const fact = useFacturacion();
+  const empresaId = useEmpresaFacturacion();
   const [cfg, setCfg] = useState<Cfg | null>(null);
   const [disparadores, setDisparadores] = useState<Record<string, string>>({});
   const [form, setForm] = useState<any>({});
@@ -108,11 +112,23 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
   // El modelo también: guardado, queda un resumen con "Editar" y "Eliminar".
   const [modeloAbierto, setModeloAbierto] = useState(true);
   const { currentUser, actualizarListaRaw, updateUserRawData } = useDatabase();
-  const ordenantes = leerOrdenantes(currentUser);
-  const nitPropio = baseDocOrd((currentUser as any)?.taxId ?? (currentUser as any)?.nit);
+  const [ordVersion, setOrdVersion] = useState(0);
+  const ordenantes: Ordenante[] = useOrdenantesEmpresa(leerOrdenantes(currentUser), ordVersion);
+  const nitPropio = baseDocOrd(empresaId ? nitEmpresa : ((currentUser as any)?.taxId ?? (currentUser as any)?.nit));
+  // La empresa escribe su ficha desde el navegador; su contador no puede, y
+  // pasa por el servidor (que revisa el vínculo).
+  const cambiarOrdenantes = async (cambio: (l: any[]) => any[], respaldo?: any[]): Promise<boolean> => {
+    if (empresaId) {
+      const r = await fact({ action: 'ordenantes_set', ordenantes: cambio(ordenantes) }, 20000).catch(() => null);
+      if (r?.ok) setOrdVersion(v => v + 1);
+      return !!r?.ok;
+    }
+    if (!currentUser?.id) return false;
+    return actualizarListaRaw(currentUser.id, 'ordenantes', cambio, respaldo);
+  };
   const [nuevoOrd, setNuevoOrd] = useState<{ nombre: string; docTipo: Ordenante['docTipo']; doc: string; correo: string; error: string | null; guardando: boolean }>({ nombre: '', docTipo: 'NIT', doc: '', correo: '', error: null, guardando: false });
   const agregarOrdenante = async () => {
-    if (!currentUser?.id) return;
+    if (!empresaId && !currentUser?.id) return;
     const nombre = nuevoOrd.nombre.trim();
     const doc = nuevoOrd.doc.replace(/\D/g, '');
     if (nombre.length < 3) { setNuevoOrd(o => ({ ...o, error: 'Escribe el nombre o la razón social.' })); return; }
@@ -121,7 +137,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     if (ordenantes.some(o => o.doc === doc)) { setNuevoOrd(o => ({ ...o, error: 'Ese documento ya está en la lista.' })); return; }
     setNuevoOrd(o => ({ ...o, guardando: true, error: null }));
     const nuevo: Ordenante = { id: `ord_${Math.random().toString(36).slice(2, 10)}`, nombre, docTipo: nuevoOrd.docTipo, doc, ...(nuevoOrd.correo.trim() ? { correo: nuevoOrd.correo.trim() } : {}) };
-    const ok = await actualizarListaRaw(currentUser.id, 'ordenantes', l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
+    const ok = await cambiarOrdenantes(l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
     setNuevoOrd(ok ? { nombre: '', docTipo: 'NIT', doc: '', correo: '', error: null, guardando: false } : { ...nuevoOrd, guardando: false, error: 'No se pudo guardar. Vuelve a intentarlo.' });
   };
   // Buscar el ordenante entre los clientes de Siigo (por nombre o documento).
@@ -131,26 +147,25 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     const q = busqOrd.q.trim();
     if (q.length < 2 || busqOrd.cargando) return;
     setBusqOrd(b => ({ ...b, cargando: true, error: null }));
-    const r = await llamarFuncion('facturacion', { action: 'buscar_clientes', q }, 60000).catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
+    const r = await fact({ action: 'buscar_clientes', q }, 60000).catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
     setBusqOrd(b => ({ ...b, cargando: false, resultados: r?.ok ? (r.clientes ?? []) : null, error: r?.ok ? null : String(r?.error ?? 'No se pudo buscar en Siigo.') }));
   };
   const agregarDesdeSiigo = async (c: any) => {
-    if (!currentUser?.id) return;
+    if (!empresaId && !currentUser?.id) return;
     const doc = String(c.identification ?? '').replace(/\D/g, '');
     if (!doc) return;
     if (ordenantes.some(o => o.doc === doc || o.doc.slice(0, 9) === doc)) { setBusqOrd(b => ({ ...b, error: `${c.nombre} ya está en la lista.` })); return; }
     const nuevo: Ordenante = { id: `ord_${Math.random().toString(36).slice(2, 10)}`, nombre: String(c.comercial || c.nombre || doc).trim(), docTipo: c.esEmpresa ? 'NIT' : 'CC', doc };
-    const ok = await actualizarListaRaw(currentUser.id, 'ordenantes', l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
+    const ok = await cambiarOrdenantes(l => [...l.filter((x: any) => x?.doc !== doc), nuevo], ordenantes);
     if (!ok) setBusqOrd(b => ({ ...b, error: 'No se pudo guardar. Vuelve a intentarlo.' }));
   };
   const quitarOrdenante = async (id: string) => {
-    if (!currentUser?.id) return;
-    await actualizarListaRaw(currentUser.id, 'ordenantes', l => l.filter((x: any) => x?.id !== id));
+    await cambiarOrdenantes(l => l.filter((x: any) => x?.id !== id));
   };
 
   const cargar = async () => {
     setCargando(true);
-    const r = await llamarFuncion('facturacion', { action: 'config_get' }, 20000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'config_get' }, 20000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setCargando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? r?.mensaje ?? 'No se pudo leer la configuración.' }); return; }
     const c: Cfg = r.config;
@@ -228,7 +243,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     const { activo: _activoForm, ...resto } = form;
     const cambiarActivo = 'activo' in extra;
     const config = { ...resto, ...extra, ...(llave ? { access_key: llave } : {}) };
-    const r = await llamarFuncion('facturacion', { action: 'config_set', config, ...(cambiarActivo ? { cambiarActivo: true } : {}) }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'config_set', config, ...(cambiarActivo ? { cambiarActivo: true } : {}) }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setGuardando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
     // El servidor guarda solo lo que conoce: si devuelve otro modelo que el
@@ -241,7 +256,8 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     setCfg(r.config); setAccessKey('');
     set('activo', !!r.config?.activo);
     // El envío pregunta el ordenante solo si el servidor confirmó el modelo Comisión.
-    if (currentUser?.id && (currentUser as any)?.raw_data?.facturacionModelo !== (r.config?.modelo ?? null)) updateUserRawData(currentUser.id, { facturacionModelo: r.config?.modelo ?? null }).catch(() => {});
+    // (Si la configura el contador, lo escribe el servidor en la empresa.)
+    if (!empresaId && currentUser?.id && (currentUser as any)?.raw_data?.facturacionModelo !== (r.config?.modelo ?? null)) updateUserRawData(currentUser.id, { facturacionModelo: r.config?.modelo ?? null }).catch(() => {});
     // Guardado con modelo: se pliega al resumen.
     if (!('activo' in extra) && config.modelo) setModeloAbierto(false);
     setAviso({ ok: true, texto: 'activo' in extra ? (extra.activo ? 'Facturación automática activada.' : 'Facturación automática pausada.') : 'Guardado.' });
@@ -270,7 +286,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void }> = ({ onCerrar
     // Siigo no devolvía el producto nuevo.
     if (!soloCatalogos && !(await guardar())) return;
     setProbando(true); setAviso(null);
-    const r = await llamarFuncion('facturacion', { action: 'probar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'probar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setProbando(false);
     if (r?.config) setCfg(r.config);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'Siigo no respondió.' }); return; }

@@ -1,11 +1,14 @@
 // ══════════════════════════════════════════════════════════════════
-//  contador — acceso de solo lectura a la contabilidad de una empresa
+//  contador — acceso a la contabilidad y la facturación de una empresa
 //
 //  El contador tiene SU cuenta en Lincoin (la que sea, menos admin). Entra
 //  por "Empresas → Contabilidad", escribe el ID Lincoin de la empresa y
 //  queda como solicitud. La empresa, desde su Contabilidad (botón
 //  "Contador"), aprueba o rechaza. Aprobado, el contador ve la contabilidad
-//  de esa empresa: movimientos, comprobantes, facturas. Nada operable.
+//  de esa empresa (movimientos, comprobantes, facturas) y opera su
+//  facturación en Siigo: emitir y configurar, credenciales incluidas (eso lo
+//  autoriza la función `facturacion`, con este mismo vínculo, y queda en el
+//  audit_log de la empresa). Nada de saldos ni envíos.
 //
 //  El vínculo vive en la fila de la EMPRESA (raw_data.contadores y
 //  raw_data.contadoresSolicitudes) y solo lo escribe este servidor. Que viva
@@ -120,7 +123,7 @@ Deno.serve(async (req) => {
         if (err) return json({ ok: false, error: `No se pudo guardar la solicitud: ${err}` }, 500)
         await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.contador_solicitud', metadata: { contadorId: yo.id, email: yo.email, at: new Date().toISOString() } })
         // La empresa se entera en el momento: campana del panel y teléfono.
-        await notificar(String(emp.id), 'Tu contador pide acceso', `${yo.nombre || yo.email} (${yo.email}) pide ver tu contabilidad. Apruébalo o recházalo en Contabilidad → Contador.`)
+        await notificar(String(emp.id), 'Tu contador pide acceso', `${yo.nombre || yo.email} (${yo.email}) pide acceso a tu contabilidad y a tu facturación (ver movimientos, emitir facturas en tu Siigo y configurarla). Apruébalo o recházalo en Contabilidad → Contador.`)
       }
       return json({ ok: true, estado: 'pendiente', empresa: { id: String(emp.id), nombre: nombreEmpresa(emp) } })
     }
@@ -215,7 +218,7 @@ Deno.serve(async (req) => {
       const err = await guardarVinculos(yo.id, contadores, solicitudes)
       if (err) return json({ ok: false, error: err }, 500)
       await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_aprobado', metadata: { contadorId, email: s.email, at: new Date().toISOString() } })
-      await notificar(contadorId, 'Acceso aprobado', `${nombreEmpresa(emp)} aprobó tu acceso a su contabilidad. Entra por Empresas → Contabilidad.`, 'success', '/portal_contabilidad')
+      await notificar(contadorId, 'Acceso aprobado', `${nombreEmpresa(emp)} aprobó tu acceso a su contabilidad y su facturación. Entra por Empresas → Contabilidad.`, 'success', '/portal_contabilidad')
       return json({ ok: true, contadores, solicitudes })
     }
 

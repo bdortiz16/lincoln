@@ -28,6 +28,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
+import { EmpresaFacturacion, useFacturacion, useOrdenantesEmpresa } from '../lib/facturacionEmpresa';
 import { useDatabase } from '../context/DatabaseContext';
 import { descargarXlsx, refCelda, type CeldaX, type Estilo, type Hoja } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
@@ -62,6 +63,9 @@ type Props = {
    *  llegan de afuera (el servidor los entrega tras verificar el vínculo). */
   soloLectura?: boolean;
   comprobantesExternos?: any[] | null;
+  /** Contador que opera la facturación de esta empresa: todo lo de
+   *  facturación va a nombre de la empresa (el servidor revisa el vínculo). */
+  empresaId?: string | null;
   /** Datos del titular para la ficha y el estado de cuenta. Sin esto se
    *  toman de la sesión (cuando la empresa mira su propia contabilidad). */
   empresa?: FichaEmpresa | null;
@@ -95,8 +99,9 @@ const ordenanteDe = (tx: any): ClienteFactura | null => {
 // emitir). Lo usan la factura de un movimiento y la emisión en lote.
 const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?: string; onCambio: (c: ClienteFactura | null) => void }> = ({ inicial = null, notaInicial, onCambio }) => {
   const { currentUser } = useDatabase();
+  const fact = useFacturacion();
   const cuU: any = currentUser ?? {};
-  const listaOrd = Array.isArray(cuU?.raw_data?.ordenantes) ? cuU.raw_data.ordenantes : Array.isArray(cuU?.ordenantes) ? cuU.ordenantes : [];
+  const listaOrd = useOrdenantesEmpresa(Array.isArray(cuU?.raw_data?.ordenantes) ? cuU.raw_data.ordenantes : Array.isArray(cuU?.ordenantes) ? cuU.ordenantes : []);
   const ordenantes: { id: string; nombre: string; docTipo: string; doc: string }[] = listaOrd.filter((o: any) => o && o.doc);
   const [cliente, setCliente] = useState<ClienteFactura | null>(inicial);
   const [q, setQ] = useState('');
@@ -111,7 +116,7 @@ const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?:
   const buscar = async () => {
     if (!q.trim()) return;
     setBuscando(true); setErrorBusqueda(null); setResultados(null);
-    const r = await llamarFuncion('facturacion', { action: 'buscar_clientes', q: q.trim() }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'buscar_clientes', q: q.trim() }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setBuscando(false);
     if (!r?.ok) { setErrorBusqueda(r?.error ?? 'No se pudo buscar.'); return; }
     setResultados(r.clientes ?? []);
@@ -174,6 +179,7 @@ const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?:
 };
 
 const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () => void; onEmitida: () => void }> = ({ asiento, cfg, onCerrar, onEmitida }) => {
+  const fact = useFacturacion();
   const monto = Number(asiento.monto) || 0;
   const [pct, setPct] = useState<string>(pctDeCfg(cfg));
   // Si el envío ya trae su ordenante (se eligió al enviar), viene puesto.
@@ -206,7 +212,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
   const emitir = async () => {
     if (!elegido || !(p > 0) || faltaItem) return;
     setEmitiendo(true); setResultado(null);
-    const r = await llamarFuncion('facturacion', { action: 'emitir_comision', transactionId: String(asiento.tx.id), clienteIdentification: elegido.identification, clienteNombre: elegido.nombre, clienteEsEmpresa: elegido.esEmpresa, comisionPct: p }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'emitir_comision', transactionId: String(asiento.tx.id), clienteIdentification: elegido.identification, clienteNombre: elegido.nombre, clienteEsEmpresa: elegido.esEmpresa, comisionPct: p }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setEmitiendo(false);
     if (!r?.ok) { setResultado({ ok: false, texto: r?.error ?? 'No se pudo emitir.' }); return; }
     // «No aplica» (p. ej. el cliente es la misma empresa): no se emitió nada.
@@ -288,6 +294,7 @@ const EmisionLoteModal: React.FC<{
   esPropio: (doc?: string | null) => boolean;
   onCerrar: () => void; onEncolado: () => void;
 }> = ({ items, cfg, periodoTxt, vivo, lecturas, esPropio, onCerrar, onEncolado }) => {
+  const fact = useFacturacion();
   const [marcados, setMarcados] = useState<Set<string>>(() => new Set(items.map(i => i.txId)));
   const [pct, setPct] = useState<string>(pctDeCfg(cfg));
   const [cliente, setCliente] = useState<ClienteFactura | null>(null);
@@ -346,7 +353,7 @@ const EmisionLoteModal: React.FC<{
     if (!listo || fase !== 'config') return;
     setFase('enviando'); setAviso(null);
     const ids = porEmitir.map(i => i.txId);
-    const r = await llamarFuncion('facturacion', { action: 'lote_encolar', transactionIds: ids, comisionPct: p, cliente }, 120000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'lote_encolar', transactionIds: ids, comisionPct: p, cliente }, 120000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     if (!r?.ok) { setFase('config'); setAviso(r?.error ?? 'No se pudo poner en cola.'); return; }
     const rech: Record<string, string> = {};
     for (const o of (r.omitidos ?? []) as any[]) rech[String(o.id)] = String(o.motivo ?? 'No se encoló.');
@@ -356,7 +363,7 @@ const EmisionLoteModal: React.FC<{
   };
   const detener = async () => {
     setDeteniendo(true);
-    const r = await llamarFuncion('facturacion', { action: 'lote_cancelar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'lote_cancelar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setDeteniendo(false);
     setAviso(r?.ok ? `Detenido. ${Number(r.cancelados) || 0} volvieron a como estaban (las que ya salieron quedan emitidas).` : (r?.error ?? 'No se pudo detener.'));
     onEncolado();
@@ -652,7 +659,8 @@ const Barras: React.FC<{ cubos: Cubo[]; titulo: string; moneda: Moneda }> = ({ c
 // crédito en Siigo, y eso lo decide la contadora. Las que Siigo tiene y
 // Lincoin no se pueden registrar, para que «Emitir» no las vuelva a mandar.
 type FacturaRev = { id: string; numero: string; fecha: string | null; total: number; cliente: string; anulada: boolean; notas_credito: string[]; registrada?: boolean; anterior?: boolean; comprobante?: string };
-const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolean; onCerrar: () => void; onCambio: () => void }> = ({ empresaId, soloLectura, onCerrar, onCambio }) => {
+const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; onCambio: () => void }> = ({ soloLectura, onCerrar, onCambio }) => {
+  const fact = useFacturacion();
   const [dias, setDias] = useState(30);
   const [cargando, setCargando] = useState(false);
   const [res, setRes] = useState<any>(null);
@@ -661,7 +669,7 @@ const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolea
   const [regMsg, setRegMsg] = useState<string | null>(null);
   const revisar = async (d: number) => {
     setDias(d); setCargando(true); setError(null);
-    const r: any = await llamarFuncion('facturacion', { action: 'duplicadas', dias: d, ...(empresaId ? { empresaId } : {}) }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r: any = await fact({ action: 'duplicadas', dias: d }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setCargando(false);
     if (!r?.ok) { setError(String(r?.error ?? 'No se pudo revisar.')); return; }
     setRes(r);
@@ -671,7 +679,7 @@ const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolea
     const facturas = ((res?.sin_registrar ?? []) as any[]).map(s => ({ folio: s.folio, factura_id: s.factura?.id }));
     if (!facturas.length) return;
     setRegistrando(true); setRegMsg(null);
-    const r: any = await llamarFuncion('facturacion', { action: 'duplicadas_registrar', facturas }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r: any = await fact({ action: 'duplicadas_registrar', facturas }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setRegistrando(false);
     if (!r?.ok) { setRegMsg(String(r?.error ?? 'No se pudieron registrar.')); return; }
     const n = (r.registradas ?? []).length;
@@ -806,8 +814,13 @@ const DuplicadasModal: React.FC<{ empresaId?: string | null; soloLectura: boolea
   );
 };
 
-export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null, empresa = null }) => {
+export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, onVerMovimiento, soloLectura = false, comprobantesExternos = null, empresa = null, empresaId = null }) => {
   const { currentUser } = useDatabase();
+  // Facturación a nombre de la empresa cuando la opera su contador.
+  const fact = (cuerpo: Record<string, unknown>, ms?: number) => llamarFuncion('facturacion', empresaId ? { ...cuerpo, empresaId } : cuerpo, ms);
+  // Los comprobantes que mandó el servidor al abrir solo sirven de arranque
+  // si el contador factura: después se leen de nuevo (salen facturas).
+  const externosFijos = comprobantesExternos && !empresaId ? comprobantesExternos : null;
   // El titular: lo que mandó el servidor (contador) o la propia sesión.
   const ficha = empresa ?? (soloLectura ? null : fichaDeUsuario(currentUser));
   // La misma empresa no se factura a sí misma: un envío con la propia empresa
@@ -871,10 +884,21 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     return m;
   };
   useEffect(() => {
-    // Modo contador: los comprobantes ya vienen del servidor.
-    if (comprobantesExternos) { setFolios(mapaFolios(comprobantesExternos)); setFoliosEstado('ok'); return; }
+    // Modo contador de solo lectura: los comprobantes ya vienen del servidor.
+    if (externosFijos) { setFolios(mapaFolios(externosFijos)); setFoliosEstado('ok'); return; }
     if (!userId || soloLectura) return;
     let vivo = true;
+    // El contador que factura no puede leer la tabla (RLS): se los pide al
+    // servidor, que revisa el vínculo con la empresa.
+    if (empresaId) {
+      if (comprobantesExternos && !lecturas) { setFolios(mapaFolios(comprobantesExternos)); setFoliosEstado('ok'); }
+      fact({ action: 'comprobantes' }, 60000).then((r: any) => {
+        if (!vivo) return;
+        if (!r?.ok) { setFoliosEstado(f => f === 'ok' ? 'ok' : 'error'); return; }
+        setFolios(mapaFolios(r.comprobantes ?? [])); setFoliosEstado('ok'); setLecturas(v => v + 1);
+      }).catch(() => {});
+      return () => { vivo = false; };
+    }
     (async () => {
       // `*` a propósito: si una columna nueva (factura_tipo) todavía no
       // existe porque falta correr su migración, nombrarla rompería toda la
@@ -890,18 +914,18 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       setFolios(mapaFolios((data ?? []) as any[])); setFoliosEstado('ok'); setLecturas(v => v + 1);
     })();
     return () => { vivo = false; };
-  }, [userId, foliosVersion, pulsoFolios, soloLectura, comprobantesExternos]);
+  }, [userId, foliosVersion, pulsoFolios, soloLectura, externosFijos, empresaId]); // eslint-disable-line react-hooks/exhaustive-deps
   // Las facturas las emite el servidor (automáticas, o una manual que tardó
   // más que la conexión): se vuelven a leer al volver a la pestaña y cada
   // 30 s, para no mostrar "pendiente" en una que ya salió.
   useEffect(() => {
-    if (!userId || soloLectura || comprobantesExternos) return;
+    if (!userId || soloLectura || externosFijos) return;
     const otraVez = () => { if (document.visibilityState === 'visible') setPulsoFolios(v => v + 1); };
     const t = setInterval(otraVez, 30000);
     document.addEventListener('visibilitychange', otraVez);
     window.addEventListener('focus', otraVez);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', otraVez); window.removeEventListener('focus', otraVez); };
-  }, [userId, soloLectura, comprobantesExternos]);
+  }, [userId, soloLectura, externosFijos]);
   // Con una cola de lote andando (o su ventana abierta), cada 5 s: así se
   // ven salir las facturas una por una.
   type FolioFila = (typeof folios)[string];
@@ -910,11 +934,11 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [loteAbierto, setLoteAbierto] = useState(false);
   const [dupAbierto, setDupAbierto] = useState(false);
   useEffect(() => {
-    if (!userId || soloLectura || comprobantesExternos) return;
+    if (!userId || soloLectura || externosFijos) return;
     if (!enCola && !emitiendoAhora && !loteAbierto) return;
     const t = setInterval(() => { if (document.visibilityState === 'visible') setPulsoFolios(v => v + 1); }, 5000);
     return () => clearInterval(t);
-  }, [userId, soloLectura, comprobantesExternos, enCola > 0, emitiendoAhora, loteAbierto]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [userId, soloLectura, externosFijos, enCola > 0, emitiendoAhora, loteAbierto]); // eslint-disable-line react-hooks/exhaustive-deps
   const vivo = useMemo(() => {
     const m: Record<string, FacturaVivo> = {};
     for (const [k, f] of Object.entries(folios) as [string, FolioFila][]) m[k] = { estado: f.factura?.estado ?? null, numero: f.factura?.numero ?? null, error: f.factura?.error ?? null };
@@ -923,7 +947,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [deteniendoCola, setDeteniendoCola] = useState(false);
   const detenerCola = async () => {
     setDeteniendoCola(true);
-    const r = await llamarFuncion('facturacion', { action: 'lote_cancelar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'lote_cancelar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setDeteniendoCola(false);
     setPulsoFolios(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo detener la cola.');
@@ -942,7 +966,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [reconciliadoMsg, setReconciliadoMsg] = useState<string | null>(null);
   const reconciliarAhora = async () => {
     setReconciliando(true); setReconciliadoMsg(null);
-    const r = await llamarFuncion('facturacion', { action: 'reconciliar' }, 240000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'reconciliar' }, 240000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setReconciliando(false);
     if (!r?.ok) { setReconciliadoMsg(r?.error ?? 'No se pudo.'); return; }
     const an = r.anulaciones;
@@ -952,7 +976,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   };
   useEffect(() => {
     if (!userId || soloLectura) return;
-    llamarFuncion('facturacion', { action: 'config_get' }, 20000)
+    fact({ action: 'config_get' }, 20000)
       .then((r: any) => { setFacturacionActiva(!!r?.config?.activo); setChequeo(r?.chequeo ?? null); setCfgFact(r?.config ?? null); })
       .catch(() => setFacturacionActiva(null));
   }, [userId, configAbierta, foliosVersion]);
@@ -961,14 +985,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const alternarAutomatica = async () => {
     if (facturacionActiva == null) return;
     setCambiandoAuto(true);
-    const r = await llamarFuncion('facturacion', { action: 'config_set', config: { activo: !facturacionActiva }, cambiarActivo: true }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'config_set', config: { activo: !facturacionActiva }, cambiarActivo: true }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setCambiandoAuto(false);
     if (!r?.ok) { alert(r?.error ?? 'No se pudo cambiar.'); return; }
     setFacturacionActiva(!!r?.config?.activo);
   };
   const reintentarFactura = async (folio: number) => {
     setReintentando(folio);
-    const r = await llamarFuncion('facturacion', { action: 'reintentar', folio }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'reintentar', folio }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setReintentando(null);
     setFoliosVersion(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo emitir la factura.');
@@ -978,7 +1002,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [emitiendo, setEmitiendo] = useState<string | null>(null);
   const emitirMovimiento = async (txId: string) => {
     setEmitiendo(txId);
-    const r = await llamarFuncion('facturacion', { action: 'emitir_movimiento', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'emitir_movimiento', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setEmitiendo(null);
     setFoliosVersion(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo emitir el documento.');
@@ -1421,6 +1445,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   );
 
   return (
+    <EmpresaFacturacion.Provider value={empresaId}>
     <div style={{ fontFamily: FONT, maxWidth: 1180, display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* 1. Periodo · moneda · CSV */}
       <div className="flex items-center justify-between flex-wrap" style={{ gap: 12 }}>
@@ -1467,8 +1492,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
               {cambiandoAuto ? '…' : facturacionActiva ? 'Automática' : 'Automática apagada'}
             </button>
           )}
-          {!soloLectura && (
-            <button onClick={() => setContadorAbierto(true)} title="Dale acceso de solo lectura a tu contador: entra por Empresas → Contabilidad con su propio correo."
+          {/* Quién es contador de la empresa lo decide la empresa, no su contador. */}
+          {!soloLectura && !empresaId && (
+            <button onClick={() => setContadorAbierto(true)} title="Dale acceso a tu contador (contabilidad y facturación): entra por Empresas → Contabilidad con su propio correo."
               style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
               className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
               Contador
@@ -1485,9 +1511,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           <button onClick={excel} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar Excel</button>
         </div>
       </div>
-      {configAbierta && !soloLectura && <FacturacionConfig onCerrar={() => setConfigAbierta(false)} />}
-      {dupAbierto && <DuplicadasModal empresaId={soloLectura ? userId : null} soloLectura={soloLectura} onCerrar={() => setDupAbierto(false)} onCambio={() => setFoliosVersion(v => v + 1)} />}
-      {contadorAbierto && !soloLectura && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} />}
+      {configAbierta && !soloLectura && <FacturacionConfig nitEmpresa={empresaId ? ficha?.nit ?? null : undefined} onCerrar={() => setConfigAbierta(false)} />}
+      {dupAbierto && <DuplicadasModal soloLectura={soloLectura} onCerrar={() => setDupAbierto(false)} onCambio={() => setFoliosVersion(v => v + 1)} />}
+      {contadorAbierto && !soloLectura && !empresaId && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} />}
       {estadoAbierto && (
         <EstadoCuentaHoja estado={ec} ficha={ficha} periodoTxt={periodoTxt} desdeTxt={desdeTxt} hastaTxt={hastaTxt}
           folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />
@@ -1553,7 +1579,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             El saldo inicial suma todo lo anterior al periodo. {moneda === 'COP' ? 'Cada envío descuenta el monto y su costo. ' : ''}Lo rechazado no mueve el saldo{ec.nNoSuman ? ` (${ec.nNoSuman} en el periodo)` : ''}. El PDF trae cada movimiento con su saldo y a quién se le envió.
           </p>
         </Tarjeta>
-        {soloLectura && ficha && (
+        {(soloLectura || empresaId) && ficha && (
           <Tarjeta>
             <Rotulo>DATOS DE LA EMPRESA</Rotulo>
             <div style={{ marginTop: 10 }}>
@@ -1882,5 +1908,6 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         @media (max-width: 720px) { .lincoin-graf-barras { grid-column: span 1 !important; } }
       `}</style>
     </div>
+    </EmpresaFacturacion.Provider>
   );
 };

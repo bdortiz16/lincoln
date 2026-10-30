@@ -54,7 +54,7 @@ export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerr
           <div>
             <p style={{ fontSize: 17, fontWeight: 800, color: C.text, margin: 0, letterSpacing: '-0.3px' }}>Tu contador</p>
             <p style={{ fontSize: 12.5, color: C.sub, margin: '5px 0 0', lineHeight: 1.5 }}>
-              Tu contador entra por <b style={{ color: C.text }}>Empresas → Contabilidad</b> con su propia cuenta, escribe tu ID, y tú lo apruebas aquí. Ve solo esta pantalla: movimientos, comprobantes y facturas. Nada de saldos operables ni envíos.
+              Tu contador entra por <b style={{ color: C.text }}>Empresas → Contabilidad</b> con su propia cuenta, escribe tu ID, y tú lo apruebas aquí. Ve esta pantalla (movimientos, comprobantes y facturas) y además <b style={{ color: C.text }}>opera tu facturación</b>: emite facturas en tu Siigo y configura el modelo, los ítems y las credenciales. No ve saldos operables ni puede hacer envíos.
             </p>
           </div>
           <button onClick={onCerrar} aria-label="Cerrar" style={{ background: 'transparent', border: 'none', color: C.sub, cursor: 'pointer', padding: 4 }}><X size={18} /></button>
@@ -118,7 +118,7 @@ export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerr
       </div>
 
       {quitarA && (
-        <ConfirmarModal titulo={`¿Quitar el acceso de ${quitarA.nombre}?`} texto="Dejará de ver tu contabilidad de inmediato. Puede volver a pedir acceso con tu ID." confirmar="Quitar acceso" peligro
+        <ConfirmarModal titulo={`¿Quitar el acceso de ${quitarA.nombre}?`} texto="Dejará de ver tu contabilidad y de operar tu facturación de inmediato. Puede volver a pedir acceso con tu ID." confirmar="Quitar acceso" peligro
           onConfirmar={() => accion('revocar_acceso', quitarA)} onCancelar={() => setQuitarA(null)} />
       )}
     </div>

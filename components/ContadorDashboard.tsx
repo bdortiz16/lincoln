@@ -200,7 +200,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
             <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.1)', display: 'grid', placeItems: 'center', color: C.sub, fontWeight: 800, fontSize: 12 }}>{inicial}</span>
             <span style={{ minWidth: 0, flex: 1 }}>
               <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{miNombre}</span>
-              <span style={{ display: 'block', fontSize: 10.5, color: C.sub }}>Contador · solo lectura</span>
+              <span style={{ display: 'block', fontSize: 10.5, color: C.sub }}>Contador · contabilidad y facturación</span>
             </span>
           </div>
           <Fila etiqueta="Cerrar sesión" icono={I.puerta} onClick={() => setConfirmarSalir(true)} />
@@ -213,7 +213,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
             <button onClick={() => setMenuMovil(true)} aria-label="Abrir menú" className="lg:hidden" style={{ background: 'transparent', border: 'none', color: C.text, padding: 4, cursor: 'pointer', display: 'inline-flex' }}><Menu size={20} /></button>
             <div style={{ minWidth: 0 }}>
               <p style={{ fontSize: 15, fontWeight: 800, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{empresaSel ? nombreSel : 'Inicio'}</p>
-              <p style={{ fontSize: 11.5, color: C.sub, margin: '1px 0 0' }}>{empresaSel ? 'Contabilidad · solo lectura' : 'Tus empresas'}</p>
+              <p style={{ fontSize: 11.5, color: C.sub, margin: '1px 0 0' }}>{empresaSel ? 'Contabilidad y facturación' : 'Tus empresas'}</p>
             </div>
           </div>
           <button onClick={actualizar} disabled={cargando} title="Actualizar" style={{ ...botonSec, opacity: cargando ? 0.6 : 1 }}>
@@ -294,7 +294,9 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
                 <ContabilidadDashboard
                   transactions={transactions}
                   userId={datos.empresa.id}
-                  soloLectura
+                  // Factura en nombre de la empresa: el servidor revisa en
+                  // cada llamada que la empresa lo tenga aprobado.
+                  empresaId={datos.empresa.id}
                   comprobantesExternos={datos.comprobantes}
                   empresa={datos.empresa}
                   onVerMovimiento={(tx: any) => setDetalle(tx)}

@@ -50,6 +50,7 @@ import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '..
 import { domicilioEmpresa } from '../_shared/rues.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { liquidacionDe, type Liquidacion } from '../_shared/liquidacion-lincoin.ts'
+import { mergeRaw } from '../_shared/raw-data.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -2147,6 +2148,10 @@ async function buscarClientes(userId: string, q: string): Promise<{ ok: boolean;
   return { ok: true, clientes: out.slice(0, 30) }
 }
 
+// Lo que el contador puede pedir sin que quede en el audit_log de la empresa:
+// solo lee (todo lo demás cambia la facturación o emite ante la DIAN).
+const ACCIONES_DE_LECTURA = new Set(['config_get', 'documento', 'documento_pdf', 'duplicadas', 'comprobantes', 'ordenantes_get', 'buscar_clientes', 'facturas', 'probar'])
+
 async function esContadorDe(contadorId: string, empresaId: string): Promise<boolean> {
   const [{ data: emp }, { data: yo }] = await Promise.all([
     db.from('users').select('role, raw_data').eq('id', empresaId).maybeSingle(),
@@ -2750,14 +2755,18 @@ Deno.serve(async (req) => {
     if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
     let userId = yo.userId
 
-    // Contador con acceso aprobado: puede CONSULTAR el documento de un
-    // movimiento de la empresa y la revisión de duplicadas (nada más, todo
-    // de solo lectura). El vínculo se lee de la fila de la empresa, que solo
-    // escribe la función `contador`.
+    // Contador con acceso aprobado: opera la facturación de la empresa como
+    // la empresa misma (emitir, lote, configurar el modelo y las credenciales
+    // de Siigo). Antes solo podía consultar; Lincoin lo abrió para que la
+    // contadora facture sin pedirle a la empresa cada factura. El vínculo se
+    // lee de la fila de la EMPRESA, que solo escribe la función `contador`;
+    // lo que cambia algo queda en el audit_log de la empresa con quién fue.
     const empresaPedida = String(body.empresaId ?? '')
     if (empresaPedida && empresaPedida !== userId) {
-      if (accion !== 'documento' && accion !== 'documento_pdf' && accion !== 'duplicadas') return json({ ok: false, error: 'no_autorizado' }, 403)
       if (!(await esContadorDe(userId, empresaPedida))) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
+      if (!ACCIONES_DE_LECTURA.has(accion)) {
+        await db.from('audit_log').insert({ user_id: empresaPedida, action: 'facturacion.por_contador', metadata: { contadorId: userId, accion, transactionId: body.transactionId ?? null, folio: body.folio ?? null, n: Array.isArray(body.transactionIds) ? body.transactionIds.length : null, at: new Date().toISOString() } }).then(() => {}, () => {})
+      }
       userId = empresaPedida
     }
 
@@ -2953,8 +2962,12 @@ Deno.serve(async (req) => {
         return json({ ok: false, error: error.message }, 500)
       }
       if (cambiaActivo) {
-        await db.from('audit_log').insert({ user_id: userId, action: fila.activo ? 'facturacion.activada' : 'facturacion.pausada', metadata: { at: new Date().toISOString() } }).then(() => {}, () => {})
+        await db.from('audit_log').insert({ user_id: userId, action: fila.activo ? 'facturacion.activada' : 'facturacion.pausada', metadata: { at: new Date().toISOString(), ...(userId !== yo.userId ? { contadorId: yo.userId } : {}) } }).then(() => {}, () => {})
       }
+      // El modelo, también en la ficha de la cuenta: el envío lo lee de ahí
+      // para pedir el ordenante. Antes lo escribía el navegador de la
+      // empresa; si lo cambia el contador, tiene que escribirlo el servidor.
+      if ('modelo' in c) await mergeRaw(db, userId, { facturacionModelo: fila.modelo ?? null }).catch(() => {})
       return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)) })
     }
 
@@ -3029,6 +3042,42 @@ Deno.serve(async (req) => {
     }
     if (accion === 'lote_cancelar') {
       return json({ ok: true, cancelados: await cancelarCola(userId) })
+    }
+
+    // ── Los comprobantes de la cuenta, para la tabla de Contabilidad. La
+    //    empresa los lee directo de la base; el contador no puede (RLS), y
+    //    para ver salir las facturas del lote necesita leerlos seguido.
+    if (accion === 'comprobantes') {
+      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at'
+      const filas: any[] = []
+      for (let desde = 0; desde < 20000; desde += 1000) {
+        const { data, error } = await db.from('comprobantes').select(cols).eq('user_id', userId).order('folio', { ascending: false }).range(desde, desde + 999)
+        if (error) return json({ ok: false, error: error.message }, 500)
+        filas.push(...(data ?? []))
+        if (!data || data.length < 1000) break
+      }
+      return json({ ok: true, comprobantes: filas })
+    }
+
+    // ── Los ordenantes (modelo Comisión). La empresa los edita desde su
+    //    navegador en su propia ficha; el contador no puede escribir la
+    //    ficha de la empresa, así que pasa por acá. Solo se toca esa clave.
+    if (accion === 'ordenantes_get' || accion === 'ordenantes_set') {
+      if (accion === 'ordenantes_set') {
+        const lista = (Array.isArray(body.ordenantes) ? body.ordenantes : []).slice(0, 200)
+          .map((o: any) => ({
+            id: String(o?.id ?? '').slice(0, 80), nombre: String(o?.nombre ?? '').trim().slice(0, 200),
+            docTipo: ['NIT', 'CC', 'CE', 'PP'].includes(String(o?.docTipo)) ? String(o.docTipo) : 'NIT',
+            doc: String(o?.doc ?? '').replace(/[^0-9A-Za-z]/g, '').slice(0, 20),
+            ...(o?.correo ? { correo: String(o.correo).trim().slice(0, 200) } : {}),
+          }))
+          .filter((o: any) => o.id && o.doc && o.nombre)
+        const err = await mergeRaw(db, userId, { ordenantes: lista })
+        if (err) return json({ ok: false, error: `No se pudieron guardar los ordenantes: ${err}` }, 500)
+      }
+      const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+      const l = (u as any)?.raw_data?.ordenantes
+      return json({ ok: true, ordenantes: Array.isArray(l) ? l.filter((o: any) => o && o.id && o.doc) : [] })
     }
 
     // ── Revisar facturas duplicadas en Siigo (solo lee) y registrar las
