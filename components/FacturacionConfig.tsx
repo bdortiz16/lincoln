@@ -393,6 +393,15 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     </select>
   );
   const productos = (cat?.productos ?? []).map((p: any) => ({ v: p.code, t: `${p.code} · ${p.name}` }));
+  // Si el comprobante es de factura electrónica, según lo que devolvió Siigo
+  // (electronic_type). Sin dato, no se dice nada.
+  const electronicaTxt = (d: any): string => {
+    const v = d?.electronic;
+    if (v == null || v === '') return '';
+    if (v === false || /^no|noelectr|none|false/i.test(String(v))) return 'no electrónica';
+    return v === true || /electr/i.test(String(v)) ? 'electrónica' : '';
+  };
+  const docFV = (cat?.documentos ?? []).find((d: any) => String(d.id) === String(form.document_id)) ?? null;
   const nombreProducto = (code: string) => { const p = (cat?.productos ?? []).find((x: any) => x.code === code); return p ? p.name : code; };
   // "Sin IVA" sale del catálogo que se trajo de Siigo, no de Siigo en vivo.
   // Si el ítem tiene IVA en Siigo y acá dice que no, o el catálogo es de
@@ -933,9 +942,15 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                         <p style={{ fontSize: 12.5, color: C.tenue, margin: 0 }}>Se eligen después de conectar.</p>
                       ) : (
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                          <Campo rot="TIPO DE COMPROBANTE (FV)" ayuda={cat.fuentes?.documentos?.motivo ?? undefined}>
-                            {select('document_id', (cat.documentos ?? []).map((d: any) => ({ v: d.id, t: `${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Siigo no devolvió tipos de factura')}
-                          </Campo>
+                          <div>
+                            <Campo rot="TIPO DE COMPROBANTE (FV)" ayuda={cat.fuentes?.documentos?.motivo ?? undefined}>
+                              {select('document_id', (cat.documentos ?? []).map((d: any) => ({ v: d.id, t: `${d.code ? d.code + ' · ' : ''}${d.name}${electronicaTxt(d) ? ` · ${electronicaTxt(d)}` : ''}` })), 'Siigo no devolvió tipos de factura')}
+                            </Campo>
+                            {/* Con «Enviar a la DIAN» encendido, Siigo rechaza un
+                                comprobante que no es de factura electrónica
+                                (document_settings · stamp.send). */}
+                            {form.stamp && electronicaTxt(docFV) === 'no electrónica' && <p style={{ fontSize: 11.5, color: C.ambar, margin: '6px 0 0', lineHeight: 1.5 }}>Este comprobante no es de factura electrónica en tu Siigo: con «Enviar la factura a la DIAN» encendido, Siigo la rechaza. Elige el comprobante de factura electrónica.</p>}
+                          </div>
                           <Campo rot="VENDEDOR" ayuda={cat.fuentes?.vendedores?.motivo ?? undefined}>
                             {select('seller_id', (cat.vendedores ?? []).map((u: any) => ({ v: u.id, t: u.nombre })), 'Siigo no devolvió vendedores')}
                           </Campo>

@@ -147,6 +147,12 @@ const siigoVisto = (m: Map<string, number>, k: string) => (m.get(k) ?? 0) > Date
 
 const MSG_RESOLUCION_DIAN = 'La resolución de facturación de la DIAN del comprobante de Siigo venció o se le acabó el rango de numeración (Siigo: invalid_dian_resolution). No se creó ninguna factura. Hay que cargar la resolución nueva en Siigo (o elegir en Configuración otro comprobante de factura con resolución vigente) y después volver a emitir desde «Sin factura».'
 const esErrorResolucion = (e: unknown) => /invalid_dian_resolution/i.test(String(e ?? ''))
+// El comprobante de factura elegido no está habilitado en Siigo para
+// mandarse a la DIAN (MEXITECH, 2026-10-30: «document_settings · The send
+// cannot be used, you must verify the document settings · stamp.send»).
+// Siigo no crea nada, y todas las que siguen fallan igual.
+const MSG_COMPROBANTE_NO_ELECTRONICO = 'El comprobante de factura elegido en Configuración no está habilitado en tu Siigo para enviarse a la DIAN como factura electrónica (Siigo: document_settings · stamp.send). No se creó ninguna factura. En Configuración elige el comprobante de factura ELECTRÓNICA de tu Siigo (o habilita la facturación electrónica de ese comprobante en Siigo) y vuelve a emitir desde «Sin factura».'
+const esErrorComprobante = (e: unknown) => /document_settings|habilitado en tu Siigo para enviarse a la DIAN/i.test(String(e ?? ''))
 
 // El motivo de Siigo, en una línea legible.
 function motivoDe(r: Resp): string {
@@ -159,6 +165,7 @@ function motivoDe(r: Resp): string {
   // numeración (XATECH, 2026-10-30, después de la FV-2-1000). No es de
   // Lincoin ni se arregla reintentando: se dice qué hacer, en español.
   if (errs?.some((e: any) => /invalid_dian_resolution/i.test(String(e?.Code ?? e?.code ?? '')))) return MSG_RESOLUCION_DIAN
+  if (errs?.some((e: any) => /document_settings/i.test(String(e?.Code ?? e?.code ?? '')))) return MSG_COMPROBANTE_NO_ELECTRONICO
   if (errs?.length) return `HTTP ${r.status}: ${errs.map((e: any) => [e.Code ?? e.code, e.Message ?? e.message, e.Params?.join?.(',') ?? e.params?.join?.(',')].filter(Boolean).join(' · ')).join(' | ')}`.slice(0, 600)
   const m = d?.message ?? d?.Message ?? d?.error ?? d?.error_description
   return `HTTP ${r.status}${m ? `: ${String(m).slice(0, 400)}` : r.texto ? `: ${r.texto.slice(0, 300)}` : ''}`
@@ -2026,7 +2033,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
 
 // Emite UN comprobante de la cola. Devuelve qué pasó para la cuenta de la
 // vuelta; el resultado de verdad queda en el comprobante.
-async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error' | 'espera' | 'otro' | 'resolucion'> {
+async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error' | 'espera' | 'otro' | 'resolucion' | 'comprobante'> {
   const det: any = f.factura_detalle ?? {}
   const lote: any = det.lote ?? {}
   const pasadas = Number(lote.pasadas ?? 0) + 1
@@ -2054,6 +2061,7 @@ async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error'
   if (r?.ok && (r.estado === 'emitida' || r.numero)) return 'emitida'
   if (r?.reintento) return 'espera'
   if (!r?.ok && esErrorResolucion(r?.error)) return 'resolucion'
+  if (!r?.ok && esErrorComprobante(r?.error)) return 'comprobante'
   // Frenada por el límite de consultas de Siigo: no se creó nada (un 429 se
   // rechaza antes de procesar). Vuelve a la cola y se reintenta en un minuto,
   // en vez de quedar en error como las 36 de un lote de XATECH.
@@ -2111,13 +2119,14 @@ async function procesarCola(userId: string): Promise<{ emitidas: number; errores
     const r = await emitirDeCola(userId, lista)
     if (r === 'emitida') out.emitidas++
     else if (r === 'error') out.errores++
-    else if (r === 'resolucion') {
-      // La resolución DIAN está vencida o agotada: TODAS las que siguen van a
-      // fallar igual. Salen de la cola con el motivo, sin llamar a Siigo, y
-      // la cola para. Se vuelven a emitir desde «Sin factura» cuando esté
-      // cargada la resolución nueva.
+    else if (r === 'resolucion' || r === 'comprobante') {
+      // La resolución DIAN está vencida o agotada, o el comprobante no es de
+      // factura electrónica: TODAS las que siguen van a fallar igual. Salen
+      // de la cola con el motivo, sin llamar a Siigo, y la cola para. Se
+      // vuelven a emitir desde «Sin factura» cuando se arregle en Siigo o en
+      // Configuración.
       out.errores++
-      await cancelarCola(userId, MSG_RESOLUCION_DIAN)
+      await cancelarCola(userId, r === 'resolucion' ? MSG_RESOLUCION_DIAN : MSG_COMPROBANTE_NO_ELECTRONICO)
       break
     }
     await guardarSistema(claveCola(userId), String(Date.now()))
