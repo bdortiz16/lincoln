@@ -111,6 +111,13 @@ const docContraparte = (tx: any): string => {
   const rc: any = tx?.recipient ?? rd?.recipient ?? {};
   return String(rd.docNumber ?? rd.documentNumber ?? rd.beneficiaryDoc ?? rd.beneficiaryDocument ?? rd.senderDoc ?? rc.documentNumber ?? rc.docNumber ?? '').replace(/\D/g, '');
 };
+// Un ajuste de saldo (Lincoin corrige un error del admin al cargar) y el
+// cargue que un ajuste revirtió completo no se facturan en ningún modelo
+// (misma regla que el servidor, motivoAjuste).
+const sinFacturaAjuste = (tx: any): 'ajuste' | 'revertido' | null => {
+  if (String(tx?.type ?? '') === 'adjustment') return 'ajuste';
+  return (tx?.raw_data?.reverso ?? tx?.reverso)?.anulado === true ? 'revertido' : null;
+};
 const esModeloMandato = (modelo: unknown) => modelo === 'comision' || modelo === 'psp';
 // PSP: con un cliente persona jurídica con NIT colombiano, la comisión lleva
 // «Retefuente comisiones 11 %» sobre su base (misma búsqueda que el servidor).
@@ -748,6 +755,7 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
   const duplicadas: any[] = res?.duplicadas ?? [];
   const sinRegistrar: any[] = res?.sin_registrar ?? [];
   const aSiMisma: any[] = res?.a_si_misma ?? [];
+  const revertidas: any[] = res?.revertidas ?? [];
   const posibles: any[] = res?.posibles ?? [];
   const nAnular = duplicadas.reduce((s, d) => {
     const vig = (d.facturas as FacturaRev[]).filter(f => !f.anulada);
@@ -820,6 +828,19 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
               </>
             )}
 
+            {revertidas.length > 0 && (
+              <>
+                {titulo(`AJUSTES DE SALDO Y CARGUES REVERTIDOS · ${revertidas.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas de ajustes de saldo, o de cargues que Lincoin revirtió con un ajuste porque fue un error del admin al cargar. No son operaciones con un tercero: anúlalas con una nota crédito en Siigo. Si el cargue se revirtió solo en parte, la nota crédito va por lo revertido. Lincoin ya no las emite.</p>
+                {revertidas.map(d => (
+                  <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.ajuste ? ' · ajuste de saldo' : d.completo ? ' · revertido completo' : ` · revertido en parte (${monto(d.revertido)})`}</p>
+                    {(d.facturas as FacturaRev[]).map(f => fila(f, d.completo ? { txt: 'anular', color: AMBAR } : { txt: 'nota crédito por lo revertido', color: AMBAR }))}
+                  </div>
+                ))}
+              </>
+            )}
+
             {sinRegistrar.length > 0 && (
               <>
                 {titulo(`EN SIIGO Y NO EN LINCOIN · ${sinRegistrar.length}`)}
@@ -877,6 +898,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const nitPropio = baseDoc(ficha?.nit);
   const esPropio = (doc?: string | null) => nitPropio.length >= 6 && !!doc && baseDoc(doc) === nitPropio;
   const movPropio = (tx: any) => esPropio(docContraparte(tx));
+  // Por qué un movimiento no lleva factura, aunque sea de los que se facturan.
+  const noAplicaPor = (tx: any): string | null => {
+    if (movPropio(tx)) return 'cuenta propia';
+    const aj = sinFacturaAjuste(tx);
+    return aj === 'ajuste' ? 'ajuste de saldo' : aj === 'revertido' ? 'cargue revertido' : null;
+  };
   const [contadorAbierto, setContadorAbierto] = useState(false);
   const [estadoAbierto, setEstadoAbierto] = useState(false);
   // Terceros: a quién se le envió ('out') o de quién se recibió ('in'), y el
@@ -1084,7 +1111,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // Solo los envíos se facturan (un cargue/depósito no lleva factura en
   // estos modelos).
   const botonSegunTipo = (a: Asiento, txId: string) => {
-    if (movPropio(a.tx)) return null;
+    if (noAplicaPor(a.tx)) return null;
     if (esMandato) return a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) ? botonFacturaComision(a) : null;
     return botonEmitir(txId);
   };
@@ -1100,7 +1127,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const tipoTx = String(a.tx?.type ?? '');
     if (!SALE.has(tipoTx) && !ENTRA.has(tipoTx)) return null;
     const txId = String(a.tx?.id ?? '');
-    if (!txId || movPropio(a.tx)) return null;
+    if (!txId || noAplicaPor(a.tx)) return null;
     const fa = folios[txId]?.factura;
     const est = fa?.estado ?? null;
     if (est === 'emitida' || est === 'en_cola') return null;
@@ -1888,7 +1915,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad|esperar/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
-                            <span style={{ color: C.tenue }} title={f && movPropio(a.tx) ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : undefined}>{f && facturacionActiva ? (movPropio(a.tx) ? 'no aplica · cuenta propia' : 'pendiente') : '—'}</span>
+                            <span style={{ color: C.tenue }} title={noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no es una operación con un tercero.' : undefined}>{facturacionActiva && noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : f && facturacionActiva ? 'pendiente' : '—'}</span>
                             {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                           </span>
                         );
@@ -1902,7 +1929,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
                                   emitir al mismo cliente, con el cálculo vigente.
                                   Solo un envío: un depósito no lleva factura. */}
-                              {fa.estado === 'anulada' && esMandato && a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) && !movPropio(a.tx) && completado && facturacionActiva && txId && !soloLectura
+                              {fa.estado === 'anulada' && esMandato && a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) && !noAplicaPor(a.tx) && completado && facturacionActiva && txId && !soloLectura
                                 ? <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
                                     title="Emite una factura nueva al mismo cliente de la anulada: terceros por el valor completo + la comisión"
                                     style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: emitiendo === txId ? 0.5 : 1 }}>

@@ -171,6 +171,42 @@ function motivoDe(r: Resp): string {
   return `HTTP ${r.status}${m ? `: ${String(m).slice(0, 400)}` : r.texto ? `: ${r.texto.slice(0, 300)}` : ''}`
 }
 
+// Con «document_settings · stamp.send» el aviso general no dice CUÁL elegir:
+// MEXITECH lo recibió dos veces sin saber qué cambiar. Se le pregunta a Siigo
+// en vivo por sus comprobantes de factura: cuál usó Lincoin, si Siigo lo
+// reporta como electrónico y cuáles sí lo son. Lo que Siigo no dice no se
+// supone. De paso queda en el catálogo, para que Configuración los marque.
+const esComprobanteElectronico = (d: any) => { const v = d?.electronic_type ?? d?.electronic; return v === true || (/electr/i.test(String(v ?? '')) && !/^no/i.test(String(v ?? ''))) }
+async function diagnosticoComprobante(userId: string, token: string, partner: string, cfg: any): Promise<string> {
+  const r = await siigo('GET', '/v1/document-types?type=FV', { token, partner })
+  if (!r.ok) return ''
+  const lista: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+  if (!lista.length) return ''
+  try {
+    const { data: fila } = await db.from('facturacion_config').select('catalogos').eq('user_id', userId).maybeSingle()
+    const cat = ((fila as any)?.catalogos ?? null) as Record<string, unknown> | null
+    if (cat && typeof cat === 'object') {
+      const documentos = lista.map(d => ({ id: d.id, code: d.code, name: d.name, clase: 'FV', electronic: d.electronic_type ?? d.electronic ?? null }))
+      await db.from('facturacion_config').update({ catalogos: { ...cat, documentos } }).eq('user_id', userId)
+    }
+  } catch { /* el catálogo se refresca igual al probar la conexión */ }
+  const rot = (d: any) => `${d.code ? `${d.code} · ` : ''}${d.name ?? 'sin nombre'} (id ${d.id})`
+  const usado = lista.find(d => String(d.id) === String(cfg.document_id))
+  const otros = lista.filter(d => d.active !== false && String(d.id) !== String(cfg.document_id))
+  // Siigo no siempre trae el tipo electrónico: sin ese dato solo se listan.
+  if (!lista.some(d => (d.electronic_type ?? d.electronic) != null)) {
+    return `${usado ? `Lincoin usó ${rot(usado)}.` : `El comprobante elegido (id ${cfg.document_id}) ya no está entre los de factura de tu Siigo.`} Siigo no informa cuál es electrónico${otros.length ? `; los otros comprobantes de factura son: ${otros.map(rot).join('; ')}` : ''}.`
+  }
+  const electronicos = otros.filter(esComprobanteElectronico)
+  const partes = [usado
+    ? `Lincoin usó ${rot(usado)}, que Siigo reporta como «${usado.electronic_type ?? usado.electronic ?? 'sin tipo electrónico'}».`
+    : `El comprobante elegido (id ${cfg.document_id}) ya no está entre los de factura de tu Siigo.`]
+  if (usado && esComprobanteElectronico(usado)) partes.push('Siigo lo marca como electrónico y aun así no deja enviarlo a la DIAN: revisa en Siigo la facturación electrónica de ese comprobante (que esté activa y con su resolución vigente).')
+  else if (electronicos.length) partes.push(`De factura electrónica en tu Siigo: ${electronicos.map(rot).join('; ')}. Elige ${electronicos.length === 1 ? 'ese' : 'uno de esos'} en Configuración → Tipo de comprobante.`)
+  else partes.push('Tu Siigo no tiene otro comprobante de factura de venta electrónico activo: habilita la facturación electrónica en Siigo, o apaga «Enviar la factura a la DIAN» en Configuración si esta cuenta no factura electrónicamente.')
+  return partes.join(' ')
+}
+
 // Token por cliente, mientras viva la instancia. Siigo lo da por 24 h.
 const tokens = new Map<string, { token: string; hasta: number }>()
 async function tokenDe(userId: string, cfg: any, forzar = false): Promise<{ token: string } | { error: string }> {
@@ -600,6 +636,25 @@ const MSG_CUENTA_PROPIA = (doc: string, salida: boolean) => salida
   : `El ingreso llega de una cuenta de la misma empresa (${doc}): es un movimiento propio y lo registra su contador. No se emite factura.`
 const esDePropios = (cp: { esDefault: boolean; identification: string }, propios: Set<string>) => !cp.esDefault && propios.has(baseDoc(cp.identification))
 
+// ── Ajustes de saldo: no se facturan ──────────────────────────────
+// Un ajuste de saldo lo hace Lincoin para corregir un error del admin al
+// cargar: no es una operación del cliente con un tercero, y no lleva factura
+// en ningún modelo. Tampoco el cargue que un ajuste revirtió completo
+// (raw_data.reverso.anulado: lo escribe admin-data al vincularlos). Si lo
+// revirtió en parte, se factura solo lo que quedó. El reverso se escribe en
+// la transacción DESPUÉS de crear el comprobante, así que se lee de ella y no
+// de la copia del comprobante.
+const MSG_AJUSTE = 'Es un ajuste de saldo de Lincoin (corrige un error del admin al cargar): no es una operación con un tercero y no lleva factura.'
+const MSG_CARGUE_REVERTIDO = 'Lincoin revirtió este cargue con un ajuste de saldo (fue un error del admin al cargar): no lleva factura.'
+const motivoAjuste = (tipo: string, rd: any): string | null =>
+  tipo === 'adjustment' ? MSG_AJUSTE : rd?.reverso?.anulado === true ? MSG_CARGUE_REVERTIDO : null
+const montoRevertido = (rd: any): number => rd?.reverso && rd.reverso.anulado !== true ? Math.max(0, Number(rd.reverso.montoCop) || 0) : 0
+async function rawDataVigente(txId: unknown): Promise<any> {
+  if (!txId) return {}
+  const { data } = await db.from('transactions').select('raw_data').eq('id', String(txId)).maybeSingle()
+  return (data as any)?.raw_data ?? {}
+}
+
 function partirNit(doc: string): { identification: string; check_digit?: string } {
   if (doc.length === 10 && dvNit(doc.slice(0, 9)) === Number(doc[9])) return { identification: doc.slice(0, 9), check_digit: doc[9] }
   if (doc.length === 9) { const dv = dvNit(doc); return dv === null ? { identification: doc } : { identification: doc, check_digit: String(dv) } }
@@ -947,6 +1002,16 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   if ((!cfg || !cfg.activo) && opts.forzar && ((comp as any).factura_estado === 'anulada' || Array.isArray((comp as any).factura_detalle?.anteriores))) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para volver a emitir.' }
   if (!cfg || !cfg.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación automática no activa.' }); return { ok: true, estado: 'omitida' } }
   const tipo = String((comp as any).tipo ?? '')
+  // Un ajuste de saldo, o el cargue que un ajuste revirtió completo: no se
+  // factura. Una ya emitida sigue su camino (se avisa en «Revisar
+  // duplicadas»); una anulada queda anulada.
+  const rdVigente = await rawDataVigente((comp as any).transaction_id)
+  const sinFactAjuste = motivoAjuste(tipo, rdVigente)
+  if (sinFactAjuste && !((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero)) {
+    if ((comp as any).factura_estado === 'anulada') return { ok: false, error: sinFactAjuste }
+    await marcar({ factura_estado: 'omitida', factura_error: sinFactAjuste })
+    return { ok: true, estado: 'omitida', aviso: sinFactAjuste }
+  }
   const reglas = documentosDe(cfg)
   const regla = reglas[tipo] ?? null
   // EL MOTIVO DEL ENVÍO MANDA. Si la operación trae motivo (se pregunta al
@@ -1075,8 +1140,10 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   if (!cli.ok) { await marcar({ factura_estado: 'error', factura_error: cli.error, factura_tipo: clase }); return { ok: false, error: cli.error } }
 
   // El monto como número para Siigo, desde el texto que guardó el comprobante.
-  const monto = Number(String((comp as any).monto ?? '0').replace(/,/g, ''))
-  if (!Number.isFinite(monto) || monto <= 0) { const e = `Monto inválido en el comprobante: ${(comp as any).monto}`; await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: clase }); return { ok: false, error: e } }
+  // Un cargue que un ajuste revirtió en parte se factura por lo que quedó.
+  const revertido = montoRevertido(rdVigente)
+  const monto = r2(Number(String((comp as any).monto ?? '0').replace(/,/g, '')) - revertido)
+  if (!Number.isFinite(monto) || monto <= 0) { const e = revertido > 0 ? `${MSG_CARGUE_REVERTIDO} (Se revirtieron ${revertido} de ${(comp as any).monto}.)` : `Monto inválido en el comprobante: ${(comp as any).monto}`; await marcar({ factura_estado: revertido > 0 ? 'omitida' : 'error', factura_error: e, ...(revertido > 0 ? {} : { factura_tipo: clase }) }); return revertido > 0 ? { ok: true, estado: 'omitida', aviso: e } : { ok: false, error: e } }
   const hoy = new Date().toISOString().slice(0, 10)
   const ctx = {
     tipo: DISPARADORES[tipo] ?? tipo, numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
@@ -1226,6 +1293,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
       e += ` · Se envió el comprobante ${usado ? `«${usado.clase ? usado.clase + ' · ' : ''}${usado.code ? usado.code + ' · ' : ''}${usado.name}» (id ${usado.id})` : `id ${idEnviado}`}.`
       e += otros.length ? ` Otros que devolvió Siigo: ${otros.join('; ')}. Elegí otro en Configuración.` : ' Siigo no devolvió otro comprobante de ese tipo.'
     }
+    if (clase === 'FV' && esErrorComprobante(e)) { const dc = await diagnosticoComprobante(userId, t.token, partner, cfg); if (dc) e += ` ${dc}` }
     if (intentos.length > 1) e += ` · Rutas probadas: ${intentos.map(i => `${i.ruta} → HTTP ${i.status}`).join(', ')}.`
     if (r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number((comp as any).factura_intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
       const espera = `Siigo lo tomó como duplicado de otro documento parecido emitido segundos antes. Se reintenta solo en unos minutos. (${e})`
@@ -1415,6 +1483,14 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     await db.from('comprobantes').update({ ...p, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
   }
   const falla = async (e: string, extra: Record<string, unknown> = {}) => { await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV', ...extra }); return { ok: false, error: e } }
+  // Un ajuste de saldo (o el cargue que un ajuste revirtió completo): no
+  // aplica. Una anulada queda anulada.
+  const porAjuste = motivoAjuste(String((tx as any).type), (tx as any).raw_data)
+  if (porAjuste) {
+    if ((comp as any).factura_estado === 'anulada' || (Array.isArray(detPrevio.anteriores) && detPrevio.anteriores.length > 0)) return { ok: false, error: porAjuste }
+    await marcar({ factura_estado: 'omitida', factura_error: porAjuste })
+    return { ok: true, estado: 'omitida', aviso: porAjuste }
+  }
 
   const moneda = String((comp as any).moneda ?? '').toUpperCase()
   if (moneda && !/^COP/.test(moneda)) return falla(`La operación es en ${moneda} y la factura en Siigo va en pesos.`)
@@ -1704,7 +1780,8 @@ async function emitirComision(userId: string, txId: string, d: { identification:
     await marcar({ factura_estado: 'pendiente', factura_error: espera, factura_tipo: 'FV', factura_detalle: { enviado: cuerpo, intentos } })
     return { ok: false, error: espera, reintento: true }
   }
-  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, ...(ret ? { retencion: { id: ret.id, nombre: ret.name, pct: ret.percentage, valor: arm.retV } } : {}), cliente: { identification: cp.identification, nombre: cp.nombre } } } })
+  const diagComp = !r.ok && esErrorComprobante(motivoDe(r)) ? await diagnosticoComprobante(userId, t.token, partner, cfg) : ''
+  if (!r.ok) return falla(`Siigo rechazó la factura de comisión — ${motivoDe(r)}${diagComp ? ` ${diagComp}` : ''} · Se mandó base ${base} con tarifa ${(tarifa * 100).toFixed(2)} % (${intentos.length} intento${intentos.length === 1 ? '' : 's'}). ${notaVivo}${intentos.length > 1 ? ' Se reintentó con la tarifa que Siigo aplica y tampoco.' : ''}`, { factura_detalle: { enviado: cuerpo, intentos, comision: { pct, comision, base, iva: ivaV, total, tarifa, ...(ret ? { retencion: { id: ret.id, nombre: ret.name, pct: ret.percentage, valor: arm.retV } } : {}), cliente: { identification: cp.identification, nombre: cp.nombre } } } })
   const resp = r.data ?? {}
   const numero = resp.name ?? (resp.number != null ? `${resp.prefix ?? ''}${resp.number}` : null) ?? String(resp.id ?? '')
   delete historia.intento
@@ -1818,16 +1895,27 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
   const lcs = [...porLc.keys()]
   const comps = new Map<string, any>()
   for (let i = 0; i < lcs.length; i += 200) {
-    const { data, error } = await db.from('comprobantes').select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, detalle, factura_estado, factura_id, factura_numero, factura_detalle')
+    const { data, error } = await db.from('comprobantes').select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, detalle, factura_estado, factura_at, factura_id, factura_numero, factura_detalle')
       .eq('user_id', userId).in('numero', lcs.slice(i, i + 200))
     if (error) return { ok: false, error: error.message }
     for (const c of (data ?? []) as any[]) comps.set(String(c.numero), c)
+  }
+  // El reverso de un cargue se escribe en la transacción (no en la copia del
+  // comprobante): se lee de ella.
+  const reversoDe = new Map<string, any>()
+  const txIds = [...comps.values()].map(c => String(c.transaction_id ?? '')).filter(Boolean)
+  for (let i = 0; i < txIds.length; i += 200) {
+    const { data } = await db.from('transactions').select('id, type, reverso:raw_data->reverso').in('id', txIds.slice(i, i + 200))
+    for (const t of (data ?? []) as any[]) reversoDe.set(String(t.id), { type: t.type, reverso: t.reverso ?? null })
   }
   const duplicadas: any[] = []
   const sinRegistrar: any[] = []
   // Vigentes a nombre de la misma empresa: se anulan con nota crédito.
   const propios = await documentosPropios(userId)
   const aSiMisma: any[] = []
+  // Vigentes de un ajuste de saldo o de un cargue que un ajuste revirtió:
+  // completo se anula; en parte, se corrige con una nota crédito por lo revertido.
+  const revertidas: any[] = []
   const deLincoinPorClave = new Map<string, any[]>()
   for (const [lc, fs] of porLc) {
     const c = comps.get(lc)
@@ -1846,9 +1934,19 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
     const cuentaPropia = esDePropios(contraparteDe(c, cfg), propios)
     const propias = cuentaPropia ? vigentes : vigentes.filter(f => propios.has(baseDoc(f.cliente)))
     if (propias.length) aSiMisma.push({ ...mov, cuenta_propia: cuentaPropia, facturas: propias })
+    const txR = reversoDe.get(String(c.transaction_id ?? ''))
+    const esAjuste = txR?.type === 'adjustment' || String(c.tipo) === 'adjustment'
+    const rev = txR?.reverso
+    const revertida = esAjuste || rev?.anulado === true || (Number(rev?.montoCop) || 0) > 0
+    const completo = esAjuste || rev?.anulado === true
+    // Revertido en parte: la factura registrada DESPUÉS del vínculo ya salió
+    // por lo que quedó; esa está bien.
+    const sobran = completo ? vigentes : vigentes.filter(f => !(f.registrada && c.factura_at && rev?.vinculadoAt && Date.parse(c.factura_at) > Date.parse(rev.vinculadoAt)))
+    if (revertida && sobran.length) revertidas.push({ ...mov, ajuste: esAjuste, completo, revertido: esAjuste ? null : Number(rev?.montoCop) || 0, facturas: sobran })
     if (vigentes.length >= 2) duplicadas.push({ ...mov, facturas: lista })
-    // Una que se tiene que anular (a la misma empresa) no se ofrece registrar.
-    else if (vigentes.length === 1 && !propias.length && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
+    // Una que se tiene que anular (a la misma empresa, o de un ajuste) no se
+    // ofrece registrar.
+    else if (vigentes.length === 1 && !propias.length && !revertida && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
     for (const f of vigentes) {
       const k = `${f.cliente}|${Math.round(f.total)}`
       deLincoinPorClave.set(k, [...(deLincoinPorClave.get(k) ?? []), { ...f, comprobante: lc }])
@@ -1862,7 +1960,7 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
     const pares = deLincoinPorClave.get(`${rf.cliente}|${Math.round(rf.total)}`)
     if (pares?.length) posibles.push({ factura: rf, de_lincoin: pares })
   }
-  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, a_si_misma: aSiMisma, posibles }
+  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, a_si_misma: aSiMisma, revertidas, posibles }
 }
 
 // Registra en Lincoin facturas que están en Siigo y Lincoin no tenía (las
@@ -2001,6 +2099,9 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       if (est === 'emitiendo' && Date.parse(String(comp.factura_at ?? '')) > Date.now() - 180000) { no('Se está emitiendo ahora.'); continue }
       const det: any = comp.factura_detalle ?? {}
       const salida = SALIDAS.includes(String(tx.type))
+      // Un ajuste de saldo (o el cargue que revirtió): no se factura.
+      const porAjuste = motivoAjuste(String(tx.type), tx.raw_data)
+      if (porAjuste) { no(porAjuste); continue }
       // Con una cuenta de la misma empresa: no se factura en ningún modelo.
       const mov = contraparteDe({ detalle: { raw_data: tx.raw_data ?? {} }, tipo: tx.type }, cfg)
       if (esDePropios(mov, propios)) { no(MSG_CUENTA_PROPIA(mov.identification, salida)); continue }
@@ -3319,6 +3420,8 @@ Deno.serve(async (req) => {
       const clienteFact = c.factura_detalle?.comision?.cliente?.identification ?? enviado?.customer?.identification ?? null
       const propiosDoc = await documentosPropios(userId)
       const mismaEmpresa = (!!clienteFact && propiosDoc.has(baseDoc(clienteFact))) || esDePropios(contraparteDe(c, cfg ?? {}), propiosDoc)
+      // Un ajuste de saldo (o el cargue que revirtió): tampoco se reemite.
+      const motivoAj = motivoAjuste(String(c.tipo ?? ''), await rawDataVigente(c.transaction_id))
       return json({
         ok: true,
         comprobante: { folio: c.folio, numero: c.numero, tipo: c.tipo, monto: c.monto, moneda: c.moneda, emitido_at: c.emitido_at },
@@ -3339,7 +3442,8 @@ Deno.serve(async (req) => {
           // una anulada). La pantalla no ofrece emitirla.
           solo_envios: esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? '')),
           misma_empresa: mismaEmpresa,
-          reemision: !mismaEmpresa && !(esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
+          ajuste: motivoAj,
+          reemision: !mismaEmpresa && !motivoAj &&!(esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
             const monto = Number(String(c.monto ?? '0').replace(/,/g, '')) || 0
             const pct = Number(c.factura_detalle.comision.pct) || 0
             const comision = r2(monto * pct / 100)
