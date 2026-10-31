@@ -35,12 +35,35 @@ type UserRole = 'business' | 'personal' | 'contador' | 'admin';
 
 // Cada rol tiene su panel. Persona y contador NO entran al de empresas.
 // El portal de Contabilidad no es un rol: es POR DÓNDE entró la cuenta
-// (Empresas → Contabilidad). Se recuerda en la sesión del navegador.
+// (Empresas → Contabilidad). Se recuerda en el navegador (localStorage) con el
+// id de la cuenta. Antes iba en sessionStorage, que se borra al cerrar la
+// pestaña mientras la sesión de Supabase sigue viva: al volver, el contador
+// caía en el portal de su propia cuenta («Operadores», Swisstech,
+// 2026-10-31). Con el id, otra cuenta que entre en el mismo navegador no
+// hereda el portal. Se borra al salir o al elegir otro portal.
 const PORTAL_KEY = 'lincoin_portal';
-const portalActual = (): string => { try { return sessionStorage.getItem(PORTAL_KEY) ?? ''; } catch { return ''; } };
-const fijarPortal = (p: 'contabilidad' | null) => { try { if (p) sessionStorage.setItem(PORTAL_KEY, p); else sessionStorage.removeItem(PORTAL_KEY); } catch { /* sin storage */ } };
-const vistaDelRol = (role?: string): ViewState => {
-  if (role !== 'admin' && (role === 'contador' || portalActual() === 'contabilidad')) return 'contador-dashboard';
+const leerMarcaPortal = (): { p: string; uid: string | null } | null => {
+  try {
+    const v = JSON.parse(localStorage.getItem(PORTAL_KEY) || 'null');
+    if (v?.p === 'contabilidad') return { p: v.p, uid: v.uid ? String(v.uid) : null };
+  } catch { /* marca ilegible */ }
+  return null;
+};
+const portalActual = (uid?: string | null): string => {
+  const m = leerMarcaPortal();
+  if (m) return !m.uid || !uid || m.uid === uid ? m.p : '';
+  // La marca vieja (por pestaña), de antes de este cambio.
+  try { return sessionStorage.getItem(PORTAL_KEY) ?? ''; } catch { return ''; }
+};
+const fijarPortal = (p: 'contabilidad' | null, uid?: string | null) => {
+  try {
+    if (p) localStorage.setItem(PORTAL_KEY, JSON.stringify({ p, uid: uid ?? null }));
+    else localStorage.removeItem(PORTAL_KEY);
+    sessionStorage.removeItem(PORTAL_KEY);
+  } catch { /* sin storage */ }
+};
+const vistaDelRol = (role?: string, uid?: string | null): ViewState => {
+  if (role !== 'admin' && (role === 'contador' || portalActual(uid) === 'contabilidad')) return 'contador-dashboard';
   return role === 'personal' ? 'persona-dashboard' : 'personal-dashboard';
 };
 // Con Google la página vuelve a "/" y se pierde por qué portal se entró; la
@@ -396,7 +419,7 @@ const App: React.FC = () => {
     // persona vuelve a Personas y un contador a Contabilidad. Antes caía
     // siempre en el de Empresas, porque ese es el rol por defecto.
     const rol = currentUser?.role;
-    const portal = portalActual();
+    const portal = portalActual(currentUser?.id);
     // Se ESPERA a que la sesión quede cerrada antes de cambiar de vista. Si se
     // hacen las dos cosas a la vez, por un momento hay usuario y la vista es
     // 'landing', que es justo la condición del splash: se veía "Verificando
@@ -408,7 +431,7 @@ const App: React.FC = () => {
     // Y se va al LOGIN, no a la portada: si la sesión venció hay que volver a
     // entrar con correo y contraseña (o Google), y eso se pide acá.
     setCurrentView('login');
-  }, [logoutUser, currentUser?.role]);
+  }, [logoutUser, currentUser?.role, currentUser?.id]);
 
   // Restore Session Logic with Enhanced KYC Routing
   useEffect(() => {
@@ -452,7 +475,10 @@ const App: React.FC = () => {
       // Check if we are currently in a registration flow to prevent premature redirection.
       const isInAuthFlow = ['register', 'confirmation', 'role-selection'].includes(currentView);
 
-      const vista = vistaDelRol(currentUser.role);
+      const vista = vistaDelRol(currentUser.role, currentUser.id);
+      // La marca del portal queda atada a esta cuenta (se puso al elegir
+      // Contabilidad, antes de saber quién iba a entrar).
+      if (vista === 'contador-dashboard' && portalActual(currentUser.id) === 'contabilidad' && !leerMarcaPortal()?.uid) fijarPortal('contabilidad', currentUser.id);
       if (currentUser.kycStatus === 'pending' || currentUser.kycStatus === 'in_progress' || currentUser.kycStatus === 'in_review' || currentUser.kycStatus === 'rejected') {
           // Cada rol va derecho a SU panel; el banner de KYC/KYB vive adentro.
           if (currentView !== vista) setCurrentView(vista);
@@ -572,11 +598,11 @@ const App: React.FC = () => {
     const mal = portal !== 'admin' ? errorDePortal(portal, role) : null;
     if (mal) { rechazoPortalRef.current = Date.now(); borrarPistaGoogle(); setErrorPortal(mal); setUserRole(portal); setCurrentView('login'); logoutUser('portal equivocado'); return; }
     setErrorPortal(null);
-    setCurrentView(vistaDelRol(role));
+    setCurrentView(vistaDelRol(role, currentUser?.id));
   };
 
   const handleEmailValidated = () => {
-    setCurrentView(vistaDelRol(currentUser?.role ?? userRole));
+    setCurrentView(vistaDelRol(currentUser?.role ?? userRole, currentUser?.id));
   };
 
   const handleIntroContinue = () => {
@@ -585,7 +611,7 @@ const App: React.FC = () => {
 
   const handleOnboardingComplete = () => {
     setShowDashboardBanner(true);
-    setCurrentView(vistaDelRol(currentUser?.role ?? userRole));
+    setCurrentView(vistaDelRol(currentUser?.role ?? userRole, currentUser?.id));
   };
 
   const [loggingOut, setLoggingOut] = useState(false);
