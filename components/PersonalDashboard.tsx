@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrebRecaudo } from './BrebRecaudo';
 import { ReenvioDianModal } from './ReenvioDianModal';
+import { DocumentosContables } from './DocumentosContables';
 import {
   Landmark,
   CheckCircle2,
@@ -3352,6 +3353,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   </div>
               </div>
           </div>
+          {/* Los que anexa el contador (RUT, Cámara de Comercio,
+              declaraciones, estados financieros): aquí se descargan. */}
+          {currentUser?.role === 'business' && (
+              <div id="documentos-contables" className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                  <DocumentosContables modo="empresa" />
+              </div>
+          )}
       </div>
   );
 

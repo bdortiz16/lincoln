@@ -27,6 +27,15 @@
 //    aprobar        {contadorId}      — la empresa aprueba una solicitud
 //    rechazar       {contadorId}      — la empresa la descarta
 //    revocar_acceso {contadorId}      — la empresa quita un acceso aprobado
+//
+//  Documentos contables (RUT, Cámara de Comercio, declaraciones, estados
+//  financieros): los anexa el contador y la empresa los descarga en su
+//  perfil. Sin empresaId (o con el propio) es la empresa; con empresaId, el
+//  contador aprobado de esa empresa.
+//    docs_listar    {empresaId?}                              — los dos
+//    docs_subir     {empresaId, tipo, descripcion?, nombre, base64} — contador
+//    docs_url       {empresaId?, id}                          — los dos
+//    docs_borrar    {empresaId, id}                           — contador
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
@@ -87,6 +96,62 @@ async function notificar(userId: string, titulo: string, mensaje: string, tipo: 
 // Escribe SOLO las dos claves del vínculo, sobre la fila fresca.
 async function guardarVinculos(empresaId: string, contadores: Vinculo[], solicitudes: Vinculo[]) {
   return mergeRaw(db, empresaId, { contadores, contadoresSolicitudes: solicitudes })
+}
+
+// ── Documentos contables de la empresa ───────────────────────────────
+// Bucket PRIVADO: cada descarga es una URL firmada que vence en minutos. En
+// raw_data (base64) pesarían varios MB y viajarían con cada carga del panel;
+// ahí solo va la lista (tipo, nombre, quién y cuándo).
+const BUCKET_DOCS = 'empresa-documentos'
+const MAX_DOC = 8 * 1024 * 1024
+const TIPOS_DOC: Record<string, string> = {
+  rut: 'RUT',
+  camara_comercio: 'Cámara de Comercio',
+  declaracion: 'Declaración',
+  estados_financieros: 'Estados financieros',
+  otro: 'Otro documento',
+}
+// El formato lo dice el contenido, no el nombre ni lo que diga el navegador:
+// un .pdf que por dentro es otra cosa no entra. El tipo con el que se sirve
+// lo pone este servidor.
+const FORMATOS: Record<string, { mime: string; firma: (b: Uint8Array) => boolean }> = {
+  pdf:  { mime: 'application/pdf', firma: b => b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 },
+  jpg:  { mime: 'image/jpeg', firma: b => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF },
+  jpeg: { mime: 'image/jpeg', firma: b => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF },
+  png:  { mime: 'image/png', firma: b => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47 },
+  webp: { mime: 'image/webp', firma: b => String.fromCharCode(...b.slice(0, 4)) === 'RIFF' && String.fromCharCode(...b.slice(8, 12)) === 'WEBP' },
+  xlsx: { mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', firma: b => b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04 },
+  docx: { mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', firma: b => b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04 },
+  xls:  { mime: 'application/vnd.ms-excel', firma: b => b[0] === 0xD0 && b[1] === 0xCF && b[2] === 0x11 && b[3] === 0xE0 },
+}
+type DocEmpresa = { id: string; tipo: string; descripcion: string; nombre: string; path: string; mime: string; size: number; subidoPor: { id: string; nombre: string }; at: string }
+
+let bucketDocsListo = false
+async function asegurarBucketDocs() {
+  if (bucketDocsListo) return
+  const { error } = await db.storage.getBucket(BUCKET_DOCS)
+  if (error) {
+    const { error: e2 } = await db.storage.createBucket(BUCKET_DOCS, { public: false, fileSizeLimit: MAX_DOC })
+    if (e2 && !/already exists/i.test(e2.message)) throw e2
+  }
+  bucketDocsListo = true
+}
+
+// La lista sale de la fila de la empresa, pero una ruta solo cuenta si está
+// en la carpeta de ESA empresa: la empresa puede editar su raw_data desde el
+// navegador, y con una ruta ajena firmaríamos el archivo de otra.
+const documentosDe = (emp: any): DocEmpresa[] => {
+  const crudos = (emp?.raw_data as any)?.documentosContables
+  return (Array.isArray(crudos) ? crudos : [])
+    .filter((d: any) => d && d.id && typeof d.path === 'string' && d.path.startsWith(`${emp.id}/`) && !d.path.includes('..') && TIPOS_DOC[String(d.tipo)])
+}
+
+// El nombre con que se descarga: sin tildes ni signos raros, que algunos
+// navegadores los cambian por guiones o cortan el nombre.
+const nombreDescarga = (d: DocEmpresa) => {
+  const ext = d.path.split('.').pop() ?? ''
+  const base = String(d.nombre || TIPOS_DOC[d.tipo]).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\.[A-Za-z0-9]{2,5}$/, '').replace(/[^\w.\- ]+/g, '_').trim().slice(0, 80) || d.tipo
+  return ext ? `${base}.${ext}` : base
 }
 
 Deno.serve(async (req) => {
@@ -216,6 +281,99 @@ Deno.serve(async (req) => {
       await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.contador_salio', metadata: { contadorId: yo.id, email: yo.email, at: new Date().toISOString() } })
       await notificar(String(emp.id), 'Tu contador dejó tu contabilidad', `${yo.nombre || yo.email} (${yo.email}) dejó de trabajar con tu contabilidad y tu facturación. Tu configuración de Siigo sigue guardada en tu cuenta, tal como estaba.`)
       return json({ ok: true })
+    }
+
+    // ── DOCUMENTOS CONTABLES (contador y empresa) ────────────────────────
+    if (accion.startsWith('docs_')) {
+      // A quién pertenecen: sin empresaId (o con el propio), a la empresa que
+      // llama; con empresaId, a esa empresa, si tiene aprobado al que llama.
+      const pedida = String(body.empresaId ?? '')
+      const comoContador = !!pedida && pedida !== yo.id
+      if (!comoContador && yo.role !== 'business') return json({ ok: false, error: 'Solo la empresa o su contador ven estos documentos' }, 403)
+      const emp = await empresaPorId(comoContador ? pedida : yo.id)
+      if (!emp) return json({ ok: false, error: 'La empresa ya no existe' }, 404)
+      if (comoContador && !lista(emp.raw_data, 'contadores').some(c => c.id === yo.id)) return json({ ok: false, error: 'La empresa no ha aprobado tu acceso.' }, 403)
+      const docs = documentosDe(emp)
+
+      if (accion === 'docs_listar') {
+        const orden = [...docs].sort((a, b) => String(b.at).localeCompare(String(a.at)))
+        // La ruta del bucket no sale: la descarga va siempre por docs_url.
+        return json({ ok: true, puedeSubir: comoContador, tipos: TIPOS_DOC, documentos: orden.map(({ path: _p, ...d }) => d) })
+      }
+
+      if (accion === 'docs_url') {
+        const d = docs.find(x => x.id === String(body.id ?? ''))
+        if (!d) return json({ ok: false, error: 'Ese documento ya no está' }, 404)
+        const { data, error } = await db.storage.from(BUCKET_DOCS).createSignedUrl(d.path, 300, { download: nombreDescarga(d) })
+        if (error || !data?.signedUrl) {
+          console.error('[contador] docs_url:', error?.message)
+          return json({ ok: false, error: 'No se pudo preparar la descarga. Intenta de nuevo.' }, 500)
+        }
+        return json({ ok: true, url: data.signedUrl })
+      }
+
+      // Anexar y retirar es del contador: la empresa los descarga.
+      if (!comoContador) return json({ ok: false, error: 'Los documentos los anexa tu contador' }, 403)
+
+      if (accion === 'docs_subir') {
+        const tipo = String(body.tipo ?? '')
+        if (!TIPOS_DOC[tipo]) return json({ ok: false, error: 'Elige qué documento es' }, 400)
+        if (tipo === 'otro' && !String(body.descripcion ?? '').trim()) return json({ ok: false, error: 'Escribe qué documento es (por ejemplo «Certificado bancario»).' }, 400)
+        const nombre = String(body.nombre ?? '').trim().slice(0, 120)
+        const ext = (nombre.split('.').pop() ?? '').toLowerCase()
+        const formato = FORMATOS[ext]
+        if (!formato) return json({ ok: false, error: 'Tiene que ser un PDF, una foto (JPG, PNG, WEBP), un Excel o un Word.' }, 400)
+        let bytes: Uint8Array
+        try {
+          const b64 = String(body.base64 ?? '').includes(',') ? String(body.base64).split(',')[1] : String(body.base64 ?? '')
+          bytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0))
+        } catch { return json({ ok: false, error: 'No se pudo leer el archivo.' }, 400) }
+        if (bytes.byteLength < 100) return json({ ok: false, error: 'El archivo llegó vacío o dañado.' }, 400)
+        if (bytes.byteLength > MAX_DOC) return json({ ok: false, error: 'Puede pesar hasta 8 MB.' }, 400)
+        if (!formato.firma(bytes)) return json({ ok: false, error: `El archivo no es un .${ext} de verdad (por dentro es otro formato). Guárdalo de nuevo como ${ext.toUpperCase()} y vuelve a intentarlo.` }, 400)
+        if (docs.length >= 200) return json({ ok: false, error: 'Ya hay 200 documentos anexados. Retira los que sobran para anexar más.' }, 400)
+
+        await asegurarBucketDocs()
+        const id = crypto.randomUUID()
+        const path = `${emp.id}/${id}-${tipo}.${ext}`
+        const { error } = await db.storage.from(BUCKET_DOCS).upload(path, bytes, { contentType: formato.mime, upsert: false })
+        if (error) {
+          console.error('[contador] docs_subir:', error.message)
+          return json({ ok: false, error: 'No se pudo guardar el documento. Intenta de nuevo en un momento.' }, 500)
+        }
+        const doc: DocEmpresa = {
+          id, tipo, descripcion: String(body.descripcion ?? '').trim().slice(0, 120), nombre, path, mime: formato.mime, size: bytes.byteLength,
+          subidoPor: { id: yo.id, nombre: yo.nombre || yo.email }, at: new Date().toISOString(),
+        }
+        // La lista se vuelve a leer justo antes de escribir: si dos archivos
+        // se anexan a la vez, no se pisa el que llegó primero.
+        const fresca = documentosDe(await empresaPorId(String(emp.id)))
+        const err = await mergeRaw(db, String(emp.id), { documentosContables: [doc, ...fresca] })
+        if (err) {
+          await db.storage.from(BUCKET_DOCS).remove([path]).catch(() => {})
+          return json({ ok: false, error: `No se pudo registrar el documento: ${err}` }, 500)
+        }
+        await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.documento_anexado', metadata: { contadorId: yo.id, email: yo.email, documentoId: id, tipo, nombre, at: doc.at } })
+        const que = doc.descripcion ? `${TIPOS_DOC[tipo]} (${doc.descripcion})` : TIPOS_DOC[tipo]
+        await notificar(String(emp.id), 'Tu contador anexó un documento', `${yo.nombre || yo.email} anexó ${que} a tu cuenta. Lo descargas en Mi perfil → Documentos contables.`, 'info', '/empresas_perfil')
+        const { path: _p, ...visible } = doc
+        return json({ ok: true, documento: visible })
+      }
+
+      if (accion === 'docs_borrar') {
+        const id = String(body.id ?? '')
+        const d = docs.find(x => x.id === id)
+        if (!d) return json({ ok: true })
+        const fresca = documentosDe(await empresaPorId(String(emp.id)))
+        const err = await mergeRaw(db, String(emp.id), { documentosContables: fresca.filter(x => x.id !== id) })
+        if (err) return json({ ok: false, error: `No se pudo retirar el documento: ${err}` }, 500)
+        const { error: eRm } = await db.storage.from(BUCKET_DOCS).remove([d.path])
+        if (eRm) console.error('[contador] docs_borrar:', eRm.message)
+        await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.documento_retirado', metadata: { contadorId: yo.id, email: yo.email, documentoId: id, tipo: d.tipo, nombre: d.nombre, at: new Date().toISOString() } })
+        return json({ ok: true })
+      }
+
+      return json({ ok: false, error: `Acción desconocida: ${accion}` }, 400)
     }
 
     // ── LA EMPRESA ───────────────────────────────────────────────────────

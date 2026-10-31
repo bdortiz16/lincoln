@@ -1673,7 +1673,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             </div>
           )}
         </div>
-        <div className="flex items-center" style={{ gap: 8 }}>
+        {/* flex-wrap: en el celular los cuatro botones no caben en una fila y
+            empujaban la página hacia los lados. */}
+        <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
           {facturacionActiva != null && (
             <button onClick={alternarAutomatica} disabled={cambiandoAuto}
               title={facturacionActiva ? 'La facturación automática está activa: cada operación completada emite su documento en Siigo. Tocá para pausar.' : 'La facturación automática está pausada: nada se emite solo. Tocá para activar (la configuración debe estar completa).'}
