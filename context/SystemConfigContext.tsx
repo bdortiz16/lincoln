@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback } from 'react';
+import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { BankDetail, TreasuryAccount, AdminUser } from './DatabaseContext';
 
@@ -82,6 +82,9 @@ const DEFAULT_CONFIG = {
 interface SystemConfigContextType {
   config: any;
   updateConfig: (newConfig: any) => void;
+  // Qué falló al guardar, si falló. Existe porque antes no existía: cualquier
+  // cambio se veía aplicado aunque no se hubiera guardado en ninguna parte.
+  configError: string | null;
   setThemePreset: (preset: string) => void;
   addCoupon: (coupon: Coupon) => void;
   removeCoupon: (code: string) => void;
@@ -162,21 +165,40 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
     });
   }, []);
 
+  // ¿La configuración en memoria es la COMPLETA (la que ve un admin) o la
+  // pública? get-system-config ya no le da a cualquiera el equipo de admin ni
+  // la tesorería. Guardar escribe el objeto entero: guardar sobre la vista
+  // pública borraría lo que no vino. Por eso se lleva la cuenta.
+  const vistaRef = useRef<'completa' | 'publica' | null>(null);
+  const tokenSesion = async (): Promise<string> => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token || SKEY;
+    } catch { return SKEY; }
+  };
+  const leerConfigServidor = useCallback(async (): Promise<{ settings: any; vista: 'completa' | 'publica' } | null> => {
+    if (!GET_CONFIG_URL) return null;
+    try {
+      const res = await fetch(GET_CONFIG_URL, {
+        headers: { 'apikey': SKEY, 'Authorization': `Bearer ${await tokenSesion()}` },
+      });
+      if (!res.ok) return null;
+      const d = await res.json();
+      if (!d?.settings) return null;
+      return { settings: d.settings, vista: d.vista === 'completa' ? 'completa' : 'publica' };
+    } catch (e) {
+      console.warn('[config] get-system-config failed', e);
+      return null;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [GET_CONFIG_URL, SKEY]);
+
   const fetchRemoteConfig = useCallback(async () => {
     if (!isSupabaseConfigured) return;
-    // Try get-system-config first (simple read-only function, no auth needed)
-    if (GET_CONFIG_URL) {
-      try {
-        const res = await fetch(GET_CONFIG_URL, {
-          headers: { 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-        });
-        if (res.ok) {
-          const { settings } = await res.json();
-          if (settings) { applySettings(settings); return; }
-        }
-      } catch (e) {
-        console.warn('[config] get-system-config failed', e);
-      }
+    // Try get-system-config first (read-only; con sesión de admin trae todo)
+    {
+      const r = await leerConfigServidor();
+      if (r) { vistaRef.current = r.vista; applySettings(r.settings); return; }
     }
     // Secondary: gasfree get_config (once deployed)
     if (GASFREE_WALLET_URL) {
@@ -225,41 +247,82 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
         })
         .subscribe();
 
+      // Al iniciar o cerrar sesión cambia lo que se puede ver (un admin trae
+      // la configuración completa): se vuelve a leer.
+      const { data: authSub } = supabase.auth.onAuthStateChange((evento) => {
+        if (evento === 'SIGNED_IN' || evento === 'SIGNED_OUT') fetchRemoteConfig();
+      });
+
       return () => {
         clearInterval(interval);
         supabase.removeChannel(channel);
+        authSub?.subscription?.unsubscribe();
       };
     }
   }, [fetchRemoteConfig]);
 
+  // La paleta nunca va al localStorage: provoca un destello de colores viejos
+  // en la próxima carga. Sale siempre del código + Supabase.
+  const guardarLocal = (full: any) => {
+    const { themeColor: _t, accentColor: _a, heroGradientMid: _m, heroGradientEnd: _e, paletteVersion: _v, ...nonPalette } = full;
+    try { localStorage.setItem(LS_CONFIG, JSON.stringify(nonPalette)); } catch { /* cuota */ }
+  };
+
+  // Qué falló al guardar. Lo lee el panel para poder decirlo en pantalla.
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  // ── Guardar configuración ──────────────────────────────────────────
+  //
+  // ESTO ANTES MENTIA, Y COSTO ENCONTRARLO.
+  //
+  // Escribía el estado y el localStorage ANTES de intentar guardar, probaba
+  // tres caminos, y si los tres fallaban no decía nada. Resultado: el admin
+  // veía el cambio aplicado —porque su propio navegador lo tenía guardado— y
+  // ningún cliente lo veía nunca. Activar un país "funcionaba" durante días
+  // sin haberse guardado jamás.
+  //
+  // Además el primer camino (gasfree/save_config) NO EXISTE: esa función no
+  // tiene esa acción. Se llamaba en cada guardado para nada.
+  //
+  // Ahora: se intenta guardar, y solo si se guardó se da por hecho. Si no, el
+  // cambio se revierte en pantalla y queda escrito por qué. Un interruptor que
+  // vuelve solo a su lugar dice la verdad; uno que se queda puesto, no.
   const updateConfig = async (newPart: any) => {
-    const newFull = { ...config, ...newPart, paletteVersion: PALETTE_VERSION };
+    const previo = config;
+    let base = config;
+    // Sobre la vista pública NO se guarda: le faltan claves (equipo de admin,
+    // tesorería) y el guardado escribe el objeto entero, así que las borraría.
+    // Se trae primero la completa; si quien guarda no es admin, no se guarda.
+    if (isSupabaseConfigured && vistaRef.current !== 'completa') {
+      const r = await leerConfigServidor();
+      if (!r || r.vista !== 'completa') {
+        setConfigError('Recarga el panel para cargar la configuración completa antes de guardar.');
+        return;
+      }
+      vistaRef.current = 'completa';
+      base = { ...DEFAULT_CONFIG, ...r.settings };
+    }
+    const newFull = { ...base, ...newPart, paletteVersion: PALETTE_VERSION };
+
+    // Optimista para que la interfaz responda al instante. Si el guardado
+    // falla, se deshace.
     setConfig(newFull);
-    // Strip palette keys from localStorage — they cause flash of wrong colors on next load.
-    // Palette is always sourced from code defaults + Supabase, never from localStorage.
-    const { themeColor: _t, accentColor: _a, heroGradientMid: _m, heroGradientEnd: _e, paletteVersion: _v, ...nonPalette } = newFull;
-    localStorage.setItem(LS_CONFIG, JSON.stringify(nonPalette));
-    if (!isSupabaseConfigured) return;
+    setConfigError(null);
+
+    if (!isSupabaseConfigured) {
+      // Sin backend no hay nada que guardar: la copia local es todo lo que hay
+      // y eso es correcto en desarrollo.
+      guardarLocal(newFull);
+      return;
+    }
 
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token
       || localStorage.getItem('cuypay_admin_token')
       || SKEY;
 
-    // Try gasfree/save_config (service key, no auth required)
-    if (GASFREE_WALLET_URL) {
-      try {
-        const res = await fetch(GASFREE_WALLET_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ action: 'save_config', settings: newFull }),
-        });
-        if (res.ok) return;
-      } catch (e) {
-        console.warn('[config] gasfree save_config error', e);
-      }
-    }
-    // Try admin-data/save_config (service key, requires admin token)
+    let motivo = 'No se pudo guardar.';
+
     if (ADMIN_DATA_URL) {
       try {
         const res = await fetch(ADMIN_DATA_URL, {
@@ -267,13 +330,28 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
           headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${token}` },
           body: JSON.stringify({ action: 'save_config', settings: newFull }),
         });
-        if (res.ok) return;
-      } catch (e) {
+        if (res.ok) { guardarLocal(newFull); return; }
+        const d = await res.json().catch(() => null);
+        // Los dos motivos reales: la sesión no pasó el 2FA, o el rol no alcanza.
+        if (d?.needs2fa) motivo = 'Volvé a verificarte con el código de la app: guardar la configuración lo exige.';
+        else if (d?.permisoDenegado) motivo = 'Tu rol no permite cambiar la configuración.';
+        else if (d?.error) motivo = String(d.error);
+      } catch (e: any) {
+        motivo = 'No hubo respuesta del servidor.';
         console.warn('[config] admin-data save_config error', e);
       }
     }
-    // Last resort: direct upsert (may be blocked by RLS)
-    await supabase.from('app_config').upsert({ id: 1, settings: newFull });
+
+    // Último intento: escribir directo. Puede estar bloqueado por RLS.
+    const { error } = await supabase.from('app_config').upsert({ id: 1, settings: newFull });
+    if (!error) { guardarLocal(newFull); return; }
+
+    // No se guardó en ningún lado. NO se escribe el localStorage: si se
+    // escribiera, este navegador seguiría mostrando el cambio para siempre y
+    // nadie más lo vería -- que es exactamente lo que pasaba.
+    console.error('[config] no se pudo guardar:', motivo, error?.message);
+    setConfig(previo);
+    setConfigError(motivo);
   };
 
   const setThemePreset = (preset: string) => {
@@ -291,7 +369,7 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
   const toggleCoupon = (code: string) => updateConfig({ coupons: config.coupons.map((x: any) => x.code === code ? {...x, active: !x.active} : x) });
 
   return (
-    <SystemConfigContext.Provider value={{ config, updateConfig, setThemePreset, addCoupon, removeCoupon, toggleCoupon }}>
+    <SystemConfigContext.Provider value={{ config, updateConfig, configError, setThemePreset, addCoupon, removeCoupon, toggleCoupon }}>
       {children}
     </SystemConfigContext.Provider>
   );

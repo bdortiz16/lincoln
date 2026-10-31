@@ -19,6 +19,8 @@ interface RegisterProps {
   onLoginClick: () => void;
   onBack: () => void;
   userRole?: 'business' | 'personal';
+  /** Registro desde Empresas → Contabilidad: misma cuenta simple, otro título. */
+  esContador?: boolean;
 }
 
 const countries = [
@@ -51,7 +53,7 @@ const simulationData = [
   },
 ];
 
-export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business' }) => {
+export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business', esContador = false }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -61,6 +63,11 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [companyCountry, setCompanyCountry] = useState('');
+  // Operadores (clientes de nuestros clientes): se registran como persona
+  // natural o como empresa. Define qué datos y documentos se les piden.
+  const [tipoOperador, setTipoOperador] = useState<'persona' | 'empresa'>('persona');
+  const [razonSocial, setRazonSocial] = useState('');
+  const esOperador = userRole === 'personal' && !esContador;
   const [cooldown, setCooldown] = useState(0);
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState('');
@@ -161,6 +168,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
           setErrorMsg("La contraseña debe tener al menos 6 caracteres.");
           setLoading(false); return;
       }
+      if (esOperador && tipoOperador === 'empresa' && razonSocial.trim().length < 3) {
+          setErrorMsg("Escribe la razón social de tu empresa.");
+          setLoading(false); return;
+      }
 
       try {
         const timeout = new Promise<{ error: string }>(resolve =>
@@ -171,8 +182,9 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             email,
             password,
             role: userRole || 'personal',
-            name: userRole === 'business' ? (companyName || 'Empresa Nueva') : 'Usuario Nuevo',
-            companyName: userRole === 'business' ? companyName : undefined,
+            name: userRole === 'business' ? (companyName || 'Empresa Nueva') : esOperador && tipoOperador === 'empresa' ? razonSocial.trim() : 'Usuario Nuevo',
+            companyName: userRole === 'business' ? companyName : esOperador && tipoOperador === 'empresa' ? razonSocial.trim() : undefined,
+            tipoOperador: esOperador ? tipoOperador : undefined,
             country: userRole === 'business' ? companyCountry : undefined,
             referralCode,
             captchaToken: captchaToken || undefined,
@@ -227,12 +239,47 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  Regístrate a LINCOIN Personas
+                  {esContador ? 'Crea tu cuenta para Contabilidad' : 'Regístrate como operador'}
                 </h1>
+
+                {esOperador && (
+                    <div className="space-y-3">
+                        <p className="text-sm text-slate-900 font-semibold">¿Cómo te vas a registrar?</p>
+                        <div className="grid grid-cols-2 gap-3">
+                            {([['persona', 'Persona natural', 'Con tu cédula'], ['empresa', 'Empresa', 'Con el NIT de tu empresa']] as const).map(([v, t, d]) => (
+                                <button key={v} type="button" onClick={() => setTipoOperador(v)}
+                                    className="text-left rounded-lg px-4 py-3 transition-colors"
+                                    style={{ border: `1.5px solid ${tipoOperador === v ? '#4ADE80' : 'rgba(255,255,255,0.16)'}`, background: tipoOperador === v ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.03)' }}>
+                                    <span className="block text-sm font-bold" style={{ color: '#F4F4F2' }}>{t}</span>
+                                    <span className="block text-xs mt-0.5" style={{ color: '#878E88' }}>{d}</span>
+                                </button>
+                            ))}
+                        </div>
+                        {tipoOperador === 'empresa' && (
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    value={razonSocial}
+                                    onChange={(e) => setRazonSocial(e.target.value.slice(0, 120))}
+                                    className="peer w-full h-12 px-4 border border-slate-500 rounded-lg text-slate-900 focus:outline-none focus:border-[#5d87ff] focus:ring-1 focus:ring-[#5d87ff] bg-white pt-3"
+                                    placeholder=" "
+                                />
+                                <label className="absolute left-4 top-0.5 text-[10px] text-slate-900 font-semibold transition-all peer-placeholder-shown:top-3.5 peer-placeholder-shown:text-sm peer-placeholder-shown:text-slate-800 peer-focus:top-0.5 peer-focus:text-[10px] peer-focus:text-[#5d87ff]">
+                                    Razón social de la empresa
+                                </label>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* Google OAuth */}
                 <button
-                    onClick={() => loginWithGoogle('personal')}
+                    onClick={() => {
+                        // Con Google no pasa por el formulario: el tipo se guarda
+                        // para que el portal lo use al pedir la autorización.
+                        if (esOperador) { try { localStorage.setItem('lincoin_tipo_operador', tipoOperador); } catch { /* */ } }
+                        loginWithGoogle('personal');
+                    }}
                     type="button"
                     className="w-full h-12 flex items-center justify-center gap-3 border border-slate-500 rounded-lg bg-white hover:bg-slate-50 transition-colors text-slate-900 font-semibold text-sm shadow-sm"
                 >
@@ -334,14 +381,14 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 </button>
 
                 <div className="text-center text-sm text-slate-900 mt-8">
-                    ¿Ya tienes una cuenta persona? <button onClick={onLoginClick} className="text-[#5d87ff] font-bold underline hover:text-[#0C0E0D]">Iniciar sesión</button>
+                    ¿Ya tienes una cuenta {esContador ? 'de contabilidad' : 'de operador'}? <button onClick={onLoginClick} className="text-[#5d87ff] font-bold underline hover:text-[#0C0E0D]">Iniciar sesión</button>
                 </div>
             </div>
         ) : (
             /* BUSINESS FORM */
             <div className="space-y-5 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  Registra tu cuenta LINCOIN Empresas
+                  Registra tu cuenta Lincoin Empresas
                 </h1>
 
                 {/* Google OAuth */}
@@ -453,7 +500,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 <button
                     onClick={handleSubmit}
                     disabled={cooldown > 0 || loading || (captchaEnabled && !captchaToken)}
-                    className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
+                    className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg transition-colors shadow-lg shadow-green-900/20 mt-4 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                     {loading ? 'Registrando...' : cooldown > 0 ? `Espera ${cooldown}s...` : 'Registrarse'}
                 </button>

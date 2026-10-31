@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 declare global { interface Window { grecaptcha: any } }
 import { Eye, EyeOff, ArrowLeft, AlertTriangle, X, CheckCircle, ShieldCheck } from 'lucide-react';
 import { Logo } from './Logo';
+import { CodeInput } from './CodeInput';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { useDatabase } from '../context/DatabaseContext';
@@ -11,14 +12,65 @@ interface LoginProps {
   onRegisterClick: () => void;
   onLoginSuccess: (role?: 'business' | 'personal' | 'admin') => void;
   onBack: () => void;
-  userRole?: 'business' | 'personal';
+  userRole?: 'business' | 'personal' | 'contador';
+  /** Mensaje que trae App (p. ej. Google entró con una cuenta del otro portal). */
+  errorInicial?: string | null;
 }
 
-export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business' }) => {
+// Cada portal es para SU tipo de cuenta: Personas para cuentas Persona,
+// Empresas → Usuario para cuentas Empresa. Por Contabilidad entra cualquier
+// cuenta que no sea admin (el vínculo se resuelve adentro con el ID). Si la
+// cuenta no corresponde al portal, NO entra: se cierra la sesión y se dice
+// por dónde debe entrar. Devuelve el mensaje, o null si sí corresponde.
+export const errorDePortal = (portal: string, rolCuenta?: string): string | null => {
+  if (!rolCuenta || rolCuenta === 'admin' || portal === 'contador' || rolCuenta === portal) return null;
+  if (rolCuenta === 'personal') return 'Esta cuenta es de Operadores. Este es el portal de Empresas: entra por Operadores en lincoin.me/ingresar_personas.';
+  if (rolCuenta === 'contador') return 'Esta cuenta es de contador. Entra por Empresas → Contabilidad.';
+  return 'Esta cuenta es de Empresas. Este es el portal de Operadores: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
+};
+
+export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business', errorInicial = null }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(errorInicial);
+  useEffect(() => { if (errorInicial) setErrorMsg(errorInicial); }, [errorInicial]);
+
+  // ¿La hora de este equipo está corrida? La sesión vence según el reloj del
+  // equipo: con el reloj adelantado (o en otra zona mal puesta) la sesión se
+  // da por vencida apenas se abre, se renueva sin parar, el servidor la
+  // invalida y la persona "entra y sale" — en ese equipo, también en
+  // incógnito, y en ningún otro. Se compara con la hora de nuestro servidor
+  // (cabecera Date; Age si la respuesta vino de caché) y se avisa.
+  const [desfaseMin, setDesfaseMin] = useState<number | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const t0 = Date.now();
+        const r = await fetch(`/favicon-16.png?reloj=${t0}`, { method: 'HEAD', cache: 'no-store' });
+        const t1 = Date.now();
+        const fecha = Date.parse(r.headers.get('date') ?? '');
+        if (!Number.isFinite(fecha)) return;
+        // Sin sumar Age: la CDN (Cloudflare, Vercel) pone en Date la hora
+        // de ESTA respuesta aunque venga de caché, y sumar Age contaba el
+        // tiempo en caché dos veces (un reloj bueno salía "atrasado 2 horas").
+        const dif = (t0 + t1) / 2 - fecha;
+        if (vivo && Math.abs(dif) > 90_000) setDesfaseMin(Math.sign(dif) * Math.round(Math.abs(dif) / 60_000));
+      } catch { /* sin red o sin cabecera: no se avisa nada */ }
+    })();
+    return () => { vivo = false; };
+  }, []);
+  const avisoReloj = desfaseMin != null && (
+    <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg text-sm mb-4 w-full max-w-md font-medium text-center">
+      La hora de este computador está {desfaseMin > 0 ? 'adelantada' : 'atrasada'}{' '}
+      {Math.abs(desfaseMin) >= 90 ? `${(Math.abs(desfaseMin) / 60).toLocaleString('es-CO', { maximumFractionDigits: 1 })} horas` : `${Math.abs(desfaseMin)} ${Math.abs(desfaseMin) === 1 ? 'minuto' : 'minutos'}`}.
+      {' '}{desfaseMin > 0
+        ? 'Con la hora adelantada la sesión se da por vencida y se cierra sola al entrar.'
+        : 'Con la hora atrasada la sesión puede fallar o cerrarse al rato de entrar.'}
+      {' '}Pon la fecha y la hora en automático.
+    </div>
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   // Forgot Password State
@@ -27,7 +79,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [forgotSent, setForgotSent] = useState(false);
 
   const { config } = useSystemConfig();
-  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset } = useDatabase();
+  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset, getMfaError, passkeyPending, loginConPasskey } = useDatabase();
 
   // Sin llave por defecto: reCAPTCHA queda opcional (el flujo resuelve token ''
   // y continúa). Se activa cargando una site key válida vía admin → recaptchaSiteKey.
@@ -39,6 +91,19 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [mfaCode, setMfaCode] = useState('');
   const [mfaError, setMfaError] = useState('');
   const [mfaLoading, setMfaLoading] = useState(false);
+  const verificandoRef = useRef(false);
+  // Cada vez que se abre el paso del código, el campo arranca VACÍO. Si la
+  // sesión obliga a pedirlo otra vez justo después de un ingreso correcto,
+  // el código anterior seguía escrito y se reenviaba solo (los 6 dígitos
+  // completos disparan el envío): el servidor lo rechazaba como "ya
+  // utilizado" y la pantalla mostraba "código incorrecto". Si el contexto
+  // dejó un motivo (por qué se vuelve a pedir), se muestra.
+  useEffect(() => {
+    if (!mfaPending) return;
+    setMfaCode('');
+    setMfaError(getMfaError() ?? '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mfaPending]);
   // CAPTCHA (Turnstile) — token de un solo uso; captchaKey remonta el widget.
   const [captchaToken, setCaptchaToken] = useState('');
   const [captchaKey, setCaptchaKey] = useState(0);
@@ -65,7 +130,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
     const safetyTimer = setTimeout(() => setIsLoading(false), 20000);
     try {
       await getRecaptchaToken();
-      const result = await loginUser(email, password, captchaToken || undefined);
+      const result = await loginUser(email, password, captchaToken || undefined, userRole === 'personal' ? 'personal' : 'business');
       setCaptchaToken(''); setCaptchaKey(k => k + 1);
 
       // 2FA pendiente: la contraseña FUE correcta; se muestra la pantalla del
@@ -78,18 +143,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         return;
       }
 
-      if (user && userRole !== 'admin' && user.role !== 'admin' && user.role !== userRole) {
-        logoutUser();
-        setErrorMsg(
-          user.role === 'personal'
-            ? 'Tu cuenta es de tipo Personal. Por favor inicia sesión en la sección de Personas.'
-            : 'Tu cuenta es de tipo Empresas. Por favor inicia sesión en la sección de Empresas.'
-        );
-        return;
-      }
+      const malPortal = errorDePortal(userRole, user.role);
+      if (malPortal) { logoutUser('portal equivocado'); setErrorMsg(malPortal); return; }
 
       if (config.maintenanceMode && user!.role !== 'admin') {
-        logoutUser();
+        logoutUser('mantenimiento');
         setErrorMsg("El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.");
         return;
       }
@@ -105,14 +163,58 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
   const handleVerify2FA = async () => {
     if (mfaCode.length !== 6) return;
+    // Un solo envío a la vez. El estado mfaLoading tarda un render en llegar:
+    // el envío automático al completar los 6 dígitos más un toque en
+    // "Verificar" (o un Enter) mandaban el MISMO código dos veces. El primero
+    // entraba y el segundo volvía "código ya utilizado", que la pantalla
+    // mostraba como "Código incorrecto" a alguien que lo había puesto bien.
+    if (verificandoRef.current) return;
+    verificandoRef.current = true;
     setMfaLoading(true);
     setMfaError('');
-    const user = await completeMFALogin(mfaCode);
+    const user = await completeMFALogin(mfaCode).finally(() => { verificandoRef.current = false; });
     setMfaLoading(false);
     if (!user) {
-      setMfaError('Código incorrecto o expirado. Intenta nuevamente.');
+      // El motivo que mandó el servidor, tal cual: límite de intentos (con
+      // cuántos minutos faltan), código ya usado, 2FA sin secreto legible,
+      // cuenta bloqueada. Antes todo salía como "código incorrecto" y quien
+      // estaba bloqueado por intentos seguía probando códigos buenos.
+      // SIN motivo no es un fallo: el código fue correcto y la cuenta tiene
+      // una llave registrada, así que falta firmar con ella (el contexto pone
+      // passkeyPending y la pantalla pasa a ese paso). Antes esto también
+      // salía como "código incorrecto", con el código bueno.
+      const err = getMfaError();
+      if (err) setMfaError(err);
       setMfaCode('');
       return;
+    }
+    // El código ya se gastó: no puede quedar escrito para un reenvío.
+    setMfaCode('');
+    entrar(user);
+  };
+
+  // Último paso, solo si la cuenta tiene llave (huella, Face ID, llave USB).
+  // Va con un toque a propósito: el navegador no abre el lector sin que
+  // alguien lo pida.
+  const handlePasskey = async () => {
+    if (verificandoRef.current) return;
+    verificandoRef.current = true;
+    setMfaLoading(true);
+    setMfaError('');
+    const user = await loginConPasskey().catch(() => null).finally(() => { verificandoRef.current = false; });
+    setMfaLoading(false);
+    if (!user) { setMfaError(getMfaError() ?? 'La llave no se pudo verificar. Intenta de nuevo.'); return; }
+    entrar(user);
+  };
+
+  const entrar = async (user: any) => {
+    // La misma regla que sin 2FA: el código correcto no abre el portal
+    // equivocado. Antes este camino se saltaba la revisión y una cuenta de
+    // Empresas con 2FA entraba por Personas.
+    const malPortal = errorDePortal(userRole, user.role);
+    if (malPortal) { await logoutUser('portal equivocado'); setMfaCode(''); setErrorMsg(malPortal); return; }
+    if (config.maintenanceMode && user.role !== 'admin') {
+      await logoutUser('mantenimiento'); setMfaCode(''); setErrorMsg('El sistema se encuentra en mantenimiento. Solo administradores pueden ingresar.'); return;
     }
     onLoginSuccess(user.role as 'business' | 'personal' | 'admin');
   };
@@ -141,37 +243,55 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
             <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-slate-200">
               <ShieldCheck className="text-[#0C0E0D]" size={28} />
             </div>
-            <h2 className="text-2xl font-bold text-[#0C0E0D]">Verificación en 2 pasos</h2>
+            <h2 className="text-2xl font-bold text-[#0C0E0D]">{passkeyPending ? 'Confirma con tu llave' : 'Verificación en 2 pasos'}</h2>
             <p className="text-slate-900 text-sm mt-2 leading-relaxed">
-              Abre tu app autenticadora (Google Authenticator, Authy, etc.) e ingresa el código de 6 dígitos.
+              {passkeyPending
+                ? 'El código de tu app es correcto. Tu cuenta tiene una llave de acceso registrada (huella, Face ID o llave USB): confírmala para entrar.'
+                : 'Abre tu app autenticadora (Google Authenticator, Authy, etc.) e ingresa el código de 6 dígitos.'}
             </p>
           </div>
 
+          {avisoReloj}
           {mfaError && (
             <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm mb-4 text-center font-medium">
               {mfaError}
             </div>
           )}
 
-          <input
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            value={mfaCode}
-            onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
-            className="w-full h-16 text-center text-3xl font-bold tracking-[0.5em] border-2 border-slate-200 rounded-xl focus:border-[#0C0E0D] outline-none mb-6 bg-slate-50"
-            placeholder="000000"
-            autoFocus
-            onKeyDown={(e) => e.key === 'Enter' && handleVerify2FA()}
-          />
+          {passkeyPending ? (
+            <button
+              onClick={handlePasskey}
+              disabled={mfaLoading}
+              className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] text-white font-bold rounded-lg disabled:opacity-50 transition-colors mb-4"
+            >
+              {mfaLoading ? 'Verificando…' : 'Confirmar con mi llave'}
+            </button>
+          ) : (<>
+          {/* Al completar los seis dígitos se verifica solo: tener que tocar
+              "Verificar" con el código ya puesto es un paso de más justo donde
+              la gente ya está esperando. El botón se queda para quien prefiera
+              tocarlo y para reintentar. */}
+          <div className="mb-6">
+            <CodeInput
+              value={mfaCode}
+              onChange={setMfaCode}
+              onComplete={() => { if (!mfaLoading) handleVerify2FA(); }}
+              status={mfaLoading ? 'verifying' : mfaError ? 'error' : 'idle'}
+              tone="light"
+              autoFocus
+              disabled={mfaLoading}
+              aria="Código de verificación en dos pasos"
+            />
+          </div>
 
           <button
             onClick={handleVerify2FA}
             disabled={mfaCode.length !== 6 || mfaLoading}
-            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
+            className="w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg disabled:opacity-50 transition-colors mb-4 shadow-lg shadow-green-900/20"
           >
             {mfaLoading ? 'Verificando...' : 'Verificar'}
           </button>
+          </>)}
 
           <button
             onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(''); }}
@@ -196,12 +316,14 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         Volver al inicio
       </button>
 
-      <div className="mb-8 scale-125 cursor-pointer hover:scale-[1.4] transition-transform duration-300 anim-fade-in" onClick={onBack} title="Volver a la página principal">
-        <Logo collapsed />
+      <div className="mb-8 cursor-pointer anim-fade-in" onClick={onBack} title="Volver a la página principal">
+        <Logo />
       </div>
 
       <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
-        ¡Te damos la bienvenida a LINCOIN{userRole === 'business' ? <><br />empresas!</> : '!'}
+        {userRole === 'business' ? <>¡Te damos la bienvenida a Lincoin<br />empresas!</>
+          : userRole === 'contador' ? <>Contabilidad<br /><span className="text-base font-semibold text-slate-600">Entra con tu cuenta y luego escribe el ID de la empresa</span></>
+          : <>¡Te damos la bienvenida a Lincoin!</>}
       </h1>
 
       {config.maintenanceMode && (
@@ -214,6 +336,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         </div>
       )}
 
+      {avisoReloj}
       {errorMsg && (
         <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm mb-6 w-full max-w-md font-medium text-center">
           {errorMsg}
@@ -261,11 +384,12 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         <button
           onClick={handleLogin}
           disabled={isLoading || (captchaEnabled && !captchaToken)}
-          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#152e52] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
+          className="btn-shine w-full h-12 bg-[#0C0E0D] hover:bg-[#161A17] font-bold rounded-lg transition-all duration-200 shadow-lg shadow-green-900/20 disabled:opacity-70 hover:shadow-xl hover:shadow-green-500/30 hover:-translate-y-0.5 active:scale-[0.98] active:translate-y-0"
         >
           {isLoading ? 'Iniciando sesión...' : 'Iniciar sesión'}
         </button>
 
+        <>
         <div className="flex items-center gap-3">
           <div className="flex-1 h-px bg-slate-200" />
           <span className="text-xs text-slate-800 font-medium">o continúa con</span>
@@ -273,7 +397,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
         </div>
 
         <button
-          onClick={() => loginWithGoogle(userRole !== 'admin' ? userRole : 'business')}
+          onClick={() => loginWithGoogle(userRole === 'personal' ? 'personal' : userRole === 'contador' ? 'contador' : 'business')}
           type="button"
           disabled={captchaEnabled && !captchaToken}
           title={captchaEnabled && !captchaToken ? 'Espera la verificación anti-bot' : undefined}
@@ -287,10 +411,11 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           </svg>
           Continuar con Google
         </button>
+        </>
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
-            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">Regístrate</button>
+            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">{userRole === 'contador' ? 'Crea tu cuenta de contador' : 'Regístrate'}</button>
           </div>
           <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0C0E0D] transition-colors">
             Recuperar contraseña
@@ -324,7 +449,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
                     placeholder="tu@email.com"
                   />
                 </div>
-                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#152e52] transition-colors">
+                <button onClick={handleForgotPassword} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] transition-colors">
                   Enviar Instrucciones
                 </button>
               </>

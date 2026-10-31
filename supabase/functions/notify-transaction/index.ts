@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { exigirWebhook, esLlamadaInterna, cabecerasInternas } from '../_shared/webhook-auth.ts'
 
 const RESEND_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -25,6 +26,13 @@ async function loadFooterNote(): Promise<void> {
 const escNote = (s: string) => s
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\n/g, '<br/>')
+// Todo dato que entra a un correo (nombre, beneficiario, banco, cuenta…) se
+// escapa: varios los escribe el propio cliente (su nombre, el de su
+// beneficiario). Sin escapar, un nombre con HTML viajaba como enlace o
+// formulario dentro de un correo legítimo de no-reply@lincoin.me.
+const esc = (v: unknown) => String(v ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 const footerNoteHtml = () => FOOTER_NOTE.trim()
   ? `<div style="margin:24px 0 0 0;padding:14px 16px;background-color:#F8FAFC;border:1px solid #e2e8f0;border-radius:10px">
       <p style="margin:0;font-size:11px;color:#64748b;line-height:1.7">${escNote(FOOTER_NOTE.trim())}</p>
@@ -118,14 +126,14 @@ function buildSubjectCompleted(tx: TxRecord): string {
 }
 
 function buildMessageCompleted(tx: TxRecord, name: string): string {
-  const greet = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>,`
+  const greet = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>,`
   const ov = (TPL[`${tplKeyOf(tx.type)}_done`] ?? {}) as any
   if (ov.message) return escNote(applyVars(String(ov.message), { nombre: name, monto: fmt(tx.amount, tx.currency) }))
   if (tx.type === 'send' || tx.type === 'otc_withdraw')
     return `${greet} tu retiro se <strong>completó</strong> y el dinero ya fue enviado al destino.`
   if (tx.type === 'dispersion') {
     const ben = tx.raw_data?.beneficiary
-    return `${greet} tu envío${ben ? ` a <strong>${ben}</strong>` : ''} llegó a destino. El banco confirmó la acreditación.`
+    return `${greet} tu envío${ben ? ` a <strong>${esc(ben)}</strong>` : ''} llegó a destino. El banco confirmó la acreditación.`
   }
   if (tx.type === 'load' || tx.type === 'otc_deposit')
     return `${greet} tu depósito fue <strong>acreditado</strong> a tu saldo.`
@@ -167,7 +175,7 @@ function txStatusText(type: string): string {
 function buildMessage(tx: TxRecord, name: string): string {
   const from = tx.raw_data?.senderName || 'un usuario Lincoin'
   const to   = tx.raw_data?.recipientName || 'un usuario Lincoin'
-  const greet = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>,`
+  const greet = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>,`
 
   // Override editable desde el panel (Soporte → Formato de correos)
   const ov = (TPL[tplKeyOf(tx.type)] ?? {}) as any
@@ -178,38 +186,39 @@ function buildMessage(tx: TxRecord, name: string): string {
   }
 
   if (tx.type === 'pay_received')
-    return `${greet} <strong>${from}</strong> te envió dinero. El monto ya está disponible en tu saldo.`
+    return `${greet} <strong>${esc(from)}</strong> te envió dinero. El monto ya está disponible en tu saldo.`
   if (tx.type === 'pay_sent')
-    return `${greet} tu transferencia a <strong>${to}</strong> fue procesada exitosamente.`
+    return `${greet} tu transferencia a <strong>${esc(to)}</strong> fue procesada exitosamente.`
   if (tx.type === 'load')
     return `${greet} recibimos tu solicitud de depósito y la estamos <strong>revisando</strong>. Te avisamos cuando se acredite.`
   if (tx.type === 'send')
     return `${greet} estamos <strong>procesando</strong> tu solicitud de retiro. Te avisamos cuando se complete.`
   if (tx.type === 'dispersion') {
     const ben = tx.raw_data?.beneficiary
-    return `${greet} estamos <strong>procesando</strong> tu envío${ben ? ` a <strong>${ben}</strong>` : ''}. Te avisamos apenas el banco confirme la acreditación.`
+    return `${greet} estamos <strong>procesando</strong> tu envío${ben ? ` a <strong>${esc(ben)}</strong>` : ''}. Te avisamos apenas el banco confirme la acreditación.`
   }
   if (tx.type === 'otc_deposit') {
     const net = networkLabel(tx.currency, tx.raw_data)
-    return `${greet} detectamos tu depósito en la red <strong>${net}</strong> y se acreditó automáticamente en tu wallet OTC.`
+    return `${greet} detectamos tu depósito en la red <strong>${esc(net)}</strong> y se acreditó automáticamente en tu wallet OTC.`
   }
   if (tx.type === 'otc_withdraw') {
     const net = networkLabel(tx.currency, tx.raw_data)
-    const addr = tx.raw_data?.toAddress ?? tx.raw_data?.address ?? ''
-    return `${greet} tu retiro en la red <strong>${net}</strong> fue enviado a la blockchain.${addr ? ` Dirección: <code style="font-size:11px">${addr.slice(0,12)}…${addr.slice(-8)}</code>` : ''}`
+    const addr = String(tx.raw_data?.toAddress ?? tx.raw_data?.address ?? '')
+    return `${greet} tu retiro en la red <strong>${esc(net)}</strong> fue enviado a la blockchain.${addr ? ` Dirección: <code style="font-size:11px">${esc(addr.slice(0,12))}…${esc(addr.slice(-8))}</code>` : ''}`
   }
   if (tx.type === 'convert' || tx.type === 'tx_created') {
     const dest = tx.raw_data?.destCurrency ?? tx.raw_data?.to_currency
-    if (dest) return `${greet} tu conversión a <strong>${dest}</strong> se completó. Ya está reflejada en tu saldo.`
+    if (dest) return `${greet} tu conversión a <strong>${esc(dest)}</strong> se completó. Ya está reflejada en tu saldo.`
     return `${greet} recibimos tu operación y ya está confirmada.`
   }
   return `${greet} registramos un movimiento en tu cuenta.`
 }
 
+// Etiqueta y valor van como TEXTO: se escapan acá, para todas las filas.
 function detailRow(label: string, value: string): string {
   return `<tr>
-    <td style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;padding:10px 0 0 0;vertical-align:top;width:40%">${label}</td>
-    <td style="font-size:14px;font-weight:600;color:${BRAND_NAVY};padding:10px 0 0 0;vertical-align:top">${value}</td>
+    <td style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;padding:10px 0 0 0;vertical-align:top;width:40%">${esc(label)}</td>
+    <td style="font-size:14px;font-weight:600;color:${BRAND_NAVY};padding:10px 0 0 0;vertical-align:top">${esc(value)}</td>
   </tr>`
 }
 
@@ -222,7 +231,7 @@ function buildDetailRows(tx: TxRecord, completed = false): string {
 
   if (tx.type === 'otc_deposit' || tx.type === 'otc_withdraw') {
     rows.push(detailRow('Red', networkLabel(tx.currency, tx.raw_data)))
-    const txId = tx.raw_data?.txId
+    const txId = tx.raw_data?.txId ? String(tx.raw_data.txId) : ''
     if (txId) rows.push(detailRow('TxID', `${txId.slice(0, 14)}…${txId.slice(-8)}`))
   }
 
@@ -286,10 +295,12 @@ const LOGO_SVG_DATAURI = `data:image/svg+xml;base64,${btoa(`
   <circle cx="68" cy="67" r="12" fill="${BRAND_TEAL}"/>
 </svg>`.trim())}`
 
-function htmlEmail(tx: TxRecord, name: string, subject: string, completed = false): string {
+function htmlEmail(tx: TxRecord, name: string, subject: string, completed = false, extraRows = ''): string {
   const label   = completed ? 'Operación completada' : txTypeLabel(tx.type)
   const message = completed ? buildMessageCompleted(tx, name) : buildMessage(tx, name)
-  const details = buildDetailRows(tx, completed)
+  // extraRows: filas que no salen de la operación sino de lo que se hizo con
+  // ella — hoy, el número del comprobante emitido.
+  const details = buildDetailRows(tx, completed) + extraRows
   const amount  = fmt(tx.amount, tx.currency)
 
   return `<!DOCTYPE html>
@@ -299,7 +310,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <meta name="color-scheme" content="light only">
 <meta name="supported-color-schemes" content="light only">
-<title>${subject}</title>
+<title>${esc(subject)}</title>
 </head>
 <body style="margin:0;padding:0;background-color:${BRAND_LIGHT};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 
@@ -324,7 +335,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 
         <!-- Tipo + monto hero -->
         <p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:${ACCENT};text-transform:uppercase;letter-spacing:1.5px">${label}</p>
-        <p style="margin:0 0 8px 0;font-size:42px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-1.8px;line-height:1">${amount}</p>
+        <p style="margin:0 0 8px 0;font-size:42px;font-weight:800;color:${BRAND_NAVY};letter-spacing:-1.8px;line-height:1">${esc(amount)}</p>
 
         <!-- Divider -->
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0">
@@ -402,7 +413,7 @@ function htmlEmail(tx: TxRecord, name: string, subject: string, completed = fals
 function customHtmlEmail(title: string, message: string, subject: string): string {
   return `<!DOCTYPE html><html lang="es"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta name="color-scheme" content="light only"><title>${subject}</title></head>
+<meta name="color-scheme" content="light only"><title>${esc(subject)}</title></head>
 <body style="margin:0;padding:0;background-color:${BRAND_LIGHT};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${BRAND_LIGHT}"><tr><td align="center" style="padding:40px 16px 48px">
   <table width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;width:100%;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08)">
@@ -427,6 +438,11 @@ function customHtmlEmail(title: string, message: string, subject: string): strin
 
 Deno.serve(async (req) => {
   try {
+    // Quién llama. Sin credencial no se manda ningún correo: la URL
+    // viaja en el bundle del navegador, así que conocerla no puede
+    // alcanzar para que Lincoin le escriba a un cliente.
+    { const no = await exigirWebhook(req, 'notify-transaction', db); if (no) return no }
+
     if (!RESEND_KEY) {
       console.error('[notify] RESEND_API_KEY secret not set — emails disabled')
       return new Response('no_key', { status: 200 })
@@ -441,8 +457,7 @@ Deno.serve(async (req) => {
     //    remitente decide el destinatario leyéndolo de la base, no del body
     //    del cliente. ────────────────────────────────────────────────────
     if (payload.type === 'CUSTOM_EMAIL') {
-      const auth = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
-      if (!SERVICE_KEY || auth !== SERVICE_KEY) return new Response('forbidden', { status: 403 })
+      if (!(await esLlamadaInterna(req, db))) return new Response('forbidden', { status: 403 })
       const to = String(payload.to ?? '')
       if (!to) return new Response('no_to', { status: 200 })
       await loadFooterNote()
@@ -481,15 +496,36 @@ Deno.serve(async (req) => {
     const completed = String(tx.status) === 'Completado'
     const dedupFlag = failed ? 'notified_failed' : completed ? 'notified_completed' : 'notified'
 
-    // Atomic deduplication (por flag).
-    const { data: claimed } = await db
-      .from('transactions')
-      .update({ raw_data: { ...(tx.raw_data ?? {}), [dedupFlag]: true } })
-      .eq('id', tx.id)
-      .filter(`raw_data->>${dedupFlag}`, 'is', null)
-      .select('id')
+    // Deduplicación atómica por flag. NUNCA se escribe raw_data entero desde
+    // `payload.record`: es la fila como era cuando disparó el trigger, y
+    // pisaba lo que mouv-proxy había escrito después (providerRef, refunded,
+    // reversado, notified_completed…). Se marca solo el flag, en SQL.
+    let claimed: boolean
+    const { data: marcado, error: errMarca } = await db.rpc('tx_marcar_flag', { p_tx: tx.id, p_flag: dedupFlag })
+    if (!errMarca) {
+      claimed = marcado === true
+    } else {
+      // Sin la función todavía (falta correr 2026_tx_marcar_flag.sql): se
+      // lee la fila ACTUAL —no la del trigger— y se marca sobre esa.
+      const { data: actual } = await db.from('transactions').select('raw_data').eq('id', tx.id).maybeSingle()
+      const raw = (actual?.raw_data ?? {}) as Record<string, unknown>
+      if (raw[dedupFlag]) claimed = false
+      else {
+        const { data: upd, error: errUpd } = await db.from('transactions')
+          .update({ raw_data: { ...raw, [dedupFlag]: true } })
+          .eq('id', tx.id).filter(`raw_data->>${dedupFlag}`, 'is', null).select('id')
+        // Si la marca NO se pudo escribir por un error (no porque ya estuviera),
+        // se sigue igual: antes eso se tomaba como "repetido" y la operación
+        // se quedaba sin comprobante, sin factura y sin correo, en silencio.
+        // Un correo de más es mejor que ninguno; el comprobante es único por
+        // operación y la factura tiene su propio candado.
+        if (errUpd) console.error('[notify] no se pudo marcar', dedupFlag, 'tx', tx.id, errUpd.message)
+        claimed = errUpd ? true : !!upd?.length
+      }
+      if (errMarca) console.warn('[notify] tx_marcar_flag no disponible:', errMarca.message)
+    }
 
-    if (!claimed || claimed.length === 0) {
+    if (!claimed) {
       console.log('[notify] duplicate — tx', tx.id, `already ${dedupFlag}, skipping`)
       return new Response('duplicate', { status: 200 })
     }
@@ -502,6 +538,29 @@ Deno.serve(async (req) => {
 
     if (userErr) console.error('[notify] user lookup error:', userErr.message)
     console.log('[notify] user found:', user?.email ?? 'none')
+
+    // ── COMPROBANTE AUTOMÁTICO ──
+    // Apenas la operación está Completada se emite el comprobante, con número
+    // consecutivo, y su número va en el correo. Se emite ANTES de mirar si el
+    // cliente apagó los correos: el comprobante es un documento contable,
+    // existe aunque el correo no salga. Y se emite ANTES de mandar el correo
+    // para poder ponerle el número.
+    //
+    // Si la tabla no existe todavía (falta correr 2026_comprobantes.sql) se
+    // anota en el log y el correo sale igual: un comprobante que no se pudo
+    // numerar no es motivo para no avisar que la plata llegó.
+    let comprobante: { numero: string; folio: number } | null = null
+    if (completed && !failed) comprobante = await emitirComprobante(tx, user?.email ?? null)
+
+    // LA FACTURA SALE SIEMPRE que haya comprobante, pase lo que pase con el
+    // correo. Antes se pedía DESPUÉS de mandarlo: si Resend fallaba, la
+    // función salía con error y la factura no se pedía nunca. Va en segundo
+    // plano para no demorar el correo, y de paso pone al día las facturas
+    // atrasadas de la misma cuenta.
+    if (comprobante) await enSegundoPlano(facturarYPonerseAlDia(comprobante.folio, tx.user_id))
+    // La factura de LINCOIN al cliente (cargues y conversiones). Es aparte de
+    // la del Siigo del cliente: facturacion decide si aplica y la emite.
+    if (completed && !failed && (tx.type === 'load' || tx.type === 'convert')) await enSegundoPlano(facturarLincoin(tx.id))
 
     if (!user?.email) return new Response('no_email', { status: 200 })
 
@@ -536,14 +595,16 @@ Deno.serve(async (req) => {
       const noun = isSend ? 'envío' : 'operación'
       const ben = tx.raw_data?.beneficiary
       subject = `Lincoin · No pudimos completar tu ${noun} de ${a}`
-      const msg = `Hola <strong style="color:${BRAND_NAVY}">${name}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${ben}</strong>` : ''} por <strong>${a}</strong>. <strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos. Si el problema persiste, escríbenos.`
+      const msg = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${esc(ben)}</strong>` : ''} por <strong>${esc(a)}</strong>. <strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos. Si el problema persiste, escríbenos.`
       html = customHtmlEmail(`No pudimos completar tu ${noun}`, msg, subject)
     } else {
       subject = completed ? buildSubjectCompleted(tx) : buildSubject(tx)
       const tplLookupKey = completed ? `${tplKeyOf(tx.type)}_done` : tplKeyOf(tx.type)
       const ovSubject = (TPL[tplLookupKey] as any)?.subject
       if (ovSubject) subject = applyVars(String(ovSubject), { nombre: name, monto: fmt(tx.amount, tx.currency) })
-      html = htmlEmail(tx, name, subject, completed)
+      const filaComprobante = comprobante ? detailRow('Comprobante', comprobante.numero) : ''
+      html = htmlEmail(tx, name, subject, completed, filaComprobante)
+      if (comprobante) subject = `${subject} · ${comprobante.numero}`
     }
 
     const emailPayload = {
@@ -570,9 +631,128 @@ Deno.serve(async (req) => {
     }
 
     console.log('[notify] email sent OK:', resBody)
+    // Recién ahora, con Resend aceptando, el comprobante queda como enviado.
+    if (comprobante) {
+      await db.from('comprobantes')
+        .update({ enviado_at: new Date().toISOString(), correo: user.email })
+        .eq('folio', comprobante.folio)
+        .then(({ error }) => { if (error) console.error('[notify] comprobante enviado_at:', error.message) })
+    }
     return new Response('sent', { status: 200 })
   } catch (e) {
     console.error('[notify] exception:', e)
     return new Response('error', { status: 500 })
   }
 })
+
+// ── Factura automática ────────────────────────────────────────────
+// Se le pide a la función `facturacion` que emita la factura de este
+// comprobante en el Siigo del cliente. ELLA decide si aplica (si el cliente
+// la activó y si este tipo de operación se factura) y guarda el resultado en
+// el comprobante. Acá solo se avisa; si falla, se anota y el correo ya salió.
+async function facturar(folio: number): Promise<void> {
+  try {
+    const ctrl = new AbortController()
+    // Emitir puede tardar: consulta al RUES/antecedentes por la ciudad del
+    // tercero, crea el tercero y el documento en Siigo (hasta 70 s). Cortar
+    // antes dejaba la emisión automática a medias.
+    const reloj = setTimeout(() => ctrl.abort(), 120000)
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: await cabecerasInternas(db),
+      body: JSON.stringify({ action: 'emitir', folio }),
+      signal: ctrl.signal,
+    })
+    clearTimeout(reloj)
+    const t = await r.text().catch(() => '')
+    console.log('[notify] facturacion', folio, r.status, t.slice(0, 300))
+  } catch (e) {
+    console.error('[notify] facturacion no respondió:', (e as Error)?.message)
+  }
+}
+
+// Corre una tarea DESPUÉS de responder (EdgeRuntime.waitUntil). Si el runtime
+// no lo ofrece, se espera acá: mejor un correo un poco más lento que una
+// factura que no se pidió.
+async function enSegundoPlano(p: Promise<unknown>): Promise<void> {
+  const rt = (globalThis as any).EdgeRuntime
+  const seguro = p.catch(e => console.error('[notify] tarea en segundo plano:', (e as Error)?.message))
+  if (rt && typeof rt.waitUntil === 'function') { rt.waitUntil(seguro); return }
+  await seguro
+}
+
+async function facturarLincoin(txId: string | number): Promise<void> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: await cabecerasInternas(db),
+      body: JSON.stringify({ action: 'lincoin_auto', transactionId: String(txId) }),
+      signal: AbortSignal.timeout(30000),
+    })
+    console.log('[notify] factura lincoin', txId, r.status, (await r.text().catch(() => '')).slice(0, 200))
+  } catch (e) {
+    console.error('[notify] factura lincoin no respondió:', (e as Error)?.message)
+  }
+}
+
+async function facturarYPonerseAlDia(folio: number, userId: string): Promise<void> {
+  await facturar(folio)
+  // Las que quedaron atrasadas de esta misma cuenta (comprobantes sin
+  // emitir, operaciones sin comprobante): las retoma facturacion.
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+      method: 'POST',
+      headers: await cabecerasInternas(db),
+      body: JSON.stringify({ action: 'ponerse_al_dia', userId }),
+      signal: AbortSignal.timeout(130000),
+    })
+    console.log('[notify] facturacion ponerse_al_dia', userId, r.status, (await r.text().catch(() => '')).slice(0, 300))
+  } catch (e) {
+    console.error('[notify] ponerse_al_dia no respondió:', (e as Error)?.message)
+  }
+}
+
+// ── Emisión del comprobante ───────────────────────────────────────
+// Un INSERT con la operación como UNIQUE: si el webhook llega repetido, el
+// segundo intento choca con la restricción y se devuelve el que ya existía.
+// El número lo pone la base (folio bigserial → numero generado): nunca se
+// arma acá, para que no haya dos comprobantes con el mismo número.
+const contraparteDe = (tx: TxRecord): string | null => {
+  const rd = tx.raw_data ?? {}
+  if (tx.type === 'dispersion' || tx.type === 'send') return rd.beneficiary ?? rd.bank ?? null
+  if (tx.type === 'pay_received') return rd.senderName ?? null
+  if (tx.type === 'pay_sent') return rd.recipientName ?? null
+  if (tx.type === 'convert' || tx.type === 'tx_created') return `${tx.currency} → ${rd.targetCurrency ?? '?'}`
+  if (tx.type === 'load') return rd.method ?? rd.bank ?? null
+  if (tx.type === 'otc_deposit' || tx.type === 'otc_withdraw') return networkLabel(tx.currency, rd)
+  return null
+}
+async function emitirComprobante(tx: TxRecord, correo: string | null): Promise<{ numero: string; folio: number } | null> {
+  const fila = {
+    transaction_id: tx.id,
+    user_id: tx.user_id,
+    tipo: tx.type,
+    monto: String(tx.amount),
+    moneda: tx.currency,
+    contraparte: contraparteDe(tx),
+    estado_al_emitir: tx.status,
+    correo,
+    detalle: { id: tx.id, type: tx.type, amount: tx.amount, currency: tx.currency, status: tx.status, raw_data: tx.raw_data ?? {} },
+  }
+  const { data, error } = await db.from('comprobantes').insert(fila).select('numero, folio').single()
+  if (!error && data) {
+    console.log('[notify] comprobante emitido', (data as any).numero, 'tx', tx.id)
+    return { numero: String((data as any).numero), folio: Number((data as any).folio) }
+  }
+  // 23505 = ya existe uno para esta operación: se devuelve ese.
+  if (error?.code === '23505') {
+    const { data: ya } = await db.from('comprobantes').select('numero, folio').eq('transaction_id', tx.id).maybeSingle()
+    if (ya) return { numero: String((ya as any).numero), folio: Number((ya as any).folio) }
+  }
+  if (/relation .*comprobantes.* does not exist|42P01/i.test(`${error?.code ?? ''} ${error?.message ?? ''}`)) {
+    console.warn('[notify] falta correr 2026_comprobantes.sql: la operación se completó y el correo sale, pero sin comprobante numerado.')
+  } else {
+    console.error('[notify] no se pudo emitir el comprobante:', error?.message)
+  }
+  return null
+}

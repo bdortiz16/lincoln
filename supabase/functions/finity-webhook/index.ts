@@ -106,7 +106,15 @@ Deno.serve(async (req) => {
       req.headers.get('signature'),
     ].filter((v): v is string => !!v).map(v => v.trim().replace(/^sha256=/i, ''))
     const { hex, b64 } = await hmacOf(rawBody, SECRET)
-    const okAuth = candidates.some(v => v === SECRET || v.toLowerCase() === hex || v === b64)
+    // En tiempo constante: con === la demora delataba cuánto del secreto
+    // coincidía.
+    const igual = (a: string, b: string) => {
+      const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b)
+      let d = x.length ^ y.length
+      for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+      return d === 0
+    }
+    const okAuth = candidates.some(v => igual(v, SECRET) || igual(v.toLowerCase(), hex) || igual(v, b64))
     if (!okAuth) return json(401, { error: 'unauthorized' })
   }
 
@@ -136,65 +144,31 @@ Deno.serve(async (req) => {
   const status  = (dig(payload, ['status', 'state', 'event_type', 'event']) ?? '').toUpperCase()
   if (!orderId || !status) return json(200, { ok: true, matched: false })
 
-  const isDone   = /COMPLETED|SUCCESS|PAID|SETTLED/.test(status)
-  const isFailed = /FAILED|REJECT|CANCEL|RETURNED|ERROR/.test(status)
-  if (!isDone && !isFailed) return json(200, { ok: true, matched: false, note: `estado ${status} sin acción` })
-
-  // Buscar la transacción de dispersión con ese providerRef.
-  const { data: rows } = await db
-    .from('transactions')
-    .select('id, user_id, amount, currency, status, raw_data')
-    .eq('type', 'dispersion')
-    .filter('raw_data->>providerRef', 'eq', orderId)
-    .limit(2)
-  const tx = (rows ?? [])[0] as any
-  if (!tx) return json(200, { ok: true, matched: false, orderId, status })
-
-  const rd = (tx.raw_data ?? {}) as Record<string, any>
-
-  if (isDone) {
-    // NO marcar Completado si ya se reembolsó/rechazó (Finity puede mandar un
-    // FAILED transitorio y luego un COMPLETED — sin este guardia el cliente
-    // se quedaba con el reembolso Y el pago).
-    if (tx.status === 'Rechazado' || rd.refunded) {
-      return json(200, { ok: true, matched: true, result: 'already_refunded_ignored' })
-    }
-    if (tx.status !== 'Completado') {
-      await db.from('transactions').update({
-        status: 'Completado',
-        raw_data: { ...rd, webhookStatus: status, webhookAt: new Date().toISOString() },
-      }).eq('id', tx.id).neq('status', 'Rechazado')
-      await audit('finity.webhook.withdrawal.completed', { txId: tx.id, orderId, status })
-    }
-    return json(200, { ok: true, matched: true, result: 'completed' })
+  // EL AVISO NO DECIDE NADA. Antes este webhook reembolsaba por su cuenta, sin
+  // las protecciones de la conciliación: no miraba la firma del servidor, tomaba
+  // cualquiera de dos filas con la misma referencia, ignoraba si el crédito
+  // fallaba (la fila quedaba "reembolsada" sin plata) y su respaldo podía
+  // escribir el saldo de una sola moneda borrando las demás. Y clasificaba con
+  // regex que leían UNSUCCESSFUL como éxito.
+  //
+  // Ahora le pide a mouv-proxy que concilie ESA referencia: allá se le vuelve a
+  // preguntar a Finity el estado y se aplica la misma regla que usa el
+  // vigilante — un solo camino para mover la plata.
+  let r: Response
+  try {
+    r = await fetch(`${SUPABASE_URL}/functions/v1/mouv-proxy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'vigilar_finity', ref: orderId }),
+      signal: AbortSignal.timeout(60000),
+    })
+  } catch (e) {
+    await audit('finity.webhook.conciliar_fallo', { orderId, status, error: String((e as Error)?.message ?? e).slice(0, 200) })
+    // 5xx: que Finity reintente el aviso. El vigilante también lo atrapa.
+    return json(502, { ok: false, orderId, error: 'conciliacion_no_disponible' })
   }
-
-  // FALLÓ: reembolso IDEMPOTENTE de monto + comisión al riel del cliente.
-  if (tx.status === 'Rechazado' || rd.refunded) {
-    return json(200, { ok: true, matched: true, result: 'already_refunded' })
-  }
-  // CAS: reclamar el reembolso ANTES de tocar el saldo. El update solo afecta
-  // filas que aún NO están Rechazadas; si otra ejecución (reconcile_ach o un
-  // segundo webhook) ya reclamó, updRows viene vacío y NO se acredita de
-  // nuevo. Sin esto, webhook + reconcile reembolsaban dos veces.
-  const railCol = String(tx.currency ?? 'COP_ACH')
-  const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? rd.feeDetail?.feeCop ?? 0)
-  const { data: claimed } = await db.from('transactions').update({
-    status: 'Rechazado',
-    raw_data: { ...rd, refunded: true, refundCop: refund, webhookStatus: status, webhookAt: new Date().toISOString() },
-  }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
-  if (!claimed?.length) {
-    return json(200, { ok: true, matched: true, result: 'refund_already_claimed' })
-  }
-  // Reintegro ATÓMICO (bloqueo de fila) — evita la carrera de duplicación con
-  // un payout concurrente (pentest #3). Fallback a read-write si la RPC falta.
-  const { error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [railCol]: refund } })
-  if (adjErr) {
-    const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
-    const bals: Record<string, number> = (u?.balances as any) ?? {}
-    const newBal = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
-    await db.from('users').update({ balances: { ...bals, [railCol]: newBal } }).eq('id', tx.user_id)
-  }
-  await audit('finity.webhook.withdrawal.failed_refunded', { txId: tx.id, orderId, status, refund })
-  return json(200, { ok: true, matched: true, result: 'refunded', refund })
+  const out = await r.json().catch(() => null) as any
+  await audit('finity.webhook.conciliado', { orderId, status, httpStatus: r.status, results: out?.results ?? null })
+  if (!r.ok) return json(502, { ok: false, orderId, error: 'conciliacion_fallo' })
+  return json(200, { ok: true, matched: Number(out?.revisadas ?? 0) > 0, orderId, results: out?.results ?? [] })
 })

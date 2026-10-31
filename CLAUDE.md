@@ -1,4 +1,10 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Lincoin — instrucciones del proyecto
+
+Las secciones de marca (logo, paleta, tipografía, producto) van primero y son obligatorias. La parte técnica está al final, en **Desarrollo**.
 
 ## LOGO — NO REDISEÑAR
 
@@ -82,3 +88,52 @@ Una cuenta digital para **recibir, cambiar y enviar USDC y EURC** (dólares y eu
 - **No somos banco** y **no tenemos licencia MiCA ni registro regulatorio.** Nunca afirmar que estamos regulados, licenciados o auditados por un regulador.
 - La confianza se comunica vía **aliados de infraestructura**: Circle (emisor de USDC/EURC, atestaciones 1:1), Fireblocks (custodia), Sumsub (KYC), SEPA/SWIFT.
 - La marca se llama **Lincoin** — nunca Cuy Pay, Alza ni otra.
+
+## Desarrollo
+
+### Comandos
+```bash
+npm install
+npm run dev        # Vite en http://localhost:3000
+npm run build      # build de producción a ./dist (lo mismo que corre Cloudflare)
+npx tsc            # verificación de tipos (tsconfig ya trae noEmit)
+```
+No hay suite de tests ni linter configurados. Para verificar un cambio, compila con `npm run build` y míralo en el navegador.
+
+Variables locales en `.env` (ver `.env.example`): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, opcionales `VITE_SUPABASE_PERSONAS_URL/_ANON_KEY` (si faltan se usa el mismo proyecto), `VITE_TURNSTILE_SITE_KEY`. Todo lo que lleve prefijo `VITE_` queda en el bundle público: **nunca** metas ahí una llave de servidor ni una contraseña. Los secretos de servidor van en los secrets de Supabase Edge Functions.
+
+### Stack y despliegue
+- **Frontend**: React 19 + Vite 6 + TypeScript + Tailwind 3. Sin carpeta `src/`: `index.tsx`, `App.tsx`, `components/`, `context/`, `lib/` están en la raíz. Alias `@/` = raíz.
+- **Backend**: Supabase (Postgres + Auth + Edge Functions en Deno). Proyecto Lincoin: `wqleypebmfiaygrurnrc`.
+- **Hosting**: Cloudflare Workers con assets estáticos (`wrangler.jsonc`, worker `lincoln`), dominio `lincoin.me`. `vercel.json` sigue existiendo para la copia en Vercel; si cambias rewrites/webhooks, cambia **los dos**. Las variables `VITE_*` en Cloudflare solo entran tras recompilar. El archivo `.deploy` se toca para forzar un rebuild sin cambios de código.
+- **Ramas**: se trabaja en `develop`; la rama principal es `claude/busy-fermi-h8to5p`.
+
+### Ruteo de la app (`index.tsx` → `App.tsx`)
+Tres apps aisladas en el mismo bundle, decididas por `window.location.pathname` antes de montar providers:
+- `/admin-personas` → `components/AdminPersonas/PersonasAdminApp` (sin providers de Empresas; usa `supabasePersonas`).
+- `/admin-empresas` o `/admin` → `AdminEmpresasApp` → `AdminDashboard` (login propio). Se chequea **después** de personas porque `/admin-personas` también empieza por `/admin`.
+- Todo lo demás → `ThemeProvider > SystemConfigProvider > DatabaseProvider > ExchangeRateProvider > App`. `App.tsx` maneja vistas por estado (`currentView`) sincronizadas con la URL vía `RUTAS_APP` / `history.pushState`: landing, login/registro, `PersonalDashboard` (empresas, el archivo más grande), `PersonaDashboard`, `ContadorDashboard`.
+
+Los paneles admin se cargan con `lazyNamed` (`lib/lazyRetry.ts`) para que un cliente no los descargue. `vite.config.ts` separa vendors en chunks fijos (react, supabase, mapa d3, iconos) a propósito.
+
+Estado global del cliente en `context/DatabaseContext.tsx` (`currentUser`, transacciones, auth, actualizaciones optimistas de saldo).
+
+### Edge functions (`supabase/functions/`)
+- El frontend las llama con `llamarFuncion()` de `lib/edge.ts`, que manda el **token de sesión** del usuario (no solo la anon key). No copies otro fetch a mano: sin el token el servidor no sabe quién llama.
+- Todas corren con `verify_jwt = false` y **cada función hace su propia autenticación**. Las acciones de admin deben exigir el 2FA de la sesión con `requireMfaSession` de `_shared/admin-auth.ts`, igual que `admin-data`.
+- Código común en `_shared/`: `candado.ts` (candado atómico contra envíos duplicados vía tabla `envio_candados`), `webhook-auth.ts`, `field-crypto.ts`, `cupos.ts`, etc.
+- **Despliegue**: `.github/workflows/deploy-edge-functions.yml` corre en push a `main` y `claude/busy-fermi-h8to5p`, y despliega **solo las funciones listadas en `FUNCTIONS`**. Una función nueva que no se agregue ahí no se despliega (el panel recibe 404). A mano: `npx supabase functions deploy <nombre> --project-ref wqleypebmfiaygrurnrc --no-verify-jwt`.
+- **Webhooks de socios** entran por `lincoin.me/webhooks/<socio>`, nunca por la URL cruda de Supabase. Cada uno es una entrada explícita en `cloudflare/worker.js` (`WEBHOOKS`) y en `vercel.json` (antes del catch-all). Nunca un comodín. Detalle en `WEBHOOKS.md`.
+- Jobs programados vía GitHub Actions contra la service_role: `conciliar-breb.yml` (cada 5 min, `mouv-proxy` `reconcile_breb`) y `facturas-al-dia.yml`. No imprimen el cuerpo de las respuestas en el log (trae datos de clientes).
+
+### Base de datos (`supabase/migrations/`)
+- Las migraciones se llaman `2026_<tema>.sql` (no con timestamp), y las nuevas se ordenan con prefijo `2026_zzN_…`. Se escriben **idempotentes** (`IF NOT EXISTS`, `CREATE OR REPLACE`, `ON CONFLICT DO NOTHING`) porque se pegan en el SQL Editor de Supabase.
+- `supabase/_lincoln_full_schema.sql` es el esquema completo consolidado para levantar un proyecto desde cero. Para validarlo en un Postgres local: `psql -f supabase/_local_validation_prelude.sql && psql -f supabase/_lincoln_full_schema.sql` (el prelude **no** se corre en Supabase).
+- RLS en todo; las RPC sensibles de admin son solo para `service_role` y se llaman desde `admin-data`, no desde el navegador. Config privada en la tabla `private_config` (sin acceso para `anon`/`authenticated`).
+
+### Herencia de CuyPay
+El repo nació del código de CuyPay (`LINCOLN_MIGRATION.md`): quedan nombres como `cuypay_id`, `cuypay_notify_tx`, `"name": "cuypay"` en `package.json` e integraciones de USDT/GasFree (TRON), OTC, Finity, Mouv, Gowd (PIX), Kumplo (AML, ver `KUMPLO_INTEGRACION.md`), Tusdatos y Siigo (facturación). Los identificadores internos se pueden quedar; lo que ve el usuario (UI, copy, correos) debe decir **Lincoin** y respetar las reglas de producto de arriba.
+
+### Convenciones
+- Código, comentarios, commits y UI en **español**. Los comentarios explican el *porqué* (el incidente o el riesgo que motivó el código); mantén ese estilo y no borres esas explicaciones al refactorizar.
+- Mensajes de commit: título descriptivo en español y cuerpo que explica qué cambia y por qué.

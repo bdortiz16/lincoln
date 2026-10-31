@@ -34,9 +34,20 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { cabecerasInternas } from '../_shared/webhook-auth.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+
+// Comparación de secretos en tiempo constante: con === el tiempo de respuesta
+// delataba cuántos caracteres del inicio coincidían.
+function igualSeguro(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(String(a ?? '')), y = new TextEncoder().encode(String(b ?? ''))
+  let d = x.length ^ y.length
+  for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
 // trim(): al pegar credenciales desde WhatsApp/correo se cuelan espacios
 // o saltos de línea — y Finity rechaza el valor con basura invisible.
 const FINITY_ID      = (Deno.env.get('FINITY_CLIENT_ID') ?? '').trim()
@@ -69,11 +80,19 @@ const CORS = {
 }
 
 // Crédito/reintegro ATÓMICO (bloqueo de fila vía adjust_balances) — evita la
-// carrera de duplicación en reconcile (pentest #3). Fallback a read-write.
+// carrera de duplicación en reconcile (pentest #3). El respaldo manual (leer y
+// escribir) es SOLO para una base sin la RPC: ante cualquier otro error la
+// respuesta pudo haberse perdido con el ajuste ya hecho, y repetirlo a mano
+// acreditaría dos veces (o, si la lectura falla, pisaría todos los saldos).
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
-  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
-  if (!error) return
-  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
+  const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error && !(adj as any)?.error) return
+  if (!error) throw new Error(`Ajuste de saldo rechazado: ${(adj as any)?.error}`)
+  if (!/42883|PGRST202|could not find the function|function .* does not exist/i.test(`${error?.code ?? ''} ${error?.message ?? ''}`)) {
+    throw new Error(`Ajuste de saldo incierto: ${error?.message ?? 'sin detalle'}`)
+  }
+  const { data: u, error: leerErr } = await db.from('users').select('balances').eq('id', userId).single()
+  if (leerErr || !u || typeof (u as any).balances !== 'object' || (u as any).balances === null) throw new Error('No se pudo leer el saldo')
   const bals: Record<string, number> = (u?.balances as any) ?? {}
   const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
   await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
@@ -127,13 +146,22 @@ async function finityTry(resource: string, init: RequestInit = {}, qs = ''): Pro
     ...(CANDIDATES[resource] ?? []).filter(p => p !== WORKING[resource]),
   ]
   let last: { res: Response; path: string } | null = null
+  // Se recuerda una ruta SOLO si respondió bien (2xx). Antes se recordaba la
+  // primera que no fuera 404/405: si la buena fallaba un momento, la
+  // siguiente candidata (que no existe y contesta 403 Forbidden) quedaba
+  // fijada y las llamadas siguientes de esa instancia iban a una ruta que
+  // no existe.
+  // Cualquier otra respuesta (400/403/409/5xx) es la respuesta real de esa
+  // ruta y se devuelve tal cual, sin probar más rutas.
   for (const path of list) {
     const res = await finityFetch(`${path}${qs}`, init)
     last = { res, path }
-    if (res.status !== 404 && res.status !== 405) {
+    if (res.ok) {
       WORKING[resource] = path
       return last
     }
+    if (res.status === 404 || res.status === 405) continue
+    return last
   }
   return last!
 }
@@ -185,6 +213,35 @@ async function getFinityToken(): Promise<string> {
   throw new Error(`finity_auth_failed:401:{"message":"Ningún servidor aceptó las credenciales (${candidates.join(', ')})"}`)
 }
 
+// El MOTIVO humano de un rechazo, tal como lo escribe Finity ("CUENTA Y NIT
+// NO CORRESPONDEN"). Se busca en todo el cuerpo: primero las claves que solo
+// significan motivo; si no, las genéricas. Nunca devuelve JSON ni códigos.
+const CLAVES_MOTIVO = ['rejectionreason', 'rejection_reason', 'rejectreason', 'reject_reason', 'rejectedreason', 'rejected_reason', 'failurereason', 'failure_reason', 'failedreason', 'failed_reason', 'statusreason', 'status_reason', 'statusdetail', 'status_detail', 'statusdescription', 'status_description', 'errormessage', 'error_message', 'errordescription', 'error_description', 'declinereason', 'decline_reason', 'motivo', 'motivo_rechazo', 'motivorechazo', 'motivo_de_rechazo', 'observation', 'observations', 'observacion', 'observaciones', 'cause', 'causa', 'detail', 'details']
+const CLAVES_MOTIVO_DEBIL = ['reason', 'description', 'message', 'mensaje', 'note', 'notes']
+function digMotivoRechazo(o: any): string | null {
+  const limpio = (v: unknown): string | null => {
+    if (typeof v !== 'string') return null
+    const s = v.trim()
+    if (s.length < 3 || s.length > 300) return null
+    if (/[{}\[\]]|http\s*\d|status\s*code|\bnull\b|undefined/i.test(s)) return null
+    return s
+  }
+  let debil: string | null = null
+  const seen = new Set<any>(); const stack = [o]
+  while (stack.length) {
+    const c = stack.pop()
+    if (!c || typeof c !== 'object' || seen.has(c)) continue
+    seen.add(c)
+    for (const [k, v] of Object.entries(c)) {
+      const key = k.toLowerCase()
+      if (CLAVES_MOTIVO.includes(key)) { const s = limpio(v); if (s) return s }
+      if (!debil && CLAVES_MOTIVO_DEBIL.includes(key)) debil = limpio(v)
+      if (v && typeof v === 'object') stack.push(v)
+    }
+  }
+  return debil
+}
+
 async function finityFetch(path: string, init: RequestInit = {}): Promise<Response> {
   return finityFetchAbs(`${FINITY_BASE}${path}`, init)
 }
@@ -193,17 +250,29 @@ async function finityFetch(path: string, init: RequestInit = {}): Promise<Respon
 // backend del portal prod.finity.com.co:444, que expone rutas que la API
 // de socios api.finity.com.co no tiene).
 async function finityFetchAbs(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = await getFinityToken()
-  return fetch(url, {
+  const pedir = async () => fetch(url, {
     ...init,
     headers: {
       accept: 'application/json',
       'content-type': 'application/json',
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${await getFinityToken()}`,
       ...(init.headers ?? {}),
     },
     signal: init.signal ?? AbortSignal.timeout(15000),
   })
+  const res = await pedir()
+  // Token rechazado ("Invalid or expired token"): el token vive en la memoria
+  // de ESTA instancia y no se renovaba hasta vencer. Si Finity deja un solo
+  // token activo por credencial, otra instancia que pide uno nuevo deja el
+  // nuestro inválido (visto el 2026-10-30: 401 en dos envíos Bre-B · Cuenta 2
+  // seguidos). Un 401 no procesó nada, así que se pide otro y se reintenta
+  // UNA vez. Con un cuerpo de un solo uso (stream) no se puede repetir.
+  if (res.status === 401 && (init.body == null || typeof init.body === 'string')) {
+    console.warn('[finity] 401: se renueva el token y se reintenta una vez')
+    tokenCache = null
+    return pedir()
+  }
+  return res
 }
 
 // ─── Login del PORTAL de Finity (prod.finity.com.co:444) ───
@@ -310,7 +379,7 @@ async function portalFetch(path: string, init: RequestInit = {}): Promise<Respon
 }
 
 // ─── Validación del caller ───
-// Dos modos (mismo patrón que didit-kyc/tatum-wallet en la app Empresas):
+// Dos modos (mismo patrón que tatum-wallet en la app Empresas):
 //  a) JWT de usuario de Supabase válido (panel admin) → userId del token.
 //  b) anon key + payload.user_id de un usuario EXISTENTE en public.users
 //     (la app Empresas usa auth propia y llama con la anon key).
@@ -335,7 +404,46 @@ function isProjectAnonKey(jwt: string): boolean {
   }
 }
 
-async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean }> {
+// ── FIRMA DEL SERVIDOR EN LOS COBROS POR LINK ──────────────────────
+// Un cliente puede insertar filas en `transactions` con su sesión. Un "cobro
+// por link" inventado (source finity_payment_link, la referencia y el monto que
+// quisiera) se acreditaba en la conciliación si su referencia aparecía como
+// texto dentro de cualquier movimiento del proveedor. Los cobros que crea ESTE
+// servidor llevan una firma (HMAC con la llave de servicio).
+async function firmaCobro(userId: string, amount: number, currency: string, reference: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(SERVICE_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(`cobro|${userId}|${Number(amount)}|${currency}|${reference}`)))
+  return Array.from(sig.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// ¿Ese id de cobro o de retiro es de QUIEN pregunta? Tener sesión válida no
+// alcanza: sin esto, un cliente cualquiera podía consultar los montos y
+// destinos de los cobros y retiros de otro con solo cambiar el id.
+// Los llamantes internos (mouv-proxy conciliando) pasan sin restricción.
+async function esMiReferencia(caller: { userId?: string; internal?: boolean }, id: string): Promise<boolean> {
+  if (caller.internal) return true
+  const uid = String(caller.userId ?? '')
+  if (!uid || !id) return false
+  // El id va dentro de un filtro .or(): con comas o puntos se le podían
+  // agregar condiciones y la pregunta "¿es tuyo?" respondía que sí.
+  if (!/^[A-Za-z0-9_-]{4,100}$/.test(id)) return false
+  try {
+    const { data } = await db.from('transactions').select('id')
+      .eq('user_id', uid)
+      .or(`raw_data->>providerRef.eq.${id},raw_data->>reference.eq.${id}`)
+      .limit(1)
+    return !!(data && data.length)
+  } catch { return false }   // ante la duda, no se muestra
+}
+
+// Qué permiso del equipo pide cada acción a un admin humano. Lo que no figura
+// (convertir, crear retiros, sondear el proveedor) queda para el dueño y para
+// las llamadas internas del servidor.
+const PERMISO_FINITY: Record<string, string | string[]> = {
+  treasury_balances: ['plata.ver', 'tesoreria'],
+}
+
+async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean; servicio?: boolean }> {
   const auth = req.headers.get('authorization') ?? ''
   const jwt = auth.replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
@@ -345,9 +453,9 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   // service-role key, que nunca sale del backend. `internal:true` es lo
   // ÚNICO que autoriza crear retiros/cuentas externas — el cliente pasa
   // por mouv-proxy, que debita el saldo ANTES de llamar aquí.
-  if (SERVICE_KEY && jwt === SERVICE_KEY) {
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) {
     const uid = String(payload.user_id ?? '')
-    return { ok: true, userId: uid || undefined, internal: true, viaJwt: true }
+    return { ok: true, userId: uid || undefined, internal: true, viaJwt: true, servicio: true }
   }
   // (El "AdminBypass <password>" se eliminó: era un secreto compartido que
   //  viajaba en el bundle del frontend. El admin real entra por JWT abajo.)
@@ -419,6 +527,47 @@ function extractBalances(d: any): { usdt: number | null; cop: number | null } {
 
 // Extrae la tasa numérica de la respuesta de Finity (mismo criterio que el
 // cliente). Para el snapshot programado de la gráfica.
+// ── Ajuste de la tasa (los "puntos" que se le bajan) ──────────────────────
+//
+// La tasa del proveedor llega tal cual. Lo que Lincoin cobra por encima se
+// expresa restándole PESOS a esa tasa: si Finity da 3.097,75 y el ajuste es 5,
+// la tasa que se usa —y la que se muestra— es 3.092,75. Esos 5 pesos por dólar
+// son el margen.
+//
+// Se aplica ACÁ, donde nace la tasa, y no en la pantalla: así el cliente nunca
+// ve una tasa distinta de la que se le va a aplicar, y no hay dos números que
+// puedan quedar desalineados. El cálculo real del abono hace lo mismo en
+// gasfree, leyendo esta misma clave.
+const AJUSTE_KEY = 'otc_rate_ajuste'
+
+type AjusteTasa = { finityCop: number; mouvCop: number }
+
+async function leerAjuste(db: any): Promise<AjusteTasa> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', AJUSTE_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k >= 0 ? k : 0 }
+    return { finityCop: n(v?.finityCop), mouvCop: n(v?.mouvCop) }
+  } catch { return { finityCop: 0, mouvCop: 0 } }
+}
+
+async function esAdmin(db: any, userId?: string): Promise<boolean> {
+  if (!userId) return false
+  try {
+    const { data } = await db.from('users').select('role').eq('id', userId).maybeSingle()
+    return String(data?.role ?? '') === 'admin'
+  } catch { return false }
+}
+
+// Nunca deja la tasa en cero o negativa: un ajuste mal escrito (500 en vez de
+// 5) no puede convertir una conversión en un regalo. Si el ajuste se comiera
+// la tasa, no se aplica y se sigue con la del proveedor.
+export function aplicarAjuste(rate: number, ajusteCop: number): number {
+  if (!(rate > 0) || !(ajusteCop > 0)) return rate
+  const r = rate - ajusteCop
+  return r > 0 ? r : rate
+}
+
 function extractRate(d: any): number | null {
   if (d == null) return null
   const cand = d.rate ?? d.value ?? d.price ?? d.cop ?? d.exchange_rate ?? d.exchangeRate
@@ -436,7 +585,7 @@ Deno.serve(async (req) => {
 
   try {
     if (!FINITY_ID || !FINITY_SECRET) {
-      return json(200, { error: 'finity_not_configured', message: 'Faltan los secrets FINITY_CLIENT_ID / FINITY_CLIENT_SECRET.' })
+      return json(200, { error: 'finity_not_configured', message: 'El servicio de cobros no está disponible en este momento. Escríbenos a soporte@lincoin.me.' })
     }
 
     const payload = await req.json().catch(() => ({}))
@@ -452,9 +601,19 @@ Deno.serve(async (req) => {
     // (nombre, documento, cuenta) de los destinos registrados — exige caller.
     // treasury_balances SALE de las READ públicas: expone los saldos de la
     // tesorería (USDt + COP de la empresa) → solo admin/interno.
-    const READ_ACTIONS = new Set(['ping', 'rates', 'discover', 'snapshot_finity'])
+    // 'discover' (sondea decenas de rutas del proveedor por llamada) y
+    // 'snapshot_finity' (escribe en fx_rate_snapshots) ya no son públicas:
+    // solo el equipo o el servidor. Las tasas programadas las guarda fx-snapshot.
+    const READ_ACTIONS = new Set(['ping', 'rates'])
 
     const caller = await validCaller(req, payload)
+    // Ser admin ya no alcanza: un miembro del equipo opera acá solo lo que su
+    // rol permite (_shared/equipo.ts). Si no alcanza, pierde la confianza de
+    // `internal` y queda como un usuario más. El ACH es Colombia: pide CO.
+    if (caller.ok && caller.internal && !caller.servicio && caller.userId) {
+      const g = await equipoPermite(db, caller.userId, PERMISO_FINITY[action], { pais: 'CO' })
+      if (!g.ok) caller.internal = false
+    }
     if (!caller.ok && !READ_ACTIONS.has(action)) {
       // 'proxy v3' en el mensaje: si el panel muestra 'unauthorized' pelado,
       // la función desplegada es una versión vieja.
@@ -464,7 +623,7 @@ Deno.serve(async (req) => {
     // ── Gates de seguridad (pentest H3) ──────────────────────────────────
     // INTERNO/ADMIN: leer movimientos/saldo de la empresa o convertir sobre la
     // tesorería compartida. Nunca un cliente (ni con anon-key + user_id).
-    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance'])
+    const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar', 'motivo_rechazo', 'discover', 'snapshot_finity'])
     if (INTERNAL_ONLY.has(action) && !caller.internal) {
       return json(403, { error: 'forbidden', message: 'Operación restringida.' })
     }
@@ -476,7 +635,19 @@ Deno.serve(async (req) => {
     // body. Sin esto, cualquiera con la anon key + el UUID de una víctima podía
     // enumerar sus retiros (fuga) y forzar cambios de estado/reembolsos en su
     // cuenta (IDOR). Los reconciliadores mueven saldo → aquí adentro.
-    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin'])
+    // 'email_event' entró acá porque era una PUERTA TRASERA a los correos:
+    // con la sola llave pública + el id de cualquier usuario se podía hacer
+    // que Lincoin le mandara a esa persona un correo con asunto, título y
+    // mensaje ELEGIDOS POR QUIEN LLAMA — y salía firmado desde nuestro
+    // dominio. Peor que el hueco de los webhooks: ahí el texto era nuestro,
+    // acá lo escribe el atacante. Además esta función reenvía a
+    // notify-transaction con el service key, o sea que autenticaba al
+    // atacante por él.
+    //
+    // 'payment_link_status' y 'withdrawal_status' consultaban a Finity por un
+    // id suelto, sin mirar de quién era: montos, destinos y estados de cobros
+    // y retiros ajenos, a la vista de cualquiera con la llave pública.
+    const NEEDS_IDENTITY = new Set(['external_accounts', 'create_external_account', 'delete_external_account', 'create_payment_link', 'reconcile_withdrawals', 'reconcile_payin', 'email_event', 'payment_link_status', 'withdrawal_status'])
     if (NEEDS_IDENTITY.has(action) && !(caller.viaJwt || caller.internal)) {
       return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión para continuar.' })
     }
@@ -608,18 +779,167 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'external_accounts') {
-      const { res, path } = await finityTry('externalAccounts')
-      return json(200, { ok: res.ok, status: res.status, path, data: await res.json().catch(() => null) })
+      // La lista es UNA sola (Finity es una cuenta de empresa): se sirve de
+      // caché 45 s para todos. Antes cada navegador abierto la pedía cada
+      // 15 s, cientos de llamadas por hora a la misma ruta de Finity.
+      const lista = await listaCuentasFinity()
+      // Un CLIENTE recibe solo SUS cuentas. La lista de Finity es una sola para
+      // toda la empresa: antes se devolvía entera y cualquier sesión veía
+      // nombre, documento y número de cuenta de los beneficiarios de todos los
+      // demás clientes. El servidor y el admin (internal) la reciben completa.
+      if (!caller.internal) {
+        const { data: yo } = await db.from('users').select('raw_data').eq('id', String(caller.userId ?? '')).maybeSingle()
+        const contactos: any[] = Array.isArray((yo as any)?.raw_data?.mouvContacts) ? (yo as any).raw_data.mouvContacts : []
+        const ids = new Set(contactos.flatMap((c: any) => [c?.finityId, c?.mouvId]).filter(Boolean).map((x: any) => String(x)))
+        const cuentas = new Set(contactos.map((c: any) => String(c?.accountNumber ?? '').replace(/\D/g, '')).filter(Boolean))
+        const esMia = (r: any) => ids.has(String(r?.id ?? r?.external_account_id ?? r?.account_id ?? ''))
+          || cuentas.has(String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, ''))
+        const d: any = lista.data
+        const filtrada = Array.isArray(d) ? d.filter(esMia)
+          : (d && typeof d === 'object')
+            ? Object.fromEntries(Object.entries(d).map(([k, v]) => [k, Array.isArray(v) ? (v as any[]).filter(esMia) : v]))
+            : d
+        return json(200, { ok: lista.ok, status: lista.status, path: lista.path, data: filtrada, ...(lista.cache ? { cache: true } : {}) })
+      }
+      if (lista.cache) return json(200, { ok: lista.ok, status: lista.status, path: lista.path, data: lista.data, cache: true })
+      const { res, path, data } = { res: { ok: lista.ok, status: lista.status }, path: lista.path, data: lista.data }
+      // Se audita un RESUMEN de los estados que devuelve el proveedor: qué
+      // campos trae cada cuenta y con qué valor. Sin esto no se puede resolver
+      // una discrepancia entre su portal y Lincoin más que adivinando qué
+      // campo mirar — que fue exactamente el problema con una cuenta que allá
+      // estaba en revisión y acá salía aprobada.
+      try {
+        const d: any = data
+        const filas: any[] = Array.isArray(d) ? d : (d?.data ?? d?.results ?? d?.items ?? d?.accounts ?? [])
+        if (Array.isArray(filas) && filas.length) {
+          await logAudit(caller.userId!, 'finity.external_accounts.estados', {
+            total: filas.length,
+            // Solo las claves que suenan a estado, para no volcar datos
+            // bancarios en la auditoría.
+            campos: Array.from(new Set(filas.flatMap((r: any) =>
+              Object.keys(r ?? {}).filter(k => /status|estado|state|verif/i.test(k))))),
+            muestra: filas.slice(0, 12).map((r: any) => ({
+              id: r?.id ?? r?.external_account_id ?? null,
+              cuenta: String(r?.account_number ?? r?.account?.account_number ?? '').slice(-4),
+              verification_status: r?.verification_status ?? null,
+              status: r?.status ?? null,
+              estado: r?.estado ?? null,
+              state: r?.state ?? null,
+            })),
+          })
+        }
+      } catch { /* la auditoría nunca puede tumbar la consulta */ }
+      return json(200, { ok: res.ok, status: res.status, path, data })
     }
 
     if (action === 'create_external_account') {
-      const { res, path } = await finityTry('externalAccounts', {
-        method: 'POST',
-        body: JSON.stringify(payload.data ?? {}),
-      })
+      const cuenta = (payload.data as any)?.account ?? {}
+      // Limpieza en el SERVIDOR, venga de donde venga (app vieja en caché,
+      // panel admin): Finity exige solo dígitos, de 6 a 20. Guiones, puntos
+      // y espacios se quitan aquí, y lo que no alcanza ni se envía.
+      if ((payload.data as any)?.account) {
+        cuenta.account_number = String(cuenta.account_number ?? '').replace(/\D/g, '')
+        if (['CC', 'NIT'].includes(String(cuenta.account_holder_id_type ?? '').toUpperCase())) {
+          cuenta.account_holder_id_number = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
+        }
+        if (cuenta.account_number.length < 6 || cuenta.account_number.length > 20) {
+          return json(200, { ok: false, status: 400, path: null, data: { message: `El número de cuenta debe tener entre 6 y 20 dígitos (tiene ${cuenta.account_number.length}). Revísalo con el banco.` } })
+        }
+      }
+      const accDigits = String(cuenta.account_number ?? '').replace(/\D/g, '')
+
+      // 1) FRENO GENERAL. Si Finity ya contestó 403/429 hace poco, no se le
+      //    vuelve a pegar hasta que pase la espera: insistir es justo lo que
+      //    hace que un proveedor bloquee (pasó el 6 y el 7 de octubre).
+      const freno = await leerFrenoInscripciones()
+      if (freno) {
+        return json(200, { ok: false, status: 429, frenado: true, path: null, data: { message: `Inscripciones en pausa hasta ${new Date(freno.hasta).toISOString()} (Finity respondió ${freno.http}). Se reintenta sola.` } })
+      }
+
+      // 2) ¿YA ESTÁ INSCRITA? Se busca en la lista (de caché) por número de
+      //    cuenta y documento. Si está, se devuelve esa: ni se duplica ni se
+      //    gasta una llamada de creación.
+      if (accDigits) {
+        // La lista puede ser grande y lenta. Si no contesta en 12 s se sigue
+        // sin ella: antes su espera más la de la creación pasaban del límite
+        // del navegador y la inscripción se perdía sin dejar rastro.
+        const lista = await Promise.race([
+          listaCuentasFinity().catch(() => null),
+          new Promise<null>(r => setTimeout(() => r(null), 12_000)),
+        ]) ?? { ok: false, status: 0, path: '', data: null, cache: false }
+        const filas = filasDe(lista.data)
+        const docDigits = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
+        const ya = filas.find((x: any) => {
+          const n = String(x?.account_number ?? x?.account?.account_number ?? '').replace(/\D/g, '')
+          if (!n || n !== accDigits) return false
+          const d = String(x?.account_holder_id_number ?? x?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
+          return !docDigits || !d || d === docDigits
+        })
+        if (ya) return json(200, { ok: true, status: 200, path: lista.path, data: ya, id: idDeCuenta(ya), reutilizada: true })
+      }
+
+      // 3) La MISMA cuenta rechazada hace menos de 10 min no se vuelve a
+      //    mandar: la respuesta va a ser la misma.
+      if (accDigits) {
+        const { data: previo } = await db.from('admin_actions')
+          .select('created_at, metadata')
+          .eq('action', 'finity.external_account.create')
+          .filter('metadata->enviado->account->>account_number', 'eq', String(cuenta.account_number ?? ''))
+          .gte('created_at', new Date(Date.now() - 10 * 60_000).toISOString())
+          .order('created_at', { ascending: false }).limit(1).maybeSingle()
+        const st = Number((previo as any)?.metadata?.status ?? 0)
+        // Solo si se manda EXACTAMENTE lo mismo: si el cliente corrigió el
+        // documento o el nombre, eso sí tiene que llegar a Finity.
+        // jsonb reordena las claves: se compara con las claves ordenadas.
+        const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
+          : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v
+        const igual = (a: any, b: any) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null))
+        if (previo && st >= 400 && st !== 403 && st !== 429 && igual((previo as any).metadata?.enviado, payload.data)) {
+          let dataPrev: any = null
+          try { dataPrev = JSON.parse(String((previo as any).metadata?.respuesta ?? 'null')) } catch { /* */ }
+          return json(200, { ok: false, status: st, repetida: true, path: (previo as any).metadata?.path ?? null, data: dataPrev ?? { message: 'Rechazada hace menos de 10 minutos; se reintenta más tarde.' } })
+        }
+      }
+
+      // Una sola ruta y 40 s: Finity tarda ~9 s en crear y a veces mucho más
+      // (valida con el banco). Con el corte de 15 s de antes, la creación se
+      // abortaba a medias y no quedaba ni rastro en la auditoría.
+      const path = WORKING['externalAccounts'] ?? '/v0/external-accounts'
+      let res: Response
+      try {
+        res = await finityFetch(path, {
+          method: 'POST',
+          body: JSON.stringify(payload.data ?? {}),
+          signal: AbortSignal.timeout(40_000),
+        })
+      } catch (e) {
+        // Sin respuesta: Finity PUDO haberla creado. Se invalida la lista para
+        // que el próximo intento la encuentre ahí en vez de duplicarla.
+        listaCache = null
+        await logAudit(caller.userId!, 'finity.external_account.create', {
+          status: 0, path, ok: false, enviado: payload.data, idCreado: null,
+          error: String((e as Error)?.message ?? e).slice(0, 200),
+        })
+        return json(200, { ok: false, status: 0, path, sinRespuesta: true, data: { message: 'Finity no respondió a tiempo. Se reintenta solo en unos minutos.' } })
+      }
       const data = await res.json().catch(() => null)
-      await logAudit(caller.userId!, 'finity.external_account.create', { status: res.status, path, data: payload.data })
-      return json(200, { ok: res.ok, status: res.status, path, data })
+      if (res.status === 403 || res.status === 429) await ponerFrenoInscripciones(res.status)
+      if (res.ok) listaCache = null
+      // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
+      // cuenta que se quedaba "en validación" no se podía diagnosticar: había
+      // registro de lo que se mandó y ninguno de lo que contestó el banco.
+      const idCreado = idDeCuenta(data)
+      await logAudit(caller.userId!, 'finity.external_account.create', {
+        status: res.status, path, ok: res.ok,
+        enviado: payload.data,
+        idCreado,
+        respuesta: JSON.stringify(data ?? {}).slice(0, 600),
+      })
+      // El id va también arriba, ya resuelto: si Finity lo anida
+      // ({ data: { id } }) y el navegador no lo encuentra, cree que la cuenta
+      // sigue sin inscribir y la vuelve a crear — así quedaron cuentas
+      // creadas 20 y 41 veces y Finity bloqueó la API.
+      return json(200, { ok: res.ok, status: res.status, path, data, id: idCreado })
     }
 
     // Des-inscribir una cuenta destino en Finity al eliminar el contacto.
@@ -632,7 +952,7 @@ Deno.serve(async (req) => {
     if (action === 'delete_external_account') {
       const eaId = String(payload.finityId ?? '').trim()
       const accDigits = String(payload.accountNumber ?? '').replace(/\D/g, '')
-      if (!eaId && !accDigits) return json(200, { ok: false, error: 'missing_ref', message: 'Falta finityId o número de cuenta.' })
+      if (!eaId && !accDigits) return json(200, { ok: false, error: 'missing_ref', message: 'Falta la referencia de la cuenta o su número.' })
 
       // Guard cross-usuario: ¿alguien más (o el mismo, en otro contacto) sigue
       // teniendo esta cuenta inscrita? Se comparan finityId e igual número.
@@ -640,20 +960,30 @@ Deno.serve(async (req) => {
       try {
         // Lincoin guarda los contactos en raw_data.mouvContacts (nombre
         // histórico); se revisa también la clave vieja finityContacts.
-        const { data: rows } = await db.from('users').select('contacts:raw_data->mouvContacts, legacy:raw_data->finityContacts')
-        for (const r of (rows ?? []) as any[]) {
-          const list = [
+        //
+        // Se pregunta a la base por contención (¿alguna cuenta tiene un
+        // contacto con este finityId / este número?), no leyendo todas las
+        // cuentas: esa lectura volvía solo las primeras 1.000 y, con más
+        // clientes, se borraba en Finity una cuenta que otro todavía usaba.
+        const preguntas: Record<string, unknown>[] = []
+        for (const k of ['mouvContacts', 'finityContacts']) {
+          if (eaId) preguntas.push({ [k]: [{ finityId: eaId }] })
+          if (accDigits) preguntas.push({ [k]: [{ accountNumber: accDigits }] })
+          // El número se guarda como lo escribió el cliente (puede traer
+          // guiones o espacios): también se pregunta tal cual llegó.
+          const tal = String(payload.accountNumber ?? '').trim()
+          if (tal && tal !== accDigits) preguntas.push({ [k]: [{ accountNumber: tal }] })
+        }
+        const conteos = await Promise.all(preguntas.map(async (contiene) => {
+          const { data, error } = await db.from('users').select('id, contacts:raw_data->mouvContacts, legacy:raw_data->finityContacts').contains('raw_data', contiene).limit(50)
+          if (error) throw error
+          // Mismo criterio que antes: una billetera cripto no cuenta.
+          return ((data ?? []) as any[]).filter(r => [
             ...(Array.isArray(r?.contacts) ? r.contacts : []),
             ...(Array.isArray(r?.legacy) ? r.legacy : []),
-          ]
-          const used = list.some((c: any) => {
-            if (c?.accountKind === 'wallet') return false
-            const fid = String(c?.finityId ?? '')
-            const cd = String(c?.accountNumber ?? '').replace(/\D/g, '')
-            return (eaId && fid === eaId) || (accDigits && cd && cd === accDigits)
-          })
-          if (used) stillUsed++
-        }
+          ].some((c: any) => c?.accountKind !== 'wallet' && ((eaId && String(c?.finityId ?? '') === eaId) || (accDigits && String(c?.accountNumber ?? '').replace(/\D/g, '') === accDigits)))).map(r => String(r.id))
+        }))
+        stillUsed = new Set(conteos.flat()).size
       } catch { stillUsed = 1 /* si la consulta falla, por seguridad NO borramos en Finity */ }
 
       if (stillUsed > 0) {
@@ -691,18 +1021,71 @@ Deno.serve(async (req) => {
       // cliente) o un admin real (JWT con role='admin' / AdminBypass). Un
       // cliente con anon-key + user_id ya NO puede drenar la tesorería.
       if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
-      const { res, path } = await finityTry('withdrawalOrders', {
-        method: 'POST',
-        body: JSON.stringify(payload.data ?? {}),
-      })
+      // UNA sola ruta, la confirmada, y un solo intento. Antes un 404 hacía
+      // probar /v0/withdrawals, /payouts, /transfers… con el MISMO cuerpo:
+      // hasta 9 POST de plata por un envío. Y con 45 s de espera: Finity ya
+      // tardó 9 s en crear una cuenta, y cortar a los 15 s convertía un
+      // retiro lento pero hecho en un "falló" que se reembolsaba.
+      const path = WORKING['withdrawalOrders'] ?? '/v0/withdrawal-orders'
+      let res: Response
+      try {
+        res = await finityFetch(path, { method: 'POST', body: JSON.stringify(payload.data ?? {}), signal: AbortSignal.timeout(45000) })
+      } catch (e) {
+        const desconocido = (e as Error)?.name === 'TimeoutError' || (e as Error)?.name === 'AbortError' || !String((e as Error)?.message ?? '').startsWith('finity_auth_failed')
+        await logAudit(caller.userId!, 'finity.withdrawal.create', { status: 0, path, data: payload.data, error: String((e as Error)?.message ?? e).slice(0, 200), desenlaceDesconocido: desconocido })
+        return json(200, { ok: false, status: 0, path, desenlaceDesconocido: desconocido, error: desconocido ? 'sin_respuesta' : 'finity_auth_failed' })
+      }
       const data = await res.json().catch(() => null)
       await logAudit(caller.userId!, 'finity.withdrawal.create', { status: res.status, path, data: payload.data, response: data })
+      return json(200, { ok: res.ok, status: res.status, path, data, ...(res.status >= 500 ? { desenlaceDesconocido: true } : {}) })
+    }
+
+    // ── Bre-B por Finity (la "Cuenta 2" de Bre-B) ────────────────────────
+    // Dos pasos: CREAR arma la transferencia y devuelve el titular de la llave
+    // y el costo, sin mover plata; CONFIRMAR es lo que la manda. Solo las
+    // llama mouv-proxy, que ya debitó el saldo del cliente.
+    //
+    // Por eso el trato del error es distinto en cada uno: si crear falla o no
+    // contesta, no salió nada y se puede devolver el saldo. Si confirmar no
+    // contesta, no se sabe — puede haber salido.
+    if (action === 'breb_crear') {
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      const path = '/v0/breb-transfers'
+      let res: Response
+      try {
+        res = await finityFetch(path, { method: 'POST', body: JSON.stringify(payload.data ?? {}), signal: AbortSignal.timeout(30000) })
+      } catch (e) {
+        await logAudit(caller.userId!, 'finity.breb.crear', { status: 0, path, data: payload.data, error: String((e as Error)?.message ?? e).slice(0, 200) })
+        return json(200, { ok: false, status: 0, path, sinRespuesta: true })
+      }
+      const data = await res.json().catch(() => null)
+      await logAudit(caller.userId!, 'finity.breb.crear', { status: res.status, path, data: payload.data, response: data })
       return json(200, { ok: res.ok, status: res.status, path, data })
+    }
+
+    if (action === 'breb_confirmar') {
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      const id = String(payload.transaction_id ?? '').trim()
+      if (!/^[\w-]{6,100}$/.test(id)) return json(400, { error: 'missing_id' })
+      const path = '/v0/breb-transfers/confirm'
+      let res: Response
+      try {
+        res = await finityFetch(path, { method: 'POST', body: JSON.stringify({ transaction_id: id }), signal: AbortSignal.timeout(45000) })
+      } catch (e) {
+        // Un token rechazado es un no: la confirmación ni se mandó.
+        const desconocido = !String((e as Error)?.message ?? '').startsWith('finity_auth_failed')
+        await logAudit(caller.userId!, 'finity.breb.confirmar', { status: 0, path, id, error: String((e as Error)?.message ?? e).slice(0, 200), desenlaceDesconocido: desconocido })
+        return json(200, { ok: false, status: 0, path, desenlaceDesconocido: desconocido, error: desconocido ? 'sin_respuesta' : 'finity_auth_failed' })
+      }
+      const data = await res.json().catch(() => null)
+      await logAudit(caller.userId!, 'finity.breb.confirmar', { status: res.status, path, id, response: data })
+      return json(200, { ok: res.ok, status: res.status, path, data, ...(res.status >= 500 || res.status === 408 ? { desenlaceDesconocido: true } : {}) })
     }
 
     if (action === 'withdrawal_status') {
       const id = String(payload.id ?? '')
       if (!id) return json(400, { error: 'missing_id' })
+      if (!(await esMiReferencia(caller, id))) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       const enc = encodeURIComponent(id)
       // El id de la dispersión ACH es un MOVEMENT id (mvm-…): en Finity vive bajo
       // /v0/movements/{id} (así lo muestra el portal: "Detalle del movimiento").
@@ -715,14 +1098,24 @@ Deno.serve(async (req) => {
         ...(CANDIDATES.withdrawalOrders ?? []),
       ]
       let lastStatus = 0, lastData: any = null
+      // Se leen TODOS los detalles que respondan (movimiento y orden de
+      // retiro): el estado suele venir en el movimiento, pero el MOTIVO del
+      // rechazo puede venir solo en la orden. El primero va en `data` (como
+      // siempre) y los demás en `extra`, para quien quiera excavar en todos.
+      const cuerpos: { path: string; data: any }[] = []
       for (const base of detailBases) {
         const r = await finityFetch(`${base}/${enc}`)
         if (r.status === 404 || r.status === 405 || r.status === 0) continue
         const data = await r.json().catch(() => null)
         if (r.ok && data && typeof data === 'object') {
-          return json(200, { ok: true, status: r.status, path: `${base}/{id}`, data })
+          cuerpos.push({ path: `${base}/{id}`, data })
+          if (cuerpos.length >= 2) break
+          continue
         }
         lastStatus = r.status; lastData = data
+      }
+      if (cuerpos.length) {
+        return json(200, { ok: true, status: 200, path: cuerpos[0].path, data: cuerpos[0].data, extra: cuerpos.slice(1) })
       }
       // Respaldo: buscar el movimiento por id en la LISTA de movimientos
       // (endpoint confirmado que ya usa reconcile_payin).
@@ -734,6 +1127,44 @@ Deno.serve(async (req) => {
         if (match) return json(200, { ok: true, status: 200, path: 'movements[list]', data: match })
       } catch { /* respaldo best-effort */ }
       return json(200, { ok: false, status: lastStatus, data: lastData })
+    }
+
+    // ── Motivo de un rechazo: TODO lo que Finity sabe de ese movimiento ──
+    // El portal de Finity muestra "Motivo de rechazo: NUMERO CUENTA NO
+    // EXISTE", pero el detalle de la API de socios no lo trae. Acá se junta
+    // todo lo que responda sobre ese id: el detalle en cada ruta conocida, el
+    // movimiento dentro del listado y el detalle en el backend del portal
+    // (el mismo que alimenta esa pantalla). Solo lectura; solo interno.
+    if (action === 'motivo_rechazo') {
+      const id = String(payload.id ?? '').trim()
+      if (!/^[\w-]{6,100}$/.test(id)) return json(400, { error: 'missing_id' })
+      const enc = encodeURIComponent(id)
+      const cuerpos: { fuente: string; path: string; status: number; data?: any }[] = []
+      const leer = async (fuente: string, path: string, pedir: () => Promise<Response>) => {
+        try {
+          const r = await pedir()
+          const data = r.ok ? await r.json().catch(() => null) : null
+          cuerpos.push({ fuente, path, status: r.status, ...(data && typeof data === 'object' ? { data } : {}) })
+        } catch { cuerpos.push({ fuente, path, status: -1 }) }
+      }
+      for (const base of [...(CANDIDATES.movements ?? []), ...(CANDIDATES.withdrawalOrders ?? []).slice(0, 2)]) {
+        await leer('api', `${base}/{id}`, () => finityFetch(`${base}/${enc}`, { signal: AbortSignal.timeout(10000) }))
+      }
+      try {
+        const { res, path } = await finityTry('movements', {})
+        const body = await res.json().catch(() => null) as any
+        const arr: any[] = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : (Array.isArray(body?.movements) ? body.movements : (Array.isArray(body?.items) ? body.items : [])))
+        const match = arr.find(m => [m?.id, m?.reference, m?.movement_id, m?.movementId, m?.external_id].map(x => String(x ?? '')).includes(id))
+        cuerpos.push({ fuente: 'api', path: `${path}[lista]`, status: match ? res.status : 404, ...(match ? { data: match } : {}) })
+      } catch { cuerpos.push({ fuente: 'api', path: 'movements[lista]', status: -1 }) }
+      if (await getPortalToken()) {
+        for (const p of ['/movements/', '/movement/', '/transactions/', '/transaction/', '/withdrawals/', '/withdraw/']) {
+          await leer('portal', `${p}{id}`, () => portalFetch(`${p}${enc}`, { signal: AbortSignal.timeout(8000) }))
+        }
+      } else {
+        cuerpos.push({ fuente: 'portal', path: 'login', status: 0 })
+      }
+      return json(200, { ok: true, cuerpos })
     }
 
     // ── Enviar un correo de evento al PROPIO usuario (ej. "Contacto
@@ -748,7 +1179,7 @@ Deno.serve(async (req) => {
       try {
         const r = await fetch(`${SUPABASE_URL}/functions/v1/notify-transaction`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+          headers: await cabecerasInternas(db),
           body: JSON.stringify({
             type: 'CUSTOM_EMAIL',
             to: u.email,
@@ -818,10 +1249,12 @@ Deno.serve(async (req) => {
 
         // 2) Estado real desde Finity.
         let realState: string | null = null
+        let motivoProveedor: string | null = null
         try {
           const r = await finityFetch(`${base}/${encodeURIComponent(oid)}`)
           const d = await r.json().catch(() => null) as any
           realState = d?.state ?? d?.status ?? d?.data?.state ?? d?.data?.status ?? d?.order?.state ?? d?.order?.status ?? null
+          motivoProveedor = digMotivoRechazo(d)
         } catch { /* si Finity no responde, no se toca el estado */ }
         if (realState == null) {
           results.push({ oid, kept: keep.id, deleted: dupIds.length, note: 'sin_respuesta_finity' })
@@ -840,11 +1273,16 @@ Deno.serve(async (req) => {
             // llamada pero NO idempotente; el claim es lo que da idempotencia.
             const krd = (keep.raw_data ?? {}) as Record<string, unknown>
             const { data: claimed } = await db.from('transactions')
-              .update({ status: 'Rechazado', raw_data: { ...krd, refunded: true, reconciledAt: new Date().toISOString(), finityState: realState } })
+              .update({ status: 'Rechazado', raw_data: { ...krd, refunded: true, reconciledAt: new Date().toISOString(), finityState: realState, providerError: motivoProveedor } })
               .eq('id', keep.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null)
               .select('id')
+            // Estas filas 'send' con "Orden …" las escribía el navegador (flujo
+            // viejo): cualquiera podía crear una con la orden rechazada de otro
+            // y el monto que quisiera, y se le "devolvía". Ya no se reembolsa
+            // solo: queda marcada para que el equipo lo revise.
             if (claimed?.length) {
-              await creditBalanceAtomic(keep.user_id, String(keep.currency), Number(keep.amount))
+              await db.from('transactions').update({ raw_data: { ...krd, refunded: null, revisionManual: true, finityState: realState, providerError: motivoProveedor } }).eq('id', keep.id)
+              await logAudit(String(keep.user_id), 'finity.withdrawal.rechazado_revisar', { txId: keep.id, orden: oid, amount: keep.amount })
             }
           } else {
             await db.from('transactions').update({ status: mapped }).eq('id', keep.id)
@@ -857,7 +1295,7 @@ Deno.serve(async (req) => {
             if (full) {
               await fetch(`${SUPABASE_URL}/functions/v1/notify-transaction`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+                headers: await cabecerasInternas(db),
                 body: JSON.stringify({ type: 'UPDATE', table: 'transactions', record: full }),
               })
             }
@@ -876,7 +1314,26 @@ Deno.serve(async (req) => {
     if (action === 'rates') {
       const qs = payload.query ? `?${new URLSearchParams(payload.query as Record<string, string>)}` : ''
       const { res, path } = await finityTry('rates', {}, qs)
-      return json(200, { ok: res.ok, status: res.status, path, base: FINITY_BASE, sandbox: FINITY_BASE !== PROD_BASE, data: await res.json().catch(() => null) })
+      const data = await res.json().catch(() => null)
+      // La tasa sale de acá YA ajustada: el cliente no ve una y se le aplica
+      // otra. `rateBruta` solo viaja para el admin, que necesita ver contra
+      // qué está ajustando; al cliente no le corresponde el margen.
+      const aj = await leerAjuste(db)
+      const bruta = extractRate(data)
+      const neta = bruta != null ? aplicarAjuste(bruta, aj.finityCop) : null
+      const salida = (bruta != null && neta != null && neta !== bruta && data && typeof data === 'object')
+        ? { ...data, rate: neta, value: neta }
+        : data
+      return json(200, {
+        ok: res.ok, status: res.status, path, base: FINITY_BASE,
+        sandbox: FINITY_BASE !== PROD_BASE,
+        data: salida,
+        ajusteCop: aj.finityCop,
+        // rateBruta viaja al admin y a los llamantes INTERNOS (service-role:
+        // otc-mesa la necesita como precio de referencia para cotizar con su
+        // propio margen). Nunca al cliente: el margen no le corresponde.
+        ...(caller.internal || await esAdmin(db, caller.userId) ? { rateBruta: bruta } : {}),
+      })
     }
 
     // ── Snapshot programado de la tasa USD→COP (para la gráfica). Pensado
@@ -916,7 +1373,7 @@ Deno.serve(async (req) => {
       // checkout regrese a Lincoin (no a Finity). No está en el esquema
       // documentado; si Finity lo ignora, no afecta; si lo valida estricto y
       // rechaza, se quita. Override con FINITY_RETURN_URL.
-      const returnUrl = (Deno.env.get('FINITY_RETURN_URL') ?? Deno.env.get('APP_BASE_URL') ?? 'https://lincoln-psi.vercel.app').trim().replace(/\/+$/, '')
+      const returnUrl = (Deno.env.get('FINITY_RETURN_URL') ?? Deno.env.get('APP_BASE_URL') ?? 'https://lincoin.me').trim().replace(/\/+$/, '')
       const body: Record<string, unknown> = {
         amount: copAmount, destination_amount: copAmount, currency: 'COP',
         return_url: returnUrl, redirect_url: returnUrl, success_url: returnUrl, cancel_url: returnUrl,
@@ -959,6 +1416,7 @@ Deno.serve(async (req) => {
             // El cobro por link (recaudo Finity) se acredita en el riel ACH.
             user_id: uid, type: 'load', amount: Math.round(netCop), currency: 'COP_ACH', status: 'Pendiente',
             raw_data: { source: 'finity_payment_link', method: 'LINK', reference: linkId, providerRef: linkId,
+              firmaServidor: await firmaCobro(uid, Math.round(netCop), 'COP_ACH', String(linkId ?? '')),
               link, title: 'Cobro por link · ACH', grossCop: copAmount, netCop, feeCop: PAYIN_FEE_COP, finityCosts: costs,
               expiresAt: data?.expires_at ?? null, createdAt: new Date().toISOString() },
           })
@@ -1006,6 +1464,13 @@ Deno.serve(async (req) => {
         // cuenta compartida → un atacante creaba un cobro nunca pagado del
         // mismo valor y se robaba el depósito de otro. El monto ya NO basta.
         if (!rd.reference) continue
+        // Solo cobros creados por este servidor, con una referencia de verdad
+        // (una de 1-2 caracteres aparecía dentro de cualquier movimiento).
+        if (String(rd.reference).length < 12) continue
+        if (String(rd.firmaServidor ?? '') !== await firmaCobro(uid, Number(tx.amount ?? 0), String(tx.currency ?? ''), String(rd.reference))) {
+          await logAudit(uid, 'finity.payin.sin_firma', { txId: tx.id })
+          continue
+        }
         const match = rows.find(m => {
           if (consumed.has(movId(m))) return false
           return JSON.stringify(m).includes(String(rd.reference))
@@ -1018,7 +1483,13 @@ Deno.serve(async (req) => {
         }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
         if (!claimed?.length) continue
         const col = String(tx.currency ?? 'COP')
-        await creditBalanceAtomic(uid, col, Number(tx.amount ?? 0))   // atómico (pentest #3)
+        try { await creditBalanceAtomic(uid, col, Number(tx.amount ?? 0)) }   // atómico (pentest #3)
+        catch (e) {
+          // Sin crédito, la fila no puede quedar Completado: vuelve a revisión.
+          await db.from('transactions').update({ status: 'Pendiente', raw_data: { ...rd, revisionManual: true, creditoFallido: String((e as Error)?.message ?? e).slice(0, 200) } }).eq('id', tx.id)
+          await logAudit(uid, 'finity.payin.credito_fallido', { txId: tx.id })
+          continue
+        }
         await logAudit(uid, 'finity.payin.credited', { txId: tx.id, amount: tx.amount, movement: match?.id ?? null })
         credited++
       }
@@ -1029,6 +1500,7 @@ Deno.serve(async (req) => {
     if (action === 'payment_link_status') {
       const id = String(payload.id ?? payload.reference ?? '')
       if (!id) return json(400, { error: 'missing_id' })
+      if (!(await esMiReferencia(caller, id))) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
       for (const p of [`/v0/payment-link/${id}`, `/v0/payment-link/status/${id}`, `/v0/payment-links/${id}`]) {
         const r = await finityFetch(p, { method: 'GET' })
         if (r.ok) return json(200, { ok: true, path: p, data: await r.json().catch(() => null) })
@@ -1088,17 +1560,79 @@ Deno.serve(async (req) => {
     const msg = String((e as Error)?.message ?? e)
     console.error('[finity] exception:', msg)
     if (msg.startsWith('finity_auth_failed')) {
+      // El detalle —nombre del proveedor, su dominio, el código HTTP— se
+      // queda en el log de arriba, que solo ve el equipo. Lo que viaja al
+      // navegador lo lee el cliente en la mesa OTC, y ahí nombrar al
+      // proveedor y su dominio es regalarlo.
       return json(200, {
         error: 'finity_auth_failed',
-        base: FINITY_BASE,
-        message: `Finity no entregó token contra ${FINITY_BASE} → ${msg.replace('finity_auth_failed:', 'HTTP ')}`,
+        message: 'No pudimos conectar con la red de pagos en este momento. Intenta de nuevo en unos minutos.',
       })
     }
-    return json(500, { error: 'internal', message: msg })
+    // Igual con las excepciones sueltas: el mensaje crudo puede traer la URL
+    // del proveedor o su respuesta literal.
+    return json(500, { error: 'internal', message: 'No pudimos completar la operación. Intenta de nuevo o escríbenos a soporte@lincoin.me.' })
   }
 })
 
 // Toda dispersión queda en el audit trail (admin_actions) — plata que sale.
+
+
+// El id de una cuenta externa, venga como venga en la respuesta de Finity.
+function idDeCuenta(d: any): string | null {
+  const c = [d?.id, d?.external_account_id, d?.account_id, d?.account?.id, d?.data?.id, d?.data?.external_account_id, d?.data?.account?.id, d?.result?.id]
+  const v = c.find(x => x != null && String(x).trim() !== '')
+  return v != null ? String(v) : null
+}
+// ─── Protección de la ruta de cuentas externas ─────────────────────────────
+// Finity bloqueó la creación de cuentas (403) después de ráfagas de llamadas.
+// Tres frenos, todos del lado del servidor (el navegador de cada cliente no
+// sabe lo que hacen los demás):
+//   · la lista se sirve de caché 45 s para todos;
+//   · antes de crear se mira si ya existe en esa lista;
+//   · un 403/429 pone en pausa TODAS las creaciones 30 min (system_config),
+//     y se avisa a los admins una sola vez.
+let listaCache: { at: number; ok: boolean; status: number; path: string; data: any } | null = null
+async function listaCuentasFinity(): Promise<{ ok: boolean; status: number; path: string; data: any; cache: boolean }> {
+  if (listaCache && Date.now() - listaCache.at < 45_000) return { ...listaCache, cache: true }
+  const { res, path } = await finityTry('externalAccounts')
+  const data = await res.json().catch(() => null)
+  if (res.ok) listaCache = { at: Date.now(), ok: true, status: res.status, path, data }
+  return { ok: res.ok, status: res.status, path, data, cache: false }
+}
+function filasDe(d: any): any[] {
+  if (Array.isArray(d)) return d
+  for (const k of ['data', 'results', 'items', 'accounts', 'external_accounts']) if (Array.isArray(d?.[k])) return d[k]
+  return []
+}
+const FRENO_KEY = 'finity_inscripciones_freno'
+async function leerFrenoInscripciones(): Promise<{ hasta: number; http: number } | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', FRENO_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(data.value) : null
+    return v && Number(v.hasta) > Date.now() ? { hasta: Number(v.hasta), http: Number(v.http) } : null
+  } catch { return null }
+}
+async function ponerFrenoInscripciones(http: number) {
+  const ahora = Date.now()
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', FRENO_KEY).maybeSingle()
+    const prev = data?.value ? JSON.parse(data.value) : null
+    // Cada bloqueo seguido dobla la espera: 30 min, 1 h, 2 h… hasta 6 h.
+    const seguidos = prev && ahora - Number(prev.hasta ?? 0) < 60 * 60_000 ? Number(prev.seguidos ?? 0) + 1 : 0
+    const espera = Math.min(30 * 60_000 * 2 ** seguidos, 6 * 3600_000)
+    await db.from('system_config').upsert({ key: FRENO_KEY, value: JSON.stringify({ hasta: ahora + espera, http, desde: ahora, seguidos }) }, { onConflict: 'key' })
+    if (!prev || Number(prev.hasta ?? 0) < ahora) {
+      await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify({ action: 'enviar', rol: 'admin', titulo: 'Finity bloqueó las inscripciones', cuerpo: `Finity respondió ${http} al inscribir cuentas. Lincoin pausó los intentos ${Math.round(espera / 60000)} min. Inscríbelas a mano en el portal mientras tanto.`, tag: 'finity-freno', url: '/admin' }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => {})
+    }
+  } catch { /* el freno es una protección; si falla, no tumba la llamada */ }
+}
+
 async function logAudit(userId: string, action: string, metadata: Record<string, unknown>) {
   try {
     const { data: u } = await db.from('users').select('email, admin_role').eq('id', userId).maybeSingle()
