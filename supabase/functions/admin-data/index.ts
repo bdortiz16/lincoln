@@ -85,8 +85,18 @@ function autoresParaPanel(rd: unknown, esDueno: boolean, yoId: string): unknown 
 // Lo que viaja al navegador del admin: sin los hashes de clave/PIN ni el
 // secreto 2FA de columna, y sin los blobs gigantes de raw_data.
 const COLUMNAS_QUE_NO_VIAJAN = ['password_hash', 'pin_hash', 'two_factor_secret']
+// Objetos de raw_data que la lista del panel no usa y que slimRawData no
+// recorta (solo acorta textos sueltos). Con 14 clientes la carga pesaba
+// 3,9 MB (2,6 MB de fichas de antecedentes y 0,5 MB de beneficiarios), se
+// repetía cada ~30 s y en el celular con datos no alcanzaba a bajar en los
+// 20 s que espera el panel: "Estás viendo datos guardados" y "No se pudo
+// buscar" (31 oct). Cumplimiento, Cupos y TusDatos los piden por su cuenta.
+// Quitarlos no borra nada: saveUser siempre toma estos dos de la base.
+const RAW_QUE_NO_VIAJA = ['tusdatos', 'mouvContacts']
 function usuarioParaPanel(u: Record<string, unknown>): Record<string, unknown> {
-  const o: Record<string, unknown> = { ...u, raw_data: sinCredenciales(slimRawData(u.raw_data, 20000)) }
+  const raw = sinCredenciales(slimRawData(u.raw_data, 20000))
+  if (raw && typeof raw === 'object') for (const k of RAW_QUE_NO_VIAJA) delete (raw as Record<string, unknown>)[k]
+  const o: Record<string, unknown> = { ...u, raw_data: raw }
   for (const k of COLUMNAS_QUE_NO_VIAJAN) delete o[k]
   return o
 }
