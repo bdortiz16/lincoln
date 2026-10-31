@@ -629,8 +629,10 @@ async function documentosPropios(userId: string): Promise<Propios> {
   const docPersona = baseDoc(x.doc_number ?? rd.docNumber)
   const esEmpresa = !!docEmpresa && (x.role === 'business' || !!(x.company_name ?? rd.companyName))
   const s: Propios = new Set([docEmpresa, esEmpresa ? '' : docPersona].filter(d => d.length >= 6))
-  // Solo la razón social de una EMPRESA: el nombre de una persona se repite.
-  const nombre = esEmpresa ? nombreBase(x.company_name ?? rd.companyName) : ''
+  // Solo la razón social de una EMPRESA (aunque no tenga el NIT inscrito):
+  // el nombre de una persona se repite.
+  const esNegocio = x.role === 'business' || !!(x.company_name ?? rd.companyName)
+  const nombre = esNegocio ? nombreBase(x.company_name ?? rd.companyName) : ''
   s.nombres = new Set(nombre.length >= 4 ? [nombre] : [])
   return s
 }
@@ -640,15 +642,19 @@ const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es
 // utilidades o gastos de la empresa y las registra su contador. No llevan
 // factura en ningún modelo. En Comisión antes solo se miraba al ordenante, y
 // un envío a la cuenta propia con un ordenante de otro cliente se facturaba.
-const MSG_CUENTA_PROPIA = (cp: Contraparte, salida: boolean, doc = cp.esDefault ? String(cp.nombreMov ?? '') : cp.identification) => salida
+const MSG_CUENTA_PROPIA = (cp: Contraparte, salida: boolean, doc = cp.esDefault ? String(cp.nombreMov ?? '') : cp.nombre && cp.nombre !== cp.identification ? `${cp.nombre} · ${cp.identification}` : cp.identification) => salida
   ? `El envío es a una cuenta de la misma empresa (${doc}): es utilidad o gasto de la empresa y lo registra su contador. No se emite factura.`
   : `El ingreso llega de una cuenta de la misma empresa (${doc}): es un movimiento propio y lo registra su contador. No se emite factura.`
-// Con documento, manda el documento. Sin él (un Bre-B por llave que no
-// guardó ninguno: «MEXITECH SOLUTIONS S.A.S», sin NIT, se ofrecía facturar),
-// la razón social de la empresa.
-const esDePropios = (cp: Contraparte, propios: Propios) => cp.esDefault
-  ? !!cp.nombreMov && !!propios.nombres?.has(nombreBase(cp.nombreMov))
-  : propios.has(baseDoc(cp.identification))
+// Por documento o por razón social: un Bre-B por llave puede no guardar
+// documento («MEXITECH SOLUTIONS S.A.S», sin NIT, se ofrecía facturar).
+// El documento, o la razón social aunque el envío traiga otro documento (el
+// de una llave, el del representante): en Colombia dos empresas no se
+// registran con la misma razón social.
+const esDePropios = (cp: Contraparte, propios: Propios) => {
+  if (!cp.esDefault && propios.has(baseDoc(cp.identification))) return true
+  const nombre = nombreBase(cp.esDefault ? cp.nombreMov : cp.nombre)
+  return nombre.length >= 4 && !!propios.nombres?.has(nombre)
+}
 
 // ── Ajustes de saldo: no se facturan ──────────────────────────────
 // Un ajuste de saldo lo hace Lincoin para corregir un error del admin al
@@ -1013,21 +1019,33 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   const marcar = async (patch: Record<string, unknown>) => {
     await db.from('comprobantes').update({ ...patch, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', folio)
   }
+  // LO QUE NUNCA LLEVA FACTURA: un ajuste de saldo, el cargue que un ajuste
+  // revirtió completo, un movimiento con una cuenta de la misma empresa. Se
+  // mira PRIMERO, aun con la facturación apagada: antes quedaba guardado
+  // «Facturación automática no activa» y la pantalla seguía ofreciendo
+  // emitirlo (MEXITECH → MEXITECH, 2026-10-30). Una ya emitida sigue su
+  // camino (se avisa en «Revisar duplicadas»); una anulada queda anulada.
+  const tipo = String((comp as any).tipo ?? '')
+  const esSalida = ['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(tipo)
+  const rdVigente = await rawDataVigente((comp as any).transaction_id)
+  {
+    let nunca = motivoAjuste(tipo, rdVigente)
+    if (!nunca) {
+      const mov = contraparteDe(comp, cfg ?? {})
+      if (esDePropios(mov, await documentosPropios(userId))) nunca = MSG_CUENTA_PROPIA(mov, esSalida)
+    }
+    const yaEmitida = (comp as any).factura_estado === 'emitida' && (comp as any).factura_numero
+    const conHistoria = (comp as any).factura_estado === 'anulada' || (Array.isArray((comp as any).factura_detalle?.anteriores) && (comp as any).factura_detalle.anteriores.length > 0)
+    if (nunca && !yaEmitida) {
+      if (conHistoria) return { ok: false, error: nunca }
+      await marcar({ factura_estado: 'omitida', factura_error: nunca })
+      return { ok: true, estado: 'omitida', aviso: nunca }
+    }
+  }
   // Una factura anulada no se marca "no aplica" por estar pausada la
   // facturación: se perdería que estuvo facturada y anulada.
   if ((!cfg || !cfg.activo) && opts.forzar && ((comp as any).factura_estado === 'anulada' || Array.isArray((comp as any).factura_detalle?.anteriores))) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para volver a emitir.' }
   if (!cfg || !cfg.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación automática no activa.' }); return { ok: true, estado: 'omitida' } }
-  const tipo = String((comp as any).tipo ?? '')
-  // Un ajuste de saldo, o el cargue que un ajuste revirtió completo: no se
-  // factura. Una ya emitida sigue su camino (se avisa en «Revisar
-  // duplicadas»); una anulada queda anulada.
-  const rdVigente = await rawDataVigente((comp as any).transaction_id)
-  const sinFactAjuste = motivoAjuste(tipo, rdVigente)
-  if (sinFactAjuste && !((comp as any).factura_estado === 'emitida' && (comp as any).factura_numero)) {
-    if ((comp as any).factura_estado === 'anulada') return { ok: false, error: sinFactAjuste }
-    await marcar({ factura_estado: 'omitida', factura_error: sinFactAjuste })
-    return { ok: true, estado: 'omitida', aviso: sinFactAjuste }
-  }
   const reglas = documentosDe(cfg)
   const regla = reglas[tipo] ?? null
   // EL MOTIVO DEL ENVÍO MANDA. Si la operación trae motivo (se pregunta al
@@ -1036,8 +1054,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   const motivoTx = String((comp as any)?.detalle?.raw_data?.motivo ?? '')
   const reglaMotivo = motivoTx && cfg.motivos && typeof cfg.motivos === 'object' ? (cfg.motivos as any)[motivoTx] : null
   // Sin regla (emisión forzada a mano): por la dirección de la plata. Una
-  // salida es documento soporte; una entrada, factura de venta.
-  const esSalida = ['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(tipo)
+  // salida es documento soporte; una entrada, factura de venta (esSalida).
   // MODELO COMISIÓN: por cada movimiento marcado, una factura de venta solo
   // por la comisión (% de Configuración), IVA INCLUIDO (base + IVA = la
   // comisión), a la contraparte del movimiento. La arma emitirComision, que
@@ -1065,17 +1082,6 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
         identification: String(clienteAnt.identification), nombre: clienteAnt.nombre ? String(clienteAnt.nombre) : undefined,
         pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true,
       })
-    }
-    // Un envío a una cuenta de la misma empresa no se factura. Se mira antes
-    // de exigir el documento del beneficiario o el ordenante: sin documento
-    // (Bre-B por llave) se reconoce por la razón social, y no es un error.
-    if (esSalida && !yaFueAnulada) {
-      const mov = contraparteDe(comp, cfg)
-      if (esDePropios(mov, await documentosPropios(userId))) {
-        const e = MSG_CUENTA_PROPIA(mov, true)
-        await marcar({ factura_estado: 'omitida', factura_error: e })
-        return { ok: true, estado: 'omitida', aviso: e }
-      }
     }
     // A quién. PSP / pasarela: al BENEFICIARIO, con el nombre y documento
     // con que se le envió (el pago es por cuenta suya).
@@ -1144,14 +1150,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   if ('error' in t) { await marcar({ factura_estado: 'error', factura_error: t.error, factura_tipo: clase }); return { ok: false, error: t.error } }
 
   const cp = contraparteDe(comp, cfg)
-  // A nombre de la misma empresa (un envío a una cuenta propia, un depósito
-  // desde ella): no se emite. Una anulada no se toca.
-  if (esDePropios(cp, await documentosPropios(userId))) {
-    const e = MSG_CUENTA_PROPIA(cp, esSalida)
-    if ((comp as any).factura_estado === 'anulada') return { ok: false, error: e }
-    await marcar({ factura_estado: 'omitida', factura_error: e })
-    return { ok: true, estado: 'omitida', aviso: e }
-  }
+  // (Con la misma empresa ya se descartó arriba, antes que todo.)
   // Si el envío no trae la dirección (se hizo antes de que el beneficiario
   // la tuviera), se toma de la lista de beneficiarios, por documento. Así
   // completar la ficha alcanza para emitir de nuevo un envío viejo.

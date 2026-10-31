@@ -908,19 +908,21 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // como ordenante (un pago propio) no se ofrece para facturar.
   const nitPropio = baseDoc(ficha?.nit);
   const esPropio = (doc?: string | null) => nitPropio.length >= 6 && !!doc && baseDoc(doc) === nitPropio;
-  // Con documento, manda el documento; sin él (un Bre-B por llave que no
-  // guardó ninguno), la razón social de la empresa.
-  const nombrePropio = nitPropio.length >= 6 ? nombreBase(ficha?.nombre) : '';
-  const movPropio = (tx: any) => {
-    const doc = docContraparte(tx);
-    if (doc) return esPropio(doc);
-    return nombrePropio.length >= 4 && nombreBase(nombreContraparte(tx)) === nombrePropio;
-  };
+  // Por documento o por razón social (misma regla que el servidor): un Bre-B
+  // por llave puede no guardar documento, o guardar el de la llave. Solo la
+  // razón social de una empresa: el nombre de una persona se repite.
+  const nombrePropio = nitPropio.length >= 6 || !!empresa ? nombreBase(ficha?.nombre) : '';
+  const movPropio = (tx: any) =>
+    esPropio(docContraparte(tx)) || (nombrePropio.length >= 4 && nombreBase(nombreContraparte(tx)) === nombrePropio);
   // Por qué un movimiento no lleva factura, aunque sea de los que se facturan.
+  // Lo que el servidor ya decidió (con la ficha completa de la empresa) también
+  // cuenta: su motivo queda guardado en el comprobante.
   const noAplicaPor = (tx: any): string | null => {
-    if (movPropio(tx)) return 'cuenta propia';
+    const guardado = String(folios[String(tx?.id ?? '')]?.factura?.error ?? '');
+    if (movPropio(tx) || /cuenta de la misma empresa|es la misma empresa que factura/i.test(guardado)) return 'cuenta propia';
     const aj = sinFacturaAjuste(tx);
-    return aj === 'ajuste' ? 'ajuste de saldo' : aj === 'revertido' ? 'cargue revertido' : null;
+    if (aj === 'revertido' || /revirtió este cargue/i.test(guardado)) return 'cargue revertido';
+    return aj === 'ajuste' || /ajuste de saldo de Lincoin/i.test(guardado) ? 'ajuste de saldo' : null;
   };
   const [contadorAbierto, setContadorAbierto] = useState(false);
   const [estadoAbierto, setEstadoAbierto] = useState(false);
