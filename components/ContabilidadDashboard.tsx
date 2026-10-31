@@ -50,6 +50,9 @@ const C = {
 };
 
 export type Periodo = 'mes' | 'anio' | 'historico';
+type Seccion = 'resumen' | 'movimientos' | 'estado' | 'terceros';
+const SECCIONES: [Seccion, string][] = [['resumen', 'Resumen'], ['movimientos', 'Movimientos'], ['estado', 'Estado de cuenta'], ['terceros', 'A quién / de quién']];
+const SECCION_KEY = 'lincoin_conta_seccion';
 
 const fmtCorto = (v: number, m: Moneda) => {
   if (m === 'COP' && Math.abs(v) >= 1e6) return `${(v / 1e6).toLocaleString('es-CO', { maximumFractionDigits: Math.abs(v) >= 100e6 ? 0 : 1 })} M`;
@@ -967,6 +970,13 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [terAbierto, setTerAbierto] = useState<string | null>(null);
   const [limiteTer, setLimiteTer] = useState(10);
   const [periodo, setPeriodo] = useState<Periodo>('mes');
+  // La sección abierta (Resumen, Movimientos, Estado de cuenta, Terceros):
+  // se recuerda en este navegador.
+  const [seccion, setSeccion] = useState<Seccion>(() => {
+    try { const v = localStorage.getItem(SECCION_KEY); if (SECCIONES.some(([k]) => k === v)) return v as Seccion; } catch { /* sin storage */ }
+    return 'resumen';
+  });
+  const elegirSeccion = (k: Seccion) => { setSeccion(k); try { localStorage.setItem(SECCION_KEY, k); } catch { /* sin storage */ } };
   // El mes que se mira con "Mes". null = el mes en curso. La contadora cierra
   // el mes anterior ya entrado el siguiente: tiene que poder volver a
   // septiembre sin depender de "Este año" (que mezcla todo).
@@ -1701,61 +1711,19 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         {kpi('MOVIMIENTOS', String(nIn + nOut), `${nIn} ${nIn === 1 ? 'recibido' : 'recibidos'} · ${nOut} ${nOut === 1 ? 'enviado' : 'enviados'}`)}
       </div>
 
-      {/* 2b. Estado de cuenta del periodo y, para la contadora, el titular. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
-        <Tarjeta>
-          <div className="flex items-start justify-between flex-wrap" style={{ gap: 10 }}>
-            <div style={{ minWidth: 0 }}>
-              <Rotulo>ESTADO DE CUENTA · {periodoTxt.toUpperCase()} · {moneda}</Rotulo>
-              <p style={{ fontSize: 12, color: C.sub, margin: '5px 0 0' }}>Del {desdeTxt} al {hastaTxt}</p>
-            </div>
-            <button onClick={() => setEstadoAbierto(true)} className="lincoin-btn-white"
-              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12.5, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              Ver estado de cuenta · PDF
-            </button>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            {([
-              ['Saldo inicial', fmtMon(ec.saldoInicial, moneda), C.text, false],
-              [`(+) Entradas · ${ec.nEntradas}`, `+${fmtMon(ec.entradas, moneda)}`, C.entra, false],
-              [`(−) Salidas · ${ec.nSalidas}`, `−${fmtMon(ec.salidas, moneda)}`, C.text, false],
-              ...(moneda === 'COP' ? [[`(−) Costos de envío`, `−${fmtMon(ec.costos, moneda)}`, C.text, false]] : []),
-              ['Saldo final', fmtMon(ec.saldoFinal, moneda), C.text, true],
-            ] as [string, string, string, boolean][]).map(([k, v, col, fuerte]) => (
-              <div key={k} className="flex items-center justify-between" style={{ gap: 12, padding: fuerte ? '10px 0 2px' : '7px 0', borderTop: `1px solid ${fuerte ? 'rgba(255,255,255,0.18)' : C.borde}` }}>
-                <span style={{ fontSize: fuerte ? 13.5 : 12.5, color: fuerte ? C.text : C.sub, fontWeight: fuerte ? 800 : 500 }}>{k}</span>
-                <span style={{ fontSize: fuerte ? 16 : 13, color: col, fontWeight: fuerte ? 800 : 700, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', letterSpacing: fuerte ? '-0.3px' : 0 }}>{v}</span>
-              </div>
-            ))}
-          </div>
-          <p style={{ fontSize: 11, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>
-            El saldo inicial suma todo lo anterior al periodo. {moneda === 'COP' ? 'Cada envío descuenta el monto y su costo. ' : ''}Lo rechazado no mueve el saldo{ec.nNoSuman ? ` (${ec.nNoSuman} en el periodo)` : ''}. El PDF trae cada movimiento con su saldo y a quién se le envió.
-          </p>
-        </Tarjeta>
-        {(soloLectura || empresaId) && ficha && (
-          <Tarjeta>
-            <Rotulo>DATOS DE LA EMPRESA</Rotulo>
-            <div style={{ marginTop: 10 }}>
-              {([
-                ['Razón social', ficha.nombre],
-                [ficha.tipoDocumento || 'NIT', ficha.nit ?? ''],
-                ['Dirección', [ficha.direccion, ficha.ciudad, ficha.pais].filter(Boolean).join(', ')],
-                ['Representante legal', [ficha.representante, ficha.representanteDoc].filter(Boolean).join(' · ')],
-                ['Correo', ficha.email ?? ''],
-                ['Teléfono', ficha.telefono ?? ''],
-                ['ID Lincoin', ficha.idLincoin ?? ''],
-                ['Cliente desde', ficha.clienteDesde ? fechaLarga(new Date(ficha.clienteDesde).getTime()) : ''],
-              ] as [string, string][]).filter(([, v]) => v).map(([k, v]) => (
-                <div key={k} className="flex items-start justify-between" style={{ gap: 14, padding: '7px 0', borderTop: `1px solid ${C.borde}` }}>
-                  <span style={{ fontSize: 12, color: C.sub, flexShrink: 0 }}>{k}</span>
-                  <span style={{ fontSize: 12.5, color: C.text, fontWeight: 600, textAlign: 'right', wordBreak: 'break-word', minWidth: 0 }}>{v}</span>
-                </div>
-              ))}
-            </div>
-          </Tarjeta>
-        )}
+      {/* Secciones: arriba quedan fijos el periodo y las cifras; el resto va
+          en secciones con botones, en vez de una sola hoja larga (pedido de
+          la contadora, 2026-10-31). Se recuerda la última abierta. */}
+      <div role="tablist" aria-label="Secciones de Contabilidad" className="flex flex-wrap" style={{ gap: 6, padding: 4, background: 'rgba(255,255,255,0.03)', border: `1px solid ${C.borde}`, borderRadius: 12 }}>
+        {SECCIONES.map(([k, rot]) => { const act = seccion === k; return (
+          <button key={k} role="tab" aria-selected={act} onClick={() => elegirSeccion(k)}
+            style={{ fontFamily: FONT, flex: '1 1 140px', fontSize: 13, fontWeight: 700, padding: '10px 14px', borderRadius: 9, cursor: 'pointer', color: act ? C.text : C.sub, background: act ? 'rgba(255,255,255,0.08)' : 'transparent', border: `1px solid ${act ? 'rgba(255,255,255,0.18)' : 'transparent'}`, whiteSpace: 'nowrap' }}>
+            {rot}{k === 'movimientos' && foliosEstado === 'ok' && nSinFactura > 0 && <span style={{ color: C.entra, fontWeight: 700, marginLeft: 6, fontVariantNumeric: 'tabular-nums' }}>· {nSinFactura} sin factura</span>}
+          </button>
+        ); })}
       </div>
 
+      {seccion === 'resumen' && (<>
       {/* 3. Gráfico + por tipo */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
         <Barras cubos={cubos} moneda={moneda} titulo={periodo === 'mes' ? `MOVIMIENTOS POR DÍA · ${rotMes.toUpperCase()}` : 'MOVIMIENTOS POR MES'} />
@@ -1776,99 +1744,6 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </Tarjeta>
       </div>
 
-      {/* 3b. A quién se le envió / de quién se recibió, en el periodo. La
-          barra de cada fila es su parte del total; al tocar una fila se ve
-          cuánto se le envió mes a mes (12 meses) y cada operación. */}
-      <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
-        <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '16px 20px 12px' }}>
-          <div style={{ minWidth: 0 }}>
-            <Rotulo>{vistaTer === 'out' ? 'A QUIÉN SE LE ENVIÓ' : 'DE QUIÉN SE RECIBIÓ'} · {periodoTxt.toUpperCase()} · {moneda}</Rotulo>
-            <p style={{ fontSize: 12, color: C.sub, margin: '5px 0 0' }}>
-              {listaTer.length === 0 ? 'Sin movimientos en el periodo.' : `${listaTer.length} ${listaTer.length === 1 ? 'tercero' : 'terceros'} · ${fmtMon(totalTer, moneda)} · toca uno para verlo mes a mes`}
-            </p>
-          </div>
-          <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3 }}>
-            {([['out', 'Enviado a'], ['in', 'Recibido de']] as [Dir, string][]).map(([k, rot]) => (
-              <button key={k} onClick={() => { setVistaTer(k); setTerAbierto(null); setLimiteTer(10); }} style={seg(vistaTer === k)}>{rot}</button>
-            ))}
-          </div>
-        </div>
-        {listaTer.length > 0 && (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-              <thead><tr>{[vistaTer === 'out' ? 'BENEFICIARIO' : 'QUIÉN PAGÓ', 'OPERACIONES', vistaTer === 'out' ? 'ENVIADO' : 'RECIBIDO', '% DEL TOTAL', 'ÚLTIMA'].map((h, i) => <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 0 ? 'left' : 'right', padding: '8px 20px', borderBottom: `1px solid ${C.borde}`, borderTop: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
-              <tbody>
-                {listaTer.slice(0, limiteTer).map(t => {
-                  const abierto = terAbierto === t.clave;
-                  const color = vistaTer === 'out' ? C.sale : C.entra;
-                  const det = [[t.docTipo, t.docNum].filter(Boolean).join(' '), [t.banco, t.tipoCuenta, t.cuenta].filter(Boolean).join(' · ')].filter(Boolean).join(' · ');
-                  return (
-                    <React.Fragment key={t.clave}>
-                      <tr className="lincoin-fila-mov" onClick={() => setTerAbierto(abierto ? null : t.clave)} aria-expanded={abierto}
-                        style={{ cursor: 'pointer', background: abierto ? 'rgba(255,255,255,0.03)' : undefined }}>
-                        <td style={{ padding: '11px 20px', borderBottom: abierto ? 'none' : `1px solid ${C.borde}`, minWidth: 260 }}>
-                          <p className="flex items-center" style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, gap: 7 }}>
-                            <span style={{ fontSize: 10, color: C.tenue, width: 9, display: 'inline-block', transform: abierto ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }}>▶</span>
-                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 380 }}>{t.nombre || '—'}</span>
-                          </p>
-                          {det && <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0 16px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 420 }}>{det}</p>}
-                          <div style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.06)', margin: '7px 0 0 16px', overflow: 'hidden', maxWidth: 420 }}>
-                            <div style={{ width: `${Math.max(2, (t.total / maxTer) * 100)}%`, height: '100%', background: color, borderRadius: 999 }} />
-                          </div>
-                        </td>
-                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{t.n}</td>
-                        <td style={{ padding: '11px 20px', fontSize: 13.5, fontWeight: 700, color: vistaTer === 'in' ? C.entra : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>
-                          {fmtMon(t.total, moneda)}
-                          {t.costos > 0 && <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: C.tenue }}>+ {fmtMon(t.costos, moneda)} de costo</span>}
-                        </td>
-                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{totalTer > 0 ? `${((t.total / totalTer) * 100).toLocaleString('es-CO', { maximumFractionDigits: 1 })} %` : '—'}</td>
-                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{new Date(t.ultima).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                      </tr>
-                      {abierto && serieTer && (
-                        <tr>
-                          <td colSpan={5} style={{ padding: '4px 20px 16px 36px', borderBottom: `1px solid ${C.borde}`, background: 'rgba(255,255,255,0.03)' }}>
-                            <div className="flex items-baseline justify-between flex-wrap" style={{ gap: 10, marginBottom: 6 }}>
-                              <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>{vistaTer === 'out' ? 'ENVIADO' : 'RECIBIDO'} POR MES · ÚLTIMOS 12 MESES</p>
-                              <p style={{ fontSize: 12, color: C.sub, margin: 0 }}>12 meses: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtMon(serieTer.doce, moneda)}</b> · desde el inicio: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtMon(serieTer.historico, moneda)}</b> en {serieTer.nHistorico} {serieTer.nHistorico === 1 ? 'operación' : 'operaciones'}</p>
-                            </div>
-                            <Columnas puntos={serieTer.puntos} color={vistaTer === 'out' ? C.sale : C.entra} moneda={moneda} rotSerie={vistaTer === 'out' ? 'Enviado' : 'Recibido'} />
-                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '12px 0 4px' }}>OPERACIONES · {periodoTxt.toUpperCase()}</p>
-                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                              <tbody>
-                                {[...t.asientos].sort((x, y) => y.ts - x.ts).map((a, i) => (
-                                  <tr key={`${a.tx.id}-${i}`}>
-                                    <td style={{ padding: '6px 0', fontSize: 12, color: C.medio, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', borderTop: `1px solid ${C.borde}` }}>{fecha(a.ts)}</td>
-                                    <td style={{ padding: '6px 12px', fontSize: 12, color: C.text, borderTop: `1px solid ${C.borde}` }}>{a.tipo}</td>
-                                    <td style={{ padding: '6px 12px', fontSize: 12, color: C.tenue, fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>{folios[String(a.tx.id)]?.numero ?? ''}</td>
-                                    <td style={{ padding: '6px 12px', fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', color: estadoColor(a.estado), whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>{a.estado.toUpperCase()}</td>
-                                    <td style={{ padding: '6px 0', fontSize: 12.5, fontWeight: 700, color: a.dir === 'in' ? C.entra : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>
-                                      {fmtMon(a.monto, moneda)}{a.costo > 0 && <span style={{ fontSize: 11, fontWeight: 500, color: C.tenue }}> + {fmtMon(a.costo, moneda)}</span>}
-                                    </td>
-                                    <td style={{ padding: '6px 0 6px 12px', textAlign: 'right', borderTop: `1px solid ${C.borde}` }}>
-                                      {onVerMovimiento && <button onClick={() => onVerMovimiento(a.tx)} style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '3px 9px', cursor: 'pointer' }}>Ver</button>}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {listaTer.length > limiteTer && (
-          <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 20px', borderTop: `1px solid ${C.borde}` }}>
-            <span style={{ fontSize: 12, color: C.sub }}>Mostrando {Math.min(limiteTer, listaTer.length)} de {listaTer.length}</span>
-            <button onClick={() => setLimiteTer(l => l + 25)} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Ver más →</button>
-          </div>
-        )}
-      </Tarjeta>
-
       {/* 4. Resumen por mes */}
       <Tarjeta style={{ padding: '18px 0 6px' }}>
         <div style={{ padding: '0 20px' }}><Rotulo>ÚLTIMOS 12 MESES · {moneda} · TOCA UN MES PARA VERLO</Rotulo></div>
@@ -1877,7 +1752,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             <thead><tr>{['MES', 'RECIBIDO', 'ENVIADO', 'NETO', 'MOVIMIENTOS'].map((h, i) => <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 0 ? 'left' : 'right', padding: '8px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
             <tbody>
               {meses12.map(m => { const vacio = m.movs === 0, col = vacio ? C.tenue : C.text, n = m.recibido - m.enviado, elegido = periodo === 'mes' && m.y === mesY && m.m === mesM; return (
-                <tr key={m.rot} onClick={() => irAMes({ y: m.y, m: m.m })} title="Ver los movimientos de este mes"
+                <tr key={m.rot} onClick={() => { irAMes({ y: m.y, m: m.m }); elegirSeccion('movimientos'); }} title="Ver los movimientos de este mes"
                   style={{ cursor: 'pointer', background: elegido ? 'rgba(74,222,128,0.06)' : undefined }}>
                   <td style={{ padding: '9px 20px', fontSize: 12.5, color: col, borderBottom: `1px solid ${C.borde}`, textTransform: 'capitalize' }}>{m.rot}</td>
                   <td style={{ padding: '9px 20px', fontSize: 12.5, color: col, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{m.recibido > 0 ? fmtMon(m.recibido, moneda) : '—'}</td>
@@ -1897,6 +1772,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </div>
       </Tarjeta>
 
+      </>)}
+
+      {seccion === 'movimientos' && (<>
       {/* 5. Movimientos */}
       <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
         <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '14px 20px', borderBottom: `1px solid ${C.borde}` }}>
@@ -2099,6 +1977,162 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         {foliosEstado === 'sin_tabla' && ' Los comprobantes automáticos todavía no están activos en esta cuenta (falta la migración 2026_comprobantes.sql).'}
         {foliosEstado === 'ok' && ' El comprobante de cada operación se emite solo, con número consecutivo, apenas la operación se completa, y llega por correo.'}
       </p>
+
+      </>)}
+
+      {seccion === 'estado' && (<>
+      {/* 2b. Estado de cuenta del periodo y, para la contadora, el titular. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12 }}>
+        <Tarjeta>
+          <div className="flex items-start justify-between flex-wrap" style={{ gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <Rotulo>ESTADO DE CUENTA · {periodoTxt.toUpperCase()} · {moneda}</Rotulo>
+              <p style={{ fontSize: 12, color: C.sub, margin: '5px 0 0' }}>Del {desdeTxt} al {hastaTxt}</p>
+            </div>
+            <button onClick={() => setEstadoAbierto(true)} className="lincoin-btn-white"
+              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 12.5, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              Ver estado de cuenta · PDF
+            </button>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            {([
+              ['Saldo inicial', fmtMon(ec.saldoInicial, moneda), C.text, false],
+              [`(+) Entradas · ${ec.nEntradas}`, `+${fmtMon(ec.entradas, moneda)}`, C.entra, false],
+              [`(−) Salidas · ${ec.nSalidas}`, `−${fmtMon(ec.salidas, moneda)}`, C.text, false],
+              ...(moneda === 'COP' ? [[`(−) Costos de envío`, `−${fmtMon(ec.costos, moneda)}`, C.text, false]] : []),
+              ['Saldo final', fmtMon(ec.saldoFinal, moneda), C.text, true],
+            ] as [string, string, string, boolean][]).map(([k, v, col, fuerte]) => (
+              <div key={k} className="flex items-center justify-between" style={{ gap: 12, padding: fuerte ? '10px 0 2px' : '7px 0', borderTop: `1px solid ${fuerte ? 'rgba(255,255,255,0.18)' : C.borde}` }}>
+                <span style={{ fontSize: fuerte ? 13.5 : 12.5, color: fuerte ? C.text : C.sub, fontWeight: fuerte ? 800 : 500 }}>{k}</span>
+                <span style={{ fontSize: fuerte ? 16 : 13, color: col, fontWeight: fuerte ? 800 : 700, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', letterSpacing: fuerte ? '-0.3px' : 0 }}>{v}</span>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: C.tenue, margin: '10px 0 0', lineHeight: 1.5 }}>
+            El saldo inicial suma todo lo anterior al periodo. {moneda === 'COP' ? 'Cada envío descuenta el monto y su costo. ' : ''}Lo rechazado no mueve el saldo{ec.nNoSuman ? ` (${ec.nNoSuman} en el periodo)` : ''}. El PDF trae cada movimiento con su saldo y a quién se le envió.
+          </p>
+        </Tarjeta>
+        {(soloLectura || empresaId) && ficha && (
+          <Tarjeta>
+            <Rotulo>DATOS DE LA EMPRESA</Rotulo>
+            <div style={{ marginTop: 10 }}>
+              {([
+                ['Razón social', ficha.nombre],
+                [ficha.tipoDocumento || 'NIT', ficha.nit ?? ''],
+                ['Dirección', [ficha.direccion, ficha.ciudad, ficha.pais].filter(Boolean).join(', ')],
+                ['Representante legal', [ficha.representante, ficha.representanteDoc].filter(Boolean).join(' · ')],
+                ['Correo', ficha.email ?? ''],
+                ['Teléfono', ficha.telefono ?? ''],
+                ['ID Lincoin', ficha.idLincoin ?? ''],
+                ['Cliente desde', ficha.clienteDesde ? fechaLarga(new Date(ficha.clienteDesde).getTime()) : ''],
+              ] as [string, string][]).filter(([, v]) => v).map(([k, v]) => (
+                <div key={k} className="flex items-start justify-between" style={{ gap: 14, padding: '7px 0', borderTop: `1px solid ${C.borde}` }}>
+                  <span style={{ fontSize: 12, color: C.sub, flexShrink: 0 }}>{k}</span>
+                  <span style={{ fontSize: 12.5, color: C.text, fontWeight: 600, textAlign: 'right', wordBreak: 'break-word', minWidth: 0 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </Tarjeta>
+        )}
+      </div>
+
+      </>)}
+
+      {seccion === 'terceros' && (<>
+      {/* 3b. A quién se le envió / de quién se recibió, en el periodo. La
+          barra de cada fila es su parte del total; al tocar una fila se ve
+          cuánto se le envió mes a mes (12 meses) y cada operación. */}
+      <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '16px 20px 12px' }}>
+          <div style={{ minWidth: 0 }}>
+            <Rotulo>{vistaTer === 'out' ? 'A QUIÉN SE LE ENVIÓ' : 'DE QUIÉN SE RECIBIÓ'} · {periodoTxt.toUpperCase()} · {moneda}</Rotulo>
+            <p style={{ fontSize: 12, color: C.sub, margin: '5px 0 0' }}>
+              {listaTer.length === 0 ? 'Sin movimientos en el periodo.' : `${listaTer.length} ${listaTer.length === 1 ? 'tercero' : 'terceros'} · ${fmtMon(totalTer, moneda)} · toca uno para verlo mes a mes`}
+            </p>
+          </div>
+          <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3 }}>
+            {([['out', 'Enviado a'], ['in', 'Recibido de']] as [Dir, string][]).map(([k, rot]) => (
+              <button key={k} onClick={() => { setVistaTer(k); setTerAbierto(null); setLimiteTer(10); }} style={seg(vistaTer === k)}>{rot}</button>
+            ))}
+          </div>
+        </div>
+        {listaTer.length > 0 && (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+              <thead><tr>{[vistaTer === 'out' ? 'BENEFICIARIO' : 'QUIÉN PAGÓ', 'OPERACIONES', vistaTer === 'out' ? 'ENVIADO' : 'RECIBIDO', '% DEL TOTAL', 'ÚLTIMA'].map((h, i) => <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 0 ? 'left' : 'right', padding: '8px 20px', borderBottom: `1px solid ${C.borde}`, borderTop: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {listaTer.slice(0, limiteTer).map(t => {
+                  const abierto = terAbierto === t.clave;
+                  const color = vistaTer === 'out' ? C.sale : C.entra;
+                  const det = [[t.docTipo, t.docNum].filter(Boolean).join(' '), [t.banco, t.tipoCuenta, t.cuenta].filter(Boolean).join(' · ')].filter(Boolean).join(' · ');
+                  return (
+                    <React.Fragment key={t.clave}>
+                      <tr className="lincoin-fila-mov" onClick={() => setTerAbierto(abierto ? null : t.clave)} aria-expanded={abierto}
+                        style={{ cursor: 'pointer', background: abierto ? 'rgba(255,255,255,0.03)' : undefined }}>
+                        <td style={{ padding: '11px 20px', borderBottom: abierto ? 'none' : `1px solid ${C.borde}`, minWidth: 260 }}>
+                          <p className="flex items-center" style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, gap: 7 }}>
+                            <span style={{ fontSize: 10, color: C.tenue, width: 9, display: 'inline-block', transform: abierto ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }}>▶</span>
+                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 380 }}>{t.nombre || '—'}</span>
+                          </p>
+                          {det && <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0 16px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 420 }}>{det}</p>}
+                          <div style={{ height: 5, borderRadius: 999, background: 'rgba(255,255,255,0.06)', margin: '7px 0 0 16px', overflow: 'hidden', maxWidth: 420 }}>
+                            <div style={{ width: `${Math.max(2, (t.total / maxTer) * 100)}%`, height: '100%', background: color, borderRadius: 999 }} />
+                          </div>
+                        </td>
+                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{t.n}</td>
+                        <td style={{ padding: '11px 20px', fontSize: 13.5, fontWeight: 700, color: vistaTer === 'in' ? C.entra : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>
+                          {fmtMon(t.total, moneda)}
+                          {t.costos > 0 && <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: C.tenue }}>+ {fmtMon(t.costos, moneda)} de costo</span>}
+                        </td>
+                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{totalTer > 0 ? `${((t.total / totalTer) * 100).toLocaleString('es-CO', { maximumFractionDigits: 1 })} %` : '—'}</td>
+                        <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, textAlign: 'right', whiteSpace: 'nowrap', borderBottom: abierto ? 'none' : `1px solid ${C.borde}` }}>{new Date(t.ultima).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                      </tr>
+                      {abierto && serieTer && (
+                        <tr>
+                          <td colSpan={5} style={{ padding: '4px 20px 16px 36px', borderBottom: `1px solid ${C.borde}`, background: 'rgba(255,255,255,0.03)' }}>
+                            <div className="flex items-baseline justify-between flex-wrap" style={{ gap: 10, marginBottom: 6 }}>
+                              <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>{vistaTer === 'out' ? 'ENVIADO' : 'RECIBIDO'} POR MES · ÚLTIMOS 12 MESES</p>
+                              <p style={{ fontSize: 12, color: C.sub, margin: 0 }}>12 meses: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtMon(serieTer.doce, moneda)}</b> · desde el inicio: <b style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{fmtMon(serieTer.historico, moneda)}</b> en {serieTer.nHistorico} {serieTer.nHistorico === 1 ? 'operación' : 'operaciones'}</p>
+                            </div>
+                            <Columnas puntos={serieTer.puntos} color={vistaTer === 'out' ? C.sale : C.entra} moneda={moneda} rotSerie={vistaTer === 'out' ? 'Enviado' : 'Recibido'} />
+                            <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '12px 0 4px' }}>OPERACIONES · {periodoTxt.toUpperCase()}</p>
+                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                              <tbody>
+                                {[...t.asientos].sort((x, y) => y.ts - x.ts).map((a, i) => (
+                                  <tr key={`${a.tx.id}-${i}`}>
+                                    <td style={{ padding: '6px 0', fontSize: 12, color: C.medio, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', borderTop: `1px solid ${C.borde}` }}>{fecha(a.ts)}</td>
+                                    <td style={{ padding: '6px 12px', fontSize: 12, color: C.text, borderTop: `1px solid ${C.borde}` }}>{a.tipo}</td>
+                                    <td style={{ padding: '6px 12px', fontSize: 12, color: C.tenue, fontFamily: 'ui-monospace, monospace', whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>{folios[String(a.tx.id)]?.numero ?? ''}</td>
+                                    <td style={{ padding: '6px 12px', fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', color: estadoColor(a.estado), whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>{a.estado.toUpperCase()}</td>
+                                    <td style={{ padding: '6px 0', fontSize: 12.5, fontWeight: 700, color: a.dir === 'in' ? C.entra : C.text, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', borderTop: `1px solid ${C.borde}` }}>
+                                      {fmtMon(a.monto, moneda)}{a.costo > 0 && <span style={{ fontSize: 11, fontWeight: 500, color: C.tenue }}> + {fmtMon(a.costo, moneda)}</span>}
+                                    </td>
+                                    <td style={{ padding: '6px 0 6px 12px', textAlign: 'right', borderTop: `1px solid ${C.borde}` }}>
+                                      {onVerMovimiento && <button onClick={() => onVerMovimiento(a.tx)} style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '3px 9px', cursor: 'pointer' }}>Ver</button>}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {listaTer.length > limiteTer && (
+          <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 20px', borderTop: `1px solid ${C.borde}` }}>
+            <span style={{ fontSize: 12, color: C.sub }}>Mostrando {Math.min(limiteTer, listaTer.length)} de {listaTer.length}</span>
+            <button onClick={() => setLimiteTer(l => l + 25)} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Ver más →</button>
+          </div>
+        )}
+      </Tarjeta>
+
+      </>)}
 
       <style>{`
         .lincoin-fila-mov:hover td { background: ${C.hover}; }

@@ -169,7 +169,10 @@ Deno.serve(async (req) => {
         }
         return { data: filas, error: null as any }
       }
-      const [tx, comps] = await Promise.all([leerTodo('transactions', 'created_at'), leerTodo('comprobantes', 'id')])
+      // comprobantes no tiene columna id: su clave es el folio. Con 'id' la
+      // consulta fallaba («column comprobantes.id does not exist») y el
+      // portal lo mostraba arriba de la contabilidad.
+      const [tx, comps] = await Promise.all([leerTodo('transactions', 'created_at'), leerTodo('comprobantes', 'folio')])
       if (tx.error) return json({ ok: false, error: `Movimientos: ${tx.error.message}` }, 500)
       // La ficha del titular para el estado de cuenta: identificación,
       // dirección y representante legal. Nada de documentos, fecha de
@@ -195,6 +198,24 @@ Deno.serve(async (req) => {
         comprobantes: comps.error ? [] : (comps.data ?? []),
         comprobantesError: comps.error ? comps.error.message : null,
       })
+    }
+
+    // El contador deja de trabajar con una empresa: sale de su lista de
+    // aprobados (o retira la solicitud en espera) y la empresa se entera. La
+    // configuración de Siigo, las facturas y la cola de emisión son de la
+    // EMPRESA (van por su id): no se tocan. Si vuelve, pide acceso otra vez.
+    if (accion === 'salir_empresa') {
+      const empresaId = String(body.empresaId ?? '')
+      const emp = empresaId ? await empresaPorId(empresaId) : null
+      if (!emp) return json({ ok: false, error: 'La empresa ya no existe' }, 404)
+      const aprobados = lista(emp.raw_data, 'contadores')
+      const pendientes = lista(emp.raw_data, 'contadoresSolicitudes')
+      if (!aprobados.some(c => c.id === yo.id) && !pendientes.some(c => c.id === yo.id)) return json({ ok: true })
+      const err = await guardarVinculos(empresaId, aprobados.filter(c => c.id !== yo.id), pendientes.filter(c => c.id !== yo.id))
+      if (err) return json({ ok: false, error: `No se pudo dejar la empresa: ${err}` }, 500)
+      await db.from('audit_log').insert({ user_id: emp.id, action: 'empresa.contador_salio', metadata: { contadorId: yo.id, email: yo.email, at: new Date().toISOString() } })
+      await notificar(String(emp.id), 'Tu contador dejó tu contabilidad', `${yo.nombre || yo.email} (${yo.email}) dejó de trabajar con tu contabilidad y tu facturación. Tu configuración de Siigo sigue guardada en tu cuenta, tal como estaba.`)
+      return json({ ok: true })
     }
 
     // ── LA EMPRESA ───────────────────────────────────────────────────────

@@ -78,6 +78,37 @@ const Fila: React.FC<{ etiqueta: string; icono: string; activo?: boolean; apagad
   );
 };
 
+// La bolita de la empresa: sus iniciales (MEXITECH → ME, J&J EYEWEAR → JE).
+const inicialesDe = (nombre: string) => {
+  const p = String(nombre ?? '').replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ0-9 ]+/g, ' ').trim().split(/\s+/).filter(w => !/^(S|SAS|SA|LTDA|EU)$/i.test(w));
+  return ((p.length > 1 ? p[0][0] + p[1][0] : (p[0] ?? '?').slice(0, 2)) || '?').toUpperCase();
+};
+const Bolita: React.FC<{ nombre: string; activo?: boolean; tam?: number }> = ({ nombre, activo, tam = 26 }) => (
+  <span aria-hidden="true" style={{ width: tam, height: tam, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', fontSize: Math.round(tam * 0.4), fontWeight: 800, letterSpacing: '-0.3px',
+    color: activo ? '#0A0A0A' : C.text, background: activo ? C.verde : 'rgba(255,255,255,0.08)', border: `1px solid ${activo ? C.verde : 'rgba(255,255,255,0.12)'}` }}>
+    {inicialesDe(nombre)}
+  </span>
+);
+// Una empresa en la barra: su bolita, el nombre y una ✕ para dejar de
+// trabajar con ella (pide confirmar).
+const FilaEmpresa: React.FC<{ nombre: string; activo: boolean; onAbrir: () => void; onDejar: () => void }> = ({ nombre, activo, onAbrir, onDejar }) => {
+  const [sobre, setSobre] = useState(false);
+  return (
+    <div onMouseEnter={() => setSobre(true)} onMouseLeave={() => setSobre(false)}
+      style={{ display: 'flex', alignItems: 'center', borderRadius: 9, background: activo ? C.activo : sobre ? C.hover : 'transparent', transition: 'background 150ms' }}>
+      <button onClick={onAbrir} aria-current={activo ? 'page' : undefined} className="lincoin-nav-item"
+        style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10, padding: '8px 4px 8px 10px', border: 'none', background: 'transparent', textAlign: 'left', cursor: 'pointer',
+          color: activo || sobre ? C.text : C.sub, fontFamily: FONT, fontSize: 14, fontWeight: activo ? 600 : 500 }}>
+        <Bolita nombre={nombre} activo={activo} />
+        <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nombre}</span>
+      </button>
+      <button onClick={onDejar} aria-label={`Dejar de trabajar con ${nombre}`} title="Dejar de trabajar con esta empresa" className="lincoin-nav-item"
+        style={{ width: 28, height: 28, marginRight: 4, flexShrink: 0, borderRadius: 7, border: 'none', background: 'transparent', color: C.sub, cursor: 'pointer', fontSize: 15, lineHeight: 1,
+          opacity: sobre || activo ? 1 : 0.35, transition: 'opacity 150ms' }}>×</button>
+    </div>
+  );
+};
+
 export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const { currentUser } = useDatabase();
   const [datos, setDatos] = useState<Datos | null>(null);
@@ -94,6 +125,22 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
   const [avisoPedido, setAvisoPedido] = useState<string | null>(null);
   const [menuMovil, setMenuMovil] = useState(false);
   const [confirmarSalir, setConfirmarSalir] = useState(false);
+  // Dejar de trabajar con una empresa (sale de su lista; lo de la empresa,
+  // como su configuración de Siigo, se queda en la empresa).
+  const [dejar, setDejar] = useState<Vinculo | null>(null);
+  const [dejando, setDejando] = useState(false);
+  const dejarEmpresa = async () => {
+    if (!dejar || dejando) return;
+    setDejando(true);
+    const r = await llamarFuncion('contador', { action: 'salir_empresa', empresaId: dejar.id }, 30000);
+    setDejando(false);
+    if (!r?.ok) { setError(r?.error ?? 'No se pudo dejar la empresa.'); setDejar(null); return; }
+    if (empresaSel === dejar.id) { setEmpresaSel(null); setDatos(null); }
+    setAprobadas(a => (a ?? []).filter(e => e.id !== dejar.id));
+    setAvisoPedido(`Dejaste ${dejar.nombre}. Su configuración de Siigo y sus facturas siguen guardadas en la empresa. Para volver, pide acceso otra vez con su ID.`);
+    setDejar(null);
+    cargarEstado();
+  };
 
   const cargarDatos = async (empresaId: string) => {
     setCargando(true); setError(null); setDatos(null);
@@ -184,7 +231,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
 
           <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '2px', color: C.sub, margin: 0, padding: '22px 12px 7px' }}>EMPRESAS</p>
           {(aprobadas ?? []).map(e => (
-            <Fila key={e.id} etiqueta={e.nombre} icono={I.edificio} activo={empresaSel === e.id} onClick={() => abrirEmpresa(e.id)} />
+            <FilaEmpresa key={e.id} nombre={e.nombre} activo={empresaSel === e.id} onAbrir={() => abrirEmpresa(e.id)} onDejar={() => setDejar(e)} />
           ))}
           {pendientes.map(p => (
             <Fila key={p.id} etiqueta={p.nombre} icono={I.reloj} apagado nota="EN ESPERA" onClick={irInicio} />
@@ -257,15 +304,19 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
                   <p style={{ ...etiqueta, marginBottom: 8 }}>TUS EMPRESAS</p>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
                     {aprobadas!.map(e => (
-                      <button key={e.id} onClick={() => abrirEmpresa(e.id)} className="lincoin-nav-item conta-empresa"
-                        style={{ fontFamily: FONT, textAlign: 'left', background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 14, padding: '16px 16px', cursor: 'pointer', color: C.text, display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <span style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'grid', placeItems: 'center', color: C.sub }}><Ico d={I.edificio} /></span>
-                        <span style={{ flex: 1, minWidth: 0 }}>
-                          <span style={{ display: 'block', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.nombre}</span>
-                          <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 2 }}>Abrir contabilidad</span>
-                        </span>
-                        <ArrowRight size={16} color={C.sub} />
-                      </button>
+                      <div key={e.id} className="conta-empresa" style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 14, display: 'flex', alignItems: 'center' }}>
+                        <button onClick={() => abrirEmpresa(e.id)} className="lincoin-nav-item"
+                          style={{ fontFamily: FONT, flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', border: 'none', borderRadius: 14, padding: '16px 8px 16px 16px', cursor: 'pointer', color: C.text, display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <Bolita nombre={e.nombre} tam={38} />
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ display: 'block', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{e.nombre}</span>
+                            <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 2 }}>Abrir contabilidad</span>
+                          </span>
+                          <ArrowRight size={16} color={C.sub} />
+                        </button>
+                        <button onClick={() => setDejar(e)} title="Dejar de trabajar con esta empresa" className="lincoin-nav-item"
+                          style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '6px 9px', margin: '0 14px 0 4px', cursor: 'pointer', flexShrink: 0 }}>Dejar</button>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -318,6 +369,17 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
         />
       )}
 
+      {dejar && (
+        <ConfirmarModal
+          titulo={`¿Dejar de trabajar con ${dejar.nombre}?`}
+          texto={`Sales de su contabilidad y su facturación, y deja de aparecer en tu lista. La configuración de Siigo es de ${dejar.nombre} y queda guardada en su cuenta, igual que sus facturas: no se borra nada. La empresa recibe un aviso. Para volver, pides acceso otra vez con su ID.`}
+          confirmar="Dejar la empresa"
+          peligro
+          ocupado={dejando}
+          onConfirmar={dejarEmpresa}
+          onCancelar={() => { if (!dejando) setDejar(null); }}
+        />
+      )}
       {confirmarSalir && (
         <ConfirmarModal
           titulo="¿Cerrar sesión?"
