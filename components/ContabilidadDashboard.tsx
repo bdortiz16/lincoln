@@ -1344,6 +1344,38 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const hastaTxt = pHasta === Infinity ? `${fechaLarga(Date.now())} (hoy)` : fechaLarga(pHasta - 1);
   const periodoTxt = periodo === 'mes' ? rotMes : periodo === 'anio' ? `Año ${ahora.getFullYear()}` : 'Histórico';
 
+  // ── Utilidad e impuestos del periodo (modelos Comisión y PSP) ──
+  // Lo facturado lo cuenta el servidor con las facturas emitidas (por su
+  // fecha, la del IVA). Lo que falta por facturar se estima acá con el % y
+  // el IVA del ítem de Configuración, y se dice que es estimado.
+  const diaCol = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+  const utilDesde = diaCol(Number.isFinite(pDesde) && pDesde > 0 ? pDesde : Date.parse('2020-01-01T12:00:00Z'));
+  const utilHasta = diaCol(Number.isFinite(pHasta) ? pHasta : Date.now() + 86_400_000);
+  const [util, setUtil] = useState<any | null>(null);
+  useEffect(() => {
+    if (seccion !== 'estado' || !esMandato || moneda !== 'COP' || !userId || soloLectura) return;
+    let vivo = true;
+    setUtil(null);
+    fact({ action: 'utilidad', desde: utilDesde, hasta: utilHasta }, 60000).then((r: any) => { if (vivo) setUtil(r ?? { ok: false }); }).catch((e: any) => { if (vivo) setUtil({ ok: false, error: String(e?.message ?? e) }); });
+    return () => { vivo = false; };
+  }, [seccion, esMandato, moneda, userId, soloLectura, utilDesde, utilHasta, foliosVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pctCfg = Number(cfgFact?.utilidad_pct) || 0;
+  const ivaItem = (() => {
+    const prod = (cfgFact?.catalogos?.productos ?? []).find((x: any) => String(x?.code) === String(cfgFact?.item_comision ?? ''));
+    const t = (prod?.taxes ?? []).find((x: any) => (Number(x?.percentage) || 0) > 0);
+    return t ? Number(t.percentage) / 100 : null;
+  })();
+  const porFacturar = foliosEstado === 'ok' ? enP.filter(a => a.moneda === 'COP' && modoLote(a) === 'comision') : [];
+  const comPorFacturar = porFacturar.reduce((sum, a) => sum + a.monto * pctCfg / 100, 0);
+  const tarifaUtil = util?.ok && Number(util.tarifa) > 0 ? Number(util.tarifa) : ivaItem;
+  const ivaPorFacturar = tarifaUtil != null ? comPorFacturar - comPorFacturar / (1 + tarifaUtil) : null;
+  // Lo que la cuenta le pagó a Lincoin en el periodo: el costo de cada envío
+  // (ya está en el estado de cuenta) y la comisión por recibir por Bre-B, que
+  // se descuenta antes de acreditar el depósito. Restan de la utilidad.
+  const nConCosto = enP.filter(a => a.moneda === 'COP' && a.dir === 'out' && cuenta(a.tx) && a.costo > 0).length;
+  const recepcion = enP.filter(a => a.moneda === 'COP' && a.dir === 'in' && cuenta(a.tx) && (a.tx?.type === 'load'))
+    .reduce((sum, a) => sum + Math.max(0, Number(a.tx?.feeCop ?? a.tx?.raw_data?.feeCop) || 0), 0);
+
   // ── Terceros del periodo: a quién se le envió y de quién se recibió ──
   const enviadoA = useMemo(() => terceros(del, 'out'), [asientos, moneda, pDesde, pHasta]); // eslint-disable-line react-hooks/exhaustive-deps
   const recibidoDe = useMemo(() => terceros(del, 'in'), [asientos, moneda, pDesde, pHasta]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2036,6 +2068,47 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         )}
       </div>
 
+        {esMandato && moneda === 'COP' && !soloLectura && (
+          <Tarjeta>
+            <Rotulo>UTILIDAD E IMPUESTOS · {periodoTxt.toUpperCase()}</Rotulo>
+            {!util ? <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0' }}>Sumando las facturas de comisión del periodo…</p>
+              : !util.ok ? <p style={{ fontSize: 12.5, color: ROJO, margin: '12px 0 0', lineHeight: 1.5 }}>No se pudo calcular: {util.error ?? 'sin respuesta'}</p>
+              : (() => {
+                const fila = (rot: React.ReactNode, v: string, o: { fuerte?: boolean; color?: string; nota?: string } = {}) => (
+                  <div style={{ padding: '9px 0', borderBottom: `1px solid ${C.borde}` }}>
+                    <div className="flex items-baseline justify-between" style={{ gap: 12 }}>
+                      <span style={{ fontSize: o.fuerte ? 13.5 : 12.5, fontWeight: o.fuerte ? 800 : 500, color: o.fuerte ? C.text : C.sub }}>{rot}</span>
+                      <span style={{ fontSize: o.fuerte ? 15 : 13, fontWeight: o.fuerte ? 800 : 700, color: o.color ?? C.text, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{v}</span>
+                    </div>
+                    {o.nota && <p style={{ fontSize: 11, color: C.tenue, margin: '3px 0 0', lineHeight: 1.45 }}>{o.nota}</p>}
+                  </div>
+                );
+                const pctTxt = util.pct ?? pctCfg;
+                const tTxt = util.tarifa != null ? `${Math.round(Number(util.tarifa) * 10000) / 100} %` : '';
+                return (
+                  <>
+                    <p style={{ fontSize: 12, color: C.sub, margin: '6px 0 4px', lineHeight: 1.5 }}>
+                      Según {util.facturas === 1 ? 'la factura' : `las ${util.facturas} facturas`} de comisión emitidas en Siigo con fecha en el periodo (la fecha que cuenta para el IVA).
+                    </p>
+                    {fila(`Comisión cobrada${pctTxt ? ` (${String(pctTxt).replace('.', ',')} %, IVA incluido)` : ''}`, fmtCop2(util.comision))}
+                    {fila(`(−) IVA ${tTxt} de la comisión`, fmtCop2(util.iva), { nota: 'IVA generado: se declara y se paga a la DIAN (menos el IVA descontable de las compras).' })}
+                    {fila('Utilidad bruta (base de la comisión, sin IVA)', fmtCop2(util.base), { fuerte: true })}
+                    {fila(`(−) Costos de envío pagados a Lincoin${nConCosto ? ` · ${nConCosto} ${nConCosto === 1 ? 'envío' : 'envíos'}` : ''}`, fmtCop2(ec.costos), { nota: 'Lo que costó cada envío del periodo (el mismo valor del estado de cuenta).' })}
+                    {recepcion > 0 && fila('(−) Comisión por recepción Bre-B pagada a Lincoin', fmtCop2(recepcion), { nota: 'Se descontó de cada depósito por Bre-B antes de acreditarlo.' })}
+                    {(() => { const neta = util.base - ec.costos - recepcion; return fila('Utilidad neta', `${neta < 0 ? '−' : ''}${fmtCop2(Math.abs(neta))}`, { fuerte: true, color: neta >= 0 ? C.entra : ROJO, nota: 'Utilidad bruta menos lo pagado a Lincoin por los envíos y las recepciones. La utilidad cuenta las facturas por su fecha; los costos, los movimientos del periodo.' }); })()}
+                    {fila(`Retención en la fuente que te practicaron${util.conRetencion ? ` · ${util.conRetencion} ${util.conRetencion === 1 ? 'factura' : 'facturas'}` : ''}`, fmtCop2(util.retencion),
+                      { nota: util.retencion > 0 ? `No la pagas tú: la descuenta el cliente (persona jurídica) al pagarte y él la declara. Para ti es un anticipo del impuesto de renta. De la comisión recibes ${fmtCop2(util.comision - util.retencion)}.` : 'Solo la practican los clientes persona jurídica con NIT colombiano (Retefuente comisiones 11 % sobre la base).' })}
+                    {util.rechazadas > 0 && <p style={{ fontSize: 11.5, color: AMBAR, margin: '10px 0 0', lineHeight: 1.5 }}>{util.rechazadas === 1 ? 'Una factura rechazada' : `${util.rechazadas} facturas rechazadas`} por la DIAN no {util.rechazadas === 1 ? 'cuenta' : 'cuentan'} hasta que se reenvíe{util.rechazadas === 1 ? '' : 'n'} (Movimientos → «Volver a emitir»).</p>}
+                    {porFacturar.length > 0 && pctCfg > 0 && (
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 0', lineHeight: 1.5 }}>
+                        Sin facturar todavía: {porFacturar.length} {porFacturar.length === 1 ? 'envío' : 'envíos'} del periodo, con una comisión estimada de {fmtCop2(comPorFacturar)}{ivaPorFacturar != null ? ` (IVA ${fmtCop2(ivaPorFacturar)}, utilidad ${fmtCop2(comPorFacturar - ivaPorFacturar)})` : ''}. Cuentan cuando se emitan sus facturas.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
+          </Tarjeta>
+        )}
       </>)}
 
       {seccion === 'terceros' && (<>

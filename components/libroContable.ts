@@ -41,6 +41,25 @@ export const asientosDe = (t: any): Asiento[] => {
     return '—';
   })();
   if (t.type === 'convert' || t.type === 'tx_created') {
+    // Una conversión se guarda de DOS formas:
+    //  A) currency = la moneda que SALE (amount) y targetCurrency /
+    //     targetAmount la que entra (autoservicio de admin-data).
+    //  B) currency = la que ENTRA (amount = lo recibido) y fromCurrency /
+    //     fromAmount la que sale: USDT → COP de GasFree y Finity, y la mesa
+    //     OTC (direccion 'in'). Leída como A, la venta de USDT por pesos
+    //     contaba esos pesos como una SALIDA («COP → ?») y el saldo en pesos
+    //     de MEXITECH quedaba negativo (septiembre de 2026).
+    const v = (k: string) => t?.[k] ?? t?.raw_data?.[k];
+    const desdeB = String(v('fromCurrency') ?? '');
+    if (!v('targetCurrency') && (desdeB || v('direccion') === 'in' || v('gasfree') === true)) {
+      const destino = String(t.currency ?? '');
+      const rot = `${(desdeB || '?').split('_')[0]} → ${destino.split('_')[0]}`;
+      const fa = Number(v('fromAmount') ?? v('debitUsd'));
+      const out: Asiento[] = [];
+      if (desdeB && Number.isFinite(fa) && fa > 0) out.push({ ...base, dir: 'out', monto: fa, moneda: familia(desdeB), tipo: 'Conversión', contraparte: rot });
+      out.push({ ...base, dir: 'in', monto: Number(t.amount) || 0, moneda: familia(destino), tipo: 'Conversión', contraparte: rot });
+      return out;
+    }
     const de = String(t.currency ?? ''), a = String(t.targetCurrency ?? '');
     const out: Asiento[] = [{ ...base, dir: 'out', monto: Number(t.amount) || 0, moneda: familia(de), tipo: 'Conversión', contraparte: `${de.split('_')[0]} → ${a.split('_')[0] || '?'}` }];
     const tA = Number(t.targetAmount);

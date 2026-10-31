@@ -1487,6 +1487,50 @@ async function sincronizarAnulaciones(userId: string): Promise<{ revisadas: numb
   return out
 }
 
+// ── Utilidad e impuestos de un periodo ────────────────────────────
+// Para el Estado de cuenta (pedido de la contadora, 2026-10-31): lo que dicen
+// las facturas de comisión EMITIDAS —no las anuladas ni las rechazadas por
+// la DIAN—, por la FECHA DE LA FACTURA, que es la que cuenta para el IVA. La
+// comisión cobrada (IVA incluido), su base (la utilidad), el IVA generado y
+// la retención en la fuente que practicaron los clientes. Sale de lo que se
+// guardó al emitir (factura_detalle.comision): no se recalcula.
+async function resumenUtilidad(userId: string, desde: string, hasta: string): Promise<any> {
+  const fecha = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
+  const d = fecha(desde), h = fecha(hasta)
+  if (!d || !h || d >= h) return { ok: false, error: 'Periodo inválido.' }
+  // La factura sale el mismo día o poco después de la fecha que lleva: se
+  // pide un margen y se filtra por la fecha de la factura.
+  const desdeIso = new Date(Date.parse(`${d}T00:00:00-05:00`) - 2 * 86_400_000).toISOString()
+  const hastaIso = new Date(Date.parse(`${h}T00:00:00-05:00`) + 2 * 86_400_000).toISOString()
+  const filas: any[] = []
+  for (let i = 0; i < 20000; i += 1000) {
+    const { data, error } = await db.from('comprobantes')
+      .select('folio, factura_at, factura_tipo, comision:factura_detalle->comision, fecha:factura_detalle->enviado->>date, dian:factura_detalle->>dian')
+      .eq('user_id', userId).eq('factura_estado', 'emitida').gte('factura_at', desdeIso).lt('factura_at', hastaIso)
+      .order('folio', { ascending: true }).range(i, i + 999)
+    if (error) return { ok: false, error: error.message }
+    filas.push(...(data ?? []))
+    if (!data || data.length < 1000) break
+  }
+  const out = { facturas: 0, comision: 0, base: 0, iva: 0, retencion: 0, conRetencion: 0, rechazadas: 0, tarifa: null as number | null, pct: null as number | null }
+  for (const f of filas) {
+    const c = f.comision
+    if (!c || typeof c !== 'object' || f.factura_tipo === 'DS') continue
+    const dia = String(f.fecha ?? '').slice(0, 10) || new Date(Date.parse(String(f.factura_at)) - 5 * 3600_000).toISOString().slice(0, 10)
+    if (dia < d || dia >= h) continue
+    if (f.dian === 'rechazada') { out.rechazadas++; continue }
+    out.facturas++
+    out.comision += Number(c.comision) || 0
+    out.base += Number(c.base) || 0
+    out.iva += Number(c.iva) || 0
+    const ret = Number(c.retencion?.valor) || 0
+    if (ret > 0) { out.retencion += ret; out.conRetencion++ }
+    if (out.tarifa == null && Number(c.tarifa) > 0) out.tarifa = Number(c.tarifa)
+    if (out.pct == null && Number(c.pct) > 0) out.pct = Number(c.pct)
+  }
+  return { ok: true, desde: d, hasta: h, ...out, comision: r2(out.comision), base: r2(out.base), iva: r2(out.iva), retencion: r2(out.retencion) }
+}
+
 // ── Facturas rechazadas por la DIAN ───────────────────────────────
 // La DIAN valida DESPUÉS de que Siigo crea la factura: el rechazo no llega
 // en la respuesta de la creación, y Contabilidad la mostraba como emitida
@@ -2480,7 +2524,7 @@ async function buscarClientes(userId: string, q: string): Promise<{ ok: boolean;
 
 // Lo que el contador puede pedir sin que quede en el audit_log de la empresa:
 // solo lee (todo lo demás cambia la facturación o emite ante la DIAN).
-const ACCIONES_DE_LECTURA = new Set(['config_get', 'documento', 'documento_pdf', 'duplicadas', 'comprobantes', 'dian_revisar', 'ordenantes_get', 'buscar_clientes', 'facturas', 'probar'])
+const ACCIONES_DE_LECTURA = new Set(['config_get', 'documento', 'documento_pdf', 'duplicadas', 'comprobantes', 'dian_revisar', 'utilidad', 'ordenantes_get', 'buscar_clientes', 'facturas', 'probar'])
 
 async function esContadorDe(contadorId: string, empresaId: string): Promise<boolean> {
   const [{ data: emp }, { data: yo }] = await Promise.all([
@@ -3413,6 +3457,9 @@ Deno.serve(async (req) => {
     //    que Siigo tiene y Lincoin no, para que no se vuelvan a emitir.
     // Facturas rechazadas por la DIAN: se marcan para mostrarlas así, y se
     // corrigen y reenvían (la misma factura, con la fecha de hoy).
+    if (accion === 'utilidad') {
+      return json(await resumenUtilidad(userId, String(body.desde ?? ''), String(body.hasta ?? '')))
+    }
     if (accion === 'dian_revisar') {
       return json({ ok: true, ...(await revisarDian(userId)) })
     }
