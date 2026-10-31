@@ -1902,6 +1902,26 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '14px 20px', borderBottom: `1px solid ${C.borde}` }}>
           <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
             <p style={{ fontSize: 14.5, fontWeight: 700, color: C.text, margin: '0 8px 0 0' }}>Movimientos</p>
+            {/* El periodo de la lista, a la mano: es el mismo de arriba (Mes /
+                Este año / Histórico). La lista (y «Sin factura» y el lote)
+                mostraba solo el mes en curso y desde acá no se veía por qué
+                ni cómo ver el mes pasado. */}
+            <select aria-label="Periodo de los movimientos" title="Qué periodo muestra la lista (el mismo selector de arriba)"
+              value={periodo === 'mes' ? `m:${mesY}-${mesM}` : periodo}
+              onChange={e => {
+                const v = e.target.value;
+                if (v.startsWith('m:')) { const [y, m] = v.slice(2).split('-').map(Number); irAMes({ y, m }); }
+                else { setPeriodo(v as Periodo); setLimite(25); }
+              }}
+              style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 999, padding: '7px 12px', outline: 'none', cursor: 'pointer', marginRight: 4 }}>
+              {opcionesMes.map(o => (
+                <option key={`${o.y}-${o.m}`} value={`m:${o.y}-${o.m}`}>
+                  {`${MESES_L[o.m].charAt(0).toUpperCase()}${MESES_L[o.m].slice(1)} ${o.y}`}{o.y === ahora.getFullYear() && o.m === ahora.getMonth() ? ' · en curso' : ''}
+                </option>
+              ))}
+              <option value="anio">Este año</option>
+              <option value="historico">Histórico (todo)</option>
+            </select>
             {([['todos', 'Todos'], ['in', 'Recibidos'], ['out', 'Enviados'], ['conv', 'Conversiones']] as const).map(([k, rot]) => { const act = filtroDir === k; return (
               <button key={k} onClick={() => { setFiltroDir(k); setLimite(25); }} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 999, cursor: 'pointer', color: act ? C.text : C.sub, background: act ? 'rgba(255,255,255,0.08)' : 'transparent', border: `1px solid ${act ? 'rgba(255,255,255,0.22)' : C.borde}` }}>{rot}</button>
             ); })}
