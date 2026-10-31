@@ -1606,6 +1606,37 @@ async function finityConfirmarBreb(userId: string, prep: ResultadoBreb2 & { crea
 }
 
 // Registro de auditoría best-effort (no bloquea la operación).
+// Huella de una llave Bre-B para contar llaves distintas sin guardarla en
+// claro: HMAC con la llave del servidor (un celular tiene pocas cifras, un
+// hash sin secreto se revierte probando todos).
+async function huellaLlave(raw: string): Promise<string> {
+  const v = String(raw ?? '').trim().toLowerCase()
+  const d = v.replace(/\D/g, '')
+  const norm = /^\+?\d{10,13}$/.test(v.replace(/[\s-]/g, '')) ? d.replace(/^57(?=\d{10}$)/, '') : v
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(FIELD_ENC_KEY || SERVICE_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(norm)))
+  return Array.from(sig.slice(0, 12)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// Titular de una llave según Finity (respaldo del directorio de Mouv). Crea
+// un Bre-B de 5.000 SIN confirmarlo — crear no mueve plata y vence solo — y
+// lee el nombre y el banco que devuelve. Prueba las formas de la llave igual
+// que el envío por la Cuenta 2.
+async function titularPorFinity(userId: string, rawKey: string, keyType: string): Promise<{ nombre: string; banco: string | null; llave: string } | null> {
+  const tipo = brebTypeToFinity(keyType, rawKey)
+  for (const valor of llavesParaFinity(tipo, rawKey)) {
+    const c = await finityCall('breb_crear', userId, { data: { amount: 5000, key_type: tipo, key_value: valor } })
+    const d = c?.data?.data ?? c?.data ?? null
+    if (c?.ok && d?.id) {
+      const nombre = [d.first_name, d.last_name].map((x: unknown) => String(x ?? '').trim()).filter(Boolean).join(' ')
+      await logAudit(userId, 'finity.breb.consulta_respaldo', { tipo, llave: enmascarar(valor), encontrada: !!nombre })
+      return nombre ? { nombre, banco: d.bank_name ? String(d.bank_name) : null, llave: valor } : null
+    }
+    if (![400, 404, 422].includes(Number(c?.status ?? 0))) break
+  }
+  return null
+}
+
 async function logAudit(userId: string | null, action: string, metadata: Record<string, unknown>) {
   try {
     await db.from('audit_log').insert({ user_id: userId, action, metadata })
@@ -2089,15 +2120,37 @@ serve(async (req: Request) => {
     // cuenta (el registro es abierto) se podía consultar en masa. Tope por
     // cuenta y por día; quien inscribe beneficiarios de verdad no llega.
     if (!caller.admin) {
+      // Se cuentan LLAVES DISTINTAS, no consultas: el formulario vuelve a
+      // consultar cada vez que el cliente sale del campo, y MEXITECH (que
+      // inscribe ~20 Bre-B al día) agotó las 60 el 30 oct a las 18:26 con
+      // llaves repetidas; desde ahí "no se llenaba la llave sola". Repetir una
+      // llave ya consultada no gasta cupo. Empresas verificadas: 150.
+      const huella = await huellaLlave(rawKey)
       try {
         const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
-        const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
-          .eq('user_id', duenoBreb).eq('action', 'mouv.breb_consulta').gte('created_at', desde)
-        if ((count ?? 0) >= 60) return json(429, { error: 'demasiadas_consultas', message: 'Llegaste al máximo de consultas de llaves por hoy. Intenta de nuevo mañana o escríbenos a soporte.' })
+        const { data: previas } = await db.from('audit_log').select('metadata')
+          .eq('user_id', duenoBreb).eq('action', 'mouv.breb_consulta').gte('created_at', desde).limit(1000)
+        const vistas = new Set<string>()
+        let sinHuella = 0   // las anteriores a este cambio no la guardaban: cuenta cada una
+        for (const f of (previas ?? []) as any[]) { const h = f?.metadata?.llave; if (h) vistas.add(String(h)); else sinHuella++ }
+        if (!vistas.has(huella)) {
+          const { data: cu } = await db.from('users').select('role, kyc_status').eq('id', duenoBreb).maybeSingle()
+          const empresaVerificada = (cu as any)?.role === 'business' && ['verified', 'approved'].includes(String((cu as any)?.kyc_status ?? ''))
+          const tope = empresaVerificada ? 150 : 60
+          if (vistas.size + sinHuella >= tope) return json(429, { error: 'demasiadas_consultas', message: 'Llegaste al máximo de consultas de llaves por hoy. Intenta de nuevo mañana o escríbenos a soporte.' })
+        }
       } catch { /* sin conteo no se frena la inscripción */ }
-      await logAudit(duenoBreb, 'mouv.breb_consulta', { tipo: String((payload as any).keyType ?? '') })
+      await logAudit(duenoBreb, 'mouv.breb_consulta', { tipo: String((payload as any).keyType ?? ''), llave: huella })
     }
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
+    // Respaldo: con el directorio de Mouv caído se le pregunta a Finity. Su
+    // "crear" de Bre-B (sin confirmar, no mueve plata) devuelve el nombre del
+    // titular y el banco, NO la cédula: esa la escribe el cliente. Solo cuando
+    // Mouv no responde; el tope de arriba aplica igual.
+    if (!rr.found && rr.caido) {
+      const fr = await titularPorFinity(duenoBreb, rawKey, String((payload as any).keyType ?? '')).catch(() => null)
+      if (fr) return json(200, { ok: true, found: true, fuente: 'finity', matchedKey: fr.llave, fullName: fr.nombre, idValue: null, keyType: null, bank: fr.banco })
+    }
     if (!rr.found && rr.caido) return json(200, { ok: false, error: 'directorio_caido', message: 'El directorio Bre-B no responde en este momento. Intenta de nuevo en unos minutos o envía por ACH.' })
     if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.' })
     return json(200, { ok: true, found: true, matchedKey: rr.matchedKey, fullName: rr.fullName ?? null, idValue: rr.idValue ?? null, keyType: rr.keyType ?? null, bank: rr.bank ?? null })
