@@ -1215,6 +1215,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [linMes, setLinMes] = useState(() => hoyBog().slice(0, 7));
   const [linData, setLinData] = useState<any>(null);
   const [linCargando, setLinCargando] = useState(false);
+  // Utilidad por cliente: buscador y si se ven todos o los primeros.
+  const [linCliBusca, setLinCliBusca] = useState('');
+  const [linCliTodos, setLinCliTodos] = useState(false);
   const [linVer, setLinVer] = useState(0);
   const [linForm, setLinForm] = useState<null | { tipo: 'retiro' | 'egreso' | 'ingreso' | 'aporte'; proveedor: 'Mouv' | 'Finity'; monto: string; fecha: string; descripcion: string; soporte: string | null; soporteNombre: string | null }>(null);
   const [linAnular, setLinAnular] = useState<{ id: string; motivo: string } | null>(null);
@@ -3846,6 +3849,77 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </>}
               </div>
           </div>
+
+          {/* Cuánto le dejó cada cliente en el periodo. */}
+          {(() => {
+              const clientes: any[] = d?.clientes ?? [];
+              const q = linCliBusca.trim().toLowerCase();
+              const filtrados = q ? clientes.filter(c => String(c.nombre).toLowerCase().includes(q)) : clientes;
+              const visibles = linCliTodos || q ? filtrados : filtrados.slice(0, 15);
+              const positiva = clientes.reduce((a, c) => a + Math.max(0, c.total), 0);
+              const TD: React.CSSProperties = { padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)', verticalAlign: 'middle' };
+              return (
+                  <div style={{ ...CARD, padding: 0 }}>
+                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                          <p style={ROT}>Utilidad por cliente · {linMes}{clientes.length ? ` · ${clientes.length} clientes` : ''}</p>
+                          {clientes.length > 5 && (
+                              <input value={linCliBusca} onChange={e => setLinCliBusca(e.target.value)} placeholder="Buscar cliente" aria-label="Buscar cliente"
+                                  style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, outline: 'none', width: 220, maxWidth: '100%' }} />
+                          )}
+                      </div>
+                      <div style={{ overflowX: 'auto' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+                              <thead><tr>{['CLIENTE', 'CARGUES', 'DE DÓNDE', 'UTILIDAD', '% DEL MES'].map((h, i) => (
+                                  <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i >= 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>{h}</th>
+                              ))}</tr></thead>
+                              <tbody>
+                                  {!d && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{linCargando ? 'Cargando…' : '—'}</td></tr>}
+                                  {d && filtrados.length === 0 && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{q ? 'Ningún cliente con ese nombre.' : 'No hubo cargues en este mes.'}</td></tr>}
+                                  {visibles.map(c => {
+                                      const pct = positiva > 0 ? (Math.max(0, c.total) / positiva) * 100 : 0;
+                                      return (
+                                          <tr key={c.id}>
+                                              <td style={TD}>
+                                                  <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{c.nombre}</span>
+                                                  <span style={{ display: 'block', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{c.empresa ? 'Empresa' : 'Persona'}</span>
+                                              </td>
+                                              <td style={{ ...TD, fontSize: 12.5, color: '#b9beba', whiteSpace: 'nowrap' }}>
+                                                  {c.cargues}<span style={{ color: 'rgba(244,244,242,0.45)' }}>{c.conContabilidad < c.cargues ? ` · ${c.conContabilidad} con contabilidad` : ''}</span>
+                                              </td>
+                                              <td style={TD}>
+                                                  <span className="flex flex-wrap" style={{ gap: '4px 12px' }}>
+                                                      {fuentes.filter(f => c.fuentes?.[f.n]).map(f => (
+                                                          <span key={f.n} className="inline-flex items-center" style={{ gap: 5, fontSize: 11.5, color: '#878E88', whiteSpace: 'nowrap' }}>
+                                                              <span style={{ width: 8, height: 8, borderRadius: 2, background: COLORES[f.n] }} />{f.n} <b style={{ color: c.fuentes[f.n] < 0 ? '#F87171' : '#F4F4F2', fontWeight: 700 }}>{fmt(c.fuentes[f.n])}</b>
+                                                          </span>
+                                                      ))}
+                                                      {!Object.values(c.fuentes ?? {}).some(Boolean) && <span style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
+                                                  </span>
+                                              </td>
+                                              <td style={{ ...TD, fontSize: 13.5, fontWeight: 800, textAlign: 'right', whiteSpace: 'nowrap', color: c.total < 0 ? '#F87171' : '#F4F4F2' }}>{c.total < 0 ? '−' : ''}{fmt(Math.abs(c.total))}</td>
+                                              <td style={{ ...TD, textAlign: 'right', width: 130 }}>
+                                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88' }}>{pct >= 1 || pct === 0 ? Math.round(pct) : '<1'} %</span>
+                                                  <span style={{ display: 'block', height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 4, marginTop: 4 }}>
+                                                      <span style={{ display: 'block', width: `${pct}%`, height: '100%', background: '#4ADE80', borderRadius: 4 }} />
+                                                  </span>
+                                              </td>
+                                          </tr>
+                                      );
+                                  })}
+                              </tbody>
+                          </table>
+                      </div>
+                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 18px' }}>
+                          <p style={{ margin: 0, fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>Sale de la contabilidad de cada cargue del mes (en Bre-B ya descuenta la comisión de Mouv). Un cargue sin contabilidad suma 0.</p>
+                          {!q && filtrados.length > 15 && (
+                              <button onClick={() => setLinCliTodos(v => !v)} style={{ fontSize: 12, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, padding: '6px 12px', cursor: 'pointer' }}>
+                                  {linCliTodos ? 'Ver los primeros 15' : `Ver los ${filtrados.length} clientes`}
+                              </button>
+                          )}
+                      </div>
+                  </div>
+              );
+          })()}
 
           <div style={CARD}>
               <p style={{ ...ROT, marginBottom: 12 }}>Saldo de Lincoin por bolsa · desde la apertura</p>

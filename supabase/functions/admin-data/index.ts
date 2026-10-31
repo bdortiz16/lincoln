@@ -4722,30 +4722,48 @@ Deno.serve(async (req: Request) => {
         if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
         const aUtc = (ymd: string, fin = false) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 5 * 3600_000 + (fin ? 86_400_000 : 0)).toISOString()
         const { filas } = await leerPorPaginas(() => db.from('transactions')
-          .select(`id, created_at, currency, ${SELECT_UTILIDAD}`)
+          .select(`id, created_at, currency, user_id, ${SELECT_UTILIDAD}`)
           .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
           .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 100_000 })
         const fuente = (c: unknown) => provDeRiel(c) ?? 'Saldo Lincoin'
         const porFuente: Record<string, { total: number; cargues: number; conContabilidad: number }> = {}
         const porDia: Record<string, Record<string, number>> = {}
+        // Cuánto le dejó a Lincoin cada cliente en el periodo: la misma
+        // utilidad de los cargues, agrupada por quién cargó.
+        const porCliente: Record<string, { total: number; cargues: number; conContabilidad: number; fuentes: Record<string, number> }> = {}
         for (const t of filas as any[]) {
           if (!String(t.currency ?? '').toUpperCase().startsWith('COP')) continue
           const f = fuente(t.currency)
           const x = (porFuente[f] ??= { total: 0, cargues: 0, conContabilidad: 0 })
+          const c = (porCliente[String(t.user_id ?? '')] ??= { total: 0, cargues: 0, conContabilidad: 0, fuentes: {} })
           x.cargues++
+          c.cargues++
           if (t.oculto) continue
-          if (t.utilidad != null && t.utilidad !== '') x.conContabilidad++
+          if (t.utilidad != null && t.utilidad !== '') { x.conContabilidad++; c.conContabilidad++ }
           const u = utilidadLincoin(t)
           x.total += u
+          c.total += u
+          c.fuentes[f] = (c.fuentes[f] ?? 0) + u
           const dia = fechaBogota(String(t.created_at))
           ;(porDia[dia] ??= {})[f] = ((porDia[dia] ?? {})[f] ?? 0) + u
         }
+        const idsCli = Object.keys(porCliente).filter(Boolean)
+        const fichaCli: Record<string, { nombre: string; empresa: boolean }> = {}
+        for (let i = 0; i < idsCli.length; i += 200) {
+          const { data: us } = await db.from('users').select('id, full_name, company_name, email, role').in('id', idsCli.slice(i, i + 200))
+          for (const u of (us ?? []) as any[]) fichaCli[String(u.id)] = { nombre: String(u.company_name || u.full_name || u.email || '—'), empresa: u.role === 'business' }
+        }
+        const clientes = idsCli
+          .map(id => ({ id, nombre: fichaCli[id]?.nombre ?? 'Cliente eliminado', empresa: fichaCli[id]?.empresa ?? false, ...porCliente[id],
+            total: Math.round(porCliente[id].total), fuentes: Object.fromEntries(Object.entries(porCliente[id].fuentes).map(([k, v]) => [k, Math.round(v)])) }))
+          .sort((a, b) => b.total - a.total)
         const movs = await movimientosCaja(desde, hasta)
         const quien = (a: any) => !a ? '—' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
         return json({
           ok: true, desde, hasta,
           fuentes: ['Finity', 'Mouv', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
           porDia: nDias <= 92 ? porDia : null,
+          clientes,
           movimientos: movs.map(m => ({ id: m.id, fecha: m.fecha, tipo: m.tipo, proveedor: m.proveedor, monto: Number(m.monto), descripcion: m.descripcion,
             soporte: m.soporte_nombre ?? null, por: quien(m.por), esMio: String(m.por?.id ?? '') === yoIdL,
             anulado: m.anulado ? { motivo: m.anulado.motivo, por: quien(m.anulado.por), at: m.anulado.at } : null })),
