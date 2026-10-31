@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrebRecaudo } from './BrebRecaudo';
+import { ReenvioDianModal } from './ReenvioDianModal';
 import {
   Landmark,
   CheckCircle2,
@@ -523,18 +524,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [docConfirmarReemision, setDocConfirmarReemision] = useState(false);
   // Emitir de nuevo el documento de un movimiento (anulado en Siigo o en
   // error), con la configuración actual. Se recarga la tarjeta al terminar.
-  // Factura rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la
-  // MISMA factura de Siigo; no se crea otra (ya ocupa ese número).
-  const reenviarRechazadaSiigo = async (txId: string, numero: string | null) => {
-    if (!confirm(`¿Corregir y volver a enviar a la DIAN la ${numero ?? 'factura'}? Es la misma factura de Siigo, con la fecha de hoy.`)) return;
-    setDocEmitiendo(true);
-    try {
-      const r = await llamarFuncion('facturacion', { action: 'reenviar_rechazada', transactionId: txId }, 130000);
-      if (!r?.ok) showToast(String(r?.error ?? 'No se pudo reenviar la factura.'), 12000, 'error');
-      else showToast(String(r.aviso ?? 'Enviada otra vez a la DIAN.'), 8000);
-    } catch (e: any) { showToast(`No se pudo reenviar: ${String(e?.message ?? e)}`, 8000, 'error'); }
-    finally { setDocEmitiendo(false); setDocVersion(v => v + 1); }
-  };
+  // Factura rechazada por la DIAN: la ventana de Lincoin pregunta, la
+  // corrige (fecha de hoy) y reenvía la MISMA factura de Siigo.
+  const [reenvioDian, setReenvioDian] = useState<{ txId: string; numero: string | null } | null>(null);
   const emitirDeNuevoSiigo = async (txId: string) => {
     setDocEmitiendo(true);
     try {
@@ -4581,12 +4573,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       </p>
                     </div>
                   )}
+                  {reenvioDian && reenvioDian.txId === String(tx.id) && <ReenvioDianModal numero={reenvioDian.numero}
+                    enviar={() => llamarFuncion('facturacion', { action: 'reenviar_rechazada', transactionId: reenvioDian.txId }, 130000)}
+                    onCerrar={enviada => { setReenvioDian(null); if (enviada) setDocVersion(v => v + 1); }} />}
                   {doc.estado === 'emitida' && (rechazado || doc.rechazada_dian) && doc.tipo !== 'DS' && tx.status === 'Completado' && (
-                    <button onClick={() => reenviarRechazadaSiigo(String(tx.id), doc.numero ?? null)} disabled={docEmitiendo}
+                    <button onClick={() => setReenvioDian({ txId: String(tx.id), numero: doc.numero ?? null })} disabled={docEmitiendo}
                       className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
                       title="Corrige la fecha y vuelve a enviar a la DIAN la misma factura de Siigo"
                       style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', opacity: docEmitiendo ? 0.6 : 1 }}>
-                      <FileText size={13} /> {docEmitiendo ? 'Enviando a la DIAN…' : 'Volver a emitir'}
+                      <FileText size={13} /> Volver a emitir
                     </button>
                   )}
                   {puedeReemitir && reem && !docConfirmarReemision && (

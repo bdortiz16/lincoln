@@ -14,6 +14,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Copy, FileText, ExternalLink, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { ReenvioDianModal } from './ReenvioDianModal';
 import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -137,7 +138,7 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const [crudaAbierta, setCrudaAbierta] = useState(false);
   const [hoja, setHoja] = useState<'comprobante' | 'documento' | null>(null);
   // version: vuelve a pedir el documento tras reenviar una rechazada.
-  const [reenviando, setReenviando] = useState(false);
+  const [reenvioAbierto, setReenvioAbierto] = useState(false);
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
@@ -153,19 +154,6 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onCerrar, hoja]);
-
-  // Rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la MISMA
-  // factura de Siigo. No se crea otra: la rechazada ya ocupa ese número.
-  const reenviarRechazada = async (numero: string | null) => {
-    if (!confirm(`¿Corregir y volver a enviar a la DIAN la ${numero ?? 'factura'}? Es la misma factura de Siigo, con la fecha de hoy.`)) return;
-    setReenviando(true); setAviso(null);
-    try {
-      const r = await llamarFuncion('facturacion', { action: 'reenviar_rechazada', transactionId: String(tx.id), empresaId }, 130000);
-      setAviso(r?.ok ? String(r.aviso ?? 'Enviada otra vez a la DIAN.') : String(r?.error ?? 'No se pudo reenviar la factura.'));
-      if (r?.ok) setVersion(v => v + 1);
-    } catch (e: any) { setAviso(`No se pudo reenviar: ${String(e?.message ?? e)}`); }
-    finally { setReenviando(false); }
-  };
 
   const copiar = (t: string) => { navigator.clipboard.writeText(t).then(() => { setAviso('Copiado'); setTimeout(() => setAviso(null), 1500); }).catch(() => {}); };
 
@@ -282,6 +270,10 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const partes = fmt(tx.amount, tx.currency);
 
   return (
+    <>
+      {reenvioAbierto && doc && <ReenvioDianModal numero={doc.numero ?? null}
+        enviar={() => llamarFuncion('facturacion', { action: 'reenviar_rechazada', transactionId: String(tx.id), empresaId }, 130000)}
+        onCerrar={enviada => { setReenvioAbierto(false); if (enviada) setVersion(v => v + 1); }} />}
     <div onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(4,5,4,0.85)', backdropFilter: 'blur(4px)', display: 'grid', placeItems: 'center', padding: 16, fontFamily: FONT }}>
       <div role="dialog" aria-modal="true" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 520, maxHeight: '92vh', overflowY: 'auto', background: C.tarjeta, border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18 }}>
         <div className="flex items-center justify-between" style={{ padding: '18px 22px 12px' }}>
@@ -350,9 +342,9 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
                   ? rechazoMsgs.map((m, i) => <p key={i} style={{ fontSize: 12, color: C.text, lineHeight: 1.45, margin: '2px 0' }}>{m}</p>)
                   : <p style={{ fontSize: 12, color: C.sub, lineHeight: 1.45, margin: 0 }}>{doc.rechazo_dian?.aviso ?? `Se ve en Siigo Nube: ${esDS ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${doc.numero ?? ''} → Ver inconsistencias.`}</p>}
                 {doc.estado === 'emitida' && !esDS && (
-                  <button onClick={() => reenviarRechazada(doc.numero ?? null)} disabled={reenviando} className="w-full flex items-center justify-center"
-                    style={{ gap: 6, marginTop: 10, padding: '10px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', cursor: 'pointer', fontFamily: FONT, opacity: reenviando ? 0.6 : 1 }}>
-                    <FileText size={14} /> {reenviando ? 'Enviando a la DIAN…' : 'Volver a emitir'}
+                  <button onClick={() => setReenvioAbierto(true)} className="w-full flex items-center justify-center"
+                    style={{ gap: 6, marginTop: 10, padding: '10px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', cursor: 'pointer', fontFamily: FONT }}>
+                    <FileText size={14} /> Volver a emitir
                   </button>
                 )}
               </div>
@@ -483,5 +475,6 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
         );
       })()}
     </div>
+    </>
   );
 };

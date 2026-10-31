@@ -28,6 +28,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
+import { ReenvioDianModal } from './ReenvioDianModal';
 import { EmpresaFacturacion, useFacturacion, useOrdenantesEmpresa } from '../lib/facturacionEmpresa';
 import { useDatabase } from '../context/DatabaseContext';
 import { descargarXlsx, refCelda, type CeldaX, type Estilo, type Hoja } from '../lib/xlsx';
@@ -1141,15 +1142,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   };
   // Rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la MISMA
   // factura en Siigo. No se crea otra: la rechazada ya ocupa ese número.
-  const [reenviando, setReenviando] = useState<string | null>(null);
-  const reenviarRechazada = async (txId: string, numero: string | null) => {
-    if (!confirm(`¿Corregir y volver a enviar a la DIAN la ${numero ?? 'factura'}? Es la misma factura de Siigo, con la fecha de hoy.`)) return;
-    setReenviando(txId);
-    const r = await fact({ action: 'reenviar_rechazada', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
-    setReenviando(null);
-    setFoliosVersion(v => v + 1);
-    alert(r?.ok ? (r.aviso ?? 'Enviada otra vez a la DIAN.') : (r?.error ?? 'No se pudo reenviar la factura.'));
-  };
+  const [reenvio, setReenvio] = useState<{ txId: string; numero: string | null } | null>(null);
+  const reenviando = reenvio?.txId ?? null;
+  const reenviarRechazada = (txId: string, numero: string | null) => setReenvio({ txId, numero });
   // Al abrir: el servidor mira en Siigo cuáles rechazó la DIAN (la DIAN
   // valida después de crearse la factura) y las marca.
   useEffect(() => {
@@ -1673,6 +1668,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         <EstadoCuentaHoja estado={ec} ficha={ficha} periodoTxt={periodoTxt} desdeTxt={desdeTxt} hastaTxt={hastaTxt}
           folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />
       )}
+      {reenvio && <ReenvioDianModal numero={reenvio.numero}
+        enviar={() => fact({ action: 'reenviar_rechazada', transactionId: reenvio.txId }, 130000)}
+        onCerrar={enviada => { setReenvio(null); if (enviada) setFoliosVersion(v => v + 1); }} />}
       {lote && cfgFact && (
         <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} vivo={vivo} lecturas={lecturas} esPropio={esPropio} onCerrar={() => { setLote(null); setLoteAbierto(false); setPulsoFolios(v => v + 1); }} onEncolado={() => setPulsoFolios(v => v + 1)} />
       )}
@@ -2014,7 +2012,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                             {/* El porqué, a la vista: "no aplica" sin motivo obliga a adivinar. */}
                             {/* Con una cuenta propia o un ajuste, ese es el motivo, aunque el
                                 guardado sea otro (p. ej. «Facturación automática no activa»). */}
-                            {fa.estado === 'omitida' && (noAplicaPor(a.tx) || fa.error) && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no lleva factura.' : fa.error}</span>}
+                            {fa.estado === 'omitida' && (noAplicaPor(a.tx) || fa.error) && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 260, lineHeight: 1.35 }}>{noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) === 'cargue revertido' ? 'Lincoin revirtió este cargue con un ajuste de saldo (fue un error del admin al cargar): no lleva factura.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no lleva factura.' : fa.error}</span>}
                           </span>
                         );
                         // "DS" delante cuando lo que salió fue un documento
