@@ -33,7 +33,8 @@ import { EmpresaFacturacion, useFacturacion, useOrdenantesEmpresa } from '../lib
 import { useDatabase } from '../context/DatabaseContext';
 import { descargarXlsx, refCelda, type CeldaX, type Estilo, type Hoja } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
-import { AccesoContadorModal } from './AccesoContadorModal';
+import { AccesoContadorModal, type Vinculo as SolicitudContador } from './AccesoContadorModal';
+import { Bolita, FichaEmpresaModal } from './FichaEmpresa';
 import { EstadoCuentaHoja } from './EstadoCuentaHoja';
 import {
   ENTRA, MESES, MESES_L, SALE, asientosDe, claveTercero, cuenta, datosTercero, efecto, esDeTercero, estadoDeCuenta, fichaDeUsuario, fmtMon, terceros,
@@ -963,6 +964,23 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     return aj === 'ajuste' || /ajuste de saldo de Lincoin/i.test(guardado) ? 'ajuste de saldo' : null;
   };
   const [contadorAbierto, setContadorAbierto] = useState(false);
+  // La ficha de la propia empresa (la bolita con su nombre): autorizar al
+  // contador, descargar los documentos contables y ver sus datos.
+  const [fichaAbierta, setFichaAbierta] = useState(false);
+  const esEmpresaPropia = !soloLectura && !empresaId && currentUser?.role === 'business';
+  // Solicitudes de contador en espera. Antes solo se veían abriendo
+  // «Contador»: el contador pedía acceso y la empresa no se enteraba. Se
+  // vuelven a leer al regresar a la pestaña.
+  const [solContador, setSolContador] = useState<SolicitudContador[]>([]);
+  useEffect(() => {
+    if (!esEmpresaPropia) return;
+    let sigue = true;
+    const leer = () => llamarFuncion('contador', { action: 'listar_accesos' }, 30000).then(r => { if (sigue && r?.ok) setSolContador(r.solicitudes ?? []); });
+    leer();
+    const alVolver = () => { if (document.visibilityState === 'visible') leer(); };
+    document.addEventListener('visibilitychange', alVolver);
+    return () => { sigue = false; document.removeEventListener('visibilitychange', alVolver); };
+  }, [esEmpresaPropia]);
   const [estadoAbierto, setEstadoAbierto] = useState(false);
   // Terceros: a quién se le envió ('out') o de quién se recibió ('in'), y el
   // que está abierto con su detalle mes a mes.
@@ -1676,6 +1694,18 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         {/* flex-wrap: en el celular los cuatro botones no caben en una fila y
             empujaban la página hacia los lados. */}
         <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+          {esEmpresaPropia && ficha && (
+            <button onClick={() => setFichaAbierta(true)} title="Tu empresa: autoriza a tu contador, descarga tus documentos contables y revisa tus datos"
+              aria-label={`${ficha.nombre}: contador, documentos y datos${solContador.length ? ` · ${solContador.length} solicitud de contador en espera` : ''}`}
+              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '4px 14px 4px 4px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8, position: 'relative' }}
+              className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+              <Bolita nombre={ficha.nombre} activo tam={29} />
+              <span style={{ maxWidth: 'min(220px, 42vw)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ficha.nombre}</span>
+              {solContador.length > 0 && (
+                <span aria-hidden="true" style={{ position: 'absolute', top: -7, right: -7, minWidth: 19, height: 19, padding: '0 5px', borderRadius: 999, background: C.entra, color: '#0A0A0A', fontSize: 11, fontWeight: 800, display: 'grid', placeItems: 'center', boxShadow: '0 0 0 3px #070808' }}>{solContador.length}</span>
+              )}
+            </button>
+          )}
           {facturacionActiva != null && (
             <button onClick={alternarAutomatica} disabled={cambiandoAuto}
               title={facturacionActiva ? 'La facturación automática está activa: cada operación completada emite su documento en Siigo. Tocá para pausar.' : 'La facturación automática está pausada: nada se emite solo. Tocá para activar (la configuración debe estar completa).'}
@@ -1692,6 +1722,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
               style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
               className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
               Contador
+              {solContador.length > 0 && <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.entra, flexShrink: 0 }} />}
             </button>
           )}
           {!soloLectura && (
@@ -1705,9 +1736,25 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           <button onClick={excel} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar Excel</button>
         </div>
       </div>
+      {esEmpresaPropia && solContador.length > 0 && (
+        <div role="status" className="flex items-center justify-between flex-wrap" style={{ gap: 10, background: 'rgba(74,222,128,0.07)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 12, padding: '12px 16px' }}>
+          <p style={{ fontSize: 13.5, color: C.text, margin: 0, lineHeight: 1.5, flex: '1 1 280px' }}>
+            <b>{solContador[0].nombre || solContador[0].email}</b>
+            {solContador[0].nombre && solContador[0].email && solContador[0].nombre !== solContador[0].email ? ` (${solContador[0].email})` : ''}
+            {solContador.length > 1 ? ` y ${solContador.length - 1} más piden` : ' pide'} acceso a tu contabilidad y tu facturación.
+          </p>
+          <button onClick={() => setFichaAbierta(true)} className="lincoin-btn-white"
+            style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '9px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', flexShrink: 0 }}>
+            Revisar y autorizar
+          </button>
+        </div>
+      )}
+      {fichaAbierta && esEmpresaPropia && ficha && (
+        <FichaEmpresaModal modo="empresa" empresa={{ ...ficha, id: userId }} onCerrar={() => setFichaAbierta(false)} onCambioContador={setSolContador} />
+      )}
       {configAbierta && !soloLectura && <FacturacionConfig nitEmpresa={empresaId ? ficha?.nit ?? null : undefined} onCerrar={() => setConfigAbierta(false)} />}
       {dupAbierto && <DuplicadasModal soloLectura={soloLectura} onCerrar={() => setDupAbierto(false)} onCambio={() => setFoliosVersion(v => v + 1)} />}
-      {contadorAbierto && !soloLectura && !empresaId && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} />}
+      {contadorAbierto && !soloLectura && !empresaId && <AccesoContadorModal onCerrar={() => setContadorAbierto(false)} onCambio={setSolContador} />}
       {estadoAbierto && (
         <EstadoCuentaHoja estado={ec} ficha={ficha} periodoTxt={periodoTxt} desdeTxt={desdeTxt} hastaTxt={hastaTxt}
           folios={folios} enviadoA={enviadoA} recibidoDe={recibidoDe} onCerrar={() => setEstadoAbierto(false)} />

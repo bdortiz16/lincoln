@@ -14,10 +14,14 @@ import { ConfirmarModal } from './ConfirmarModal';
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = { tarjeta: '#0C0E0D', borde: 'rgba(255,255,255,0.10)', text: '#F4F4F2', sub: '#878E88', tenue: '#6b716c', verde: '#4ADE80', rojo: '#F87171' };
 
-type Vinculo = { id: string; email: string; nombre: string; at?: string };
+export type Vinculo = { id: string; email: string; nombre: string; at?: string };
 const fecha = (ts?: string) => { const d = new Date(ts ?? 0); return isNaN(d.getTime()) || !ts ? '' : d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }); };
 
-export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
+// El contenido: el ID para el contador, las solicitudes y quién tiene
+// acceso. Vive solo (en la ficha de la empresa) o dentro del modal de abajo.
+// onCambio avisa qué solicitudes quedan en espera, para el aviso de
+// Contabilidad.
+export const AccesoContadorPanel: React.FC<{ onCambio?: (solicitudes: Vinculo[]) => void }> = ({ onCambio }) => {
   const [miId, setMiId] = useState('');
   const [contadores, setContadores] = useState<Vinculo[] | null>(null);
   const [solicitudes, setSolicitudes] = useState<Vinculo[]>([]);
@@ -26,7 +30,7 @@ export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerr
   const [copiado, setCopiado] = useState(false);
   const [quitarA, setQuitarA] = useState<Vinculo | null>(null);
 
-  const aplicar = (r: any) => { setContadores(r.contadores ?? []); setSolicitudes(r.solicitudes ?? []); if (r.miId) setMiId(String(r.miId)); };
+  const aplicar = (r: any) => { setContadores(r.contadores ?? []); setSolicitudes(r.solicitudes ?? []); if (r.miId) setMiId(String(r.miId)); onCambio?.(r.solicitudes ?? []); };
   const cargar = async () => {
     const r = await llamarFuncion('contador', { action: 'listar_accesos' }, 30000);
     if (!r?.ok) { setError(r?.error ?? 'No se pudo consultar.'); setContadores([]); return; }
@@ -48,17 +52,7 @@ export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerr
   const Rotulo: React.FC<{ children: React.ReactNode }> = ({ children }) => <p style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.2px', color: C.sub, margin: '22px 0 8px' }}>{children}</p>;
 
   return (
-    <div onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-      <div onClick={e => e.stopPropagation()} style={{ fontFamily: FONT, width: '100%', maxWidth: 540, background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 16, padding: 22, maxHeight: '90vh', overflowY: 'auto' }}>
-        <div className="flex items-start justify-between" style={{ gap: 12 }}>
-          <div>
-            <p style={{ fontSize: 17, fontWeight: 800, color: C.text, margin: 0, letterSpacing: '-0.3px' }}>Tu contador</p>
-            <p style={{ fontSize: 12.5, color: C.sub, margin: '5px 0 0', lineHeight: 1.5 }}>
-              Tu contador entra por <b style={{ color: C.text }}>Empresas → Contabilidad</b> con su propia cuenta, escribe tu ID, y tú lo apruebas aquí. Ve esta pantalla (movimientos, comprobantes y facturas) y además <b style={{ color: C.text }}>opera tu facturación</b>: emite facturas en tu Siigo y configura el modelo, los ítems y las credenciales. No ve saldos operables ni puede hacer envíos.
-            </p>
-          </div>
-          <button onClick={onCerrar} aria-label="Cerrar" style={{ background: 'transparent', border: 'none', color: C.sub, cursor: 'pointer', padding: 4 }}><X size={18} /></button>
-        </div>
+    <div style={{ fontFamily: FONT }}>
 
         {/* El ID que la empresa le da al contador. */}
         <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginTop: 16, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.25)', borderRadius: 12, padding: '12px 14px' }}>
@@ -115,7 +109,6 @@ export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerr
             ))}
           </div>
         )}
-      </div>
 
       {quitarA && (
         <ConfirmarModal titulo={`¿Quitar el acceso de ${quitarA.nombre}?`} texto="Dejará de ver tu contabilidad y de operar tu facturación de inmediato. Puede volver a pedir acceso con tu ID." confirmar="Quitar acceso" peligro
@@ -124,3 +117,26 @@ export const AccesoContadorModal: React.FC<{ onCerrar: () => void }> = ({ onCerr
     </div>
   );
 };
+
+// Qué ve y qué hace el contador, en una línea que se repite en el modal y en
+// la ficha de la empresa.
+export const ExplicacionContador: React.FC = () => (
+  <p style={{ fontSize: 12.5, color: C.sub, margin: '5px 0 0', lineHeight: 1.5 }}>
+    Tu contador entra por <b style={{ color: C.text }}>Empresas → Contabilidad</b> con su propia cuenta, escribe tu ID, y tú lo apruebas aquí. Ve esta pantalla (movimientos, comprobantes y facturas) y además <b style={{ color: C.text }}>opera tu facturación</b>: emite facturas en tu Siigo y configura el modelo, los ítems y las credenciales. No ve saldos operables ni puede hacer envíos.
+  </p>
+);
+
+export const AccesoContadorModal: React.FC<{ onCerrar: () => void; onCambio?: (solicitudes: Vinculo[]) => void }> = ({ onCerrar, onCambio }) => (
+  <div onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    <div onClick={e => e.stopPropagation()} style={{ fontFamily: FONT, width: '100%', maxWidth: 540, background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 16, padding: 22, maxHeight: '90vh', overflowY: 'auto' }}>
+      <div className="flex items-start justify-between" style={{ gap: 12 }}>
+        <div>
+          <p style={{ fontSize: 17, fontWeight: 800, color: C.text, margin: 0, letterSpacing: '-0.3px' }}>Tu contador</p>
+          <ExplicacionContador />
+        </div>
+        <button onClick={onCerrar} aria-label="Cerrar" style={{ background: 'transparent', border: 'none', color: C.sub, cursor: 'pointer', padding: 4 }}><X size={18} /></button>
+      </div>
+      <AccesoContadorPanel onCambio={onCambio} />
+    </div>
+  </div>
+);

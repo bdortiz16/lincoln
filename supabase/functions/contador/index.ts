@@ -172,8 +172,12 @@ Deno.serve(async (req) => {
       const codigo = String(body.codigoEmpresa ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
       if (codigo.length < 4) return json({ ok: false, error: 'Escribe el ID Lincoin de la empresa' }, 400)
       // El código no es único en la base: si dos empresas lo comparten no se
-      // adivina a cuál pedirle acceso.
-      const { data: emps } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(2)
+      // adivina a cuál pedirle acceso. Sin distinguir mayúsculas: el panel
+      // muestra el ID en mayúsculas, pero hay cuentas viejas que lo guardaron
+      // en minúsculas, y con eq() su contador recibía «No hay una empresa con
+      // ese ID». El código solo trae letras y números, así que ilike no
+      // interpreta comodines.
+      const { data: emps } = await db.from('users').select('*').eq('role', 'business').ilike('raw_data->>ownReferralCode', codigo).limit(2)
       if ((emps ?? []).length > 1) return json({ ok: false, error: 'Ese ID está repetido. Pídele a la empresa que se comunique con soporte.' }, 409)
       const emp = (emps ?? [])[0]
       if (!emp) return json({ ok: false, error: 'No hay una empresa con ese ID. Pídele a la empresa que lo copie de su panel (Contabilidad → Contador).' }, 404)

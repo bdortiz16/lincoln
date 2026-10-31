@@ -9,14 +9,13 @@
 //  el vínculo.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { RefreshCw, Search, Clock, Building2, ArrowRight, Menu, X } from 'lucide-react';
+import { RefreshCw, Search, Clock, Building2, ArrowRight, Menu } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
 import { llamarFuncion } from '../lib/edge';
 import { ContabilidadDashboard } from './ContabilidadDashboard';
 import { ConfirmarModal } from './ConfirmarModal';
 import { ContadorDetalleMovimiento } from './ContadorDetalleMovimiento';
-import { DocumentosContables } from './DocumentosContables';
+import { Bolita, FichaEmpresaModal } from './FichaEmpresa';
 import type { FichaEmpresa } from './libroContable';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -80,17 +79,6 @@ const Fila: React.FC<{ etiqueta: string; icono: string; activo?: boolean; apagad
   );
 };
 
-// La bolita de la empresa: sus iniciales (MEXITECH → ME, J&J EYEWEAR → JE).
-const inicialesDe = (nombre: string) => {
-  const p = String(nombre ?? '').replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ0-9 ]+/g, ' ').trim().split(/\s+/).filter(w => !/^(S|SAS|SA|LTDA|EU)$/i.test(w));
-  return ((p.length > 1 ? p[0][0] + p[1][0] : (p[0] ?? '?').slice(0, 2)) || '?').toUpperCase();
-};
-const Bolita: React.FC<{ nombre: string; activo?: boolean; tam?: number }> = ({ nombre, activo, tam = 26 }) => (
-  <span aria-hidden="true" style={{ width: tam, height: tam, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', fontSize: Math.round(tam * 0.4), fontWeight: 800, letterSpacing: '-0.3px',
-    color: activo ? '#0A0A0A' : C.text, background: activo ? C.verde : 'rgba(255,255,255,0.08)', border: `1px solid ${activo ? C.verde : 'rgba(255,255,255,0.12)'}` }}>
-    {inicialesDe(nombre)}
-  </span>
-);
 // Una empresa en la barra: su bolita, el nombre y una ✕ para dejar de
 // trabajar con ella (pide confirmar).
 const FilaEmpresa: React.FC<{ nombre: string; activo: boolean; onAbrir: () => void; onDejar: () => void }> = ({ nombre, activo, onAbrir, onDejar }) => {
@@ -108,68 +96,6 @@ const FilaEmpresa: React.FC<{ nombre: string; activo: boolean; onAbrir: () => vo
         style={{ width: 28, height: 28, marginRight: 4, flexShrink: 0, borderRadius: 7, border: 'none', background: 'transparent', color: C.sub, cursor: 'pointer', fontSize: 15, lineHeight: 1,
           opacity: sobre || activo ? 1 : 0.35, transition: 'opacity 150ms' }}>×</button>
     </div>
-  );
-};
-
-// La ficha de la empresa abierta: sus datos (los mismos del estado de
-// cuenta) y sus documentos contables, que el contador anexa y la empresa
-// descarga en su perfil.
-const FichaEmpresaModal: React.FC<{ empresa: Datos['empresa']; onCerrar: () => void }> = ({ empresa, onCerrar }) => {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // Con la confirmación de "Retirar" abierta, Escape es de ella.
-      if (e.key === 'Escape' && !document.getElementById('confirmar-titulo')) onCerrar();
-    };
-    window.addEventListener('keydown', onKey);
-    const antes = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = antes; };
-  }, [onCerrar]);
-  const desde = empresa.clienteDesde ? new Date(empresa.clienteDesde).toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Bogota' }) : '';
-  const filas = ([
-    ['Identificación', [empresa.tipoDocumento, empresa.nit].filter(Boolean).join(' ')],
-    ['Representante legal', [empresa.representante, empresa.representanteDoc].filter(Boolean).join(' · ')],
-    ['Dirección', empresa.direccion],
-    ['Ciudad', [empresa.ciudad, empresa.pais].filter(Boolean).join(', ')],
-    ['Teléfono', empresa.telefono],
-    ['Correo', empresa.email],
-    ['Cliente Lincoin desde', desde],
-  ] as [string, string | undefined][]).filter(([, v]) => String(v ?? '').trim());
-  return createPortal(
-    <div onClick={onCerrar} role="dialog" aria-modal="true" aria-labelledby="ficha-empresa-titulo"
-      style={{ position: 'fixed', inset: 0, zIndex: 110, background: 'rgba(0,0,0,0.66)', backdropFilter: 'blur(5px)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '5vh 16px', overflowY: 'auto', fontFamily: FONT, color: C.text }}>
-      <div onClick={e => e.stopPropagation()} className="animate-in zoom-in-95 fade-in duration-200"
-        style={{ width: '100%', maxWidth: 640, background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 18, boxShadow: '0 30px 90px rgba(0,0,0,0.6)', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', top: -80, right: -60, width: 240, height: 240, borderRadius: '50%', background: 'radial-gradient(circle, rgba(74,222,128,0.14), transparent 65%)', pointerEvents: 'none' }} />
-        <div className="flex items-center" style={{ gap: 14, padding: '22px 22px 18px', borderBottom: `1px solid ${C.borde}`, position: 'relative' }}>
-          <Bolita nombre={empresa.nombre} activo tam={46} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <h2 id="ficha-empresa-titulo" style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.4px', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{empresa.nombre}</h2>
-            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0' }}>{[empresa.nit ? `${empresa.tipoDocumento || 'NIT'} ${empresa.nit}` : '', empresa.idLincoin ? `ID Lincoin ${empresa.idLincoin}` : ''].filter(Boolean).join(' · ')}</p>
-          </div>
-          <button onClick={onCerrar} aria-label="Cerrar" style={{ background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, color: C.sub, borderRadius: 9, padding: 7, cursor: 'pointer', display: 'inline-flex', flexShrink: 0 }}><X size={16} /></button>
-        </div>
-        <div style={{ padding: '18px 22px 4px', position: 'relative' }}>
-          <p style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '1.2px', color: C.sub, margin: '0 0 8px' }}>DATOS DE LA EMPRESA</p>
-          {filas.length === 0
-            ? <p style={{ fontSize: 13, color: C.tenue, margin: 0 }}>La empresa no ha completado sus datos en Lincoin.</p>
-            : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px 18px' }}>
-                {filas.map(([k, v]) => (
-                  <div key={k} style={{ minWidth: 0 }}>
-                    <p style={{ fontSize: 11.5, color: C.sub, margin: 0 }}>{k}</p>
-                    <p style={{ fontSize: 13.5, fontWeight: 600, margin: '2px 0 0', overflowWrap: 'anywhere' }}>{v}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-        </div>
-        <div style={{ padding: '18px 22px 22px', marginTop: 14, borderTop: `1px solid ${C.borde}`, position: 'relative' }}>
-          <DocumentosContables modo="contador" empresaId={empresa.id} />
-        </div>
-      </div>
-    </div>,
-    document.body,
   );
 };
 
@@ -445,7 +371,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
       )}
 
       {fichaAbierta && datos && datos.empresa.id === empresaSel && (
-        <FichaEmpresaModal empresa={datos.empresa} onCerrar={() => setFichaAbierta(false)} />
+        <FichaEmpresaModal modo="contador" empresa={datos.empresa} onCerrar={() => setFichaAbierta(false)} />
       )}
 
       {dejar && (
