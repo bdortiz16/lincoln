@@ -334,7 +334,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
               <button onClick={() => setFichaAbierta(true)} title={`Ficha y documentos de ${nombreSel}`} aria-label={`Ficha y documentos de ${nombreSel}`}
                 style={{ ...botonSec, color: C.text, padding: '4px 12px 4px 4px' }}>
                 <Bolita nombre={nombreSel} activo tam={27} />
-                <span className="hidden sm:inline">Ficha y documentos</span>
+                <span style={{ maxWidth: 'min(200px, 34vw)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{nombreSel}</span>
               </button>
             )}
             <button onClick={actualizar} disabled={cargando} title="Actualizar" style={{ ...botonSec, opacity: cargando ? 0.6 : 1 }}>
