@@ -486,6 +486,12 @@ function documentosGuardados(cfg: any): Record<string, 'FV' | 'DS'> {
 // impuesto, el total que se paga incluye el impuesto (Siigo lo exige así).
 type ItemCfg = { code: string; description?: string; quantity?: number; valor?: 'monto' | 'porcentaje' | 'fijo'; porcentaje?: number; fijo?: number; tax_id?: number | null }
 const r2 = (n: number) => Math.round(n * 100) / 100
+// LA FECHA DEL DOCUMENTO ES LA DE COLOMBIA (UTC−5, sin horario de verano).
+// Se tomaba la de UTC: desde las 7 p. m. ya es «mañana» en UTC, y la DIAN
+// rechazó la FV-2-3 de MEXITECH (emitida el 30 oct a las 7:01 p. m.): «La
+// fecha de elaboración del documento (31 oct) no coincide con la fecha de
+// envío a la DIAN (30 oct)».
+const hoyColombia = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
 
 // ── Los dos modelos de negocio ───────────────────────────────────
 //
@@ -1170,7 +1176,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   const revertido = montoRevertido(rdVigente)
   const monto = r2(Number(String((comp as any).monto ?? '0').replace(/,/g, '')) - revertido)
   if (!Number.isFinite(monto) || monto <= 0) { const e = revertido > 0 ? `${MSG_CARGUE_REVERTIDO} (Se revirtieron ${revertido} de ${(comp as any).monto}.)` : `Monto inválido en el comprobante: ${(comp as any).monto}`; await marcar({ factura_estado: revertido > 0 ? 'omitida' : 'error', factura_error: e, ...(revertido > 0 ? {} : { factura_tipo: clase }) }); return revertido > 0 ? { ok: true, estado: 'omitida', aviso: e } : { ok: false, error: e } }
-  const hoy = new Date().toISOString().slice(0, 10)
+  const hoy = hoyColombia()
   const ctx = {
     tipo: DISPARADORES[tipo] ?? tipo, numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy,
@@ -1465,6 +1471,94 @@ async function sincronizarAnulaciones(userId: string): Promise<{ revisadas: numb
   return out
 }
 
+// ── Facturas rechazadas por la DIAN ───────────────────────────────
+// La DIAN valida DESPUÉS de que Siigo crea la factura: el rechazo no llega
+// en la respuesta de la creación, y Contabilidad la mostraba como emitida
+// (FV-2-3 de MEXITECH). Se mira el sello (stamp.status) de las facturas de
+// los últimos días y se marca el comprobante (factura_detalle.dian =
+// 'rechazada'), para mostrarla rechazada con «Volver a emitir». Una que
+// después queda aceptada se desmarca. Sin el dato del sello no se toca nada.
+const esRechazoDian = (st: unknown) => /reject|rechaz/i.test(String(st ?? ''))
+async function revisarDian(userId: string, dias = 10): Promise<{ revisadas: number; rechazadas: string[]; error?: string }> {
+  const out = { revisadas: 0, rechazadas: [] as string[] }
+  const cfg = await leerConfig(userId)
+  if (!cfg) return out
+  const { data: comps, error } = await db.from('comprobantes').select('folio, factura_id, factura_numero, factura_tipo, factura_detalle')
+    .eq('user_id', userId).eq('factura_estado', 'emitida').not('factura_id', 'is', null)
+    .gte('factura_at', new Date(Date.now() - dias * 86_400_000).toISOString()).limit(500)
+  if (error) return { ...out, error: error.message }
+  const filas = ((comps ?? []) as any[]).filter(c => c.factura_tipo !== 'DS')
+  if (!filas.length) return out
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return { ...out, error: t.error }
+  const partner = cfg.partner_id || 'Lincoin'
+  const fecha = new Date(Date.now() - (dias + 1) * 86_400_000 - 5 * 3600_000).toISOString().slice(0, 10)
+  const sello = new Map<string, any>()
+  for (let page = 1; page <= 10; page++) {
+    const r = await siigo('GET', `/v1/invoices?date_start=${fecha}&page=${page}&page_size=100`, { token: t.token, partner, ms: 30000 })
+    if (!r.ok) return { ...out, error: `No se pudieron leer las facturas de Siigo — ${motivoDe(r)}` }
+    const res: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+    for (const f of res) if (f?.id != null && f.stamp) sello.set(String(f.id), f.stamp)
+    if (!res.length || page * 100 >= Number(r.data?.pagination?.total_results ?? 0)) break
+  }
+  for (const c of filas) {
+    const st = sello.get(String(c.factura_id))
+    if (!st) continue
+    out.revisadas++
+    const rech = esRechazoDian(st.status)
+    const det = (c.factura_detalle ?? {}) as Record<string, any>
+    if (rech && det.dian !== 'rechazada') await db.from('comprobantes').update({ factura_detalle: { ...det, dian: 'rechazada', dian_status: st.status ?? null } }).eq('folio', c.folio).eq('factura_estado', 'emitida')
+    else if (!rech && det.dian === 'rechazada') { const { dian: _d, ...resto } = det; await db.from('comprobantes').update({ factura_detalle: { ...resto, dian_status: st.status ?? null } }).eq('folio', c.folio).eq('factura_estado', 'emitida') }
+    if (rech) out.rechazadas.push(String(c.factura_numero ?? c.factura_id))
+  }
+  return out
+}
+
+// VOLVER A EMITIR una factura rechazada por la DIAN: la MISMA factura de
+// Siigo (mismo número), corregida y enviada otra vez (PUT /v1/invoices/{id}),
+// como «corregir y reenviar» en Siigo Nube. Se corrige la fecha a la de hoy
+// en Colombia: la DIAN exige que la de elaboración sea la del envío. No se
+// crea otra factura: la rechazada ya ocupa ese número en Siigo, y una nueva
+// dejaría dos cobros por el mismo movimiento.
+async function reenviarRechazada(userId: string, txId: string): Promise<any> {
+  const { data: comp } = await db.from('comprobantes').select('*').eq('transaction_id', txId).maybeSingle()
+  const c = comp as any
+  if (!c || String(c.user_id) !== userId) return { ok: false, error: 'movimiento_no_encontrado' }
+  if (c.factura_estado !== 'emitida' || !c.factura_id) return { ok: false, error: 'Este movimiento no tiene una factura emitida para volver a enviar.' }
+  if (c.factura_tipo === 'DS') return { ok: false, error: 'Un documento soporte rechazado se corrige en Siigo Nube (Compras → Documento soporte → Ver inconsistencias) y se vuelve a enviar desde allá.' }
+  const cfg = await leerConfig(userId)
+  if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
+  const t = await tokenDe(userId, cfg)
+  if ('error' in t) return { ok: false, error: t.error }
+  const partner = cfg.partner_id || 'Lincoin'
+  const id = encodeURIComponent(String(c.factura_id))
+  const det = (c.factura_detalle ?? {}) as Record<string, any>
+  // ¿Sigue rechazada? Si ya la aceptaron (se corrigió en Siigo Nube), no se toca.
+  const actual = await siigo('GET', `/v1/invoices/${id}`, { token: t.token, partner })
+  if (!actual.ok) return { ok: false, error: `No se pudo leer la ${c.factura_numero ?? 'factura'} en Siigo — ${motivoDe(actual)}` }
+  if (!esRechazoDian(actual.data?.stamp?.status)) {
+    if (det.dian === 'rechazada') { const { dian: _d, ...resto } = det; await db.from('comprobantes').update({ factura_detalle: { ...resto, dian_status: actual.data?.stamp?.status ?? null } }).eq('folio', c.folio) }
+    return { ok: true, estado: 'emitida', numero: c.factura_numero, aviso: `La ${c.factura_numero ?? 'factura'} ya no está rechazada en Siigo (estado DIAN: ${actual.data?.stamp?.status ?? 'sin dato'}).` }
+  }
+  const enviado = det.enviado
+  if (!enviado || typeof enviado !== 'object' || !Array.isArray(enviado.items)) return { ok: false, error: `No está guardado lo que se le mandó a Siigo para la ${c.factura_numero ?? 'factura'}. Corrígela en Siigo Nube (Ventas → Facturas → ${c.factura_numero ?? ''} → Ver inconsistencias) y vuelve a enviarla a la DIAN.` }
+  const hoy = hoyColombia()
+  const cuerpo = { ...enviado, date: hoy, payments: (Array.isArray(enviado.payments) ? enviado.payments : []).map((p: any) => ({ ...p, due_date: hoy })), stamp: { send: true } }
+  const r = await siigo('PUT', `/v1/invoices/${id}`, { token: t.token, partner, body: cuerpo, ms: 70000 })
+  const reenvios = [...(Array.isArray(det.reenvios_dian) ? det.reenvios_dian : []), { at: new Date().toISOString(), fecha: hoy, status: r.status, ...(r.ok ? {} : { motivo: motivoDe(r) }) }]
+  if (!r.ok) {
+    await db.from('comprobantes').update({ factura_detalle: { ...det, reenvios_dian: reenvios } }).eq('folio', c.folio)
+    return { ok: false, error: `Siigo no dejó corregir y reenviar la ${c.factura_numero ?? 'factura'} — ${motivoDe(r)}. Corrígela en Siigo Nube: Ventas → Facturas → ${c.factura_numero ?? ''} → Ver inconsistencias, y vuelve a enviarla a la DIAN.` }
+  }
+  const d = r.data ?? {}
+  const { dian: _d, rechazo_dian: _r, ...resto } = det
+  await db.from('comprobantes').update({
+    factura_numero: d.name ?? c.factura_numero, factura_cufe: d.stamp?.cufe ?? c.factura_cufe ?? null, factura_url: d.public_url ?? c.factura_url ?? null,
+    factura_detalle: { ...resto, enviado: cuerpo, respuesta: d, reenvios_dian: reenvios, dian_status: d.stamp?.status ?? null },
+  }).eq('folio', c.folio)
+  return { ok: true, estado: 'emitida', numero: d.name ?? c.factura_numero, aviso: `Se corrigió la fecha (${hoy}) y la ${d.name ?? c.factura_numero ?? 'factura'} se volvió a enviar a la DIAN. La validación tarda unos minutos.` }
+}
+
 // ── Factura de COMISIÓN por un depósito (modelo PSP), a mano ─────────────
 // El cliente elige a quién se le factura (quien mandó la plata) y el
 // porcentaje (por defecto el de Configuración). La factura lleva UN ítem: el
@@ -1601,7 +1695,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   const iva = ivaVivo ?? ivaDelProducto(cfg, item) ?? (ivaElegido ? { id: Number(ivaElegido.id), name: String(ivaElegido.name ?? ''), percentage: Number(ivaElegido.percentage) || 0 } : null)
   const tarifaCatalogo = iva ? iva.percentage / 100 : 0
   const comision = r2(monto * pct / 100)
-  const hoy = new Date().toISOString().slice(0, 10)
+  const hoy = hoyColombia()
   const ctx: Record<string, string> = {
     tipo: DISPARADORES[String((comp as any).tipo)] ?? String((comp as any).tipo), numero: String((comp as any).numero ?? ''), contraparte: cp.nombre,
     monto: monto.toLocaleString('es-CO', { maximumFractionDigits: 2 }), fecha: hoy, utilidad: String(pct),
@@ -2366,7 +2460,7 @@ async function buscarClientes(userId: string, q: string): Promise<{ ok: boolean;
 
 // Lo que el contador puede pedir sin que quede en el audit_log de la empresa:
 // solo lee (todo lo demás cambia la facturación o emite ante la DIAN).
-const ACCIONES_DE_LECTURA = new Set(['config_get', 'documento', 'documento_pdf', 'duplicadas', 'comprobantes', 'ordenantes_get', 'buscar_clientes', 'facturas', 'probar'])
+const ACCIONES_DE_LECTURA = new Set(['config_get', 'documento', 'documento_pdf', 'duplicadas', 'comprobantes', 'dian_revisar', 'ordenantes_get', 'buscar_clientes', 'facturas', 'probar'])
 
 async function esContadorDe(contadorId: string, empresaId: string): Promise<boolean> {
   const [{ data: emp }, { data: yo }] = await Promise.all([
@@ -2613,7 +2707,7 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   }
   if (!iva) return falla(`El ítem de comisión (${itemC}) no tiene IVA en Siigo y no se eligió uno en Configuración. La comisión va gravada: ponele el IVA al ítem en Siigo.`)
 
-  const hoy = new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
+  const hoy = hoyColombia()
   const fechaOp = new Date(Date.parse(String(t.created_at)) - 5 * 3600_000).toISOString().slice(0, 10)
   const ctx: Record<string, string> = {
     tipo: liq.tipo === 'cargue' ? 'Cargue' : 'Conversión', fecha: fechaOp, cliente: cp.nombre,
@@ -3231,7 +3325,8 @@ Deno.serve(async (req) => {
     //    no alcanzó a crear ──────────────────────────────────────────────
     if (accion === 'reconciliar') {
       const anul = await sincronizarAnulaciones(userId).catch(e => ({ revisadas: 0, anuladas: [] as string[], parciales: [] as string[], error: String((e as Error)?.message ?? e) }))
-      return json({ ok: true, ...(await reconciliar(userId)), anulaciones: anul })
+      const dian = await revisarDian(userId).catch(e => ({ revisadas: 0, rechazadas: [] as string[], error: String((e as Error)?.message ?? e) }))
+      return json({ ok: true, ...(await reconciliar(userId)), anulaciones: anul, dian })
     }
 
     // ── Factura de comisión por un depósito (PSP), a mano ──────────────
@@ -3262,7 +3357,7 @@ Deno.serve(async (req) => {
     //    empresa los lee directo de la base; el contador no puede (RLS), y
     //    para ver salir las facturas del lote necesita leerlos seguido.
     if (accion === 'comprobantes') {
-      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at'
+      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at, dian:factura_detalle->>dian'
       const filas: any[] = []
       for (let desde = 0; desde < 20000; desde += 1000) {
         const { data, error } = await db.from('comprobantes').select(cols).eq('user_id', userId).order('folio', { ascending: false }).range(desde, desde + 999)
@@ -3296,6 +3391,16 @@ Deno.serve(async (req) => {
 
     // ── Revisar facturas duplicadas en Siigo (solo lee) y registrar las
     //    que Siigo tiene y Lincoin no, para que no se vuelvan a emitir.
+    // Facturas rechazadas por la DIAN: se marcan para mostrarlas así, y se
+    // corrigen y reenvían (la misma factura, con la fecha de hoy).
+    if (accion === 'dian_revisar') {
+      return json({ ok: true, ...(await revisarDian(userId)) })
+    }
+    if (accion === 'reenviar_rechazada') {
+      const txId = String(body.transactionId ?? '')
+      if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+      return json(await reenviarRechazada(userId, txId))
+    }
     if (accion === 'duplicadas') {
       return json(await revisarDuplicadas(userId, Number(body.dias ?? 30)))
     }
@@ -3408,10 +3513,17 @@ Deno.serve(async (req) => {
               selloErrores = re.ok && lista
                 ? { mensajes: lista.map((x: any) => typeof x === 'string' ? x : [x.code ?? x.Code, x.message ?? x.Message ?? x.description].filter(Boolean).join(' · ')).filter(Boolean), aviso: null }
                 : { mensajes: [], aviso: `Siigo no entregó el detalle del rechazo por API (${motivoDe(re)} en ${rutaDoc}/{id}/stamp/errors). Se ve en Siigo Nube: ${clase === 'DS' ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${c.factura_numero ?? ''} → Ver inconsistencias.` }
-              if (selloErrores.mensajes.length) {
-                const det = { ...(c.factura_detalle ?? {}), respuesta: d, rechazo_dian: selloErrores.mensajes, consultado_at: new Date().toISOString() }
-                await db.from('comprobantes').update({ factura_detalle: det }).eq('folio', c.folio).then(() => {}, () => {})
-              }
+              // Queda marcada como rechazada (Contabilidad la muestra así, con
+              // «Volver a emitir»), con el detalle si Siigo lo dio.
+              const det = { ...(c.factura_detalle ?? {}), respuesta: d, dian: 'rechazada', dian_status: d.stamp?.status ?? null, ...(selloErrores.mensajes.length ? { rechazo_dian: selloErrores.mensajes } : {}), consultado_at: new Date().toISOString() }
+              await db.from('comprobantes').update({ factura_detalle: det }).eq('folio', c.folio).then(() => {}, () => {})
+              c.factura_detalle = det
+            } else if (d.stamp && c.factura_detalle?.dian === 'rechazada') {
+              // Ya no está rechazada (se corrigió en Siigo Nube): se desmarca.
+              const { dian: _d, ...resto } = c.factura_detalle
+              const det = { ...resto, dian_status: d.stamp?.status ?? null }
+              await db.from('comprobantes').update({ factura_detalle: det }).eq('folio', c.folio).then(() => {}, () => {})
+              c.factura_detalle = det
             }
           } else if (r.status === 404 && c.factura_estado === 'emitida') {
             // Siigo ya no lo tiene: se eliminó/anuló allá. Queda registrado
@@ -3469,6 +3581,8 @@ Deno.serve(async (req) => {
           solo_envios: esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? '')),
           misma_empresa: mismaEmpresa,
           ajuste: motivoAj,
+          // Rechazada por la DIAN: se corrige y se reenvía la misma factura.
+          rechazada_dian: c.factura_estado === 'emitida' && clase === 'FV' && c.factura_detalle?.dian === 'rechazada',
           reemision: !mismaEmpresa && !motivoAj &&!(esMandato(cfg) && !SALIDAS.includes(String(c.tipo ?? ''))) && (c.factura_estado === 'anulada' || (c.factura_estado === 'error' && Array.isArray(c.factura_detalle?.anteriores) && c.factura_detalle.anteriores.length > 0)) && c.factura_detalle?.comision?.cliente?.identification ? (() => {
             const monto = Number(String(c.monto ?? '0').replace(/,/g, '')) || 0
             const pct = Number(c.factura_detalle.comision.pct) || 0

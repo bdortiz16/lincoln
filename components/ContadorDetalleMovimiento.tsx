@@ -136,6 +136,9 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const [aviso, setAviso] = useState<string | null>(null);
   const [crudaAbierta, setCrudaAbierta] = useState(false);
   const [hoja, setHoja] = useState<'comprobante' | 'documento' | null>(null);
+  // version: vuelve a pedir el documento tras reenviar una rechazada.
+  const [reenviando, setReenviando] = useState(false);
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     let vivo = true;
@@ -143,13 +146,26 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
       .then((r: any) => { if (vivo) setConsulta(r?.ok ? { estado: 'ok', documento: r.documento ?? null, comprobante: r.comprobante ?? null } : { estado: 'error', error: String(r?.error ?? 'sin respuesta') }); })
       .catch((e: any) => { if (vivo) setConsulta({ estado: 'error', error: String(e?.message ?? e) }); });
     return () => { vivo = false; };
-  }, [tx.id, empresaId]);
+  }, [tx.id, empresaId, version]);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { if (hoja) setHoja(null); else onCerrar(); } };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   }, [onCerrar, hoja]);
+
+  // Rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la MISMA
+  // factura de Siigo. No se crea otra: la rechazada ya ocupa ese número.
+  const reenviarRechazada = async (numero: string | null) => {
+    if (!confirm(`¿Corregir y volver a enviar a la DIAN la ${numero ?? 'factura'}? Es la misma factura de Siigo, con la fecha de hoy.`)) return;
+    setReenviando(true); setAviso(null);
+    try {
+      const r = await llamarFuncion('facturacion', { action: 'reenviar_rechazada', transactionId: String(tx.id), empresaId }, 130000);
+      setAviso(r?.ok ? String(r.aviso ?? 'Enviada otra vez a la DIAN.') : String(r?.error ?? 'No se pudo reenviar la factura.'));
+      if (r?.ok) setVersion(v => v + 1);
+    } catch (e: any) { setAviso(`No se pudo reenviar: ${String(e?.message ?? e)}`); }
+    finally { setReenviando(false); }
+  };
 
   const copiar = (t: string) => { navigator.clipboard.writeText(t).then(() => { setAviso('Copiado'); setTimeout(() => setAviso(null), 1500); }).catch(() => {}); };
 
@@ -251,7 +267,8 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
     else if (doc.enviado?.total != null) filasDoc.push({ label: 'Total del documento', value: fmt(doc.enviado.total, 'COP') });
     if (sello) filasDoc.push({ label: 'Estado DIAN', value: rechDian ? `Rechazado (${sello})` : sello, color: /accept|acept|approv/i.test(sello) ? C.verde : rechDian ? C.rojo : undefined });
     if (cude) filasDoc.push({ label: esDS ? 'CUDS' : 'CUFE', value: corta(cude, 12, 10), mono: true, copy: cude });
-    if (sg?.stamp?.observations) filasDoc.push({ label: 'Observaciones DIAN', value: String(sg.stamp.observations) });
+    // Siigo las manda con los espacios escapados («Check\u0020the\u0020…»).
+    if (sg?.stamp?.observations) filasDoc.push({ label: 'Observaciones DIAN', value: String(sg.stamp.observations).replace(/\\u([0-9a-fA-F]{4})/g, (_m, h) => String.fromCharCode(parseInt(h, 16))) });
   }
   const pillDoc = !doc ? null
     : doc.estado === 'emitida' ? (rechDian ? { t: 'RECHAZADO POR LA DIAN', c: C.rojo, b: 'rgba(248,113,113,0.35)' } : { t: 'EMITIDO', c: C.verde, b: 'rgba(74,222,128,0.3)' })
@@ -332,6 +349,12 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
                 {rechazoMsgs.length > 0
                   ? rechazoMsgs.map((m, i) => <p key={i} style={{ fontSize: 12, color: C.text, lineHeight: 1.45, margin: '2px 0' }}>{m}</p>)
                   : <p style={{ fontSize: 12, color: C.sub, lineHeight: 1.45, margin: 0 }}>{doc.rechazo_dian?.aviso ?? `Se ve en Siigo Nube: ${esDS ? 'Compras → Documento soporte' : 'Ventas → Facturas'} → ${doc.numero ?? ''} → Ver inconsistencias.`}</p>}
+                {doc.estado === 'emitida' && !esDS && (
+                  <button onClick={() => reenviarRechazada(doc.numero ?? null)} disabled={reenviando} className="w-full flex items-center justify-center"
+                    style={{ gap: 6, marginTop: 10, padding: '10px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', cursor: 'pointer', fontFamily: FONT, opacity: reenviando ? 0.6 : 1 }}>
+                    <FileText size={14} /> {reenviando ? 'Enviando a la DIAN…' : 'Volver a emitir'}
+                  </button>
+                )}
               </div>
             )}
             {doc && (doc.estado === 'error' || doc.estado === 'omitida' || doc.estado === 'anulada') && doc.error && (

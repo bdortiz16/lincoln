@@ -945,7 +945,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [lote, setLote] = useState<ItemLote[] | null>(null);
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(25);
-  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null; at?: string | null } }>>({});
+  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null; at?: string | null; dian?: string | null } }>>({});
   const [foliosEstado, setFoliosEstado] = useState<'cargando' | 'ok' | 'sin_tabla' | 'error'>('cargando');
   const [configAbierta, setConfigAbierta] = useState(false);
   const [facturacionActiva, setFacturacionActiva] = useState<boolean | null>(null);
@@ -976,7 +976,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const m: typeof folios = {};
     for (const r of filas) m[String(r.transaction_id)] = {
       folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
-      factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null, at: r.factura_at ?? null },
+      factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null, at: r.factura_at ?? null, dian: r.dian ?? r.factura_detalle?.dian ?? null },
     };
     return m;
   };
@@ -1003,7 +1003,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       // Solo las columnas de la tabla (sin factura_detalle, que trae las
       // respuestas completas de Siigo y hacía lenta cada recarga). Si una
       // columna nueva todavía no existe (falta su migración), se cae a '*'.
-      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at';
+      // dian: si la DIAN rechazó la factura (lo marca el servidor).
+      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at, dian:factura_detalle->>dian';
       let { data, error } = await supabase.from('comprobantes').select(cols).eq('user_id', userId).limit(2000);
       if (error && /column|schema cache|PGRST/i.test(error.message)) ({ data, error } = await supabase.from('comprobantes').select('*').eq('user_id', userId).limit(2000));
       if (!vivo) return;
@@ -1104,6 +1105,25 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     setFoliosVersion(v => v + 1);
     if (!r?.ok) alert(r?.error ?? 'No se pudo emitir el documento.');
   };
+  // Rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la MISMA
+  // factura en Siigo. No se crea otra: la rechazada ya ocupa ese número.
+  const [reenviando, setReenviando] = useState<string | null>(null);
+  const reenviarRechazada = async (txId: string, numero: string | null) => {
+    if (!confirm(`¿Corregir y volver a enviar a la DIAN la ${numero ?? 'factura'}? Es la misma factura de Siigo, con la fecha de hoy.`)) return;
+    setReenviando(txId);
+    const r = await fact({ action: 'reenviar_rechazada', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    setReenviando(null);
+    setFoliosVersion(v => v + 1);
+    alert(r?.ok ? (r.aviso ?? 'Enviada otra vez a la DIAN.') : (r?.error ?? 'No se pudo reenviar la factura.'));
+  };
+  // Al abrir: el servidor mira en Siigo cuáles rechazó la DIAN (la DIAN
+  // valida después de crearse la factura) y las marca.
+  useEffect(() => {
+    if (!userId || soloLectura) return;
+    let vivo = true;
+    fact({ action: 'dian_revisar' }, 60000).then((r: any) => { if (vivo && r?.ok && r.revisadas) setPulsoFolios(v => v + 1); }).catch(() => {});
+    return () => { vivo = false; };
+  }, [userId, soloLectura]);
   const botonEmitir = (txId: string) => (
     <button onClick={() => emitirMovimiento(txId)} disabled={emitiendo === txId}
       title="Emitir ahora el documento en Siigo con la configuración actual"
@@ -1970,6 +1990,21 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         // muestra el documento completo (estado DIAN,
                         // CUFE/CUDS, ítems, PDF). Si Siigo dio un enlace
                         // público, además se abre directo.
+                        // Rechazada por la DIAN: se ve así, con «Volver a emitir».
+                        if (fa.estado === 'emitida' && fa.dian === 'rechazada') return (
+                          <span className="flex items-center flex-wrap" style={{ gap: 6 }}>
+                            <button onClick={() => onVerMovimiento?.(a.tx)} title="Rechazada por la DIAN · ver el motivo"
+                              style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: '#F87171', background: 'transparent', border: 'none', padding: 0, cursor: onVerMovimiento ? 'pointer' : 'default', textDecoration: 'line-through', textUnderlineOffset: 3 }}>
+                              {fa.numero ?? 'factura'}
+                            </button>
+                            <span style={{ color: '#F87171', fontWeight: 700, fontSize: 11 }}>rechazada DIAN</span>
+                            {!soloLectura && txId && <button onClick={() => reenviarRechazada(txId, fa.numero)} disabled={reenviando === txId}
+                              title="Corrige la fecha y vuelve a enviar a la DIAN la misma factura de Siigo"
+                              style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: reenviando === txId ? 0.5 : 1 }}>
+                              {reenviando === txId ? '…' : 'Volver a emitir'}
+                            </button>}
+                          </span>
+                        );
                         if (fa.estado === 'emitida') return (
                           <span className="flex items-center" style={{ gap: 6 }}>
                             <button onClick={() => onVerMovimiento?.(a.tx)} title={`${fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} · ver el documento`}

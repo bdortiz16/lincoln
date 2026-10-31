@@ -523,6 +523,18 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const [docConfirmarReemision, setDocConfirmarReemision] = useState(false);
   // Emitir de nuevo el documento de un movimiento (anulado en Siigo o en
   // error), con la configuración actual. Se recarga la tarjeta al terminar.
+  // Factura rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la
+  // MISMA factura de Siigo; no se crea otra (ya ocupa ese número).
+  const reenviarRechazadaSiigo = async (txId: string, numero: string | null) => {
+    if (!confirm(`¿Corregir y volver a enviar a la DIAN la ${numero ?? 'factura'}? Es la misma factura de Siigo, con la fecha de hoy.`)) return;
+    setDocEmitiendo(true);
+    try {
+      const r = await llamarFuncion('facturacion', { action: 'reenviar_rechazada', transactionId: txId }, 130000);
+      if (!r?.ok) showToast(String(r?.error ?? 'No se pudo reenviar la factura.'), 12000, 'error');
+      else showToast(String(r.aviso ?? 'Enviada otra vez a la DIAN.'), 8000);
+    } catch (e: any) { showToast(`No se pudo reenviar: ${String(e?.message ?? e)}`, 8000, 'error'); }
+    finally { setDocEmitiendo(false); setDocVersion(v => v + 1); }
+  };
   const emitirDeNuevoSiigo = async (txId: string) => {
     setDocEmitiendo(true);
     try {
@@ -4470,7 +4482,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 if (sello) filas.push({ label: 'DIAN', value: rechazado ? `Rechazado (${sello})` : sello, color: /accept|acept|approv/i.test(sello) ? '#4ADE80' : rechazado ? '#F87171' : undefined });
                 if (cude) filas.push({ label: esDS ? 'CUDS' : 'CUFE', value: truncMid(cude, 10, 8), mono: true, copy: cude });
                 if (sg?.stamp?.errors) filas.push({ label: 'Error DIAN', value: String(sg.stamp.errors), color: '#F87171' });
-                if (sg?.stamp?.observations) filas.push({ label: 'Obs. DIAN', value: String(sg.stamp.observations) });
+                // Siigo las manda con los espacios escapados («Check\u0020the\u0020…»).
+                if (sg?.stamp?.observations) filas.push({ label: 'Obs. DIAN', value: String(sg.stamp.observations).replace(/\\u([0-9a-fA-F]{4})/g, (_m, h) => String.fromCharCode(parseInt(h, 16))) });
                 // La nota crédito con que se anuló en Siigo (o una parcial).
                 if (Array.isArray(doc.notas_credito) && doc.notas_credito.length) filas.push({ label: doc.notas_credito.length === 1 ? 'Nota crédito' : 'Notas crédito', value: doc.notas_credito.map((n: any) => `${n.nombre}${n.total ? ` · ${formatMoney(Number(n.total), 'COP')}` : ''}`).join(' · '), mono: true, color: doc.estado === 'anulada' ? '#F4F4F2' : '#FB923C' });
               }
@@ -4567,6 +4580,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                         Los ingresos para terceros salieron por {formatMoney(Number(mal.terceros), 'COP')} y lo transferido fue {formatMoney(Number(mal.transferido), 'COP')}: se restó la comisión. Anúlala con una nota crédito en Siigo; al abrir este detalle Lincoin la ve anulada y aparece «Volver a emitir».
                       </p>
                     </div>
+                  )}
+                  {doc.estado === 'emitida' && (rechazado || doc.rechazada_dian) && doc.tipo !== 'DS' && tx.status === 'Completado' && (
+                    <button onClick={() => reenviarRechazadaSiigo(String(tx.id), doc.numero ?? null)} disabled={docEmitiendo}
+                      className="w-full flex items-center justify-center hover:bg-white/[0.09] transition-colors"
+                      title="Corrige la fecha y vuelve a enviar a la DIAN la misma factura de Siigo"
+                      style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none', opacity: docEmitiendo ? 0.6 : 1 }}>
+                      <FileText size={13} /> {docEmitiendo ? 'Enviando a la DIAN…' : 'Volver a emitir'}
+                    </button>
                   )}
                   {puedeReemitir && reem && !docConfirmarReemision && (
                     <button onClick={() => setDocConfirmarReemision(true)} disabled={docEmitiendo}
