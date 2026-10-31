@@ -626,6 +626,10 @@ const baseDoc = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); 
 // SOLUTIONS S.A.S» y «Mexitech Solutions SAS» son la misma.
 const nombreBase = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
   .replace(/[^A-Z0-9 ]+/g, ' ').replace(/\b(S ?A ?S|S ?A|LTDA|LIMITADA|E ?U|S EN C|S ?C ?A)\b/g, ' ').replace(/\s+/g, ' ').trim()
+// La misma razón social, o una que empieza con la otra: MEXITECH quedó
+// inscrita en Lincoin como «MEXITECH» y sus envíos van a «MEXITECH SOLUTIONS
+// S.A.S». El nombre corto tiene que tener al menos 6 letras.
+const mismoNombre = (a: string, b: string) => !!a && !!b && (a === b || (a.length >= 6 && b.startsWith(`${a} `)) || (b.length >= 6 && a.startsWith(`${b} `)))
 type Propios = Set<string> & { nombres?: Set<string> }
 async function documentosPropios(userId: string): Promise<Propios> {
   const { data: u } = await db.from('users').select('*').eq('id', userId).maybeSingle()
@@ -638,8 +642,10 @@ async function documentosPropios(userId: string): Promise<Propios> {
   // Solo la razón social de una EMPRESA (aunque no tenga el NIT inscrito):
   // el nombre de una persona se repite.
   const esNegocio = x.role === 'business' || !!(x.company_name ?? rd.companyName)
-  const nombre = esNegocio ? nombreBase(x.company_name ?? rd.companyName) : ''
-  s.nombres = new Set(nombre.length >= 4 ? [nombre] : [])
+  // La razón social (de la columna y de la ficha, pueden diferir). No el
+  // nombre de la cuenta: en algunas es el del representante, una persona.
+  const nombres = esNegocio ? [x.company_name, rd.companyName].map(nombreBase).filter(n => n.length >= 4) : []
+  s.nombres = new Set(nombres)
   return s
 }
 const MSG_MISMA_EMPRESA = (doc: string) => `El cliente de la factura (${doc}) es la misma empresa que factura: una empresa no se factura a sí misma (un pago propio es gasto de la empresa y lo registra su contador). No se emitió.`
@@ -659,7 +665,7 @@ const MSG_CUENTA_PROPIA = (cp: Contraparte, salida: boolean, doc = cp.esDefault 
 const esDePropios = (cp: Contraparte, propios: Propios) => {
   if (!cp.esDefault && propios.has(baseDoc(cp.identification))) return true
   const nombre = nombreBase(cp.esDefault ? cp.nombreMov : cp.nombre)
-  return nombre.length >= 4 && !!propios.nombres?.has(nombre)
+  return nombre.length >= 4 && [...(propios.nombres ?? [])].some(n => mismoNombre(n, nombre))
 }
 
 // ── Ajustes de saldo: no se facturan ──────────────────────────────

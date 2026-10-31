@@ -120,6 +120,10 @@ const nombreContraparte = (tx: any): string => {
 // servidor): «MEXITECH SOLUTIONS S.A.S» y «Mexitech Solutions SAS» son la misma.
 const nombreBase = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
   .replace(/[^A-Z0-9 ]+/g, ' ').replace(/\b(S ?A ?S|S ?A|LTDA|LIMITADA|E ?U|S EN C|S ?C ?A)\b/g, ' ').replace(/\s+/g, ' ').trim();
+// La misma razón social, o una que empieza con la otra: MEXITECH quedó
+// inscrita en Lincoin como «MEXITECH» y sus envíos van a «MEXITECH SOLUTIONS
+// S.A.S». El nombre corto tiene que tener al menos 6 letras.
+const mismoNombre = (a: string, b: string) => !!a && !!b && (a === b || (a.length >= 6 && b.startsWith(`${a} `)) || (b.length >= 6 && a.startsWith(`${b} `)));
 // Un ajuste de saldo (Lincoin corrige un error del admin al cargar) y el
 // cargue que un ajuste revirtió completo no se facturan en ningún modelo
 // (misma regla que el servidor, motivoAjuste).
@@ -433,6 +437,17 @@ const EmisionLoteModal: React.FC<{
 
   const alternar = (txId: string) => setMarcados(m => { const n = new Set(m); if (n.has(txId)) n.delete(txId); else n.add(txId); return n; });
   const todos = marcados.size === items.length;
+  // Buscador: por beneficiario, ordenante (cliente de la factura) o
+  // documento, para quitar (o marcar) de una vez todos los de un cliente que
+  // no se quiere facturar, en vez de desmarcarlos uno por uno.
+  const [busca, setBusca] = useState('');
+  const norm = (t: unknown) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const q = norm(busca).trim();
+  const coincide = (i: ItemLote) => !q || [i.a.contraparte, i.ordenante?.nombre, i.ordenante?.identification, docContraparte(i.a.tx), nombreContraparte(i.a.tx)].some(t => norm(t).includes(q));
+  const visibles = q ? items.filter(coincide) : items;
+  const cambiables = visibles.filter(i => !yaSalio(i));
+  const marcadosVisibles = cambiables.filter(i => marcados.has(i.txId)).length;
+  const marcarVisibles = (on: boolean) => setMarcados(m => { const n = new Set(m); for (const i of cambiables) { if (on) n.add(i.txId); else n.delete(i.txId); } return n; });
   const aNombreDe = (i: ItemLote) => yaSalio(i) ? 'factura emitida'
     : i.modo === 'reemitir' ? 'al mismo cliente de la anulada'
     : i.modo === 'directo' ? 'según Configuración'
@@ -495,11 +510,30 @@ const EmisionLoteModal: React.FC<{
         )}
 
         <div className="flex items-center justify-between" style={{ margin: '18px 0 6px', gap: 10 }}>
-          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>MOVIMIENTOS · {marcados.size} DE {items.length}</p>
-          {enConfig && <button onClick={() => setMarcados(todos ? new Set() : new Set(items.map(i => i.txId)))} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>{todos ? 'Quitar todos' : 'Marcar todos'}</button>}
+          <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>MOVIMIENTOS · {marcados.size} DE {items.length}{q ? ` · ${visibles.length} CON «${busca.trim().toUpperCase()}»` : ''}</p>
+          {enConfig && !q && <button onClick={() => setMarcados(todos ? new Set() : new Set(items.map(i => i.txId)))} style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>{todos ? 'Quitar todos' : 'Marcar todos'}</button>}
         </div>
+        {enConfig && items.length > 1 && (
+          <div className="flex items-center flex-wrap" style={{ gap: 8, marginBottom: 8 }}>
+            <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar cliente, beneficiario o documento" aria-label="Buscar en los movimientos del lote"
+              style={{ ...CAMPO, flex: '1 1 220px', width: 'auto', minWidth: 0 }} />
+            {q && cambiables.length > 0 && (
+              <>
+                <button onClick={() => marcarVisibles(false)} disabled={marcadosVisibles === 0}
+                  style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer', opacity: marcadosVisibles === 0 ? 0.45 : 1 }}>
+                  Quitar estos ({marcadosVisibles})
+                </button>
+                <button onClick={() => marcarVisibles(true)} disabled={marcadosVisibles === cambiables.length}
+                  style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer', opacity: marcadosVisibles === cambiables.length ? 0.45 : 1 }}>
+                  Marcar estos
+                </button>
+              </>
+            )}
+          </div>
+        )}
         <div style={{ border: `1px solid ${C.borde}`, borderRadius: 10, maxHeight: 300, overflowY: 'auto' }}>
-          {items.map((i, k) => {
+          {q && visibles.length === 0 && <p style={{ fontSize: 12, color: C.sub, margin: 0, padding: '12px' }}>Ningún movimiento del lote coincide con «{busca.trim()}».</p>}
+          {visibles.map((i, k) => {
             const f = estadoFila(i);
             const on = marcados.has(i.txId);
             const fija = !enConfig || yaSalio(i);
@@ -913,7 +947,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // razón social de una empresa: el nombre de una persona se repite.
   const nombrePropio = nitPropio.length >= 6 || !!empresa ? nombreBase(ficha?.nombre) : '';
   const movPropio = (tx: any) =>
-    esPropio(docContraparte(tx)) || (nombrePropio.length >= 4 && nombreBase(nombreContraparte(tx)) === nombrePropio);
+    esPropio(docContraparte(tx)) || (nombrePropio.length >= 4 && mismoNombre(nombreBase(nombreContraparte(tx)), nombrePropio));
   // Por qué un movimiento no lleva factura, aunque sea de los que se facturan.
   // Lo que el servidor ya decidió (con la ficha completa de la empresa) también
   // cuenta: su motivo queda guardado en el comprobante.
