@@ -832,7 +832,10 @@ export const ContactsSection: React.FC<{
                     loading: false, found: true, bank: r.bank ?? null,
                     msg: chocaAviso
                         ? `Esta llave es de ${realN || 'otra persona'}${realD ? ` (${realD})` : ''}, no de lo que escribiste. Borra el nombre y el documento para que se llenen solos, o revisa la llave.`
-                        : (realN ? `Titular: ${realN}` : 'Llave verificada'),
+                        : r.fuente === 'finity'
+                            // Respaldo (Mouv caído): Finity no trae la cédula.
+                            ? `Titular: ${realN || 'verificado'}. Escribe su documento: el directorio no lo trajo.`
+                            : (realN ? `Titular: ${realN}` : 'Llave verificada'),
                 });
                 return;
             }
