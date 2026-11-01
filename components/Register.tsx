@@ -33,26 +33,13 @@ const countries = [
   { name: 'Brasil', code: '+55', countryCode: 'BR' },
 ];
 
-// Simulación: recibes dólares digitales (USDT) y retiras en pesos por BreB/ACH.
+// Ejemplo del panel derecho: una empresa cobra por llave Bre-B y le paga a un
+// proveedor. (1 nov: antes mostraba USDT → pesos; Lincoin ahora es una
+// pasarela de pagos para empresas en Colombia.)
 const simulationData = [
-  {
-    id: 1,
-    available: 'US$ 5.000 en tu wallet',
-    send: { amount: '1.000', currency: 'USD' },
-    receive: { amount: '3.950.000', currency: 'COP' }
-  },
-  {
-    id: 2,
-    available: 'US$ 5.000 en tu wallet',
-    send: { amount: '2.500', currency: 'USD' },
-    receive: { amount: '9.875.000', currency: 'COP' }
-  },
-  {
-    id: 3,
-    available: 'US$ 5.000 en tu wallet',
-    send: { amount: '500', currency: 'USD' },
-    receive: { amount: '1.975.000', currency: 'COP' }
-  },
+  { id: 1, available: 'Cuenta de tu empresa · COP', send: { amount: '1.200.000', currency: 'COP' }, receive: { amount: '4.850.000', currency: 'COP' } },
+  { id: 2, available: 'Cuenta de tu empresa · COP', send: { amount: '3.400.000', currency: 'COP' }, receive: { amount: '980.000', currency: 'COP' } },
+  { id: 3, available: 'Cuenta de tu empresa · COP', send: { amount: '650.000', currency: 'COP' }, receive: { amount: '2.150.000', currency: 'COP' } },
 ];
 
 export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business', esContador = false, revisor = false }) => {
@@ -530,17 +517,17 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                     </div>
                     <div className="rounded-xl p-4 mb-2 flex justify-between items-center" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.06)' }}>
                         <div>
-                            <p className="text-xs mb-1" style={{ color: '#4ADE80' }}>Recibes en dólares digitales</p>
-                            <p className="text-2xl font-bold transition-all duration-300" style={{ color: '#F4F4F2' }}>US$ {currentSim.send.amount}</p>
+                            <p className="text-xs mb-1" style={{ color: '#4ADE80' }}>Te pagan por llave Bre-B</p>
+                            <p className="text-2xl font-bold transition-all duration-300" style={{ color: '#F4F4F2' }}>+$ {currentSim.send.amount}</p>
                         </div>
-                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all duration-300" style={{ background: 'rgba(39,117,202,0.15)', border: '1px solid rgba(39,117,202,0.35)' }}>
-                            <span className="font-bold" style={{ color: '#2775CA', fontSize: 12 }}>USDT</span>
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all duration-300" style={{ background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)' }}>
+                            <span className="font-bold" style={{ color: '#4ADE80', fontSize: 12 }}>Recibido</span>
                         </div>
                     </div>
                     <div className="rounded-xl p-4 flex justify-between items-center" style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.06)' }}>
                          <div>
-                            <p className="text-xs mb-1" style={{ color: '#878E88' }}>Retiras a Colombia · BreB</p>
-                            <p className="text-2xl font-bold transition-all duration-300" style={{ color: '#F4F4F2' }}>$ {currentSim.receive.amount}</p>
+                            <p className="text-xs mb-1" style={{ color: '#878E88' }}>Pagas a un proveedor · Bre-B</p>
+                            <p className="text-2xl font-bold transition-all duration-300" style={{ color: '#F4F4F2' }}>−$ {currentSim.receive.amount}</p>
                         </div>
                         <div className="flex items-center gap-2 transition-all duration-300">
                             <FlagImg code={currentSim.receive.currency} className="w-5 h-3.5 object-cover rounded-sm" />
@@ -551,10 +538,10 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             </div>
             <div className="text-center">
                 <h2 className="text-3xl font-bold mb-4" style={{ color: '#F4F4F2', letterSpacing: '-0.5px' }}>
-                    Dólares digitales, <span style={{ color: '#4ADE80' }}>sin fronteras</span>
+                    Cobra y paga, <span style={{ color: '#4ADE80' }}>en segundos</span>
                 </h2>
                 <p className="leading-relaxed text-sm max-w-md mx-auto" style={{ color: '#878E88' }}>
-                    Recibe y guarda USDT en tu wallet, cambia a pesos y retira en Colombia por BreB y ACH — más OTC para volúmenes grandes. Todo desde una sola cuenta empresarial.
+                    Recibe pagos por llave Bre-B o link de pago, y paga a proveedores y nómina en cualquier banco de Colombia por Bre-B o ACH. Todo desde una sola cuenta empresarial.
                 </p>
             </div>
         </div>

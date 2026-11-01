@@ -82,11 +82,12 @@ El verde nunca es fondo grande. Es puntual: el punto del logo, un botón, un dat
 
 ## Producto — qué es Lincoin
 
-Una cuenta digital para **recibir, cambiar y enviar USDC y EURC** (dólares y euros digitales) en Latinoamérica y Europa, con tarjeta Mastercard.
+Desde el 1 nov 2026 Lincoin es una **pasarela de pagos para empresas en Colombia**: una cuenta en pesos (COP) para **cobrar** (llave Bre-B, links de pago) y **pagar** (a proveedores, nómina y terceros en cualquier banco, por Bre-B y ACH). Ya **no** se presenta como cuenta para recibir/convertir USDT o EURT ni para enviar entre países: la página pública, el registro y el copy no deben hablar de eso.
 
-- **Solo USDC y EURC.** No mostrar Bitcoin, ETH ni otras cripto en la app, tickers o copy.
-- **No somos banco** y **no tenemos licencia MiCA ni registro regulatorio.** Nunca afirmar que estamos regulados, licenciados o auditados por un regulador.
-- La confianza se comunica vía **aliados de infraestructura**: Circle (emisor de USDC/EURC, atestaciones 1:1), Fireblocks (custodia), Sumsub (KYC), SEPA/SWIFT.
+- Se registran **empresas** y **operadores** (personas del equipo de una empresa). No hay registro de personas naturales.
+- La página pública **no muestra tarifas**: cada operación muestra su tarifa antes de confirmarla, dentro de la app.
+- **No somos banco** y **no tenemos licencia ni registro regulatorio.** Nunca afirmar que estamos regulados, licenciados, vigilados o auditados por un regulador. Sí se puede decir que Lincoin implementa su SARLAFT (prevención de LA/FT) y verifica a cada empresa (KYB).
+- La confianza se comunica vía los rieles (Bre-B, ACH) y "aliados de infraestructura de pagos", **sin nombrarlos**: el cliente nunca ve Mouv, Finity, Coinsenda, Gowd, Kamin, TusDatos, Siigo ni otro aliado. En el admin sí.
 - La marca se llama **Lincoin** — nunca Cuy Pay, Alza ni otra.
 
 ## Desarrollo
