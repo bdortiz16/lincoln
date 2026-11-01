@@ -1050,7 +1050,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const METHODS = ([
                               { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
-                              { key: 'cash', title: 'Retiro en punto físico', pill: null, time: 'Efectivo en corresponsales aliados', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
+                              // "Retiro en punto físico" se quitó de la lista (1 nov):
+                              // no se ofrece a los clientes.
                           ] as const).filter(m => permitido(m.key));
                           // Con un solo saldo (Operadores) todos los métodos salen
                           // del mismo; y "Saldo Saldo Lincoin" no se repite.
