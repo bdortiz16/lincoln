@@ -1218,6 +1218,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // Utilidad por cliente: buscador y si se ven todos o los primeros.
   const [linCliBusca, setLinCliBusca] = useState('');
   const [linCliTodos, setLinCliTodos] = useState(false);
+  // Tesorería › Lincoin en secciones (como Contabilidad): el tablero ya no es
+  // una sola página larga. Se recuerda la última abierta.
+  type LinSeccion = 'resumen' | 'clientes' | 'bolsas' | 'movimientos';
+  const [linSeccion, setLinSeccionState] = useState<LinSeccion>(() => {
+    try { const v = localStorage.getItem('lincoin_admin_lin_seccion'); return (['resumen', 'clientes', 'bolsas', 'movimientos'].includes(String(v)) ? v : 'resumen') as LinSeccion; } catch { return 'resumen'; }
+  });
+  const setLinSeccion = (v: LinSeccion) => { setLinSeccionState(v); try { localStorage.setItem('lincoin_admin_lin_seccion', v); } catch { /* sin storage */ } };
   const [linVer, setLinVer] = useState(0);
   // tipo 'enviar': la utilidad sale de la bolsa por Bre-B a una llave de
   // Lincoin (queda como retiro). opId es uno por intento: un doble clic o un
@@ -3841,8 +3848,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           showToast(r?.error ?? 'No se pudo enviar.', 5000);
           setLinForm(f => f && ({ ...f, otp: '' }));
       };
-      const kpi = (l: string, v: string, sub: string, color = '#F4F4F2') => (
-          <div style={{ ...CARD, padding: 16 }}>
+      const kpi = (l: string, v: string, sub: string, color = '#F4F4F2', ir?: LinSeccion) => (
+          <div onClick={ir ? () => setLinSeccion(ir) : undefined} title={ir ? 'Ver el detalle' : undefined} style={{ ...CARD, padding: 16, cursor: ir ? 'pointer' : undefined }}>
               <p style={{ margin: 0, fontSize: 12, color: '#878E88' }}>{l}</p>
               <p style={{ margin: '6px 0 0', fontSize: 21, fontWeight: 800, letterSpacing: '-0.5px', color }}>{v}</p>
               <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{sub}</p>
@@ -3868,12 +3875,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           </div>
 
           <div className="grid grid-cols-2 xl:grid-cols-4" style={{ gap: 12 }}>
-              {kpi('Saldo de Lincoin en bolsas', difs.length ? fmt(saldoLincoin) : '—', difs.length ? 'apertura + utilidad − retiros ± externos' : 'la caja abre hoy a las 23:59', '#4ADE80')}
-              {kpi('Utilidad del periodo', fmt(utilidad), `de ${cargues} cargues`)}
-              {kpi('Retiros de utilidad', fmt(retiros), `${vivos.filter(m => m.tipo === 'retiro').length} en el periodo`)}
-              {kpi('Diferencia sin explicar', difTotal == null ? '—' : signo(difTotal), difTotal == null ? 'cuando abra la caja' : difTotal === 0 ? 'todo cuadra' : 'falta registrar algo', difTotal == null ? 'rgba(244,244,242,0.45)' : difTotal === 0 ? '#4ADE80' : '#FBBF24')}
+              {kpi('Saldo de Lincoin en bolsas', difs.length ? fmt(saldoLincoin) : '—', difs.length ? 'apertura + utilidad − retiros ± externos' : 'la caja abre hoy a las 23:59', '#4ADE80', 'bolsas')}
+              {kpi('Utilidad del periodo', fmt(utilidad), `de ${cargues} cargues`, '#F4F4F2', 'resumen')}
+              {kpi('Retiros de utilidad', fmt(retiros), `${vivos.filter(m => m.tipo === 'retiro').length} en el periodo`, '#F4F4F2', 'movimientos')}
+              {kpi('Diferencia sin explicar', difTotal == null ? '—' : signo(difTotal), difTotal == null ? (difs.length ? 'leyendo las bolsas…' : 'cuando abra la caja') : difTotal === 0 ? 'todo cuadra' : 'falta registrar algo', difTotal == null ? 'rgba(244,244,242,0.45)' : difTotal === 0 ? '#4ADE80' : '#FBBF24', 'bolsas')}
           </div>
 
+          {/* Secciones del tablero */}
+          <div role="tablist" aria-label="Secciones de Lincoin" className="flex flex-wrap" style={{ gap: 6, padding: 4, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12 }}>
+              {([
+                  ['resumen', 'Resumen', ''],
+                  ['clientes', 'Por cliente', (d?.clientes ?? []).length ? `· ${(d?.clientes ?? []).length}` : ''],
+                  ['bolsas', 'Bolsas y envíos', difTotal != null && difTotal !== 0 ? '· no cuadra' : ''],
+                  ['movimientos', 'Movimientos', movs.length ? `· ${movs.length}` : ''],
+              ] as [LinSeccion, string, string][]).map(([k, rot, extra]) => { const act = linSeccion === k; return (
+                  <button key={k} role="tab" aria-selected={act} onClick={() => setLinSeccion(k)}
+                      style={{ flex: '1 1 140px', fontSize: 13, fontWeight: 700, padding: '10px 14px', borderRadius: 9, cursor: 'pointer', color: act ? '#F4F4F2' : '#878E88', background: act ? 'rgba(255,255,255,0.08)' : 'transparent', border: `1px solid ${act ? 'rgba(255,255,255,0.18)' : 'transparent'}`, whiteSpace: 'nowrap' }}>
+                      {rot}{extra && <span style={{ color: k === 'bolsas' ? '#FBBF24' : '#4ADE80', marginLeft: 6, fontWeight: 700 }}>{extra}</span>}
+                  </button>
+              ); })}
+          </div>
+
+          {linSeccion === 'resumen' && (
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] items-start" style={{ gap: 16 }}>
               <div style={CARD}>
                   <p style={{ ...ROT, marginBottom: 12 }}>Utilidades por fuente</p>
@@ -3924,6 +3947,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               </div>
           </div>
 
+          )}
+
+          {linSeccion === 'clientes' && (<>
           {/* Cuánto le dejó cada cliente en el periodo. */}
           {(() => {
               const clientes: any[] = d?.clientes ?? [];
@@ -3995,6 +4021,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               );
           })()}
 
+          </>)}
+
+          {linSeccion === 'bolsas' && (<>
           <div style={CARD}>
               <p style={{ ...ROT, marginBottom: 12 }}>Saldo de Lincoin por bolsa · {mesLargo}</p>
               <div className="grid grid-cols-1 lg:grid-cols-2" style={{ gap: 14 }}>
@@ -4114,6 +4143,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 )}
           </div>
 
+          </>)}
+
+          {linSeccion === 'movimientos' && (
           <div style={{ ...CARD, padding: 0 }}>
               <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}><p style={ROT}>Movimientos de Lincoin · {linMes}</p></div>
               <div style={{ overflowX: 'auto' }}>
@@ -4157,6 +4189,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               </div>
               <p style={{ margin: 0, padding: '12px 18px', fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>Cada movimiento ajusta el Lincoin esperado de su bolsa y la diferencia del cierre de caja. No se borran: el dueño los puede anular con motivo.</p>
           </div>
+
+          )}
 
           {/* Registrar movimiento */}
           {linForm && (
