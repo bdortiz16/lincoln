@@ -1718,7 +1718,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           )}
           {/* Quién es contador de la empresa lo decide la empresa, no su contador. */}
           {!soloLectura && !empresaId && (
-            <button onClick={() => setContadorAbierto(true)} title="Dale acceso a tu contador o revisor fiscal (contabilidad y facturación): entra por Empresas → Contabilidad y revisor con su propio correo."
+            <button onClick={() => setContadorAbierto(true)} title="Dale acceso a tu contador o revisor fiscal (contabilidad y facturación): entra por Empresas → Contabilidad o Revisor fiscal con su propio correo."
               style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
               className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
               Contador

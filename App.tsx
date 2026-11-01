@@ -313,6 +313,8 @@ const App: React.FC = () => {
   // Mensaje del portal equivocado ("esta cuenta es de Empresas…"): lo pone
   // la guarda de abajo y lo muestra la pantalla de Login.
   const [errorPortal, setErrorPortal] = useState<string | null>(null);
+  // Entró por Empresas → Revisor fiscal (y no por Contabilidad).
+  const [entradaRevisor, setEntradaRevisor] = useState(false);
   // Momento del último rechazo por portal. Sirve para que nada que venga
   // "atrasado" del ingreso (el aviso de éxito del 2FA, el salto al panel)
   // pise la pantalla del mensaje y termine en el inicio sin explicación.
@@ -570,8 +572,15 @@ const App: React.FC = () => {
   const handleContadorSelected = () => {
     fijarPortal('contabilidad');
     setErrorPortal(null);
+    setEntradaRevisor(false);
     setUserRole('contador');
     setCurrentView('login');
+  };
+  // Revisor fiscal: la misma puerta que el contador (mismo portal y mismo
+  // acceso). Solo cambia el título de las pantallas de ingreso y registro.
+  const handleRevisorSelected = () => {
+    handleContadorSelected();
+    setEntradaRevisor(true);
   };
 
   const handleRegisterSuccess = (registeredEmail: string) => {
@@ -676,6 +685,7 @@ const App: React.FC = () => {
               <RoleSelection 
                  onSelectBusiness={handleBusinessSelected}
                  onSelectContador={handleContadorSelected}
+                 onSelectRevisor={handleRevisorSelected}
                  onSelectPersonal={handlePersonalSelected}
                  onRegisterPersonal={() => navigateToRegister('personal')}
                  onClose={navigateToLanding}
@@ -686,6 +696,7 @@ const App: React.FC = () => {
           return (
             <Login
               userRole={userRole !== 'admin' ? userRole : 'business'}
+              revisor={userRole === 'contador' && entradaRevisor}
               errorInicial={errorPortal}
               onRegisterClick={() => navigateToRegister(userRole !== 'admin' ? userRole : 'business')}
               onLoginSuccess={handleLoginSuccess}
@@ -697,6 +708,7 @@ const App: React.FC = () => {
             <Register 
               userRole={userRole === 'business' ? 'business' : 'personal'}
               esContador={userRole === 'contador'}
+              revisor={userRole === 'contador' && entradaRevisor}
               onSuccess={handleRegisterSuccess} 
               onLoginClick={navigateToLogin}
               onBack={navigateToLanding}

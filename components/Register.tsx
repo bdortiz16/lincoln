@@ -21,6 +21,8 @@ interface RegisterProps {
   userRole?: 'business' | 'personal';
   /** Registro desde Empresas → Contabilidad: misma cuenta simple, otro título. */
   esContador?: boolean;
+  /** Entró por «Revisor fiscal»: misma cuenta que el contador, otro título. */
+  revisor?: boolean;
 }
 
 const countries = [
@@ -53,7 +55,7 @@ const simulationData = [
   },
 ];
 
-export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business', esContador = false }) => {
+export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onBack, userRole = 'business', esContador = false, revisor = false }) => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState('');
@@ -239,7 +241,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  {esContador ? 'Crea tu cuenta para Contabilidad y revisor' : 'Regístrate como operador'}
+                  {esContador ? (revisor ? 'Crea tu cuenta de revisor fiscal' : 'Crea tu cuenta para Contabilidad') : 'Regístrate como operador'}
                 </h1>
 
                 {esOperador && (

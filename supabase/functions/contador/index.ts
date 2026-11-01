@@ -401,7 +401,7 @@ Deno.serve(async (req) => {
       const err = await guardarVinculos(yo.id, contadores, solicitudes)
       if (err) return json({ ok: false, error: err }, 500)
       await db.from('audit_log').insert({ user_id: yo.id, action: 'empresa.contador_aprobado', metadata: { contadorId, email: s.email, at: new Date().toISOString() } })
-      await notificar(contadorId, 'Acceso aprobado', `${nombreEmpresa(emp)} aprobó tu acceso a su contabilidad y su facturación. Entra por Empresas → Contabilidad y revisor.`, 'success', '/portal_contabilidad')
+      await notificar(contadorId, 'Acceso aprobado', `${nombreEmpresa(emp)} aprobó tu acceso a su contabilidad y su facturación. Entra por Empresas → Contabilidad (o Revisor fiscal).`, 'success', '/portal_contabilidad')
       return json({ ok: true, contadores, solicitudes })
     }
 
