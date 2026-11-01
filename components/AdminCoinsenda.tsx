@@ -112,7 +112,7 @@ export const AdminCoinsenda: React.FC = () => {
           {sinConectar.map(n => (
             <div key={n} className="flex items-center justify-between flex-wrap" style={{ gap: 10, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 12, padding: '11px 14px' }}>
               <span style={{ fontSize: 13, lineHeight: 1.45 }}>
-                <b>La Cuenta {n} todavía no está conectada.</b> <span style={{ color: C.sub }}>{n === 4 ? 'Si es una subcuenta de Coinsenda, usa la misma llave de la Cuenta 3; guarda su correo y prueba la conexión.' : 'Genera su llave, regístrala en Coinsenda, guarda el correo y prueba la conexión.'}</span>
+                <b>La Cuenta {n} todavía no está conectada.</b> <span style={{ color: C.sub }}>Genera su llave, regístrala en esa cuenta de Coinsenda, guarda el correo y prueba la conexión.</span>
               </span>
               <button style={{ ...btnPri, background: C.green }} onClick={() => irA(n)}>Conectar Cuenta {n} →</button>
             </div>
@@ -294,21 +294,11 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
   const [gen, setGen] = useState<{ otp: string; reemplazar: boolean; ocupado: boolean; error: string | null } | null>(null);
   const [copiada, setCopiada] = useState(false);
   const [recienGenerada, setRecienGenerada] = useState(false);
-  // Cuenta 4 = subcuenta de Coinsenda: comparte la clave pública de la
-  // principal y firma con la llave de la Cuenta 3 (solo cambia el correo).
-  const [compartida, setCompartida] = useState(false);
-  const [llave3, setLlave3] = useState<Llave | null>(null);
-  const [compartida3Secreto, setCompartida3Secreto] = useState(false);
-  const [compOcupado, setCompOcupado] = useState(false);
-  const [compMsg, setCompMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
   const cargar = async () => {
     setCargando(true);
     const r = await pedirAdmin({ action: 'coinsenda_llave_estado', cuenta }).catch(() => null);
-    if (r?.ok) {
-      setLlave(r.llave ?? null); setDesdeSecreto(!!r.desdeSecreto); setError(null);
-      setCompartida(!!r.compartida); setLlave3(r.llaveCompartida ?? null); setCompartida3Secreto(!!r.compartidaDesdeSecreto);
-    }
+    if (r?.ok) { setLlave(r.llave ?? null); setDesdeSecreto(!!r.desdeSecreto); setError(null); }
     else setError(r?.permisoDenegado ? 'Solo el dueño puede ver y generar las llaves de Coinsenda.' : (r?.error ?? 'No se pudo leer la llave.'));
     setCargando(false);
   };
@@ -322,41 +312,23 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
     setGen(g => g && ({ ...g, ocupado: false, otp: '', error: r?.error ?? 'No se pudo generar la llave.' }));
   };
 
-  const compartir = async (v: boolean) => {
-    setCompOcupado(true); setCompMsg(null);
-    const r = await pedirAdmin({ action: 'coinsenda_llave_compartir', cuenta, compartir: v }).catch(() => null);
-    setCompOcupado(false);
-    if (r?.ok) {
-      setCompMsg({ ok: true, texto: (v ? 'Listo: la Cuenta 4 firma con la llave de la Cuenta 3. Ahora guarda el correo de la subcuenta y dale «Probar conexión».' : 'Listo: la Cuenta 4 vuelve a su llave propia.') + (r.apagada ? ' Sus envíos quedaron apagados hasta que la conexión pase.' : '') });
-      await cargar(); onCambio();
-    } else setCompMsg({ ok: false, texto: r?.needs2fa ? 'Tu sesión necesita el 2FA para cambiar esto. Sal y vuelve a entrar con tu código.' : (r?.error ?? 'No se pudo cambiar.') });
-  };
-  // La llave que de verdad firma esta cuenta (la propia o la de la Cuenta 3).
-  const vista = compartida ? llave3 : llave;
-
   const copiar = async () => {
-    if (!vista) return;
-    try { await navigator.clipboard.writeText(vista.publica.trim()); setCopiada(true); setTimeout(() => setCopiada(false), 2500); } catch { /* el navegador no dejó: se puede seleccionar a mano */ }
+    if (!llave) return;
+    try { await navigator.clipboard.writeText(llave.publica.trim()); setCopiada(true); setTimeout(() => setCopiada(false), 2500); } catch { /* el navegador no dejó: se puede seleccionar a mano */ }
   };
 
   return (
     <div className="space-y-4" style={{ maxWidth: 820 }}>
       {/* Los pasos para conectar esta cuenta, con lo que ya está hecho. */}
       {datos && (() => {
-        const hayLlaveP = compartida ? (!!llave3 || compartida3Secreto) : (!!llave || desdeSecreto || !!datos.llave || datos.llaveDesdeSecreto);
+        const hayLlaveP = !!llave || desdeSecreto || !!datos.llave || datos.llaveDesdeSecreto;
         const okPrueba = conectadaDe(datos);
         const encendida = datos.interruptores.breb || datos.interruptores.ach;
+        const tramo = tramoClave(llave?.publica);
         const pasos: { t: React.ReactNode; hecho: boolean }[] = [
-          ...(compartida ? [
-          { t: <>Llave: la misma de la Cuenta 3.</>, hecho: hayLlaveP },
-          { t: <>Comprobar que en la subcuenta de Coinsenda (Ajustes → Desarrollador) la clave registrada empiece «…CgKCAQEA<b>{tramoClave(llave3?.publica) ?? '?'}</b>…». Si allá aparece otra, esta opción no sirve: dale <b>Usar una llave propia</b>, genérala y pégala allá con <b>Reemplazar</b>.</>, hecho: okPrueba },
-        ] : [
-          { t: cuenta === 4
-              ? <>Elegir la llave. Si la Cuenta 4 es una <b>subcuenta</b> de la misma cuenta de Coinsenda (en su panel de Desarrollador aparece la misma clave ya registrada), dale <b>Usar la llave de la Cuenta 3</b> abajo. Si es otra cuenta, <b>Generar llave</b>.</>
-              : <>Generar la llave de la Cuenta {cuenta} (abajo, <b>Generar llave</b>, con tu código 2FA).</>, hecho: hayLlaveP },
-          { t: <>Entrar a Coinsenda con el correo de {cuenta === 4 ? <b>la Cuenta 4</b> : 'esta cuenta'} y pegar la pública en <b>Ajustes → Desarrollador → Clave pública de API → Registrar clave</b>.</>, hecho: okPrueba },
-        ]),
-          { t: compartida ? <>Escribir aquí el correo <b>de la subcuenta</b> (no el de la Cuenta 3) y darle <b>Guardar</b>.</> : <>Escribir aquí ese correo y darle <b>Guardar</b>.</>, hecho: datos.configurada },
+          { t: <>Generar la llave de la Cuenta {cuenta} (abajo, <b>Generar llave</b>, con tu código 2FA).</>, hecho: hayLlaveP },
+          { t: <>Entrar a Coinsenda con el correo de {cuenta === 4 ? <b>la Cuenta 4</b> : 'esta cuenta'} y pegar la pública en <b>Ajustes → Desarrollador → Clave pública de API</b> (<b>Registrar clave</b>, o <b>Reemplazar</b> si ya había otra){tramo ? <>. Allá debe quedar empezando «…CgKCAQEA<b>{tramo}</b>…»</> : null}.</>, hecho: okPrueba },
+          { t: <>Escribir aquí ese correo y darle <b>Guardar</b>.</>, hecho: datos.configurada },
           { t: <>Darle <b>Probar conexión</b> y que pase.</>, hecho: okPrueba },
           { t: <>Encender Bre-B y/o ACH · Cuenta {cuenta} para los clientes.</>, hecho: encendida },
         ];
@@ -381,82 +353,63 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
           <div style={{ minWidth: 0 }}>
             <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Llave de la API · Cuenta {cuenta}</p>
             <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
-              {compartida
-                ? <>Esta cuenta firma con la <b style={{ color: C.text }}>llave de la Cuenta 3</b>. Solo funciona si la subcuenta tiene registrada en Coinsenda esa misma clave; lo que la distingue es su correo.</>
-                : <>La <b style={{ color: C.text }}>pública</b> se pega en Coinsenda, entrando con el correo de la Cuenta {cuenta}. La <b style={{ color: C.text }}>privada</b> la guarda el servidor, cifrada, y no sale de ahí.</>}
+              La <b style={{ color: C.text }}>pública</b> se pega en Coinsenda, entrando con el correo de la Cuenta {cuenta}. La <b style={{ color: C.text }}>privada</b> la guarda el servidor, cifrada, y no sale de ahí.
             </p>
           </div>
           {!cargando && !error && (
-            <span style={{ border: `1px solid ${vista ? 'rgba(74,222,128,0.3)' : C.b2}`, color: vista ? C.green : C.sub, borderRadius: 999, padding: '3px 9px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.6px', whiteSpace: 'nowrap' }}>
-              {compartida ? 'LA DE LA CUENTA 3' : llave ? 'GENERADA' : 'SIN LLAVE'}
+            <span style={{ border: `1px solid ${llave ? 'rgba(74,222,128,0.3)' : C.b2}`, color: llave ? C.green : C.sub, borderRadius: 999, padding: '3px 9px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.6px', whiteSpace: 'nowrap' }}>
+              {llave ? 'GENERADA' : 'SIN LLAVE'}
             </span>
           )}
         </div>
 
-        {/* Subcuenta: la misma llave de la Cuenta 3 (o volver a una propia). */}
-        {!cargando && !error && cuenta === 4 && !gen && (
-          compartida ? (
-            <div className="flex items-center flex-wrap" style={{ gap: 10, marginTop: 12 }}>
-              <button style={btnSec} disabled={compOcupado} onClick={() => compartir(false)}>{compOcupado ? 'Cambiando…' : 'Usar una llave propia'}</button>
-              <span style={{ fontSize: 11.5, color: C.sub }}>Si en la subcuenta aparece otra clave, usa una propia y pégala allá.</span>
-            </div>
-          ) : (
-            <div style={{ marginTop: 12, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 10, padding: '11px 13px' }}>
-              <p style={{ fontSize: 12.5, margin: 0, lineHeight: 1.5 }}>
-                <b>¿La subcuenta ya tiene registrada la misma clave de la Cuenta 3?</b> En su panel de Desarrollador, la clave tendría que empezar «…CgKCAQEA<b>{tramoClave(llave3?.publica) ?? '?'}</b>…». Si es así, usa la de la Cuenta 3. Si aparece otra (o ninguna), genera aquí una propia y pégala allá con <b>Reemplazar</b>.
-              </p>
-              <button style={{ ...btnSec, marginTop: 10 }} disabled={compOcupado} onClick={() => compartir(true)}>{compOcupado ? 'Cambiando…' : 'Usar la llave de la Cuenta 3'}</button>
-            </div>
-          )
-        )}
-        {compMsg && <p style={{ fontSize: 12.5, color: compMsg.ok ? C.green : C.red, margin: '8px 0 0', lineHeight: 1.45 }}>{compMsg.texto}</p>}
 
         {cargando && <p style={{ fontSize: 12.5, color: C.sub, margin: '14px 0 0' }}>Cargando…</p>}
         {error && <p style={{ fontSize: 12.5, color: C.red, margin: '14px 0 0' }}>{error}</p>}
 
-        {!cargando && !error && !compartida && !llave && !gen && (
+        {!cargando && !error && !llave && !gen && (
           <div style={{ marginTop: 14 }}>
             <p style={{ fontSize: 12.5, color: C.sub, margin: '0 0 10px', lineHeight: 1.5 }}>
-              {cuenta === 4 ? 'Si la Cuenta 4 es otra cuenta de Coinsenda (no una subcuenta), genera aquí su llave y luego copia la pública en esa cuenta.' : `Todavía no hay llave para la Cuenta ${cuenta}. Genérala aquí y luego copia la pública en Coinsenda.`}
+              Todavía no hay llave para la Cuenta {cuenta}. Genérala aquí y luego copia la pública en esa cuenta de Coinsenda.
             </p>
             <button style={btnPri} onClick={() => setGen({ otp: '', reemplazar: false, ocupado: false, error: null })}>Generar llave</button>
           </div>
         )}
 
-        {!cargando && !error && vista && (
+        {!cargando && !error && llave && (
           <div style={{ marginTop: 14 }}>
-            {recienGenerada && !compartida && (
+            {recienGenerada && (
               <div style={{ background: 'rgba(74,222,128,0.07)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 10, padding: '10px 12px', marginBottom: 10, fontSize: 12.5, lineHeight: 1.5 }}>
-                Llave lista. Entra a Coinsenda con el correo de la Cuenta {cuenta}, y pégala en <b>Ajustes → Desarrollador → Clave pública de API</b>; dale <b>Registrar clave</b>.
+                Llave lista. Entra a Coinsenda con el correo de la Cuenta {cuenta}, y pégala en <b>Ajustes → Desarrollador → Clave pública de API</b>; dale <b>Registrar clave</b> (o <b>Reemplazar</b> si allá ya había otra).
               </div>
             )}
             <div className="flex items-center justify-between" style={{ gap: 8, marginBottom: 6 }}>
               <p style={ROT}>CLAVE PÚBLICA</p>
               <button style={{ ...btnSec, padding: '5px 11px', color: copiada ? C.green : C.text, borderColor: copiada ? 'rgba(74,222,128,0.4)' : C.b2 }} onClick={copiar}>{copiada ? 'Copiada ✓' : 'Copiar'}</button>
             </div>
-            <pre style={{ fontFamily: MONO, fontSize: 11.5, color: C.text, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 9, padding: 12, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', userSelect: 'all' }}>{vista.publica.trim()}</pre>
+            <pre style={{ fontFamily: MONO, fontSize: 11.5, color: C.text, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 9, padding: 12, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', userSelect: 'all' }}>{llave.publica.trim()}</pre>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 10 }}>
               <div>
                 <p style={ROT}>HUELLA</p>
-                <p style={{ fontFamily: MONO, fontSize: 12, margin: '3px 0 0' }}>{vista.huella}</p>
+                <p style={{ fontFamily: MONO, fontSize: 12, margin: '3px 0 0' }}>{llave.huella}</p>
               </div>
-              {tramoClave(vista.publica) && (
+              {tramoClave(llave.publica) && (
                 <div>
                   <p style={ROT}>EN COINSENDA SE VE ASÍ</p>
-                  <p style={{ fontFamily: MONO, fontSize: 12, margin: '3px 0 0', wordBreak: 'break-all' }}>…CgKCAQEA<b style={{ color: C.green }}>{tramoClave(vista.publica)}</b>…</p>
+                  <p style={{ fontFamily: MONO, fontSize: 12, margin: '3px 0 0', wordBreak: 'break-all' }}>…CgKCAQEA<b style={{ color: C.green }}>{tramoClave(llave.publica)}</b>…</p>
                 </div>
               )}
               <div>
                 <p style={ROT}>GENERADA</p>
-                <p style={{ fontSize: 12, margin: '3px 0 0' }}>{fecha(vista.at)}{vista.por?.nombre || vista.por?.email ? ` · ${vista.por?.nombre || vista.por?.email}` : ''}{compartida ? ' · de la Cuenta 3' : ''}</p>
+                <p style={{ fontSize: 12, margin: '3px 0 0' }}>{fecha(llave.at)}{llave.por?.nombre || llave.por?.email ? ` · ${llave.por?.nombre || llave.por?.email}` : ''}</p>
               </div>
             </div>
-            {(compartida ? compartida3Secreto : desdeSecreto) && (
+            {desdeSecreto && (
               <p style={{ fontSize: 11.5, color: C.amber, margin: '10px 0 0', lineHeight: 1.5 }}>
-                Ojo: en los secretos de Supabase hay un {cuenta === 4 && !compartida ? 'COINSENDA_PRIVATE_KEY_C4' : 'COINSENDA_PRIVATE_KEY'}, y ese manda sobre esta llave. Si vas a usar la de aquí, borra ese secreto.
+                Ojo: en los secretos de Supabase hay un {cuenta === 4 ? 'COINSENDA_PRIVATE_KEY_C4' : 'COINSENDA_PRIVATE_KEY'}, y ese manda sobre esta llave. Si vas a usar la de aquí, borra ese secreto.
               </p>
             )}
-            {!gen && !compartida && (
+            {!gen && (
               <button style={{ ...btnSec, marginTop: 12, color: C.sub }} onClick={() => setGen({ otp: '', reemplazar: true, ocupado: false, error: null })}>Generar otra llave</button>
             )}
           </div>
@@ -486,7 +439,7 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
         )}
       </div>
 
-      {!error && <Conexion key={compartida ? 'compartida' : 'propia'} cuenta={cuenta} compartida={compartida} hayLlave={compartida ? (!!llave3 || compartida3Secreto) : (!!llave || desdeSecreto)} onCambio={onCambio} />}
+      {!error && <Conexion cuenta={cuenta} hayLlave={!!llave || desdeSecreto} onCambio={onCambio} />}
     </div>
   );
 };
@@ -516,7 +469,7 @@ const VerDetalle: React.FC<{ v: unknown }> = ({ v }) => {
   );
 };
 
-const Conexion: React.FC<{ cuenta: Cuenta; compartida?: boolean; hayLlave: boolean; onCambio: () => void }> = ({ cuenta, compartida, hayLlave, onCambio }) => {
+const Conexion: React.FC<{ cuenta: Cuenta; hayLlave: boolean; onCambio: () => void }> = ({ cuenta, hayLlave, onCambio }) => {
   const [email, setEmail] = useState<string | null>(null);
   const [borrador, setBorrador] = useState('');
   const [editando, setEditando] = useState(false);
@@ -577,9 +530,7 @@ const Conexion: React.FC<{ cuenta: Cuenta; compartida?: boolean; hayLlave: boole
     <div style={tarjeta}>
       <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Conexión · Cuenta {cuenta}</p>
       <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
-        {compartida
-          ? <>El correo de la <b style={{ color: C.text }}>subcuenta</b> (el que aparece en esa subcuenta de Coinsenda, no el de la Cuenta 3). Va dentro del token: con la misma llave, el correo es lo que hace que Coinsenda abra la subcuenta.</>
-          : <>El correo con el que entras a {cuenta === 4 ? 'la cuenta de la Cuenta 4' : 'Coinsenda'}: va dentro del token que firma la llave. Tiene que ser otro distinto al de la Cuenta {cuenta === 3 ? 4 : 3}.</>}
+        El correo con el que entras a {cuenta === 4 ? 'la cuenta de la Cuenta 4' : 'Coinsenda'}: va dentro del token que firma la llave. Tiene que ser otro distinto al de la Cuenta {cuenta === 3 ? 4 : 3}.
       </p>
 
       <p style={{ ...ROT, margin: '14px 0 6px' }}>CORREO DE LA CUENTA</p>
@@ -608,7 +559,7 @@ const Conexion: React.FC<{ cuenta: Cuenta; compartida?: boolean; hayLlave: boole
           <button style={{ ...btnPri, opacity: (!hayLlave || !email || probando) ? 0.45 : 1, cursor: (!hayLlave || !email || probando) ? 'not-allowed' : 'pointer' }}
             disabled={!hayLlave || !email || probando} onClick={probar}>{probando ? 'Probando…' : 'Probar conexión'}</button>
         </div>
-        {(!hayLlave || !email) && <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0' }}>{!hayLlave ? (cuenta === 4 ? 'Primero elige la llave: la de la Cuenta 3 (subcuenta) o una propia.' : 'Primero genera la llave y regístrala en Coinsenda.') : 'Primero guarda el correo de la cuenta.'}</p>}
+        {(!hayLlave || !email) && <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0' }}>{!hayLlave ? 'Primero genera la llave y regístrala en Coinsenda.' : 'Primero guarda el correo de la cuenta.'}</p>}
         {ultima && !prueba && (
           <p style={{ fontSize: 11.5, color: ultima.ok ? C.green : C.amber, margin: '8px 0 0', lineHeight: 1.45 }}>
             Última prueba: {fecha(ultima.at)} · {ultima.ok ? 'conectado' : `falló${ultima.detalle ? ` — ${ultima.detalle}` : ''}`}
