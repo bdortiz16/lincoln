@@ -143,13 +143,14 @@ export const SidebarEmpresas: React.FC<Props> = ({
     { clave: 'tarjetas', etiqueta: 'Tarjetas', icono: I.tarjeta, pronto: true },
   ];
 
-  // Estado de la identidad (KYC), justo debajo de Compliance: es lo que
-  // decide qué puede hacer la cuenta, así que vive a la vista y junto a lo
-  // de cumplimiento, no dentro de Ajustes.
+  // Estado de la identidad (KYC): es lo que decide qué puede hacer la
+  // cuenta, así que vive a la vista y no dentro de Ajustes. Va al final del
+  // menú principal, justo encima de DESCUBRE (pedido del 1 nov): en medio,
+  // debajo de Compliance, partía la lista en dos.
   const tarjetaKyc = (
     <div style={{
       background: 'rgba(255,255,255,0.035)', border: `1px solid ${C.borde}`,
-      borderRadius: 11, padding: '11px 12px', margin: '4px 2px 6px',
+      borderRadius: 11, padding: '11px 12px', margin: '12px 2px 0',
     }}>
       <p style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, fontWeight: 700, color: C.text, margin: 0 }}>
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: kycVerificado ? C.verde : C.sub, flexShrink: 0 }} />
@@ -195,12 +196,8 @@ export const SidebarEmpresas: React.FC<Props> = ({
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {principales.map(it => (
-            <React.Fragment key={it.clave}>
-              <Fila it={it} />
-              {it.clave === 'compliance' && tarjetaKyc}
-            </React.Fragment>
-          ))}
+          {principales.map(it => <Fila key={it.clave} it={it} />)}
+          {tarjetaKyc}
 
           <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '2px', color: C.sub, margin: 0, padding: '22px 12px 7px' }}>DESCUBRE</p>
           <Fila it={{
