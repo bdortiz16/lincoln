@@ -33,6 +33,15 @@ type Cuenta = 3 | 4;
 const NOMBRE: Record<Cuenta, string> = { 3: 'Coinsenda', 4: 'Coinsenda 2' };
 type Llave = { publica: string; huella: string; at: string; por?: { nombre?: string; email?: string } | null };
 
+// El tramo que distingue una clave pública RSA 2048: todas empiezan con el
+// mismo encabezado, y el panel de Coinsenda muestra solo el inicio de la
+// registrada. Con este tramo se compara a ojo si allá está la de aquí (el 1 nov
+// la subcuenta tenía registrada otra clave y la firma fallaba).
+const ENCABEZADO_RSA2048 = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA';
+const tramoClave = (pem?: string | null): string | null => {
+  const cuerpo = String(pem ?? '').replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '');
+  return cuerpo.startsWith(ENCABEZADO_RSA2048) ? cuerpo.slice(ENCABEZADO_RSA2048.length, ENCABEZADO_RSA2048.length + 10) : null;
+};
 const fecha = (d?: string | null) => { if (!d) return '—'; try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return d; } };
 const fechaCorta = (d?: string | null) => { if (!d) return '—'; try { return new Date(d).toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return d; } };
 const pesos = (n: number | null | undefined) => n == null || !Number.isFinite(Number(n)) ? '—' : `$${Math.round(Number(n)).toLocaleString('es-CO')}`;
@@ -339,7 +348,8 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
         const encendida = datos.interruptores.breb || datos.interruptores.ach;
         const pasos: { t: React.ReactNode; hecho: boolean }[] = [
           ...(compartida ? [
-          { t: <>Llave: la misma de la Cuenta 3. La subcuenta ya la tiene registrada en Coinsenda, así que allá no hay que pegar nada.</>, hecho: hayLlaveP },
+          { t: <>Llave: la misma de la Cuenta 3.</>, hecho: hayLlaveP },
+          { t: <>Comprobar que en la subcuenta de Coinsenda (Ajustes → Desarrollador) la clave registrada empiece «…CgKCAQEA<b>{tramoClave(llave3?.publica) ?? '?'}</b>…». Si allá aparece otra, esta opción no sirve: dale <b>Usar una llave propia</b>, genérala y pégala allá con <b>Reemplazar</b>.</>, hecho: okPrueba },
         ] : [
           { t: cuenta === 4
               ? <>Elegir la llave. Si la Cuenta 4 es una <b>subcuenta</b> de la misma cuenta de Coinsenda (en su panel de Desarrollador aparece la misma clave ya registrada), dale <b>Usar la llave de la Cuenta 3</b> abajo. Si es otra cuenta, <b>Generar llave</b>.</>
@@ -372,7 +382,7 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
             <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Llave de la API · Cuenta {cuenta}</p>
             <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
               {compartida
-                ? <>Esta cuenta firma con la <b style={{ color: C.text }}>llave de la Cuenta 3</b>: es una subcuenta y Coinsenda le comparte la misma clave. Lo que la distingue es su correo.</>
+                ? <>Esta cuenta firma con la <b style={{ color: C.text }}>llave de la Cuenta 3</b>. Solo funciona si la subcuenta tiene registrada en Coinsenda esa misma clave; lo que la distingue es su correo.</>
                 : <>La <b style={{ color: C.text }}>pública</b> se pega en Coinsenda, entrando con el correo de la Cuenta {cuenta}. La <b style={{ color: C.text }}>privada</b> la guarda el servidor, cifrada, y no sale de ahí.</>}
             </p>
           </div>
@@ -387,14 +397,15 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
         {!cargando && !error && cuenta === 4 && !gen && (
           compartida ? (
             <div className="flex items-center flex-wrap" style={{ gap: 10, marginTop: 12 }}>
-              <button style={{ ...btnSec, color: C.sub }} disabled={compOcupado} onClick={() => compartir(false)}>{compOcupado ? 'Cambiando…' : 'Usar una llave propia'}</button>
+              <button style={btnSec} disabled={compOcupado} onClick={() => compartir(false)}>{compOcupado ? 'Cambiando…' : 'Usar una llave propia'}</button>
+              <span style={{ fontSize: 11.5, color: C.sub }}>Si en la subcuenta aparece otra clave, usa una propia y pégala allá.</span>
             </div>
           ) : (
             <div style={{ marginTop: 12, background: 'rgba(74,222,128,0.06)', border: '1px solid rgba(74,222,128,0.28)', borderRadius: 10, padding: '11px 13px' }}>
               <p style={{ fontSize: 12.5, margin: 0, lineHeight: 1.5 }}>
-                <b>¿Es una subcuenta de la misma cuenta de Coinsenda?</b> Si en su panel de Desarrollador ya aparece la clave pública registrada (la misma de la Cuenta 3), no generes otra: usa la de la Cuenta 3 y aquí solo cambia el correo.
+                <b>¿La subcuenta ya tiene registrada la misma clave de la Cuenta 3?</b> En su panel de Desarrollador, la clave tendría que empezar «…CgKCAQEA<b>{tramoClave(llave3?.publica) ?? '?'}</b>…». Si es así, usa la de la Cuenta 3. Si aparece otra (o ninguna), genera aquí una propia y pégala allá con <b>Reemplazar</b>.
               </p>
-              <button style={{ ...btnPri, background: C.green, marginTop: 10 }} disabled={compOcupado} onClick={() => compartir(true)}>{compOcupado ? 'Cambiando…' : 'Usar la llave de la Cuenta 3'}</button>
+              <button style={{ ...btnSec, marginTop: 10 }} disabled={compOcupado} onClick={() => compartir(true)}>{compOcupado ? 'Cambiando…' : 'Usar la llave de la Cuenta 3'}</button>
             </div>
           )
         )}
@@ -429,6 +440,12 @@ const PanelCuenta: React.FC<{ cuenta: Cuenta; datos: CuentaTablero | null; onCam
                 <p style={ROT}>HUELLA</p>
                 <p style={{ fontFamily: MONO, fontSize: 12, margin: '3px 0 0' }}>{vista.huella}</p>
               </div>
+              {tramoClave(vista.publica) && (
+                <div>
+                  <p style={ROT}>EN COINSENDA SE VE ASÍ</p>
+                  <p style={{ fontFamily: MONO, fontSize: 12, margin: '3px 0 0', wordBreak: 'break-all' }}>…CgKCAQEA<b style={{ color: C.green }}>{tramoClave(vista.publica)}</b>…</p>
+                </div>
+              )}
               <div>
                 <p style={ROT}>GENERADA</p>
                 <p style={{ fontSize: 12, margin: '3px 0 0' }}>{fecha(vista.at)}{vista.por?.nombre || vista.por?.email ? ` · ${vista.por?.nombre || vista.por?.email}` : ''}{compartida ? ' · de la Cuenta 3' : ''}</p>
@@ -694,7 +711,12 @@ const Conexion: React.FC<{ cuenta: Cuenta; compartida?: boolean; hayLlave: boole
         ))}
       </div>
       {swMsg && <p style={{ fontSize: 12.5, color: swMsg.ok ? C.green : C.red, margin: '8px 0 0' }}>{swMsg.texto}</p>}
-      {ultima?.ok !== true && <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0' }}>Para encenderla, la prueba de conexión de la Cuenta {cuenta} tiene que pasar primero.</p>}
+      {ultima?.ok !== true && !(sw.breb || sw.ach) && <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0' }}>Para encenderla, la prueba de conexión de la Cuenta {cuenta} tiene que pasar primero.</p>}
+      {ultima?.ok === false && (sw.breb || sw.ach) && (
+        <p style={{ fontSize: 12, color: C.amber, margin: '8px 0 0', lineHeight: 1.45 }}>
+          La última prueba falló y esta cuenta sigue encendida: mientras no se arregle, los envíos por la Cuenta {cuenta} no salen (al cliente no se le descuenta nada, pero ve el error). Apágala o arregla la conexión.
+        </p>
+      )}
     </div>
     </>
   );

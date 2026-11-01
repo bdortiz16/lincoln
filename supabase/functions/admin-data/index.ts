@@ -206,6 +206,14 @@ async function bolsasProveedores(): Promise<Record<string, number | null>> {
   }
 }
 
+// El tramo de una clave pública RSA 2048 que se ve en el panel de Coinsenda y
+// la distingue de otra: todas empiezan con el mismo encabezado DER.
+const ENCABEZADO_RSA2048 = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA'
+function tramoClave(pem?: string | null): string | null {
+  const cuerpo = String(pem ?? '').replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '')
+  return cuerpo.startsWith(ENCABEZADO_RSA2048) ? cuerpo.slice(ENCABEZADO_RSA2048.length, ENCABEZADO_RSA2048.length + 10) : null
+}
+
 // La bolsa de una cuenta de Coinsenda: el disponible de su billetera COP (la
 // misma de donde salen los envíos de esa cuenta). null = no configurada o no
 // respondió.
@@ -5034,7 +5042,9 @@ Deno.serve(async (req: Request) => {
         const compartida = cuentaDeLlave(await configCoinsenda(db, cuentaCs)) !== cuentaCs
         return json({
           ok: true, cuenta: cuentaCs, llave: await estadoLlaveCoinsenda(db, cuentaCs), desdeSecreto: !!Deno.env.get(secretoLlave(cuentaCs)),
-          compartida, llaveCompartida: compartida ? await estadoLlaveCoinsenda(db, 3) : null, compartidaDesdeSecreto: compartida && !!Deno.env.get(secretoLlave(3)),
+          // La de la Cuenta 3 va siempre para la Cuenta 4 (solo la pública): la
+          // pantalla la muestra para compararla con la registrada en la subcuenta.
+          compartida, llaveCompartida: cuentaCs === 4 ? await estadoLlaveCoinsenda(db, 3) : null, compartidaDesdeSecreto: compartida && !!Deno.env.get(secretoLlave(3)),
         })
       }
       // Que la Cuenta 4 firme con la llave de la Cuenta 3 (o vuelva a la suya).
@@ -5177,8 +5187,16 @@ Deno.serve(async (req: Request) => {
         }
         const login = await cli.login()
         if (!exitoso(login) || !jwtDe(login)) {
-          const pista = login.status === 401 || login.status === 403
-            ? ` Revisa que ${cfg.email ?? 'el correo'} sea el de la cuenta de Coinsenda y que la clave registrada allá tenga la huella ${llaveC?.huella ?? '(la del secreto)'}.`
+          // Coinsenda responde 465 "Invalid signature" (no 401) cuando la clave
+          // registrada en ESA cuenta no es la nuestra: pasó el 1 nov con la
+          // subcuenta, que tenía registrada otra clave. Su panel muestra el
+          // inicio de la clave registrada; todas las RSA 2048 empiezan igual,
+          // así que se da el tramo que las distingue para compararlo a ojo.
+          const textoFallo = `${login.error ?? ''} ${JSON.stringify(login.data ?? '')}`
+          const deFirma = login.status === 401 || login.status === 403 || login.status === 465 || /signature|pubkey/i.test(textoFallo)
+          const tramo = tramoClave(llaveC?.publica)
+          const pista = deFirma
+            ? `. La clave registrada en la cuenta de Coinsenda de ${cfg.email ?? 'ese correo'} no es la que firma aquí${deLlave !== cuentaCs ? ` (la de la Cuenta ${deLlave})` : ''}. En Coinsenda (Ajustes → Desarrollador) la clave tiene que empezar «…CgKCAQEA${tramo ?? '?'}…»${tramo ? '' : ` (huella ${llaveC?.huella ?? 'del secreto'})`}. Si allá aparece otra, dale Reemplazar y pega la de aquí.`
             : ''
           pasos.push({ paso: 'Iniciar sesión', ok: false, detalle: describirFallo(login, 'iniciar sesión') + pista })
           return terminar(false)
