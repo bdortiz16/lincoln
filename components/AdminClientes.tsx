@@ -1145,8 +1145,8 @@ const ENVIO_MAL = ['Fallido', 'Rechazado'];
 const esCop = (t: any) => String(t.currency ?? '').toUpperCase().startsWith('COP');
 const rielEnvio = (t: any): string => {
   const cur = String(t.currency ?? '').toUpperCase();
-  if (t.rail === 'BREB' || cur === 'COP_BREB') return Number(t.cuentaBreb) === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B';
-  if (t.rail === 'ACH' || cur === 'COP_ACH') return 'ACH';
+  if (t.rail === 'BREB' || cur === 'COP_BREB') { const n = Number(t.cuentaBreb) || 1; return n >= 2 ? `Bre-B · Cuenta ${n}` : 'Bre-B'; }
+  if (t.rail === 'ACH' || cur === 'COP_ACH') return Number(t.cuentaAch) === 3 ? 'ACH · Cuenta 3' : 'ACH';
   if (cur === 'COP') return 'Saldo Lincoin';
   if (cur.startsWith('USD')) return 'USD / USDT';
   if (cur === 'BRL') return 'Brasil';

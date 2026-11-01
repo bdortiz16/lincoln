@@ -12,7 +12,7 @@ export const motivoLegibleCliente = (v: unknown): string | null => {
   const t = typeof v === 'string' ? v.trim() : '';
   if (!t || t.length < 3 || t.length > 240) return null;
   if (/[{}[\]<>]|https?:|http\s*\d|status\s*code|\b(api|request|bad|internal|server|gateway|timeout|exception|null|undefined|token|unauthori[sz]ed|forbidden|payload|json|paso)\b/i.test(t)) return null;
-  if (/\b(kamin|finity|mouv|gowd|kumplo|tusdatos|sumsub|fireblocks|tatum|gasfree|saldo|fondos)\b/i.test(t)) return null;
+  if (/\b(kamin|finity|mouv|gowd|kumplo|tusdatos|sumsub|fireblocks|tatum|gasfree|coin[s]enda|saldo|fondos)\b/i.test(t)) return null;
   if (/\b(the|to|of|is|was|not|could|cannot|unable|failed|invalid|please|your|with|from)\b/i.test(t)) return null;
   if (!/\b(de|del|la|el|los|las|no|en|por|para|con|sin|al|es|se|y|cuenta|banco|titular|documento|llave|existe|corresponde[n]?|v[aá]lid[ao]|inv[aá]lid[ao]|rechazad[ao]|bloquead[ao])\b/i.test(t)) return null;
   return t;

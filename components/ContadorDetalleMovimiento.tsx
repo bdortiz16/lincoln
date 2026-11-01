@@ -192,7 +192,8 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   // Bre-B · Cuenta 2 se paga con el saldo ACH (moneda COP_ACH) pero es un
   // envío por llave: manda el riel del envío, no la moneda.
   const esBreb = tx.currency === 'COP_BREB' || (tx.type === 'dispersion' && v('rail') === 'BREB');
-  const riel = esBreb ? (Number(v('cuentaBreb')) === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B') : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : '';
+  const nCuenta = Number(v('cuentaBreb')) || 1;
+  const riel = esBreb ? (nCuenta >= 2 ? `Bre-B · Cuenta ${nCuenta}` : 'Bre-B') : tx.currency === 'COP_ACH' ? (Number(v('cuentaAch')) === 3 ? 'ACH · Cuenta 3 · Colombia' : 'ACH · Colombia') : '';
   const ref = String(v('providerRef') ?? v('providerTraceId') ?? v('reference') ?? v('txHash') ?? '').trim();
   const motivoPago = String(v('motivo') ?? v('reason') ?? '').trim();
   const nota = String(v('note') ?? v('description') ?? '').trim();

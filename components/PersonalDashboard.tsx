@@ -2539,9 +2539,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const acct = String(t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? rd.account ?? '');
           const last4 = acct ? `···${acct.slice(-4)}` : '';
           const isBreb = t.currency === 'COP_BREB' || (t.type === 'dispersion' && (t.rail ?? rd.rail) === 'BREB');
-          const cuenta2 = isBreb && Number(t.cuentaBreb ?? rd.cuentaBreb) === 2;
+          // Cuenta 2 y 3 se nombran; la 1 es "Bre-B" o "ACH" a secas.
+          const nCuentaB = isBreb ? Number(t.cuentaBreb ?? rd.cuentaBreb) || 1 : 1;
+          const nCuentaA = !isBreb ? Number(t.cuentaAch ?? rd.cuentaAch) || 1 : 1;
           let title = t.title || ROW_LABELS[t.type] || t.type;
-          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (cuenta2 ? 'Bre-B · Cuenta 2' : 'Bre-B') : 'ACH'}${ben ? ` · ${ben}` : ''}`;
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · Cuenta ${nCuentaB}` : 'Bre-B') : (nCuentaA === 3 ? 'ACH · Cuenta 3' : 'ACH')}${ben ? ` · ${ben}` : ''}`;
           else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
           else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
           const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -3064,6 +3066,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   // Cuenta que viene en camino: se ve apagada y con
                   // "Próximamente", sin saldo ni botón, y nunca con el nombre
                   // del aliado que hay detrás.
+                  // Cuenta 3 (Bre-B y ACH): la enciende el admin. Apagada, "Próximamente".
+                  const c3B = (config as any)?.cuenta3?.breb === true;
+                  const c3A = (config as any)?.cuenta3?.ach === true;
                   const cuentaProxima = (n: number) => (
                       <div key={`prox-${n}`} aria-disabled="true" className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px dashed rgba(255,255,255,0.1)', background: 'transparent', opacity: 0.65 }}>
                           <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta {n}</span> · Aún no disponible</p>
@@ -3123,8 +3128,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   2 con el saldo ACH (el mismo de la tarjeta ACH). */}
                               <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
                                   {([
-                                      { n: 1, bal: brebBal, sub: 'Saldo Bre-B', metodo: 'breb' as const },
-                                      { n: 2, bal: achBal, sub: 'Usa tu saldo ACH', metodo: 'breb2' as const },
+                                      { n: 1, bal: brebBal, sub: 'Saldo Bre-B', metodo: 'breb' as 'breb' | 'breb2' | 'breb3' },
+                                      { n: 2, bal: achBal, sub: 'Usa tu saldo ACH', metodo: 'breb2' as 'breb' | 'breb2' | 'breb3' },
+                                      ...(c3B ? [{ n: 3, bal: brebBal, sub: 'Saldo Bre-B', metodo: 'breb3' as 'breb' | 'breb2' | 'breb3' }] : []),
                                   ]).map(c => (
                                       <div key={c.n} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
                                           <div style={{ minWidth: 0 }}>
@@ -3136,7 +3142,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                                       </div>
                                   ))}
-                                  {cuentaProxima(3)}
+                                  {!c3B && cuentaProxima(3)}
                               </div>
                               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '10px 0 0' }}>Dispersa por llave Bre-B a cualquier banco en Colombia, en segundos. Hasta 12 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
@@ -3180,7 +3186,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                                   </div>
                                   {cuentaProxima(2)}
-                                  {cuentaProxima(3)}
+                                  {c3A ? (
+                                      <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
+                                          <div style={{ minWidth: 0 }}>
+                                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta 3</span> · Saldo ACH · llega en 6 a 24 h</p>
+                                              <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
+                                          </div>
+                                          <button onClick={() => openSendMoney(undefined, { metodo: 'ach3' })} disabled={achBal <= 0}
+                                              style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', color: achBal <= 0 ? '#878E88' : '#F4F4F2', background: 'transparent', cursor: achBal <= 0 ? 'not-allowed' : 'pointer' }}
+                                              className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                                      </div>
+                                  ) : cuentaProxima(3)}
                               </div>
                               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '10px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío${achMaxPersona && achMaxPersona < achMaxEnvio ? ` (${millones(achMaxPersona)} si el beneficiario es una persona)` : ''}.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
@@ -3870,8 +3886,10 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const railDeTx = (tx: any): string | null => {
     const rd = (tx?.raw_data ?? {}) as Record<string, any>;
     if (tx?.type === 'dispersion' && (tx?.rail === 'BREB' || rd.rail === 'BREB')) {
-      return Number(tx?.cuentaBreb ?? rd.cuentaBreb) === 2 ? 'Bre-B · Cuenta 2' : 'Bre-B';
+      const n = Number(tx?.cuentaBreb ?? rd.cuentaBreb) || 1;
+      return n >= 2 ? `Bre-B · Cuenta ${n}` : 'Bre-B';
     }
+    if (tx?.type === 'dispersion' && Number(tx?.cuentaAch ?? rd.cuentaAch) === 3) return 'ACH · Cuenta 3';
     return railOfCurrency(tx?.currency);
   };
 
@@ -4004,7 +4022,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     // Bre-B · Cuenta 2 sale del saldo ACH (moneda COP_ACH) pero es un envío
     // por llave: se reconoce por el riel, no por la moneda.
     const esBrebDisp = tx.currency === 'COP_BREB' || (tx as any).rail === 'BREB' || rawData.rail === 'BREB';
-    const esCuenta2 = esBrebDisp && Number((tx as any).cuentaBreb ?? rawData.cuentaBreb) === 2;
+    const nCuentaTx = esBrebDisp ? (Number((tx as any).cuentaBreb ?? rawData.cuentaBreb) || 1) : 1;
+    const achCuenta3 = !esBrebDisp && Number((tx as any).cuentaAch ?? rawData.cuentaAch) === 3;
 
     // EMISOR: el titular de la cuenta que originó el movimiento (ej. XATECH).
     // Esta es la app del CLIENTE, así que el movimiento es SUYO → se muestra el
@@ -4355,7 +4374,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const benInitials = benName ? benName.split(/\s+/).filter(Boolean).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase() : '';
     const isCop = String(tx.currency || '').startsWith('COP');
     const isBrebTx = esBrebDisp;
-    const railLabel = isBrebTx ? `Bre-B${esCuenta2 ? ' · Cuenta 2' : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
+    const railLabel = isBrebTx ? `Bre-B${nCuentaTx >= 2 ? ` · Cuenta ${nCuentaTx}` : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? (achCuenta3 ? 'ACH · Cuenta 3 · Colombia' : 'ACH · Colombia') : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
     const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
     // Cargue Bre-B con comisión de recepción: desglose transparente en el
     // detalle (Monto recibido − Comisión 0,10% = Acreditado). El número grande

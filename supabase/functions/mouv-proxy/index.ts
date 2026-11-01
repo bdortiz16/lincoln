@@ -26,6 +26,7 @@ import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro } from '../_shared/coinsenda.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
@@ -168,7 +169,7 @@ function mensajeFalloBreb2(fb: ResultadoBreb2, debitado: boolean): string {
 async function reembolsoPermitido(tx: any, ref: string, origen: string): Promise<{ ok: boolean; refund: number }> {
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const amount = Number(tx.amount ?? 0)
-  const feeMax = Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(amount))
+  const feeMax = Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(amount), BREB3_FEE_COP, ACH3_FEE_COP)
   const fee = Math.min(Math.max(0, Number(rd.feeCop ?? 0) || 0), feeMax)
   const refund = Number((amount + fee).toFixed(2))
   if (!ref) return { ok: true, refund }
@@ -1175,6 +1176,100 @@ const BREB_FEE_COP = Number(Deno.env.get('BREB_FEE_COP') ?? String(BREB_MOUV_FIX
 // mismo que la Cuenta 1; el costo que cobra Finity queda anotado en cada
 // envío (costoProveedorCop) para poder ajustar esta tarifa con datos reales.
 const BREB2_FEE_COP = Number(Deno.env.get('BREB2_FEE_COP') ?? '') || brebFeeCop()
+// Cuenta 3 (Coinsenda), de Bre-B y de ACH: $2.500 por envío cada una
+// (decisión del 1 nov). Coinsenda cobra $2.000 por Bre-B y $1.000 por banco:
+// con $1.200, Bre-B · Cuenta 3 perdía $800 en cada envío. Cada riel paga con
+// su propio saldo: Bre-B con el saldo Bre-B y ACH con el saldo ACH.
+const BREB3_FEE_COP = Number(Deno.env.get('BREB3_FEE_COP') ?? '') || 2500
+const ACH3_FEE_COP = Number(Deno.env.get('ACH3_FEE_COP') ?? '') || 2500
+
+// ── Cuenta 3 (Coinsenda) ─────────────────────────────────────────────
+// ¿Está activa para los clientes? La enciende el dueño en Admin → Coinsenda
+// (app_config.settings.cuenta3). El servidor lo revisa en cada envío: que la
+// pantalla la muestre no basta.
+async function cuenta3Activa(tipo: 'breb' | 'ach'): Promise<boolean> {
+  try {
+    const { data } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+    return (data as any)?.settings?.cuenta3?.[tipo] === true
+  } catch { return false }
+}
+type PrepCuenta3 = {
+  ok: boolean; mensaje?: string; status?: number | null; crudo?: any
+  retiroId?: string; billetera?: string; destino?: string; proveedor?: string
+  costoProveedor?: number; montoProveedor?: number; titular?: string
+}
+// PREPARAR = inscribir el destino (o reusarlo) y CREAR el retiro, que nace
+// 'pending' y no mueve plata. Corre ANTES de debitar: si la llave no resuelve,
+// el banco no está en su catálogo o la billetera no alcanza, el envío no
+// arranca — sin débito, sin fila Fallido y sin devolución.
+async function coinsendaPreparar(userId: string, rail: 'BREB' | 'ACH', recipient: Record<string, any>, amount: number, nombresEsperados: string[]): Promise<PrepCuenta3> {
+  const etiquetaRiel = rail === 'BREB' ? 'Bre-B · Cuenta 3' : 'ACH · Cuenta 3'
+  const fallaProveedor = (st: number | null | undefined) => !st || st >= 500 || st === 401 || st === 403 || st === 408 || st === 429
+  const noDisponible = `${etiquetaRiel} no está disponible en este momento, así que no salió nada. Envíalo por otra cuenta o inténtalo de nuevo en unos minutos.`
+  let cli: ClienteCoinsenda
+  try { cli = new ClienteCoinsenda(db, await configCoinsenda(db), 30_000) } catch { return { ok: false, mensaje: noDisponible } }
+  try {
+    const tipo = rail === 'BREB' ? 'breb' : 'bank'
+    const prov = await proveedorCop(cli, tipo)
+    if ('error' in prov) { await logAudit(userId, 'coinsenda.prep_sin_medio', { rail, error: prov.error }); return { ok: false, mensaje: noDisponible } }
+    const costo = costoCoinsenda(prov, tipo)
+    if (!costo) { await logAudit(userId, 'coinsenda.prep_sin_costo', { rail, proveedor: prov.id }); return { ok: false, mensaje: noDisponible } }
+    const bruto = montoBruto(amount, costo)
+    const bill = await billeteraCop(cli)
+    if ('error' in bill) { await logAudit(userId, 'coinsenda.prep_sin_billetera', { rail, error: bill.error }); return { ok: false, mensaje: noDisponible } }
+    if (Number.isFinite(bill.disponible) && bill.disponible < bruto) {
+      await logAudit(userId, 'coinsenda.prep_sin_fondos', { rail, bruto, disponible: bill.disponible })
+      await avisarAdminBreb2('c3_sin_fondos', 'Cuenta 3 (Coinsenda) sin fondos: hay que recargar la billetera COP',
+        `Un cliente intentó enviar ${amount.toLocaleString('es-CO')} COP por ${etiquetaRiel}. Con el costo de Coinsenda son ${bruto.toLocaleString('es-CO')} COP y la billetera COP de Coinsenda tiene ${bill.disponible.toLocaleString('es-CO')} COP. Hay que recargarla. Mientras tanto los clientes pueden enviar por la Cuenta 1 o la Cuenta 2.`)
+      return { ok: false, mensaje: `${etiquetaRiel} no tiene fondos disponibles en este momento, así que no salió nada. Envíalo por otra cuenta o inténtalo más tarde.` }
+    }
+    let destino: string
+    let titular: string | undefined
+    if (rail === 'BREB') {
+      const alias = aliasBreb(String(recipient.key ?? ''))
+      const rr = await resolverLlave(cli, alias)
+      if (!rr.encontrada) {
+        await logAudit(userId, 'coinsenda.prep_llave', { status: rr.status, error: rr.error ?? null })
+        if (rr.error && fallaProveedor(rr.status)) return { ok: false, status: rr.status, mensaje: noDisponible }
+        return { ok: false, status: rr.status, mensaje: 'La llave Bre-B del beneficiario no aparece en el directorio, así que no salió nada. Pídele que te confirme su llave exacta.' }
+      }
+      titular = rr.nombre
+      if (rr.nombre && titularEsOtro(rr.nombre, nombresEsperados)) {
+        await logAudit(userId, 'coinsenda.prep_titular_otro', { titular: rr.nombre, esperados: nombresEsperados.filter(Boolean).slice(0, 4) })
+        return { ok: false, mensaje: `Esa llave Bre-B está a nombre de ${rr.nombre}, no del beneficiario que tienes inscrito. Corrige el beneficiario antes de enviar.` }
+      }
+      const dd = await destinoBreb(cli, prov, alias, String(recipient.holderName ?? ''))
+      if ('error' in dd) {
+        await logAudit(userId, 'coinsenda.prep_inscribir', { rail, status: dd.status ?? null, error: dd.error })
+        return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : 'La Cuenta 3 no pudo registrar la llave de este beneficiario, así que no salió nada. Envíalo por otra cuenta.' }
+      }
+      destino = dd.id
+    } else {
+      const cfgC = await configCoinsenda(db)
+      const dd = await destinoBanco(cli, prov, {
+        banco: String(recipient.bankCode ?? ''), tipoCuenta: String(recipient.accountType ?? ''), numero: String(recipient.accountNumber ?? ''),
+        docTipo: String(recipient.documentType ?? 'CC'), docNumero: String(recipient.documentNumber ?? ''), titular: String(recipient.holderName ?? ''),
+        correo: cfgC.email ?? null,
+      })
+      if ('error' in dd) {
+        await logAudit(userId, 'coinsenda.prep_inscribir', { rail, status: dd.status ?? null, error: dd.error })
+        if ((dd as any).datos) return { ok: false, mensaje: `${dd.error} No salió nada: envíalo por ACH · Cuenta 1.` }
+        return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : 'La Cuenta 3 no pudo registrar la cuenta de este beneficiario, así que no salió nada. Envíalo por ACH · Cuenta 1.' }
+      }
+      destino = dd.id
+    }
+    const cr = await crearRetiro(cli, { cuenta: bill.id, destino, proveedor: String(prov.id), monto: bruto })
+    if (!cr.ok) {
+      const fallo = cr as { status: number; error: string; crudo: any }
+      await logAudit(userId, 'coinsenda.prep_crear', { rail, status: fallo.status, error: fallo.error, bruto })
+      return { ok: false, status: fallo.status, crudo: fallo.crudo, mensaje: fallaProveedor(fallo.status) ? noDisponible : `${etiquetaRiel} no aceptó este envío, así que no salió nada. Revisa los datos del beneficiario o envíalo por otra cuenta.` }
+    }
+    return { ok: true, retiroId: cr.id, billetera: bill.id, destino, proveedor: String(prov.id), costoProveedor: bruto - amount, montoProveedor: bruto, ...(titular ? { titular } : {}) }
+  } catch (e) {
+    await logAudit(userId, 'coinsenda.prep_excepcion', { rail, error: String((e as Error)?.message ?? e).slice(0, 300) })
+    return { ok: false, mensaje: noDisponible }
+  }
+}
 
 // ── ¿La cuenta destino está APROBADA en Finity? ─────────────────────────
 // El estado que muestra Lincoin no sirve como control: vive en los contactos
@@ -2046,6 +2141,9 @@ serve(async (req: Request) => {
       const { data: filasRef } = await db.from('transactions')
         .select('id, user_id, amount, currency, status, raw_data, created_at')
         .eq('type', 'dispersion').eq('currency', 'COP_ACH').in('status', ['Procesando', 'Completado'])
+        // Los de la Cuenta 3 (Coinsenda) también pagan con el saldo ACH, pero
+        // no son de Finity: los concilia reconcile_cuenta3.
+        .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
         .filter('raw_data->>providerRef', 'eq', refObjetivo).limit(3)
       const resultados: Record<string, unknown>[] = []
       for (const tx of (filasRef ?? []) as any[]) {
@@ -2060,6 +2158,8 @@ serve(async (req: Request) => {
     const baseVivas = () => db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
       .eq('type', 'dispersion').eq('status', 'Procesando').eq('currency', 'COP_ACH')
+      // Sin la Cuenta 3: su providerRef es un retiro de Coinsenda, no de Finity.
+      .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
       .not('raw_data->>providerRef', 'is', null)
       .gte('created_at', new Date(ahora - 10 * 86_400_000).toISOString())
       .lte('created_at', new Date(ahora - 30_000).toISOString())
@@ -2364,6 +2464,8 @@ serve(async (req: Request) => {
       .select('id, user_id, amount, currency, status, raw_data')
       .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Procesando')
       .neq('currency', 'COP_BREB')
+      // Ni la Cuenta 3 (Coinsenda): la concilia reconcile_cuenta3.
+      .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
       .order('created_at', { ascending: false })
       .limit(20)
     const out: any[] = []
@@ -2421,6 +2523,109 @@ serve(async (req: Request) => {
   // Cubre tanto las 'Procesando' como las que quedaron 'Completado' en una
   // ventana reciente (para atrapar una devolución tardía y reembolsar aunque
   // el comprobante ya dijera Completado). Idempotente (flag refunded, CAS).
+  // ── CONCILIAR LA CUENTA 3 (Coinsenda) ─────────────────────────────
+  // Coinsenda no tiene webhooks: el estado se relee de cada retiro por su id.
+  //   accepted  → Completado.
+  //   confirmed → salió de la billetera; sigue Procesando hasta que acepten.
+  //   rejected  → no llegó: se devuelve monto + comisión al cliente.
+  //   pending   → la confirmación no pasó o no tuvo respuesta: se vuelve a
+  //               confirmar ESE MISMO retiro (no paga dos veces). Si Coinsenda
+  //               la rechaza claro, no salió nada y se devuelve.
+  // La corre el cron (llave de servicio, `todos`), el panel del admin, o el
+  // cliente para sus propios envíos.
+  if (action === 'reconcile_cuenta3') {
+    const barrido = caller.admin && payload?.todos === true
+    const userId = barrido ? null : requireOwner(caller, payload)
+    if (!barrido && !userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+    let q = db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data, created_at')
+      .eq('type', 'dispersion').eq('status', 'Procesando')
+      .filter('raw_data->>proveedor', 'eq', 'coinsenda')
+      .gte('created_at', new Date(Date.now() - 15 * 86_400_000).toISOString())
+      .order('created_at', { ascending: true })
+      .limit(barrido ? 40 : 15)
+    if (!barrido) q = q.eq('user_id', userId!)
+    const { data: filas, error: errFilas } = await q
+    if (errFilas) return json(500, { ok: false, error: 'lectura', message: 'No se pudieron leer los envíos de la Cuenta 3.' })
+    const out: Record<string, unknown>[] = []
+    if (!filas?.length) return json(200, { ok: true, checked: 0, results: out })
+    const cli = new ClienteCoinsenda(db, await configCoinsenda(db), 20_000)
+    for (const tx of filas as any[]) {
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      const ref = String(rd.providerRef ?? rd.coinsenda?.retiro ?? '').trim()
+      const edadS = (Date.now() - new Date(tx.created_at).getTime()) / 1000
+      try {
+        if (!ref) { out.push({ id: tx.id, result: 'sin_referencia' }); continue }
+        // El envío todavía puede estar terminando de confirmarse.
+        if (edadS < 45) { out.push({ id: tx.id, result: 'muy_reciente' }); continue }
+        const lr = await leerRetiro(cli, ref)
+        if (!lr.ok) { out.push({ id: tx.id, result: 'consulta_fallida', ...(caller.admin ? { error: (lr as { error: string }).error } : {}) }); continue }
+        if (!lr.existe) {
+          // Coinsenda no lo encuentra: no se decide solo. Lo mira una persona.
+          if (!rd.revisionManual) await db.from('transactions').update({ raw_data: { ...rd, revisionManual: true, retiroNoEncontrado: true, ultimaRevision: new Date().toISOString() } }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
+          out.push({ id: tx.id, result: 'no_encontrado' }); continue
+        }
+        let estado = String(lr.estado ?? '')
+        if (estado === 'pending') {
+          if (edadS < 120) { out.push({ id: tx.id, result: 'pendiente' }); continue }
+          const c = await confirmarRetiro(cli, ref)
+          await logAudit(String(tx.user_id), 'coinsenda.reconcile.reconfirmar', { txId: tx.id, providerRef: ref, desenlace: c.desenlace, httpStatus: c.status || null })
+          if (c.desenlace === 'salio' || c.desenlace === 'aceptado') estado = String(c.estado ?? 'confirmed')
+          else if (c.desenlace === 'no_salio' || c.desenlace === 'rechazado') estado = 'no_salio'
+          else { out.push({ id: tx.id, result: 'sin_confirmar' }); continue }
+        }
+        const ahora = new Date().toISOString()
+        if (estado === 'accepted') {
+          const { data: ok } = await db.from('transactions').update({
+            status: 'Completado',
+            raw_data: { ...rd, providerState: 'accepted', settledAt: ahora, reconciledAt: ahora, desenlaceDesconocido: undefined, confirmarPendiente: undefined, revisionManual: undefined },
+          }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null).select('id')
+          if (ok?.length) { await notifyTx(tx.id); out.push({ id: tx.id, result: 'completed' }) } else out.push({ id: tx.id, result: 'ya_cambio' })
+          continue
+        }
+        if (estado === 'confirmed') {
+          // Ya salió de la billetera: no hay nada pendiente de nuestro lado.
+          if (rd.providerState !== 'confirmed' || rd.confirmarPendiente) {
+            await db.from('transactions').update({ raw_data: { ...rd, providerState: 'confirmed', confirmarPendiente: undefined, desenlaceDesconocido: undefined, revisionManual: undefined, ultimaRevision: ahora } })
+              .eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
+          }
+          out.push({ id: tx.id, result: 'still_processing' }); continue
+        }
+        if (estado === 'rejected' || estado === 'no_salio') {
+          if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'coinsenda'); out.push({ id: tx.id, result: 'revision_sin_firma' }); continue }
+          const permiso = await reembolsoPermitido(tx, ref, 'coinsenda')
+          if (!permiso.ok) { out.push({ id: tx.id, result: 'revision_ref_duplicada' }); continue }
+          const refund = permiso.refund
+          const railCol = String(tx.currency ?? '')
+          // providerError lo ve el cliente: sin el nombre del aliado.
+          const motivo = estado === 'rejected' ? 'El banco o el directorio Bre-B rechazó el envío.' : 'La confirmación del envío no pasó, así que no salió.'
+          // CAS: se reclama ANTES de tocar el saldo (no hay doble reembolso).
+          const { data: claimed } = await db.from('transactions').update({
+            status: 'Rechazado',
+            raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, reconciledAt: ahora, revisionManual: undefined, confirmarPendiente: undefined },
+          }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null).select('id')
+          if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
+          const acreditado = await creditBalanceAtomic(String(tx.user_id), railCol, refund)
+          if (!acreditado) {
+            await db.from('transactions').update({ status: 'Procesando', raw_data: { ...rd, reembolsoPendiente: true, reembolsoFallidoAt: ahora, revisionManual: true } })
+              .eq('id', tx.id).eq('status', 'Rechazado').filter('raw_data->>refunded', 'eq', 'true')
+            await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_fallido', { txId: tx.id, refund, railCol, providerRef: ref })
+            await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: railCol, created_at: tx.created_at, raw_data: rd })
+            out.push({ id: tx.id, result: 'reembolso_fallido' }); continue
+          }
+          await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso', { txId: tx.id, refund, railCol, providerRef: ref, estado })
+          await notifyTx(tx.id)
+          await avisarCliente(String(tx.user_id), 'Tu envío fue devuelto', `El envío de ${Number(tx.amount).toLocaleString('es-CO')} COP no llegó y ya volvió a tu saldo, con la comisión.`, `devuelto-${tx.id}`)
+          out.push({ id: tx.id, result: 'refunded', refund }); continue
+        }
+        out.push({ id: tx.id, result: 'estado_desconocido', ...(caller.admin ? { estado } : {}) })
+      } catch (e) {
+        out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
+      }
+    }
+    return json(200, { ok: true, checked: filas.length, results: out })
+  }
+
   if (action === 'reconcile_breb') {
     // Identidad PROBADA (JWT/admin) — mismo motivo que reconcile_ach (IDOR).
     // El cron y el workflow llaman con la llave de servicio y `todos`, sin
@@ -2454,6 +2659,9 @@ serve(async (req: Request) => {
     let q = db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
       .eq('type', 'dispersion').eq('currency', 'COP_BREB')
+      // Bre-B · Cuenta 3 también paga con el saldo Bre-B, pero sale por
+      // Coinsenda: no está en el listado de Mouv. La concilia reconcile_cuenta3.
+      .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
       .in('status', recientesMin > 0 ? ['Procesando'] : ['Procesando', 'Completado'])
       .gte('created_at', since)
       .order('created_at', { ascending: false })
@@ -3322,6 +3530,11 @@ serve(async (req: Request) => {
         message: 'Este envío no tiene guardada la referencia del proveedor, así que no se puede pedir su comprobante.',
       })
     }
+    // La Cuenta 3 (Coinsenda) no tiene comprobante descargable del proveedor:
+    // su referencia no es de Mouv y pedirla allá daba un "no existe" confuso.
+    if (String(rd.proveedor ?? '') === 'coinsenda') {
+      return json(409, { error: 'sin_comprobante', message: 'Este envío salió por la Cuenta 3, que no tiene comprobante del banco para descargar. La referencia del envío es ' + ref + '.' })
+    }
 
     const r = await fetch(`${MOUV_BASE}/wallets/transactions/${encodeURIComponent(ref)}/receipt.pdf`, {
       headers: { accept: 'application/pdf', authorization: `Bearer ${MOUV_API_KEY}` },
@@ -3605,6 +3818,11 @@ serve(async (req: Request) => {
     if (rail === 'BREB2') {
       return json(200, { ok: true, rail: 'BREB2', provider: 'lincoin', feeCop: BREB2_FEE_COP, fixedCop: BREB2_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + BREB2_FEE_COP })
     }
+    // Cuenta 3 (Coinsenda): precio fijo de Lincoin por envío, igual que las otras.
+    if (rail === 'BREB3' || rail === 'ACH3') {
+      const fee = rail === 'BREB3' ? BREB3_FEE_COP : ACH3_FEE_COP
+      return json(200, { ok: true, rail, provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
+    }
     if (rail === 'BREB') {
       const fee = brebFeeCop(amount)
       return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
@@ -3619,13 +3837,17 @@ serve(async (req: Request) => {
   //   BREB → $1.200 fijos por envío (BREB_FEE_COP); se debita monto + 1.200.
   //   ACH  → precio fijo Finity (ACH_FEE_COP); se debita monto + tarifa.
   // Si el proveedor falla, se REINTEGRA todo lo debitado.
-  if (action === 'payout_breb' || action === 'payout_breb2' || action === 'payout_ach') {
-    const rail: 'BREB' | 'ACH' = action === 'payout_ach' ? 'ACH' : 'BREB'
+  if (action === 'payout_breb' || action === 'payout_breb2' || action === 'payout_ach' || action === 'payout_breb3' || action === 'payout_ach3') {
+    const rail: 'BREB' | 'ACH' = action === 'payout_ach' || action === 'payout_ach3' ? 'ACH' : 'BREB'
     // Bre-B tiene DOS cuentas. La 1 sale por Mouv con el saldo Bre-B; la 2 sale
     // por Finity con el saldo ACH, porque Finity usa una sola bolsa para los dos
     // rieles. Todo lo demás —inscripción, AML, titular de la llave, motivo,
     // topes— es el mismo proceso.
     const brebFinity = action === 'payout_breb2'
+    // Cuenta 3 (Coinsenda), de Bre-B o de ACH. Cada riel paga con su saldo:
+    // Bre-B · Cuenta 3 con el saldo Bre-B y ACH · Cuenta 3 con el saldo ACH.
+    // Todo el resto —2FA, AML, titular, cupo, candados— es el mismo proceso.
+    const cuenta3 = action === 'payout_breb3' || action === 'payout_ach3'
     const railCol = rail === 'BREB' && !brebFinity ? 'COP_BREB' : 'COP_ACH'
     const saldoLabel = railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
     // Los nombres que conocemos del beneficiario. Con la Cuenta 2 se comparan
@@ -3645,6 +3867,10 @@ serve(async (req: Request) => {
     // la cuenta de otro con solo la llave pública + el id de la víctima.
     const userId = requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida. Vuelve a iniciar sesión.' })
+    // La Cuenta 3 solo sale si el dueño la activó en Admin → Coinsenda.
+    if (cuenta3 && !(await cuenta3Activa(rail === 'BREB' ? 'breb' : 'ach'))) {
+      return json(403, { error: 'cuenta3_inactiva', message: `${rail === 'BREB' ? 'Bre-B' : 'ACH'} · Cuenta 3 todavía no está disponible. Envíalo por otra cuenta.` })
+    }
 
     // ── Seguridad de la cuenta: bloqueo y 2FA ────────────────────────────────
     // Se leen SOLO las claves que hacen falta, no el raw_data entero: en una
@@ -3990,6 +4216,8 @@ serve(async (req: Request) => {
     // La Cuenta 2 (Finity) arranca con el mismo tope hasta que Finity confirme
     // el suyo; se cambia con el secret BREB2_MAX_COP.
     const BREB2_MAX_COP  = Number(Deno.env.get('BREB2_MAX_COP')  ?? '') || BREB_MAX_COP
+    // La Cuenta 3 (Coinsenda) también con el tope de Bre-B; secret BREB3_MAX_COP.
+    const BREB3_MAX_COP  = Number(Deno.env.get('BREB3_MAX_COP')  ?? '') || BREB_MAX_COP
     // ACH: el tope lo fija el admin — por defecto 500 M para empresas y 50 M
     // para personas, con excepciones por cliente y siempre por debajo del
     // tope del proveedor (ver topeAchDe). Bre-B sigue en el límite de Mouv.
@@ -4005,7 +4233,7 @@ serve(async (req: Request) => {
     // tiene forma de NIT de empresa.
     tipoBeneficiario = tipoCupo(tipoBeneficiario, benefDocCupo)
     const topeAch = rail === 'BREB' ? null : await topeAchDe(userId, tipoBeneficiario)
-    const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : BREB_MAX_COP) : topeAch!.max
+    const perOpMax = rail === 'BREB' ? (brebFinity ? BREB2_MAX_COP : cuenta3 ? BREB3_MAX_COP : BREB_MAX_COP) : topeAch!.max
     if (amount > perOpMax) {
       await logAudit(userId, `mouv.${action}.over_limit`, { amount, tope: perOpMax, origen: topeAch?.origen ?? 'breb', beneficiario: tipoBeneficiario })
       return json(400, { error: 'over_limit', message: rail === 'BREB'
@@ -4062,7 +4290,8 @@ serve(async (req: Request) => {
     //    en revisión se debitó, quedó "Fallido" y hubo que devolverlo — y la
     //    pantalla la mostraba como aprobada. Ahora no arranca, y el contacto
     //    vuelve a "en validación" para que la pantalla diga la verdad.
-    if (rail === 'ACH') {
+    // (La Cuenta 3 no pasa por Finity: su destino lo inscribe Coinsenda al preparar.)
+    if (rail === 'ACH' && !cuenta3) {
       const accD = String(recipient.accountNumber ?? '').replace(/\D/g, '')
       const rev = await revisarDestinoFinity(userId, recipient.finityId ? String(recipient.finityId) : null, accD, String(recipient.documentNumber ?? '').replace(/\D/g, ''))
       if (rev.bloqueo) {
@@ -4087,11 +4316,11 @@ serve(async (req: Request) => {
     let feeCop = 0
     let feeDetail: Record<string, unknown> = {}
     if (rail === 'BREB') {
-      feeCop = brebFinity ? BREB2_FEE_COP : brebFeeCop(amount)
+      feeCop = brebFinity ? BREB2_FEE_COP : cuenta3 ? BREB3_FEE_COP : brebFeeCop(amount)
       feeDetail = { feeCop, feeFixedCop: feeCop, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
-      feeCop = ACH_FEE_COP
-      feeDetail = { feeCop, feeProvider: 'finity' }
+      feeCop = cuenta3 ? ACH3_FEE_COP : ACH_FEE_COP
+      feeDetail = { feeCop, feeProvider: cuenta3 ? 'lincoin' : 'finity' }
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
 
@@ -4238,6 +4467,19 @@ serve(async (req: Request) => {
       }
     }
 
+    // ── Cuenta 3 (Coinsenda): PREPARAR antes de tocar el saldo ───────────
+    // Inscribir el destino y crear el retiro no mueven plata (nace 'pending').
+    // Si algo no cuadra, el envío no arranca y no se descuenta nada.
+    let prepC3: PrepCuenta3 | null = null
+    if (cuenta3) {
+      prepC3 = await coinsendaPreparar(userId, rail, recipient, amount, [...nombresTitular])
+      if (!prepC3.ok) {
+        await logAudit(userId, `coinsenda.${action}.no_creada`, { amount, status: prepC3.status ?? null, mensaje: prepC3.mensaje ?? null })
+        await soltarCandados()
+        return json(200, { error: 'payout_failed', refunded: false, sinDebito: true, message: `${prepC3.mensaje ?? 'No pudimos preparar el envío, así que no salió nada.'} No se descontó nada de tu saldo.` })
+      }
+    }
+
     // ── Cuentas PERSONA: su COP llega al Saldo Lincoin ('COP'), no a un
     //    riel. Antes de debitar el riel del envío se cubre lo que falte desde
     //    'COP' y, si aún falta, desde el otro riel. Es un movimiento interno
@@ -4309,8 +4551,18 @@ serve(async (req: Request) => {
     const keyTypeLabel = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Llave' } as Record<string, string>)[String(recipient.keyType ?? '')] ?? 'Llave'
     const prettyBase = {
       source: 'mouv_payout', rail,
-      ...(rail === 'BREB' ? { cuentaBreb: brebFinity ? 2 : 1, proveedor: brebFinity ? 'finity' : 'mouv' } : {}),
-      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : `Dispersión ${railLabel}`,
+      ...(rail === 'BREB'
+        ? { cuentaBreb: brebFinity ? 2 : cuenta3 ? 3 : 1, proveedor: brebFinity ? 'finity' : cuenta3 ? 'coinsenda' : 'mouv' }
+        : cuenta3 ? { cuentaAch: 3, proveedor: 'coinsenda' } : {}),
+      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : cuenta3 ? `Dispersión ${railLabel} · Cuenta 3` : `Dispersión ${railLabel}`,
+      // Cuenta 3: el retiro ya existe en Coinsenda (pending) desde antes de
+      // debitar, así que su id va desde el primer registro. Sin él no se
+      // podría conciliar si algo se cae a mitad de camino.
+      ...(cuenta3 && prepC3?.retiroId ? {
+        providerRef: prepC3.retiroId,
+        coinsenda: { retiro: prepC3.retiroId, billetera: prepC3.billetera, destino: prepC3.destino, medio: prepC3.proveedor, montoProveedor: prepC3.montoProveedor },
+        costoProveedorCop: prepC3.costoProveedor,
+      } : {}),
       beneficiary: recipient.holderName ?? null,
       bank: rail === 'BREB' ? `Bre-B · ${keyTypeLabel}` : (recipient.bankCode ?? 'ACH'),
       account: rail === 'BREB' ? (recipient.key ?? null) : (recipient.accountNumber ?? null),
@@ -4393,7 +4645,60 @@ serve(async (req: Request) => {
     }
 
     // 4) Llamar al PROVEEDOR del riel: BREB → Mouv (Cuenta 1) o Finity
-    //    (Cuenta 2) · ACH → Finity
+    //    (Cuenta 2) · ACH → Finity · Cuenta 3 (Bre-B o ACH) → Coinsenda
+    if (cuenta3) {
+      const etiqueta3 = `${railLabel} · Cuenta 3`
+      let conf: Awaited<ReturnType<typeof confirmarRetiro>>
+      try {
+        const cli3 = new ClienteCoinsenda(db, await configCoinsenda(db), 30_000)
+        conf = await confirmarRetiro(cli3, prepC3!.retiroId!)
+      } catch (e) {
+        conf = { desenlace: 'desconocido', status: 0, error: String((e as Error)?.message ?? e).slice(0, 200), crudo: null }
+      }
+      const ahora = new Date().toISOString()
+      const base3 = { ...prettyBase, ...feeDetail, ...(prepC3!.titular ? { titularProveedor: prepC3!.titular } : {}), providerState: conf.estado || null }
+      if (conf.desenlace === 'aceptado' || conf.desenlace === 'salio') {
+        // 'confirmed' = salió de la billetera; 'accepted' = el banco o el
+        // directorio lo aceptó. Completado solo con lo segundo; lo primero
+        // queda Procesando hasta que la conciliación lo vea aceptado.
+        const completo = conf.desenlace === 'aceptado'
+        await asentarTx(completo ? 'Completado' : 'Procesando', { ...base3, aceptadaAt: ahora, ...(completo ? { settledAt: ahora } : { sinConfirmarDesde: ahora }) })
+        await logAudit(userId, `coinsenda.${action}.ok`, { amount, feeCop, rail, providerRef: prepC3!.retiroId, estado: conf.estado ?? null, costoProveedorCop: prepC3!.costoProveedor ?? null })
+        await notifyTx(txId)
+        return json(200, { ok: true, status: completo ? 'Completado' : 'Procesando', confirmada: completo, providerRef: prepC3!.retiroId, feeCop, newBalance: afterDebit })
+      }
+      if (conf.desenlace === 'desconocido') {
+        // Sin respuesta clara al confirmar: NO se devuelve (pudo salir) y NO
+        // se recrea. La conciliación relee el retiro y, si sigue 'pending',
+        // vuelve a confirmar ESE MISMO retiro (no paga dos veces).
+        await asentarTx('Procesando', { ...base3, desenlaceDesconocido: true, confirmarPendiente: true, revisionManual: true, httpStatus: conf.status || null, detalleProveedor: conf.error ?? null, sinConfirmarDesde: ahora })
+        await logAudit(userId, `coinsenda.${action}.desenlace_desconocido`, { txId, amount, providerRef: prepC3!.retiroId, httpStatus: conf.status || null })
+        await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: ahora, raw_data: base3 })
+        await notifyTx(txId)
+        return json(200, {
+          ok: true, status: 'Procesando', confirmada: false, desenlaceDesconocido: true,
+          message: 'No pudimos confirmar el envío con el banco. NO lo reintentes: lo estamos verificando y te avisamos en minutos.',
+          feeCop, newBalance: afterDebit,
+        })
+      }
+      // La confirmación no pasó (4xx claro) o el retiro quedó rechazado: no
+      // salió nada → REINTEGRAR monto + comisión.
+      const reint3 = await reintegrarEnvio(userId, railCol, totalDebit)
+      await asentarTx('Fallido', {
+        // errorMessage lo puede ver el cliente: sin el nombre del aliado. El
+        // detalle técnico (con el nombre) queda aparte, para el admin.
+        ...base3, error: conf.crudo ?? 'c3_failed', errorMessage: 'La Cuenta 3 no confirmó el envío, así que no salió.',
+        detalleProveedor: conf.error ?? `retiro en estado ${conf.estado || 'desconocido'}`,
+        httpStatus: conf.status || null, ...marcasReintegro(reint3.ok), failedAt: ahora,
+      })
+      if (!reint3.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: ahora, raw_data: { ...prettyBase, reembolsoPendiente: true } })
+      await logAudit(userId, `coinsenda.${action}.fail`, { amount, providerRef: prepC3!.retiroId, httpStatus: conf.status || null, estado: conf.estado ?? null, error: conf.error ?? null })
+      await notifyTx(txId)
+      await soltarCandados()
+      return json(200, { error: 'payout_failed', refunded: reint3.ok, newBalance: reint3.saldo ?? 0,
+        message: conReintegro(`${etiqueta3} no pudo completar el envío, así que no salió nada. Tu saldo fue devuelto — envíalo por otra cuenta o inténtalo de nuevo en unos minutos.`, reint3.ok) })
+    }
+
     if (brebFinity) {
       const fb = await finityConfirmarBreb(userId, prepBreb2!)
       const ahora = new Date().toISOString()

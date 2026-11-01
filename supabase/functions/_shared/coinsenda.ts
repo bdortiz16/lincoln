@@ -30,6 +30,10 @@ const DOMINIOS = new Set(['coinsenda.com', 'bitsenda.com'])
 const SUBDOMINIO: Record<string, string> = { transaction: 'tx', farming: 'farm' }
 
 export function urlServicio(servicio: string, dominio: string): string {
+  // Solo para el banco de pruebas local (un Coinsenda simulado): nunca se
+  // define en Supabase. Con él, las llamadas van a <base>/<servicio>/...
+  const prueba = Deno.env.get('COINSENDA_URL_PRUEBA') ?? ''
+  if (prueba) return `${prueba.replace(/\/$/, '')}/${servicio}${servicio === 'auth' ? '/auth' : '/api'}`
   if (!DOMINIOS.has(dominio)) throw new Error(`Dominio de Coinsenda no permitido: ${dominio}`)
   return `https://${SUBDOMINIO[servicio] ?? servicio}.${dominio}${servicio === 'auth' ? '/auth' : '/api'}`
 }
@@ -181,4 +185,263 @@ export function describirFallo(r: RespuestaCoinsenda, que: string): string {
   const motivo = String(e.message ?? e.error ?? '').slice(0, 300)
   const codigo = e.code ?? e.error_code ?? null
   return `Coinsenda respondió ${r.status} al ${que}${motivo ? `: ${motivo}` : ''}${codigo ? ` [${codigo}]` : ''}`
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ENVÍOS (Cuenta 3 de Bre-B y de ACH)
+//
+// Un envío en Coinsenda son tres identificadores y dos llamadas:
+//   · account_id           → la billetera COP de Lincoin de donde sale;
+//   · withdraw_account_id  → el destino, INSCRITO antes (una llave Bre-B o una
+//                            cuenta de banco; sin inscribir no hay envío);
+//   · withdraw_provider_id → el medio (breb o bank), con su costo.
+// Se CREA el retiro (nace 'pending' y no mueve plata) y se CONFIRMA (ahí sale).
+// Después recorre confirmed → accepted, o termina en rejected. No hay webhooks:
+// el estado se relee del retiro por su id.
+//
+// OJO con el monto: Coinsenda descuenta su costo DEL monto ("amount es lo que
+// se debita, no lo que llega"). Para que al beneficiario le llegue lo que el
+// cliente pidió, se crea por el monto MÁS el costo de Coinsenda.
+// ════════════════════════════════════════════════════════════════════
+
+const esCopC = (x: any) => String(x?.currency && typeof x.currency === 'object' ? (x.currency.currency ?? '') : (x?.currency ?? '')).toLowerCase() === 'cop'
+const listaDe = (r: RespuestaCoinsenda): any[] => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.data) ? r.data.data : []
+const objetoDe = (r: RespuestaCoinsenda): any => {
+  const d = r.data?.data ?? r.data
+  return Array.isArray(d) ? d[0] ?? null : d
+}
+const numero = (v: unknown): number => { const n = Number(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n : NaN }
+const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+
+/** La billetera COP de donde salen los envíos: la predeterminada, nunca la de la tarjeta. */
+export async function billeteraCop(cli: ClienteCoinsenda): Promise<{ id: string; disponible: number; tipo: string; nombre: string } | { error: string }> {
+  const uid = await cli.userId()
+  const r = await cli.pedir('account', 'GET', '/users/{id}/accounts', { filter: { id: uid } })
+  if (!exitoso(r)) return { error: describirFallo(r, 'leer las billeteras') }
+  const cands = listaDe(r).filter(b => esCopC(b) && String(b?.type ?? '') !== 'card_mirror' && b?.enabled !== false && b?.visible !== false && b?.id)
+  const orden = (b: any) => (b?.default === true ? 0 : 2) + (String(b?.type) === 'payment' ? 0 : String(b?.type) === 'trade' ? 0.5 : 1)
+  const b = cands.sort((x, y) => orden(x) - orden(y))[0]
+  if (!b) return { error: 'La cuenta de Coinsenda no tiene una billetera COP habilitada.' }
+  return { id: String(b.id), disponible: numero(b.available), tipo: String(b.type ?? ''), nombre: String(b.name ?? '') }
+}
+
+/** El medio COP de un tipo ('breb' o 'bank'). Se leen todos: con el filtro
+ *  enabled/visible en la consulta, Coinsenda no devolvía los de COP. */
+export async function proveedorCop(cli: ClienteCoinsenda, tipo: 'breb' | 'bank'): Promise<any | { error: string }> {
+  const r = await cli.pedir('withdraw', 'GET', '/withdrawProviders', { filter: { limit: 200 } })
+  if (!exitoso(r)) return { error: describirFallo(r, 'leer los medios de envío') }
+  const cands = listaDe(r).filter(p => esCopC(p) && String(p?.provider_type ?? '') === tipo && p?.enabled !== false && p?.id)
+  const p = cands.sort((a, b) => (a?.visible === false ? 1 : 0) - (b?.visible === false ? 1 : 0))[0]
+  return p ?? { error: `La cuenta de Coinsenda no tiene habilitado el envío ${tipo === 'breb' ? 'Bre-B' : 'bancario'} en COP.` }
+}
+
+/** El costo de Coinsenda para un envío: fijo + porcentaje (en puntos: "1" = 1 %).
+ *  Claves de provider.costs: breb → 'breb'; bancaria → 'pp' (otro banco; hoy
+ *  igual a 'op' y a 'same_bank'). */
+export function costoCoinsenda(p: any, tipo: 'breb' | 'bank'): { fijo: number; pct: number } | null {
+  const c = p?.provider?.costs ?? p?.costs ?? null
+  if (!c || typeof c !== 'object') return null
+  const e = tipo === 'breb' ? c.breb : (c.pp ?? c.op ?? c.same_bank)
+  if (!e || typeof e !== 'object') return null
+  const fijo = numero(e.fixed ?? 0), pct = numero(e.percent ?? 0)
+  return Number.isFinite(fijo) && Number.isFinite(pct) ? { fijo, pct } : null
+}
+/** Lo que hay que pedirle a Coinsenda para que al beneficiario le llegue `neto`. */
+export function montoBruto(neto: number, costo: { fijo: number; pct: number }): number {
+  return Math.ceil((neto + costo.fijo) / (1 - costo.pct / 100))
+}
+
+/** La llave Bre-B como la manda la app de Coinsenda (normalizeBrebAlias):
+ *  correo tal cual; celular tal cual; número sin @; alias con @. */
+export function aliasBreb(raw: string): string {
+  const v = String(raw ?? '').trim()
+  if (!v) return v
+  const sinArroba = v.replace(/^@/, '')
+  if (sinArroba.includes('@')) return sinArroba
+  const dig = sinArroba.replace(/\D/g, '')
+  if (/^[+\d\s().-]+$/.test(sinArroba) && /^(57)?3\d{9}$/.test(dig)) return v
+  if (/^\d+$/.test(sinArroba)) return v.startsWith('@') ? `@${sinArroba}` : sinArroba
+  return `@${sinArroba}`
+}
+
+/** El titular de una llave según el directorio Bre-B de Coinsenda. */
+export async function resolverLlave(cli: ClienteCoinsenda, alias: string): Promise<{ encontrada: boolean; nombre?: string; documento?: string; error?: string; status: number; crudo?: any }> {
+  const r = await cli.pedir('withdraw', 'POST', '/withdrawAccounts/resolve-breb-alias-public', { data: { alias } })
+  const err = r.data?.error && typeof r.data.error === 'object' ? r.data.error : (r.data?.data?.error ?? null)
+  if (!exitoso(r) || err) {
+    if (String(err?.code ?? '') === 'withdrawaccount_23') return { encontrada: false, status: r.status }
+    return { encontrada: false, status: r.status, error: describirFallo(r, 'consultar la llave Bre-B') }
+  }
+  const d = objetoDe(r) ?? {}
+  const nombre = [d.name ?? d.first_name ?? d.names, d.surname ?? d.last_name ?? d.surnames].map((x: unknown) => String(x ?? '').trim()).filter(Boolean).join(' ') || String(d.full_name ?? d.holder_name ?? '').trim()
+  const documento = String(d.id_number ?? d.document_number ?? d.document ?? d.nit ?? '').replace(/\D/g, '')
+  return { encontrada: true, status: r.status, ...(nombre ? { nombre } : {}), ...(documento ? { documento } : {}), crudo: d }
+}
+
+/** Todas las cuentas destino, de a 200 por id (el guardia de Coinsenda corta
+ *  cada lista en 200 sin avisar). Se filtra después: con where sobre
+ *  visible/state la cuenta no devolvía todo. */
+async function destinosInscritos(cli: ClienteCoinsenda): Promise<any[] | { error: string }> {
+  const todos: any[] = []
+  let ultimo: string | null = null
+  for (let pagina = 0; pagina < 10; pagina++) {
+    const filtro: Record<string, unknown> = { order: 'id ASC', limit: 200, ...(ultimo ? { where: { id: { gt: ultimo } } } : {}) }
+    const r = await cli.pedir('withdraw', 'GET', '/users/{id}/withdrawAccounts', { filter: filtro })
+    if (!exitoso(r)) return { error: describirFallo(r, 'leer las cuentas destino') }
+    const l = listaDe(r)
+    todos.push(...l)
+    if (l.length < 200) return todos
+    ultimo = l[l.length - 1]?.id ? String(l[l.length - 1].id) : null
+    if (!ultimo) break
+  }
+  return todos
+}
+const destinoUsable = (w: any) => w?.visible !== false && !['rejected', 'canceled', 'cancelled'].includes(String(w?.state ?? '').toLowerCase())
+
+/** La llave Bre-B inscrita en Coinsenda (la reusa si ya estaba). */
+export async function destinoBreb(cli: ClienteCoinsenda, prov: any, alias: string, etiqueta: string): Promise<{ id: string; nuevo: boolean } | { error: string; status?: number; crudo?: any }> {
+  const lista = await destinosInscritos(cli)
+  if (!Array.isArray(lista)) return lista
+  const norm = (s: unknown) => String(s ?? '').trim().toLowerCase().replace(/^@/, '')
+  const ya = lista.filter(w => String(w?.provider_type ?? '') === 'breb' && (!w?.currency || esCopC(w)) && destinoUsable(w) && norm(w?.info?.account_id) === norm(alias))
+    .sort((a, b) => String(b?.updated_at ?? '').localeCompare(String(a?.updated_at ?? '')))[0]
+  if (ya?.id) return { id: String(ya.id), nuevo: false }
+  const r = await cli.pedir('withdraw', 'POST', '/withdrawAccounts/add-new-withdraw-account', { data: {
+    currency: 'cop', provider_type: 'breb', internal: prov?.internal ?? false,
+    info_needed: { label: etiqueta.slice(0, 40) || alias, account_id: alias, country: 'colombia' },
+  } })
+  const d = objetoDe(r)
+  if (!exitoso(r) || !d?.id) return { error: describirFallo(r, 'inscribir la llave Bre-B'), status: r.status, crudo: r.data }
+  return { id: String(d.id), nuevo: true }
+}
+
+// Lo que Coinsenda llama banco, tipo de cuenta y tipo de documento son claves
+// de SU catálogo (info_needed del medio bancario). Lincoin guarda nombres
+// ("Bancolombia", "ahorros", "CC"): se cruzan por la clave o por el nombre
+// visible. Si no hay cruce claro, no se adivina: el envío no arranca.
+const claveCatalogo = (cat: Record<string, any> | null | undefined, prueba: (clave: string, nombre: string) => boolean): string | null => {
+  if (!cat || typeof cat !== 'object') return null
+  for (const [k, v] of Object.entries(cat)) {
+    if (k === 'ui_name' || k === 'ui_type') continue
+    if (prueba(sinTildes(k), sinTildes(String((v as any)?.ui_name ?? '')))) return k
+  }
+  return null
+}
+const nombreBanco = (s: string) => sinTildes(s).replace(/\b(banco|bank|s\.?a\.?s?|colombia)\b/g, '').replace(/[^a-z0-9]/g, '')
+export function bancoCoinsenda(prov: any, banco: string): string | null {
+  const objetivo = nombreBanco(banco)
+  if (!objetivo) return null
+  return claveCatalogo(prov?.info_needed?.bank_name, (k, n) => nombreBanco(k) === objetivo || (!!n && nombreBanco(n) === objetivo))
+}
+export function tipoCuentaCoinsenda(prov: any, bancoClave: string, tipo: string): string | null {
+  const ahorros = /ahorro|saving/.test(sinTildes(tipo))
+  const re = ahorros ? /ahorro|saving/ : /corriente|checking|current/
+  const k = claveCatalogo(prov?.info_needed?.account_type, (cl, n) => re.test(cl) || re.test(n))
+  const compatibles = prov?.info_needed?.bank_name?.[bancoClave]?.compatible_account_types
+  if (k && Array.isArray(compatibles) && !compatibles.includes(k)) return null
+  return k
+}
+const DOC_COINSENDA: Record<string, [RegExp, string]> = {
+  CC: [/ciudadan|^cc$/, 'cedula_ciudadania'], NIT: [/^nit$|nit/, 'nit'], CE: [/extranjer|^ce$/, 'cedula_extranjeria'],
+  PP: [/pasaporte|passport/, 'pasaporte'], PA: [/pasaporte|passport/, 'pasaporte'], TI: [/tarjeta/, 'tarjeta_identidad'],
+  PPT: [/ppt|permiso/, 'ppt'], PEP: [/pep|permiso/, 'pep'],
+}
+export function tipoDocCoinsenda(prov: any, docTipo: string): string | null {
+  const m = DOC_COINSENDA[String(docTipo ?? '').toUpperCase().trim()]
+  if (!m) return null
+  const cat = prov?.info_needed?.id_type
+  if (cat && typeof cat === 'object') return claveCatalogo(cat, (k, n) => m[0].test(k) || m[0].test(n))
+  return m[1]
+}
+/** Nombres y apellidos de un titular escrito en una sola línea. Empresa: la razón social en los dos. */
+export function partirNombre(completo: string, empresa: boolean): { name: string; surname: string } {
+  const t = String(completo ?? '').trim().replace(/\s+/g, ' ')
+  if (empresa || !t) return { name: t, surname: t }
+  const p = t.split(' ')
+  if (p.length === 1) return { name: p[0], surname: p[0] }
+  if (p.length === 2) return { name: p[0], surname: p[1] }
+  if (p.length === 3) return { name: p[0], surname: p.slice(1).join(' ') }
+  return { name: p.slice(0, 2).join(' '), surname: p.slice(2).join(' ') }
+}
+
+/** La cuenta de banco inscrita en Coinsenda (la reusa si ya estaba). */
+export async function destinoBanco(cli: ClienteCoinsenda, prov: any, d: {
+  banco: string; tipoCuenta: string; numero: string; docTipo: string; docNumero: string; titular: string; correo?: string | null
+}): Promise<{ id: string; nuevo: boolean } | { error: string; status?: number; crudo?: any; datos?: boolean }> {
+  const bancoK = bancoCoinsenda(prov, d.banco)
+  if (!bancoK) return { error: `El banco «${d.banco}» no está en el catálogo de la Cuenta 3.`, datos: true }
+  const tipoK = tipoCuentaCoinsenda(prov, bancoK, d.tipoCuenta)
+  if (!tipoK) return { error: `La Cuenta 3 no acepta cuentas ${d.tipoCuenta} de ese banco.`, datos: true }
+  const docK = tipoDocCoinsenda(prov, d.docTipo)
+  if (!docK) return { error: `La Cuenta 3 no reconoce el tipo de documento «${d.docTipo}».`, datos: true }
+  const numeroCta = String(d.numero ?? '').replace(/\D/g, '')
+  const lista = await destinosInscritos(cli)
+  if (!Array.isArray(lista)) return lista
+  const ya = lista.filter(w => String(w?.provider_type ?? '') === 'bank' && destinoUsable(w)
+    && String(w?.info?.bank_name ?? '') === bancoK && String(w?.info?.account_number ?? '').replace(/\D/g, '') === numeroCta)
+    .sort((a, b) => String(b?.updated_at ?? '').localeCompare(String(a?.updated_at ?? '')))[0]
+  if (ya?.id) return { id: String(ya.id), nuevo: false }
+  // A nombre de cuál identidad del negocio se inscribe (como en su app).
+  const ids = await cli.pedir('identity', 'GET', '/users/{id}/identities', { filter: { limit: 200 } })
+  const identidad = listaDe(ids)[0]
+  const empresa = docK === 'nit'
+  const { name, surname } = partirNombre(d.titular, empresa)
+  const valores: Record<string, unknown> = {
+    account_number: numeroCta, account_type: tipoK, bank_name: bancoK, country: prov?.country,
+    email: d.correo ?? undefined, id_number: String(d.docNumero ?? '').replace(/\D/g, ''), id_type: docK,
+    label: bancoK, name, surname,
+  }
+  const pide = prov?.info_needed && typeof prov.info_needed === 'object' ? Object.keys(prov.info_needed) : Object.keys(valores)
+  const info: Record<string, unknown> = {}
+  for (const k of pide) if (k in valores && valores[k] != null && valores[k] !== '') info[k] = typeof valores[k] === 'string' ? String(valores[k]).trim() : valores[k]
+  info.thirdPartyId = true
+  const r = await cli.pedir('withdraw', 'POST', '/withdrawAccounts/add-new-withdraw-account', { data: {
+    currency: 'cop', provider_type: 'bank', internal: prov?.internal ?? false,
+    ...(identidad?.id ? { identity_id: String(identidad.id) } : {}), info_needed: info,
+  } })
+  const w = objetoDe(r)
+  if (!exitoso(r) || !w?.id) return { error: describirFallo(r, 'inscribir la cuenta bancaria'), status: r.status, crudo: r.data }
+  return { id: String(w.id), nuevo: true }
+}
+
+/** Crea el retiro. Nace 'pending': todavía no mueve plata. */
+export async function crearRetiro(cli: ClienteCoinsenda, x: { cuenta: string; destino: string; proveedor: string; monto: number }): Promise<{ ok: true; id: string; estado: string; crudo: any } | { ok: false; status: number; error: string; crudo: any }> {
+  const r = await cli.pedir('withdraw', 'POST', '/withdraws/add-new-withdraw-public', { data: {
+    account_id: x.cuenta, amount: String(Math.round(x.monto)), withdraw_account_id: x.destino, withdraw_provider_id: x.proveedor,
+  } })
+  const w = objetoDe(r)
+  if (exitoso(r) && w?.id) return { ok: true, id: String(w.id), estado: String(w.state ?? 'pending'), crudo: w }
+  return { ok: false, status: r.status, error: describirFallo(r, 'crear el retiro'), crudo: r.data ?? r.error ?? null }
+}
+
+export type DesenlaceConfirmar = 'salio' | 'aceptado' | 'rechazado' | 'no_salio' | 'desconocido'
+/** Confirma el retiro: es lo que manda la plata. Volver a confirmar el MISMO
+ *  retiro no paga dos veces (es el mismo id), por eso la conciliación puede
+ *  reintentarlo cuando no hubo respuesta. */
+export async function confirmarRetiro(cli: ClienteCoinsenda, id: string): Promise<{ desenlace: DesenlaceConfirmar; estado?: string; status: number; error?: string; crudo: any }> {
+  const r = await cli.pedir('withdraw', 'POST', '/withdraws/add-update-withdraw', { data: { withdraw_id: id, state: 'confirmed' } })
+  const w = objetoDe(r)
+  const estado = String(w?.state ?? '').toLowerCase()
+  if (exitoso(r)) {
+    if (estado === 'accepted') return { desenlace: 'aceptado', estado, status: r.status, crudo: w }
+    if (estado === 'confirmed') return { desenlace: 'salio', estado, status: r.status, crudo: w }
+    if (estado === 'rejected') return { desenlace: 'rechazado', estado, status: r.status, crudo: w }
+    // 200 sin estado claro: no se sabe si salió. Lo resuelve la conciliación.
+    return { desenlace: 'desconocido', estado, status: r.status, crudo: r.data }
+  }
+  // Sin respuesta, error del servidor, tiempo o límite: no se sabe.
+  if (r.status === 0 || r.status >= 500 || r.status === 408 || r.status === 429) {
+    return { desenlace: 'desconocido', status: r.status, error: describirFallo(r, 'confirmar el retiro'), crudo: r.data ?? r.error ?? null }
+  }
+  // Un 4xx claro: la confirmación no pasó, el retiro sigue sin mover plata.
+  return { desenlace: 'no_salio', status: r.status, error: describirFallo(r, 'confirmar el retiro'), crudo: r.data }
+}
+
+/** Un retiro por id: su estado actual. */
+export async function leerRetiro(cli: ClienteCoinsenda, id: string): Promise<{ ok: true; existe: boolean; estado?: string; crudo?: any } | { ok: false; error: string }> {
+  const r = await cli.pedir('withdraw', 'GET', '/users/{id}/withdraws', { filter: { where: { id }, limit: 1 } })
+  if (!exitoso(r)) return { ok: false, error: describirFallo(r, 'leer el retiro') }
+  const w = listaDe(r)[0]
+  if (!w) return { ok: true, existe: false }
+  return { ok: true, existe: true, estado: String(w.state ?? '').toLowerCase(), crudo: w }
 }

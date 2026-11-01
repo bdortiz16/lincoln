@@ -3280,7 +3280,7 @@ Deno.serve(async (req: Request) => {
         'caja_movimiento_crear', 'caja_movimiento_anular',
         'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
         // La llave con la que Lincoin firma ante Coinsenda
-        'coinsenda_llave_generar', 'coinsenda_config_guardar',
+        'coinsenda_llave_generar', 'coinsenda_config_guardar', 'coinsenda_cuenta3_set',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -5017,7 +5017,29 @@ Deno.serve(async (req: Request) => {
       // Coinsenda. Va dentro del token firmado; sin él no hay sesión.
       if (body.action === 'coinsenda_config_get') {
         const c = await configCoinsenda(db)
-        return json({ ok: true, email: c.email ?? null, dominio: c.dominio, ultimaPrueba: c.ultimaPrueba ?? null })
+        const { data: ac } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        const c3 = ((ac as any)?.settings?.cuenta3 ?? {}) as Record<string, unknown>
+        return json({ ok: true, email: c.email ?? null, dominio: c.dominio, ultimaPrueba: c.ultimaPrueba ?? null, cuenta3: { breb: c3.breb === true, ach: c3.ach === true } })
+      }
+      // Encender o apagar la Cuenta 3 para los clientes (Bre-B y ACH por
+      // separado). Va en la configuración pública (app_config.settings.cuenta3)
+      // porque la pantalla del cliente la lee para quitar el "Próximamente";
+      // el servidor de envíos la vuelve a revisar en cada envío. Solo el
+      // dueño, con su sesión en 2FA, y solo si la conexión ya pasó la prueba.
+      if (body.action === 'coinsenda_cuenta3_set') {
+        const quiere = { breb: body.breb === true, ach: body.ach === true }
+        if (quiere.breb || quiere.ach) {
+          const c = await configCoinsenda(db)
+          if ((c.ultimaPrueba as any)?.ok !== true) return json({ ok: false, error: 'Primero dale «Probar conexión» y que pase: sin eso los envíos no saldrían.' }, 400)
+        }
+        const { data: ac, error: eAc } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        if (eAc) return errorGenerico('coinsenda_cuenta3_set', eAc)
+        const settings = ((ac as any)?.settings ?? {}) as Record<string, any>
+        const antes = { breb: settings.cuenta3?.breb === true, ach: settings.cuenta3?.ach === true }
+        const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, cuenta3: quiere } }).eq('id', 1)
+        if (eUp) return errorGenerico('coinsenda_cuenta3_set', eUp)
+        await auditAdmin(req, 'coinsenda.cuenta3_cambio', { antes, ahora: quiere })
+        return json({ ok: true, cuenta3: quiere })
       }
       if (body.action === 'coinsenda_config_guardar') {
         const email = String(body.email ?? '').trim().toLowerCase().slice(0, 120)

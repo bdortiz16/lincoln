@@ -151,13 +151,6 @@ export const AdminCoinsenda: React.FC = () => {
       </div>
 
       {!error && <Conexion hayLlave={!!llave || desdeSecreto} />}
-
-      <div style={{ background: C.card, border: `1px solid ${C.b1}`, borderRadius: 13, padding: '16px 18px' }}>
-        <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Envíos por Cuenta 3</p>
-        <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
-          Para los clientes siguen en "Próximamente". Se activan cuando la prueba de conexión pase y quede conectado el envío.
-        </p>
-      </div>
     </div>
   );
 };
@@ -196,12 +189,30 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
   const [ultima, setUltima] = useState<{ at: string; ok: boolean; detalle?: string | null } | null>(null);
   const [probando, setProbando] = useState(false);
   const [prueba, setPrueba] = useState<Prueba | null>(null);
+  // Cuenta 3 para los clientes: encendida o no, por riel.
+  const [c3, setC3] = useState<{ breb: boolean; ach: boolean }>({ breb: false, ach: false });
+  const [c3Ocupado, setC3Ocupado] = useState(false);
+  const [c3Msg, setC3Msg] = useState<{ ok: boolean; texto: string } | null>(null);
 
   useEffect(() => {
     pedirAdmin({ action: 'coinsenda_config_get' }).then(r => {
-      if (r?.ok) { setEmail(r.email ?? null); setBorrador(r.email ?? ''); setEditando(!r.email); setUltima(r.ultimaPrueba ?? null); }
+      if (r?.ok) {
+        setEmail(r.email ?? null); setBorrador(r.email ?? ''); setEditando(!r.email); setUltima(r.ultimaPrueba ?? null);
+        if (r.cuenta3) setC3({ breb: r.cuenta3.breb === true, ach: r.cuenta3.ach === true });
+      }
     }).catch(() => {});
   }, []);
+
+  const cambiarC3 = async (riel: 'breb' | 'ach') => {
+    const nuevo = { ...c3, [riel]: !c3[riel] };
+    setC3Ocupado(true); setC3Msg(null);
+    const r = await pedirAdmin({ action: 'coinsenda_cuenta3_set', ...nuevo }).catch(() => null);
+    setC3Ocupado(false);
+    if (r?.ok) {
+      setC3(nuevo);
+      setC3Msg({ ok: true, texto: `${riel === 'breb' ? 'Bre-B' : 'ACH'} · Cuenta 3 ${nuevo[riel] ? 'activada: los clientes ya la pueden usar.' : 'apagada: vuelve a «Próximamente».'}` });
+    } else setC3Msg({ ok: false, texto: r?.needs2fa ? 'Tu sesión necesita el 2FA para cambiar esto. Sal y vuelve a entrar con tu código.' : (r?.error ?? 'No se pudo cambiar.') });
+  };
 
   const guardar = async () => {
     setGuardando(true); setMsg(null);
@@ -220,6 +231,7 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
   };
 
   return (
+    <>
     <div style={{ background: C.card, border: `1px solid ${C.b1}`, borderRadius: 13, padding: '16px 18px' }}>
       <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Conexión</p>
       <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
@@ -331,5 +343,32 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
         )}
       </div>
     </div>
+
+    <div style={{ background: C.card, border: `1px solid ${C.b1}`, borderRadius: 13, padding: '16px 18px' }}>
+      <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Envíos por Cuenta 3</p>
+      <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
+        Apagada, el cliente la ve como «Próximamente». Encendida, puede enviar por ella. La plata sale de la billetera COP de Coinsenda y al cliente se le descuenta de su saldo de ese riel.
+      </p>
+      <div className="space-y-2" style={{ marginTop: 12 }}>
+        {([
+          { k: 'breb' as const, t: 'Bre-B · Cuenta 3', d: 'Del saldo Bre-B del cliente · comisión $2.500 · Coinsenda cobra $2.000' },
+          { k: 'ach' as const, t: 'ACH · Cuenta 3', d: 'Del saldo ACH del cliente · comisión $2.500 · Coinsenda cobra $1.000 · llega en 6 a 24 h' },
+        ]).map(f => (
+          <div key={f.k} className="flex items-center justify-between" style={{ gap: 12, padding: '10px 12px', borderRadius: 10, background: C.elev, border: `1px solid ${C.b1}` }}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>{f.t}</p>
+              <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0', lineHeight: 1.45 }}>{f.d}</p>
+            </div>
+            <button role="switch" aria-checked={c3[f.k]} aria-label={f.t} disabled={c3Ocupado} onClick={() => cambiarC3(f.k)}
+              style={{ flexShrink: 0, width: 44, height: 24, borderRadius: 999, border: 'none', cursor: c3Ocupado ? 'wait' : 'pointer', position: 'relative', background: c3[f.k] ? C.green : 'rgba(255,255,255,0.14)', transition: 'background 0.15s' }}>
+              <span style={{ position: 'absolute', top: 3, left: c3[f.k] ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: c3[f.k] ? '#0C0E0D' : C.text, transition: 'left 0.15s' }} />
+            </button>
+          </div>
+        ))}
+      </div>
+      {c3Msg && <p style={{ fontSize: 12.5, color: c3Msg.ok ? C.green : C.red, margin: '8px 0 0' }}>{c3Msg.texto}</p>}
+      {ultima?.ok !== true && <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0' }}>Para encenderla, la prueba de conexión tiene que pasar primero.</p>}
+    </div>
+    </>
   );
 };

@@ -79,3 +79,29 @@ jobs:
           # Un 5xx es un problema real que hay que ver; un 200 con casos sin
           # confirmar es normal y no debe pintar la corrida de rojo.
           if [ "$CODE" -ge 500 ]; then exit 1; fi
+
+      # La Cuenta 3 (Coinsenda) de Bre-B y de ACH. Coinsenda no avisa por
+      # webhook: cada retiro se relee por su id. Acepta → Completado; rechaza
+      # → se devuelve al cliente; sin confirmar → se vuelve a confirmar el
+      # MISMO retiro (no paga dos veces). Va en un paso aparte: si Coinsenda no
+      # responde, no frena la conciliación de Bre-B de arriba.
+      - name: Conciliar Cuenta 3 (Coinsenda)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then exit 0; fi
+          RESP=$(curl -sS --max-time 120 -w '\n%{http_code}' \
+            -X POST "$SUPABASE_URL/functions/v1/mouv-proxy" \
+            -H "Content-Type: application/json" \
+            -H "apikey: $SERVICE_KEY" \
+            -H "Authorization: Bearer $SERVICE_KEY" \
+            -d '{"action":"reconcile_cuenta3","todos":true}')
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+          # Solo contadores: el cuerpo trae ids y montos de clientes.
+          echo "HTTP $CODE"
+          echo "$BODY" | jq -r '"revisados: \(.checked // 0)"' || true
+          echo "$BODY" | jq -r '[.results[]?.result] | group_by(.) | map("  \(.[0]): \(length)") | .[]' || true
+          if [ "$CODE" -ge 500 ]; then exit 1; fi
