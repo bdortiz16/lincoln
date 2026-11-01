@@ -38,13 +38,10 @@ import {
   Edit2, 
   UploadCloud, 
   QrCode, 
-  Palette, 
   Power, 
   Ban, 
   Unlock, 
   ShieldAlert, 
-  Megaphone, 
-  Tag, 
   DollarSign, 
   ChevronDown, 
   ChevronUp, 
@@ -68,7 +65,6 @@ import {
   Target, 
   Briefcase, 
   Layout, 
-  Image as ImageIcon, 
   Gift, 
   Cloud, 
   FileSearch, 
@@ -108,7 +104,6 @@ import { descargarMovimientosCliente, reversosDe } from './excelMovimientosClien
 import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import { FlagImg, flagUrl } from './FlagImg';
-import { PaletteChooser } from './PaletteChooser';
 import { useExchangeRates } from '../context/ExchangeRateContext'; 
 import { useSystemConfig, Coupon } from '../context/SystemConfigContext'; 
 import { useDatabase, AdminUser, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
@@ -281,8 +276,8 @@ const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tu
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera', lincoin: 'Lincoin',
-  team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
-  security: 'Seguridad', design: 'Diseño y Apariencia',
+  team: 'Equipo Admin', reports: 'Reportes', config: 'Configuración',
+  security: 'Seguridad',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
   tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores',
@@ -545,12 +540,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const soloTesoreria = rol === 'tesoreria';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'marketing' | 'config' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda'>(soloTesoreria ? 'cargues' : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda'>(soloTesoreria ? 'cargues' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [showPaletteChooser, setShowPaletteChooser] = useState(false);
   
   // Clients Logic
   // Este admin gestiona SOLO empresas — las personas se administran en
@@ -1309,12 +1303,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [activeAlerts, setActiveAlerts] = useState<SystemAlert[]>([]);
   
-  // Marketing / Coupons State
-  const [newCouponCode, setNewCouponCode] = useState('');
-  const [newCouponDiscount, setNewCouponDiscount] = useState('');
-
   const { exchangeRates, updateRate, updateFee, toggleMode, apiStatus, forceRefresh, getRate } = useExchangeRates();
-  const { config: systemConfig, updateConfig: updateSystemConfig, configError, addCoupon, removeCoupon, toggleCoupon, setThemePreset } = useSystemConfig();
+  const { config: systemConfig, updateConfig: updateSystemConfig, configError } = useSystemConfig();
   const { 
       getAllPendingDeposits, 
       getAllPendingWithdrawals, 
@@ -1829,36 +1819,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   };
   const handleSecurityBlockUser = () => { if (!selectedSecurityUser) return; toggleUserBlock(selectedSecurityUser.id, !selectedSecurityUser.isBlocked, "Bloqueo preventivo de seguridad"); showToast("Estado de seguridad actualizado"); };
 
-  const handleAddCoupon = () => {
-      if (!newCouponCode || !newCouponDiscount) return;
-      addCoupon({ code: newCouponCode.toUpperCase(), discount: Number(newCouponDiscount), active: true });
-      setNewCouponCode('');
-      setNewCouponDiscount('');
-      showToast("Cupón creado");
-  };
-
-  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          try {
-              const base64 = await fileToBase64(file);
-              updateSystemConfig({ logoUrl: base64 });
-              showToast("Logo actualizado");
-          } catch (error) { console.error(error); }
-      }
-  };
-
-  const handlePromoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          try {
-              const base64 = await fileToBase64(file);
-              updateSystemConfig({ marketingModal: { ...systemConfig.marketingModal, imageUrl: base64 } });
-              showToast("Imagen promocional actualizada");
-          } catch (error) { console.error(error); }
-      }
-  };
-
   const handleTeamSave = () => {
       if (editingUserId) {
           updateAdminUser(editingUserId, newUserForm);
@@ -2183,73 +2143,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // La vista de clientes vive ahora en components/AdminClientes.tsx
   // (maestro-detalle). Acá quedaba una segunda lista con sus propios
   // botones; dos pantallas para lo mismo se separan en cuanto una cambia.
-
-  const renderMarketing = () => (
-      <div className="space-y-6 animate-in fade-in duration-300">
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><Tag size={20} className="text-[#0C0E0D]"/> Gestión de Cupones</h3>
-              
-              <div className="flex gap-4 mb-6 items-end">
-                  <div className="flex-1">
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Código Cupón</label>
-                      <input 
-                          type="text" 
-                          value={newCouponCode}
-                          onChange={(e) => setNewCouponCode(e.target.value.toUpperCase())}
-                          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm uppercase focus:border-[#0C0E0D] outline-none"
-                          placeholder="EJ: VERANO2025"
-                      />
-                  </div>
-                  <div className="w-32">
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Descuento (%)</label>
-                      <input 
-                          type="number" 
-                          value={newCouponDiscount}
-                          onChange={(e) => setNewCouponDiscount(e.target.value)}
-                          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-[#0C0E0D] outline-none"
-                          placeholder="20"
-                      />
-                  </div>
-                  <button onClick={handleAddCoupon} className="bg-[#0C0E0D] px-6 py-2 rounded-lg font-bold text-sm hover:bg-[#161A17] h-[38px] flex items-center gap-2">
-                      <Plus size={16}/> Crear
-                  </button>
-              </div>
-
-              <div className="border border-slate-200 rounded-xl overflow-hidden">
-                  <table className="w-full text-left text-sm">
-                      <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
-                          <tr>
-                              <th className="px-6 py-3">Código</th>
-                              <th className="px-6 py-3">Descuento</th>
-                              <th className="px-6 py-3">Estado</th>
-                              <th className="px-6 py-3 text-right">Acciones</th>
-                          </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                          {systemConfig.coupons.map((coupon, idx) => (
-                              <tr key={idx} className="hover:bg-slate-50">
-                                  <td className="px-6 py-3 font-bold text-slate-700">{coupon.code}</td>
-                                  <td className="px-6 py-3 text-green-600 font-bold">-{coupon.discount}%</td>
-                                  <td className="px-6 py-3">
-                                      <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${coupon.active ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'}`}>
-                                          {coupon.active ? 'Activo' : 'Inactivo'}
-                                      </span>
-                                  </td>
-                                  <td className="px-6 py-3 text-right flex justify-end gap-2">
-                                      <button onClick={() => toggleCoupon(coupon.code)} className="text-slate-400 hover:text-[#0C0E0D] p-1"><RefreshCw size={14}/></button>
-                                      <button onClick={() => removeCoupon(coupon.code)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={14}/></button>
-                                  </td>
-                              </tr>
-                          ))}
-                          {systemConfig.coupons.length === 0 && (
-                              <tr><td colSpan={4} className="p-4 text-center text-slate-400">No hay cupones activos.</td></tr>
-                          )}
-                      </tbody>
-                  </table>
-              </div>
-          </div>
-      </div>
-  );
 
   const renderCargues = () => {
       const q = carguesSearch.trim().toLowerCase();
@@ -4816,181 +4709,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 // a que alguien la volviera a conectar creyendo que administraba permisos. El
 // equipo de verdad está en AdminEquipo, contra admin_miembros.
 
-const renderDesign = () => (
-      <div className="space-y-8 animate-in fade-in duration-300 max-w-4xl">
-          
-          {/* Blue Palette Chooser */}
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                  <Palette size={20} className="text-[#4ADE80]"/> Paletas de Azules
-              </h3>
-              <p className="text-slate-500 text-sm mb-4">Elige entre 10 variaciones de azul para la identidad visual de Lincoin.</p>
-              <button
-                  onClick={() => setShowPaletteChooser(true)}
-                  className="w-full py-3 rounded-xl font-bold text-white transition-all hover:opacity-90 flex items-center justify-center gap-2"
-                  style={{ background: 'linear-gradient(135deg, #050A14, #4ADE80)' }}
-              >
-                  <Palette size={18}/> Ver las 10 paletas de azules
-              </button>
-          </div>
-
-          {/* Quick Themes */}
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
-                  <Palette size={20} className="text-[#0C0E0D]"/> Temas Predefinidos (Temporadas)
-              </h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <button onClick={() => { setThemePreset('default'); showToast('Tema Default aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-[#0C0E0D] transition-all flex flex-col items-center gap-2 group bg-slate-50">
-                      <div className="text-2xl">🔵</div>
-                      <span className="font-bold text-xs text-slate-700">Default</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('christmas'); showToast('Tema Navidad aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-red-600 transition-all flex flex-col items-center gap-2 group bg-red-50">
-                      <div className="text-2xl">🎄</div>
-                      <span className="font-bold text-xs text-red-700">Navidad</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('halloween'); showToast('Tema Halloween aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-orange-500 transition-all flex flex-col items-center gap-2 group bg-orange-50">
-                      <div className="text-2xl">🎃</div>
-                      <span className="font-bold text-xs text-orange-600">Halloween</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('autumn'); showToast('Tema Otoño aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-yellow-600 transition-all flex flex-col items-center gap-2 group bg-yellow-50">
-                      <div className="text-2xl">🍂</div>
-                      <span className="font-bold text-xs text-yellow-700">Otoño</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('summer'); showToast('Tema Verano aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-green-400 transition-all flex flex-col items-center gap-2 group bg-slate-50">
-                      <div className="text-2xl">☀️</div>
-                      <span className="font-bold text-xs text-[#4ADE80]">Verano</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('patrias'); showToast('Tema Fiestas Patrias aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-red-800 transition-all flex flex-col items-center gap-2 group bg-slate-100">
-                      <FlagImg code="CL" className="w-8 h-6 object-cover rounded shadow-sm" />
-                      <span className="font-bold text-xs text-slate-800">Fiestas Patrias</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('dead'); showToast('Tema Día de Muertos aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-purple-600 transition-all flex flex-col items-center gap-2 group bg-purple-50">
-                      <div className="text-2xl">💀</div>
-                      <span className="font-bold text-xs text-purple-700">Día de Muertos</span>
-                  </button>
-                  <button onClick={() => { setThemePreset('spring'); showToast('Tema Primavera aplicado'); }} className="p-4 rounded-xl border border-slate-200 hover:border-green-500 transition-all flex flex-col items-center gap-2 group bg-green-50">
-                      <div className="text-2xl">🌸</div>
-                      <span className="font-bold text-xs text-green-700">Primavera</span>
-                  </button>
-              </div>
-          </div>
-
-          {/* Branding */}
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
-                  <Layout size={20} className="text-[#0C0E0D]"/> Personalización Manual
-              </h3>
-              
-              <div className="space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div>
-                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Color Primario</label>
-                          <div className="flex items-center gap-2">
-                              <input 
-                                  type="color" 
-                                  value={systemConfig.themeColor} 
-                                  onChange={(e) => updateSystemConfig({ themeColor: e.target.value })}
-                                  className="w-10 h-10 rounded cursor-pointer border-0 p-0"
-                              />
-                              <input 
-                                  type="text" 
-                                  value={systemConfig.themeColor}
-                                  onChange={(e) => updateSystemConfig({ themeColor: e.target.value })}
-                                  className="border border-slate-300 rounded px-3 py-2 text-sm font-mono flex-1 uppercase"
-                              />
-                          </div>
-                      </div>
-                      <div>
-                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Color Acento</label>
-                          <div className="flex items-center gap-2">
-                              <input 
-                                  type="color" 
-                                  value={systemConfig.accentColor} 
-                                  onChange={(e) => updateSystemConfig({ accentColor: e.target.value })}
-                                  className="w-10 h-10 rounded cursor-pointer border-0 p-0"
-                              />
-                              <input 
-                                  type="text" 
-                                  value={systemConfig.accentColor}
-                                  onChange={(e) => updateSystemConfig({ accentColor: e.target.value })}
-                                  className="border border-slate-300 rounded px-3 py-2 text-sm font-mono flex-1 uppercase"
-                              />
-                          </div>
-                      </div>
-                  </div>
-
-                  <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Cargar Logo</label>
-                      <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative cursor-pointer">
-                          <input type="file" onChange={handleLogoUpload} accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
-                          <div className="flex flex-col items-center">
-                              <Cloud size={24} className="text-slate-400 mb-2"/>
-                              <span className="text-sm font-bold text-[#0C0E0D]">Click para subir imagen</span>
-                              <span className="text-xs text-slate-400 mt-1">PNG, SVG o JPG (Max 2MB)</span>
-                          </div>
-                      </div>
-                      {systemConfig.logoUrl && (
-                          <div className="mt-4 p-2 bg-slate-800 rounded flex justify-center">
-                              <img src={systemConfig.logoUrl} alt="Logo Preview" className="h-10 object-contain" />
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-
-          {/* Marketing Modal */}
-          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex justify-between items-center mb-6">
-                  <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                      <Gift size={20} className="text-[#0C0E0D]"/> Pop-up Promocional (Modal)
-                  </h3>
-                  <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-slate-500 uppercase">{systemConfig.marketingModal?.isActive ? 'Activo' : 'Inactivo'}</span>
-                      <button 
-                          onClick={() => updateSystemConfig({ 
-                              marketingModal: { ...systemConfig.marketingModal, isActive: !systemConfig.marketingModal.isActive } 
-                          })} 
-                          className={`w-12 h-6 rounded-full p-1 transition-colors ${systemConfig.marketingModal?.isActive ? 'bg-green-500' : 'bg-slate-300'}`}
-                      >
-                          <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform ${systemConfig.marketingModal?.isActive ? 'translate-x-6' : ''}`}></div>
-                      </button>
-                  </div>
-              </div>
-
-              <div className="space-y-4">
-                  <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Cargar Imagen Promocional</label>
-                      <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors relative cursor-pointer">
-                          <input type="file" onChange={handlePromoUpload} accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" />
-                          <div className="flex flex-col items-center">
-                              <ImageIcon size={24} className="text-slate-400 mb-2"/>
-                              <span className="text-sm font-bold text-[#0C0E0D]">Subir Banner</span>
-                          </div>
-                      </div>
-                  </div>
-                  
-                  <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Enlace de Destino</label>
-                      <input 
-                          type="text" 
-                          value={systemConfig.marketingModal?.linkUrl || ''} 
-                          onChange={(e) => updateSystemConfig({ marketingModal: { ...systemConfig.marketingModal, linkUrl: e.target.value } })}
-                          className="border border-slate-300 rounded-lg px-4 py-2 w-full text-sm"
-                          placeholder="#"
-                      />
-                  </div>
-
-                  {systemConfig.marketingModal?.imageUrl && (
-                      <div className="mt-4 p-4 bg-slate-50 rounded-lg border border-slate-100">
-                          <p className="text-xs font-bold text-slate-500 uppercase mb-2">Vista Previa:</p>
-                          <img src={systemConfig.marketingModal.imageUrl} alt="Preview" className="max-w-xs h-auto rounded shadow-sm" />
-                      </div>
-                  )}
-              </div>
-          </div>
-      </div>
-  );
-
   const renderSecurity = (businessOtcOnly = false) => {
       const baseUsers = businessOtcOnly
         ? allUsers.filter((u: any) => (u.otcEnabled || u.raw_data?.otcEnabled))
@@ -5757,8 +5475,6 @@ const renderDesign = () => (
                                 siete renglones sueltos. */}
                             <AdminSidebarItem icon={Shield} label="Seguridad" active={GRUPO_SEG.includes(activeTab)} onClick={() => navTo('security')} />
                             <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo(operadoresPend > 0 ? 'operadores' : cuposPend > 0 ? 'cupos' : 'compliance')} />
-                            <AdminSidebarItem icon={Megaphone} label="Marketing" active={activeTab === 'marketing'} onClick={() => navTo('marketing')} />
-                            <AdminSidebarItem icon={Palette} label="Diseño" active={activeTab === 'design'} onClick={() => navTo('design')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
@@ -5901,7 +5617,6 @@ const renderDesign = () => (
                     <AdminClientes showToast={showToast} onSincronizarCripto={soloTesoreria ? undefined : handleSyncCrypto} onLiberarCorreo={() => setShowOrphanTool(v => !v)} sinBrasil={soloTesoreria} />
                   </div>
                 )}
-                {activeTab === 'marketing' && renderMarketing()}
                 {activeTab === 'lincoin' && renderLincoin()}
                 {activeTab === 'treasury' && (tesoreriaOk ? renderTreasury() : (
                   <div className="py-8">
@@ -5915,7 +5630,6 @@ const renderDesign = () => (
                 {activeTab === 'cargues' && renderCargues()}
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}
-                {activeTab === 'design' && renderDesign()}
                 {activeTab === 'team' && <AdminEquipo />}
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
@@ -6099,7 +5813,6 @@ const renderDesign = () => (
                 </div>
             </div>
         )}
-        {showPaletteChooser && <PaletteChooser onClose={() => setShowPaletteChooser(false)} />}
     </div>
   );
 };
