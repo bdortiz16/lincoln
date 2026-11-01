@@ -3812,6 +3812,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           return Math.max(0, disp - margenCosto(disp));
       };
       const mesLargo = new Date(`${linMes}-15T12:00:00`).toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+      // Tipo de llave Bre-B, para mostrarlo. Las de comercio (00 + 8 dígitos)
+      // no están entre las que Mouv documenta para enviar.
+      const esComercio = (l: any) => !!l && (/MERCHANT|COMERCIO/i.test(String(l.tipo ?? '')) || /^00\d{8}$/.test(String(l.llave ?? '').replace(/\D/g, '')));
+      const tipoLlave = (l: any) => esComercio(l) ? 'Llave de comercio' : ({ PHONE: 'Celular', EMAIL: 'Correo', ALPHANUM: 'Alias', NRIC: 'Documento' } as Record<string, string>)[String(l?.tipo ?? '').toUpperCase()] ?? '';
       const mesCorto = new Date(`${linMes}-15T12:00:00`).toLocaleDateString('es-CO', { month: 'long' });
       const esMesActual = linMes === hoyBog().slice(0, 7);
       const enviarDesde = (prov: 'Mouv' | 'Finity') => setLinForm({ tipo: 'enviar', proveedor: prov, monto: '', fecha: hoyBog(), descripcion: `Utilidad de ${mesLargo}`, soporte: null, soporteNombre: null, llaveId: (linLlaves ?? [])[0]?.id ?? '', otp: '', opId: crypto.randomUUID() });
@@ -4133,7 +4137,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           <div key={l.id} className="flex items-center justify-between" style={{ gap: 10, background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '9px 12px' }}>
                               <span style={{ minWidth: 0 }}>
                                   <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{l.alias ? `${l.alias} · ` : ''}{l.titular}</span>
-                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflowWrap: 'anywhere' }}>{[l.llave, l.banco, l.documento ? `Doc. ${l.documento}` : ''].filter(Boolean).join(' · ')}</span>
+                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflowWrap: 'anywhere' }}>{[l.llave, tipoLlave(l), l.banco, l.documento ? `Doc. ${l.documento}` : ''].filter(Boolean).join(' · ')}</span>
+                                  {esComercio(l) && <span style={{ display: 'block', fontSize: 11, color: '#FBBF24', marginTop: 2 }}>Mouv no envía a llaves de comercio: desde Mouv usa otra llave de la empresa (celular, correo, @alias o NIT). Desde Finity sí sale.</span>}
                               </span>
                               {esDueno && <button disabled={cajaOcupada} onClick={() => cajaAccion({ action: 'caja_llave_quitar', id: l.id }, 'Llave quitada.')}
                                   style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer', flexShrink: 0 }}>Quitar</button>}
@@ -4217,9 +4222,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       </div>
                       {linForm.tipo === 'enviar' ? (() => {
                           const mx = paraEnviar(linForm.proveedor);
+                          // Bre-B: hasta 12.000.000 por transferencia.
+                          const tope = mx == null ? null : Math.min(mx, 12_000_000);
                           const monto = Number(linForm.monto || 0);
                           const pasa = mx != null && monto > mx;
-                          const listo = !!linForm.llaveId && monto >= 5000 && !pasa && String(linForm.otp ?? '').length === 6 && linForm.descripcion.trim().length >= 3;
+                          const pasaBreb = monto > 12_000_000;
+                          const llaveSel = (linLlaves ?? []).find(l => l.id === linForm.llaveId);
+                          const listo = !!linForm.llaveId && monto >= 5000 && !pasa && !pasaBreb && String(linForm.otp ?? '').length === 6 && linForm.descripcion.trim().length >= 3;
                           return (<>
                               <div className="grid grid-cols-2" style={{ gap: 8 }}>
                                   <div><label style={RF}>Bolsa</label>
@@ -4236,9 +4245,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               <label style={RF}>Monto (COP)</label>
                               <div className="flex" style={{ gap: 6 }}>
                                   <input inputMode="numeric" value={linForm.monto ? Number(linForm.monto).toLocaleString('es-CO') : ''} placeholder="0" onChange={e => setLinForm(f => f && ({ ...f, monto: e.target.value.replace(/\D/g, '') }))} style={{ ...CAMPO, fontSize: 18, fontWeight: 800, flex: 1 }} />
-                                  <button disabled={!mx} onClick={() => mx && setLinForm(f => f && ({ ...f, monto: String(mx) }))} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '0 12px', fontWeight: 700, fontSize: 12, cursor: mx ? 'pointer' : 'not-allowed', opacity: mx ? 1 : 0.5 }}>Todo</button>
+                                  <button disabled={!tope} onClick={() => tope && setLinForm(f => f && ({ ...f, monto: String(tope) }))} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '0 12px', fontWeight: 700, fontSize: 12, cursor: tope ? 'pointer' : 'not-allowed', opacity: tope ? 1 : 0.5 }}>Todo</button>
                               </div>
                               {pasa && <p style={{ margin: '5px 0 0', fontSize: 11.5, color: '#F87171' }}>Supera lo que hay de Lincoin en {linForm.proveedor} ({fmt(mx ?? 0)}).</p>}
+                              {!pasa && pasaBreb && <p style={{ margin: '5px 0 0', fontSize: 11.5, color: '#F87171' }}>Bre-B permite hasta 12.000.000 por transferencia. Envíalo en partes.</p>}
+                              {linForm.proveedor === 'Mouv' && esComercio(llaveSel) && <p style={{ margin: '5px 0 0', fontSize: 11.5, color: '#FBBF24', lineHeight: 1.45 }}>Esta es una llave de comercio (empieza por 00): Mouv no envía a ese tipo de llave. Elige Finity, o inscribe otra llave de la empresa (celular, correo, @alias o NIT).</p>}
                               {monto > 0 && monto < 5000 && <p style={{ margin: '5px 0 0', fontSize: 11.5, color: '#878E88' }}>El mínimo es 5.000.</p>}
                               <label style={RF}>Descripción</label>
                               <input value={linForm.descripcion} onChange={e => setLinForm(f => f && ({ ...f, descripcion: e.target.value }))} style={CAMPO} />

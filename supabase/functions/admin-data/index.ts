@@ -4943,7 +4943,7 @@ Deno.serve(async (req: Request) => {
       // ── Llaves Bre-B de Lincoin ────────────────────────────────────────
       if (body.action === 'caja_llaves_get') {
         const llaves = await llavesLincoin()
-        return json({ ok: true, llaves: llaves.map(l => ({ id: l.id, alias: l.alias ?? null, llave: l.llave, titular: l.titular, documento: l.documento, banco: l.banco ?? null, at: l.at ?? null })) })
+        return json({ ok: true, llaves: llaves.map(l => ({ id: l.id, alias: l.alias ?? null, llave: l.llave, tipo: l.tipo ?? null, titular: l.titular, documento: l.documento, banco: l.banco ?? null, at: l.at ?? null })) })
       }
       // A nombre de quién está una llave, antes de inscribirla. Solo el dueño.
       if (body.action === 'caja_llave_consultar') {
@@ -5002,6 +5002,9 @@ Deno.serve(async (req: Request) => {
         const opId = String(body.opId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
         if (!CAJA.some(c => c.proveedor === proveedor)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
         if (!isFinite(monto) || monto < 5000) return json({ ok: false, error: 'El monto mínimo es 5.000.' }, 400)
+        // Bre-B: hasta 12.000.000 por transferencia (tope de la red). Más que
+        // eso se envía en partes.
+        if (monto > 12_000_000) return json({ ok: false, error: 'Bre-B permite hasta 12.000.000 por transferencia. Envíalo en partes.' }, 400)
         if (!opId) return json({ ok: false, error: 'Falta el identificador de la operación. Recarga la página.' }, 400)
         const otpErr = await requireAdminOtp(auth.userId, body.otp)
         if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)

@@ -411,14 +411,28 @@ function brebTypeToMouv(t: string, keyValue?: string): 'PHONE' | 'EMAIL' | 'ALPH
   if (/EMAIL|CORREO|MAIL/.test(s)) return 'EMAIL'
   if (/NRIC|C[EÉ]DULA|DOCUMENT|DOCUMENTO|\bCC\b|\bNIT\b|\bID\b/.test(s)) return 'NRIC'
   if (/ALPHANUM|ALFANUM|MERCHANT|COMERCIO|C[OÓ]DIGO|CODE|LLAVE|ALIAS/.test(s)) return 'ALPHANUM'
-  // Tipo desconocido → inferir por el formato del valor de la llave.
+  // Tipo desconocido → inferir por el formato del valor de la llave, con los
+  // formatos que documenta Mouv: celular = 10 dígitos que empiezan por 3,
+  // documento (CC o NIT) = 5 a 15 dígitos. Antes cualquier número de 10
+  // dígitos se tomaba por celular: una cédula de 10 cifras (1032…) o una
+  // llave de comercio (00…) salían con el tipo equivocado.
   const v = String(keyValue ?? '').trim()
-  if (/@/.test(v)) return 'EMAIL'
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return 'EMAIL'
+  if (v.startsWith('@')) return 'ALPHANUM'
+  const soloNumero = /^\+?[\d\s-]+$/.test(v)
   const digits = v.replace(/[^\d]/g, '')
-  if (/^\+?\d[\d\s-]{9,14}$/.test(v) && digits.length >= 10) return 'PHONE'
-  if (/^\d{6,10}$/.test(digits)) return 'NRIC'
+  if (soloNumero && /^(57)?3\d{9}$/.test(digits)) return 'PHONE'
+  // Código de comercio (00 + 8 dígitos): el envío de Mouv no tiene un tipo
+  // MERCHANT; va como ALPHANUM.
+  if (soloNumero && /^00\d{8}$/.test(digits)) return 'ALPHANUM'
+  if (soloNumero && /^\d{5,15}$/.test(digits)) return 'NRIC'
   return 'ALPHANUM'
 }
+// Una llave de comercio Bre-B (la que dan los bancos a un negocio: 00 y 8
+// dígitos). Mouv documenta celular, correo, alias y documento; a una de
+// comercio rechazó el envío de la utilidad («no está disponible desde tu
+// cuenta») y Finity sí la pagó.
+const esLlaveComercio = (valor: unknown, tipo?: unknown) => /MERCHANT|COMERCIO/i.test(String(tipo ?? '')) || /^00\d{8}$/.test(String(valor ?? '').replace(/\D/g, ''))
 
 // ── Resolver una llave Bre-B en el directorio de Mouv, con VARIANTES ──
 // El directorio guarda los celulares con indicativo +57, así que una llave
@@ -2156,17 +2170,24 @@ serve(async (req: Request) => {
       if (proveedor === 'Mouv') {
         // El costo que Mouv le cobra a la bolsa por la transferencia (se
         // registra aparte para que la caja cuadre).
-        const q = await mouvQuoteBreb(monto, llave, tipo).catch(() => null)
+        const q = await mouvQuoteBreb(monto, llave, rr.keyType ?? tipo).catch(() => null)
+        // La cotización dice si la billetera Bre-B alcanza (monto + comisión
+        // + IVA). Si no, no se manda: Mouv lo rechazaría igual.
+        if (q?.ok && q.raw?.canAfford === false) {
+          const disp = Number(q.raw?.currentBalance) / 100
+          return json(200, { ok: false, noSalio: true, message: `La billetera Bre-B de Mouv no alcanza para ${monto.toLocaleString('es-CO')} más la comisión${Number.isFinite(disp) ? ` (tiene ${Math.floor(disp).toLocaleString('es-CO')})` : ''}. No se envió nada.` })
+        }
         const r = await mouvPayout('BREB', { key: llave, keyType: tipo, holderName: titular, documentNumber: documento, reference: 'Utilidad Lincoin' }, monto)
         const desconocido = !r.ok && (r.status === 0 || r.status >= 500)
         await logAudit(quien, 'lincoin.breb_enviar', { proveedor, monto, llave: enmascarar(llave), ok: r.ok, status: r.status, ref: r.providerRef ?? null, referencia: r.referencia ?? null })
         if (r.ok) return json(200, { ok: true, ref: r.providerRef ?? null, referencia: r.referencia ?? null, titular: r.targetName ?? titular, costo: q?.ok ? Math.round(q.feeCop) : null })
         const motivo = String(r.data?.message ?? r.data?.error?.message ?? r.data?.error ?? '').slice(0, 200)
+        const comercio = esLlaveComercio(llave, rr.keyType ?? tipo)
         return json(200, {
           ok: false, desconocido, noSalio: !desconocido, ref: r.providerRef ?? null, referencia: r.referencia ?? null,
           message: desconocido
             ? 'Mouv no contestó a tiempo: no sabemos si el envío salió. No lo repitas; revisa su estado en unos minutos.'
-            : `Mouv no aceptó el envío${motivo && !JERGA_TECNICA.test(motivo) ? ` (${motivo})` : ''}. No salió nada.`,
+            : `Mouv no aceptó el envío${motivo && !JERGA_TECNICA.test(motivo) ? ` (${motivo})` : ''}. No salió nada.${comercio ? ' Esa es una llave de comercio (empieza por 00) y Mouv solo documenta envíos a celular, correo, @alias o documento: envíalo desde Finity, o inscribe otra llave de la empresa.' : ''}`,
         })
       }
 
