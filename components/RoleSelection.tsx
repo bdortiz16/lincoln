@@ -30,7 +30,7 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
 
       {/* Modal */}
       <div
-        className={`relative w-full ${paso === 'empresas' ? 'max-w-5xl' : 'max-w-3xl'} max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300`}
+        className="relative w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300"
         style={{
           background: '#0D0E0D',
           border: '1px solid rgba(255,255,255,0.10)',
@@ -65,7 +65,7 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
           <p className="text-center" style={{ color: '#8F8F8A', fontSize: 15, maxWidth: 520, marginBottom: 40 }}>
             ¿Cómo quieres entrar?
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-4xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
             <button onClick={onSelectBusiness} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <User className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
@@ -78,30 +78,27 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
                 Ingresar <ChevronRight size={15} />
               </span>
             </button>
-            <button onClick={onSelectContador} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
-              <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
-                <BookOpen className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
-              </div>
-              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Contabilidad</h3>
-              <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
-                Para el contador: revisa la contabilidad de la empresa con el acceso que ella te dio.
-              </p>
-              <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
-                Ingresar <ChevronRight size={15} />
-              </span>
-            </button>
-            <button onClick={onSelectRevisor ?? onSelectContador} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
-              <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
-                <ShieldCheck className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
-              </div>
-              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Revisor fiscal</h3>
-              <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
-                Para el revisor fiscal: revisa la contabilidad de la empresa con el acceso que ella te dio.
-              </p>
-              <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
-                Ingresar <ChevronRight size={15} />
-              </span>
-            </button>
+            {/* El lugar de Contabilidad partido a la mitad: arriba el contador,
+                abajo el revisor fiscal. Los dos entran al mismo portal. */}
+            <div className="flex flex-col gap-4">
+              {([
+                [onSelectContador, BookOpen, 'Contabilidad', 'Para el contador, con el acceso que la empresa te dio.'],
+                [onSelectRevisor ?? onSelectContador, ShieldCheck, 'Revisor fiscal', 'Para el revisor fiscal, con el acceso que la empresa te dio.'],
+              ] as [() => void, typeof BookOpen, string, string][]).map(([alTocar, Icono, titulo, texto]) => (
+                <button key={titulo} onClick={alTocar} className="role-card rc-mitad group relative flex flex-1 items-center text-left transition-all duration-300" style={{ ...cardStyle, padding: '20px 20px', gap: 16 }}>
+                  <div className="rc-circle flex items-center justify-center rounded-full shrink-0 transition-all duration-300 group-hover:scale-105" style={{ ...circleStyle, width: 60, height: 60, marginBottom: 0 }}>
+                    <Icono className="transition-colors duration-300" style={{ width: 26, height: 26, color: '#F4F4F2' }} strokeWidth={1.8} />
+                  </div>
+                  <span className="flex flex-col" style={{ minWidth: 0, flex: 1 }}>
+                    <span style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 18, color: '#F4F4F2' }}>{titulo}</span>
+                    <span style={{ color: '#8F8F8A', fontSize: 12.5, lineHeight: 1.45, margin: '3px 0 8px' }}>{texto}</span>
+                    <span className="flex items-center gap-1.5" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 13 }}>
+                      Ingresar <ChevronRight size={14} />
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
           <button onClick={() => setPaso('roles')} className="flex items-center gap-1 hover:underline" style={{ color: '#8F8F8A', fontSize: 13.5, fontWeight: 600, marginTop: 26, background: 'transparent', border: 'none', cursor: 'pointer' }}>
             <ChevronLeft size={15} /> Volver
@@ -129,9 +126,9 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
               </span>
             </button>
 
-            {/* EMPRESAS: al tocar, se abre el paso con las tres entradas —
-                Usuario (la cuenta de la empresa), Contabilidad (el contador)
-                y Revisor fiscal (misma puerta que el contador). */}
+            {/* EMPRESAS: al tocar, se abre el paso con las entradas —
+                Usuario (la cuenta de la empresa) y, partido a la mitad,
+                Contabilidad (el contador) y Revisor fiscal (misma puerta). */}
             <button onClick={() => setPaso('empresas')} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <Building2 className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
@@ -165,6 +162,7 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
           .rs-content h2 { font-size: 22px !important; margin-bottom: 8px !important; }
           .rs-content > p { font-size: 13.5px !important; margin-bottom: 24px !important; }
           .role-card { padding: 18px 16px !important; }
+          .rc-mitad .rc-circle { width: 48px !important; height: 48px !important; margin-bottom: 0 !important; }
           .rc-circle { width: 56px !important; height: 56px !important; margin-bottom: 12px !important; }
           .rc-circle svg { width: 26px !important; height: 26px !important; }
           .role-card h3 { font-size: 18px !important; margin-bottom: 4px !important; }
