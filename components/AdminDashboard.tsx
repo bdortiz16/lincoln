@@ -3805,6 +3805,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           return Math.max(0, disp - margenCosto(disp));
       };
       const mesLargo = new Date(`${linMes}-15T12:00:00`).toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+      const mesCorto = new Date(`${linMes}-15T12:00:00`).toLocaleDateString('es-CO', { month: 'long' });
+      const esMesActual = linMes === hoyBog().slice(0, 7);
       const enviarDesde = (prov: 'Mouv' | 'Finity') => setLinForm({ tipo: 'enviar', proveedor: prov, monto: '', fecha: hoyBog(), descripcion: `Utilidad de ${mesLargo}`, soporte: null, soporteNombre: null, llaveId: (linLlaves ?? [])[0]?.id ?? '', otp: '', opId: crypto.randomUUID() });
       const ESTADO_ENVIO: Record<string, { l: string; c: string }> = {
           enviando: { l: 'Enviando', c: '#FBBF24' }, en_proceso: { l: 'En proceso', c: '#FBBF24' }, por_confirmar: { l: 'Por confirmar', c: '#FBBF24' },
@@ -3987,54 +3989,68 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           })()}
 
           <div style={CARD}>
-              <p style={{ ...ROT, marginBottom: 12 }}>Saldo de Lincoin por bolsa · desde la apertura</p>
+              <p style={{ ...ROT, marginBottom: 12 }}>Saldo de Lincoin por bolsa · {mesLargo}</p>
               <div className="grid grid-cols-1 lg:grid-cols-2" style={{ gap: 14 }}>
                   {cajaP.map(c => {
                       const fila = (l: React.ReactNode, v: number | null, o: { signo?: string; color?: string; fuerte?: boolean } = {}) => (
-                          <div className="flex justify-between" style={{ padding: '5px 0', fontSize: 12.5, color: '#878E88' }}>
-                              <span>{l}</span><span style={{ fontWeight: o.fuerte ? 800 : 700, color: o.color ?? '#F4F4F2' }}>{v == null ? '—' : `${v === 0 ? '' : (o.signo ?? '')}${fmt(Math.abs(v))}`}</span>
+                          <div className="flex justify-between" style={{ gap: 10, padding: '5px 0', fontSize: 12.5, color: '#878E88' }}>
+                              <span>{l}</span><span style={{ fontWeight: o.fuerte ? 800 : 700, color: o.color ?? '#F4F4F2', whiteSpace: 'nowrap' }}>{v == null ? '—' : `${v === 0 ? '' : (o.signo ?? '')}${fmt(Math.abs(v))}`}</span>
                           </div>
                       );
                       const v = vivo[c.proveedor];
+                      // La caja del MES elegido (servidor). Mientras la función nueva
+                      // no esté publicada, se arma con lo de siempre (desde la apertura).
+                      const cm: any = (d?.cajaMes ?? []).find((x: any) => x.proveedor === c.proveedor)
+                          ?? (c.apertura ? { abierta: true, abreEnElMes: true, inicio: c.apertura.lincoin, utilidad: c.utilidadDesdeApertura, retiros: c.retirosDesdeApertura, externos: c.externosDesdeApertura, cierre: c.lincoinEsperado } : null);
+                      const fechaAp = c.apertura ? new Date(c.apertura.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '';
                       return (
                           <div key={c.proveedor} style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: 14 }}>
                               <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
                                   <span className="flex items-center" style={{ gap: 7, fontWeight: 800, color: '#F4F4F2' }}>{c.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {c.proveedor}</span>
-                                  {c.dif == null ? null : c.dif === 0
+                                  {!esMesActual || c.dif == null ? null : c.dif === 0
                                     ? <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={12} /> Cuadra</span>
                                     : <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#FBBF24' }}><AlertTriangle size={12} /> No cuadra</span>}
                               </div>
-                              {!c.apertura ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja abre hoy a las 23:59 (o desde Tesorería › Cierre de caja).</p> : <>
-                                  {fila(`Saldo de apertura · ${new Date(c.apertura.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}`, c.apertura.lincoin)}
-                                  {fila('+ Utilidad de los cargues', c.utilidadDesdeApertura, { signo: c.utilidadDesdeApertura < 0 ? '−' : '+', color: '#4ADE80' })}
-                                  {/* La caja suma desde que se abrió; lo de antes ya quedó dentro del
-                                      saldo de apertura (era lo que había en la bolsa ese día). Sin esta
-                                      línea parecía que faltaba utilidad del mes. */}
-                                  {(() => { const delMes = Number(fuentes.find(f => f.n === c.proveedor)?.total ?? 0); return delMes !== c.utilidadDesdeApertura ? (
+                              {!c.apertura ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja abre hoy a las 23:59 (o desde Tesorería › Cierre de caja).</p>
+                               : !cm?.abierta ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja de {c.proveedor} abrió el {fechaAp}: en {mesLargo} todavía no había caja.</p>
+                               : <>
+                                  {fila(cm.abreEnElMes ? `Saldo de apertura · ${fechaAp}` : `Saldo al empezar ${mesCorto}`, cm.inicio)}
+                                  {fila(`+ Utilidad de los cargues de ${mesCorto}`, cm.utilidad, { signo: cm.utilidad < 0 ? '−' : '+', color: '#4ADE80' })}
+                                  {/* El mes en que se abrió la caja solo suma desde la apertura: lo
+                                      de antes ya estaba en la bolsa ese día y entró en el saldo de
+                                      apertura. Sin esta línea parecía que faltaba utilidad. */}
+                                  {(() => { const delMes = Number(fuentes.find(f => f.n === c.proveedor)?.total ?? 0); return cm.abreEnElMes && delMes !== cm.utilidad ? (
                                       <p style={{ margin: '0 0 4px', fontSize: 11, color: 'rgba(244,244,242,0.45)', lineHeight: 1.45 }}>
-                                          Utilidad de {mesLargo} en {c.proveedor} (todo el mes): {fmt(delMes)}. Aquí solo suma la de después de la apertura del {new Date(c.apertura.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}: la de antes ya estaba en la bolsa ese día y entró en el saldo de apertura.
+                                          En {mesCorto} la caja abrió el {fechaAp}: la utilidad de antes de esa fecha ({fmt(delMes)} en todo el mes) ya estaba en la bolsa ese día y entró en el saldo de apertura. Desde el mes siguiente esta línea es la utilidad del mes completo.
                                       </p>
                                   ) : null; })()}
-                                  {fila('− Retiros de utilidad', c.retirosDesdeApertura, { signo: '−' })}
-                                  {fila('± Movimientos externos y aportes', c.externosDesdeApertura, { signo: c.externosDesdeApertura < 0 ? '−' : '+' })}
+                                  {fila(`− Retiros de utilidad de ${mesCorto}`, cm.retiros, { signo: '−' })}
+                                  {fila('± Movimientos externos y aportes', cm.externos, { signo: cm.externos < 0 ? '−' : '+' })}
                                   <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)', marginTop: 4, paddingTop: 4 }}>
-                                      {fila('= Lincoin esperado', c.lincoinEsperado, { fuerte: true, color: '#4ADE80' })}
-                                      {fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
+                                      {fila(esMesActual ? '= Lincoin hoy' : `= Lincoin al cierre de ${mesCorto}`, cm.cierre, { fuerte: true, color: '#4ADE80' })}
+                                      {esMesActual && fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
                                   </div>
-                                  <div className="flex justify-between" style={{ gap: 10, marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
-                                      background: c.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${c.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: c.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
-                                      <span>Diferencia sin explicar</span><span style={{ whiteSpace: 'nowrap' }}>{c.dif == null ? '—' : signo(c.dif)}</span>
-                                  </div>
-                                  {c.dif != null && c.dif !== 0 && <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>}
-                                  {(() => { const mx = paraEnviar(c.proveedor); return (
-                                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-                                          <span style={{ fontSize: 12, color: '#878E88' }}>Para enviar a la empresa: <b style={{ color: '#F4F4F2' }}>{mx == null ? '—' : fmt(mx)}</b></span>
-                                          <button onClick={() => enviarDesde(c.proveedor)} disabled={!mx} className="inline-flex items-center"
-                                              style={{ gap: 6, background: mx ? '#4ADE80' : 'rgba(255,255,255,0.08)', color: mx ? '#0C0E0D' : 'rgba(244,244,242,0.45)', border: 'none', borderRadius: 9, padding: '7px 12px', fontWeight: 800, fontSize: 12, cursor: mx ? 'pointer' : 'not-allowed' }}>
-                                              <ArrowUpCircle size={13} /> Enviar a la empresa
-                                          </button>
+                                  {esMesActual ? <>
+                                      <div className="flex justify-between" style={{ gap: 10, marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
+                                          background: c.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${c.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: c.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
+                                          <span>Diferencia sin explicar</span><span style={{ whiteSpace: 'nowrap' }}>{c.dif == null ? '—' : signo(c.dif)}</span>
                                       </div>
-                                  ); })()}
+                                      {c.dif != null && c.dif !== 0 && <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>}
+                                      {(() => { const mx = paraEnviar(c.proveedor); return (
+                                          <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                                              <span style={{ fontSize: 12, color: '#878E88' }}>Para enviar a la empresa: <b style={{ color: '#F4F4F2' }}>{mx == null ? '—' : fmt(mx)}</b></span>
+                                              <button onClick={() => enviarDesde(c.proveedor)} disabled={!mx} className="inline-flex items-center"
+                                                  style={{ gap: 6, background: mx ? '#4ADE80' : 'rgba(255,255,255,0.08)', color: mx ? '#0C0E0D' : 'rgba(244,244,242,0.45)', border: 'none', borderRadius: 9, padding: '7px 12px', fontWeight: 800, fontSize: 12, cursor: mx ? 'pointer' : 'not-allowed' }}>
+                                                  <ArrowUpCircle size={13} /> Enviar a la empresa
+                                              </button>
+                                          </div>
+                                      ); })()}
+                                  </> : (
+                                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                                          <span style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>Cierre del mes. La bolsa en vivo y el envío a la empresa están en el mes en curso.</span>
+                                          <button onClick={() => setLinMes(hoyBog().slice(0, 7))} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 9, padding: '6px 11px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Ir al mes en curso</button>
+                                      </div>
+                                  )}
                               </>}
                           </div>
                       );

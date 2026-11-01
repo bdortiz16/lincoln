@@ -311,6 +311,61 @@ async function estadoCaja() {
   })
 }
 
+// La caja de UN mes, por bolsa. La de estadoCaja() suma todo desde la
+// apertura y no vuelve a empezar; el tablero se mira por mes: con qué
+// arrancó Lincoin en cada bolsa el día 1, cuánto dejaron los cargues ESE
+// mes, qué se retiró o se movió por fuera, y con cuánto cerró. El mes en que
+// se abrió la caja arranca con el saldo de apertura y solo suma desde ese
+// día (lo de antes ya estaba en la bolsa y entró en la apertura).
+async function cajaDelMes(desde: string, hasta: string, inicioIso: string, finIso: string) {
+  const { data: aps } = await db.from('caja_apertura').select('*')
+  const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
+  const tsAp = (a: any) => Date.parse(String(a.abierta_at))
+  const primera = ((aps ?? []) as any[]).map(tsAp).filter(Number.isFinite).sort((x, y) => x - y)[0]
+  if (!Number.isFinite(primera)) return CAJA.map(c => ({ proveedor: c.proveedor, abierta: false }))
+  const tInicio = Date.parse(inicioIso), tFin = Math.min(Date.parse(finIso), Date.now())
+  // Utilidad de los cargues: antes del mes (para el saldo con que arranca) y
+  // dentro del mes, cada bolsa desde SU apertura.
+  const antes: Record<string, number> = {}, mes: Record<string, number> = {}
+  if (tFin > primera) {
+    const { filas } = await leerPorPaginas(() => db.from('transactions')
+      .select(`id, created_at, currency, ${SELECT_UTILIDAD}`)
+      .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+      .gte('created_at', new Date(primera).toISOString()).lt('created_at', new Date(tFin).toISOString()), { tope: 100_000 })
+    for (const t of filas as any[]) {
+      const p = provDeRiel(t.currency)
+      const a = p ? aperturas.get(p) : null
+      const ts = Date.parse(String(t.created_at))
+      if (!p || !a || !(ts >= tsAp(a))) continue
+      const u = utilidadLincoin(t)
+      if (ts < tInicio) antes[p] = (antes[p] ?? 0) + u
+      else mes[p] = (mes[p] ?? 0) + u
+    }
+  }
+  const movs = (await movimientosCaja(fechaBogota(new Date(primera).toISOString()), hasta)).filter(m => !m.anulado)
+  return CAJA.map(c => {
+    const a = aperturas.get(c.proveedor)
+    if (!a) return { proveedor: c.proveedor, abierta: false }
+    const desdeAp = fechaBogota(String(a.abierta_at))
+    if (Date.parse(finIso) <= tsAp(a)) return { proveedor: c.proveedor, abierta: false, abreDespues: true, aperturaAt: a.abierta_at }
+    const deEsta = movs.filter(m => m.proveedor === c.proveedor && String(m.fecha) >= desdeAp)
+    const suma = (lista: any[], tipo: 'retiro' | 'otros') => lista
+      .filter(m => tipo === 'retiro' ? m.tipo === 'retiro' : m.tipo !== 'retiro')
+      .reduce((acc, m) => acc + (tipo === 'retiro' ? 1 : (SIGNO_MOV[m.tipo] ?? 0)) * Number(m.monto), 0)
+    const previos = deEsta.filter(m => String(m.fecha) < desde)
+    const delMes = deEsta.filter(m => String(m.fecha) >= desde && String(m.fecha) <= hasta)
+    const abreEnElMes = tsAp(a) >= tInicio
+    const inicio = Number(a.lincoin) + (antes[c.proveedor] ?? 0) - suma(previos, 'retiro') + suma(previos, 'otros')
+    const utilidad = mes[c.proveedor] ?? 0
+    const retiros = suma(delMes, 'retiro'), externos = suma(delMes, 'otros')
+    return {
+      proveedor: c.proveedor, abierta: true, abreEnElMes, aperturaAt: a.abierta_at,
+      inicio: Math.round(inicio), utilidad: Math.round(utilidad), retiros: Math.round(retiros), externos: Math.round(externos),
+      cierre: Math.round(inicio + utilidad - retiros + externos),
+    }
+  })
+}
+
 // Foto diaria (23:59 de Colombia). Si la caja no se ha abierto, se abre
 // ahora: "la caja empieza hoy".
 async function cajaFoto() {
@@ -4827,6 +4882,7 @@ Deno.serve(async (req: Request) => {
           fuentes: ['Finity', 'Mouv', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
           porDia: nDias <= 92 ? porDia : null,
           clientes,
+          cajaMes: await cajaDelMes(desde, hasta, aUtc(desde), aUtc(hasta, true)),
           movimientos: movs.map(m => ({ id: m.id, fecha: m.fecha, tipo: m.tipo, proveedor: m.proveedor, monto: Number(m.monto), descripcion: m.descripcion,
             soporte: m.soporte_nombre ?? null, por: quien(m.por), esMio: String(m.por?.id ?? '') === yoIdL,
             envio: m.envio ? { estado: m.envio.estado ?? null, titular: m.envio.titular ?? null, llave: m.envio.llave ?? null, ref: m.envio.ref ?? null, costoDe: m.envio.costoDe ?? null, detalle: m.envio.detalle ?? null } : null,
