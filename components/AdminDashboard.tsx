@@ -1219,7 +1219,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [linCliBusca, setLinCliBusca] = useState('');
   const [linCliTodos, setLinCliTodos] = useState(false);
   const [linVer, setLinVer] = useState(0);
-  const [linForm, setLinForm] = useState<null | { tipo: 'retiro' | 'egreso' | 'ingreso' | 'aporte'; proveedor: 'Mouv' | 'Finity'; monto: string; fecha: string; descripcion: string; soporte: string | null; soporteNombre: string | null }>(null);
+  // tipo 'enviar': la utilidad sale de la bolsa por Bre-B a una llave de
+  // Lincoin (queda como retiro). opId es uno por intento: un doble clic o un
+  // reintento tras un «no sabemos si salió» no manda dos veces.
+  const [linForm, setLinForm] = useState<null | { tipo: 'retiro' | 'egreso' | 'ingreso' | 'aporte' | 'enviar'; proveedor: 'Mouv' | 'Finity'; monto: string; fecha: string; descripcion: string; soporte: string | null; soporteNombre: string | null; llaveId?: string; otp?: string; opId?: string }>(null);
+  // Llaves Bre-B de Lincoin (las inscribe el dueño) y su formulario.
+  const [linLlaves, setLinLlaves] = useState<any[] | null>(null);
+  const [linLlaveForm, setLinLlaveForm] = useState<null | { llave: string; consulta: any | null; alias: string; otp: string; ocupado: boolean; error: string | null }>(null);
+  const [linRevisando, setLinRevisando] = useState<string | null>(null);
   const [linAnular, setLinAnular] = useState<{ id: string; motivo: string } | null>(null);
   // Comprobante bajo demanda: el listado llega sin las imágenes base64
   // (admin-data las reemplaza por '__stored__' para no pesar megas) y aquí
@@ -1403,8 +1410,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     pedirAdmin({ action: 'lincoin_resumen', desde: `${linMes}-01`, hasta: finMes > hoy ? hoy : finMes })
       .then(d => { if (vigente) { setLinCargando(false); if (d?.ok) setLinData(d); else showToast(d?.error ?? 'No se pudo cargar el tablero de Lincoin.'); } })
       .catch(() => { if (vigente) setLinCargando(false); });
+    pedirAdmin({ action: 'caja_llaves_get' }).then(d => { if (vigente && d?.ok) setLinLlaves(d.llaves ?? []); }).catch(() => {});
     return () => { vigente = false; };
   }, [activeTab, linMes, linVer]);
+  // Los envíos a la empresa que siguen en camino se le preguntan al
+  // proveedor al abrir el tablero (como mucho tres): así «En proceso» pasa
+  // solo a «Llegó» o, si lo devolvieron, el retiro se anula.
+  useEffect(() => {
+    if (activeTab !== 'lincoin' || !linData?.movimientos) return;
+    const pendientes = (linData.movimientos as any[]).filter(m => !m.anulado && m.envio?.ref && ['en_proceso', 'por_confirmar', 'enviando'].includes(m.envio?.estado)).slice(0, 3);
+    if (!pendientes.length) return;
+    let vigente = true;
+    (async () => {
+      let cambio = false;
+      for (const m of pendientes) {
+        const r = await pedirAdmin({ action: 'caja_envio_estado', id: m.id }).catch(() => null);
+        if (r?.ok && r.estado && r.estado !== m.envio.estado && r.estado !== 'en_proceso') cambio = true;
+      }
+      if (vigente && cambio) setLinVer(v => v + 1);
+    })();
+    return () => { vigente = false; };
+  }, [activeTab, linData]);
   const cajaAccion = async (body: Record<string, unknown>, ok: string) => {
     setCajaOcupada(true);
     const d = await pedirAdmin(body).catch(() => null);
@@ -3766,7 +3792,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           if (!r?.soporte) { showToast('No se pudo abrir el comprobante.'); return; }
           const w = window.open(); if (w) w.document.write(`<iframe src="${r.soporte}" style="border:0;width:100%;height:100%"></iframe>`);
       };
-      const nuevo = () => setLinForm({ tipo: 'egreso', proveedor: 'Finity', monto: '', fecha: hoyBog(), descripcion: '', soporte: null, soporteNombre: null });
+      const nuevo = () => setLinForm({ tipo: 'egreso', proveedor: 'Finity', monto: '', fecha: hoyBog(), descripcion: '', soporte: null, soporteNombre: null, llaveId: (linLlaves ?? [])[0]?.id ?? '', otp: '', opId: crypto.randomUUID() });
+      // Lo que de verdad se puede enviar de una bolsa: lo menor entre lo que
+      // le toca a Lincoin y lo que sobra en la bolsa en vivo después de los
+      // saldos de los clientes, menos un margen para el costo de la
+      // transferencia. El servidor hace la misma cuenta y es el que manda.
+      const margenCosto = (n: number) => Math.ceil(n * 0.002) + 2000;
+      const paraEnviar = (prov: string): number | null => {
+          const c = cajaP.find(x => x.proveedor === prov); const v = vivo[prov];
+          if (!c || c.lincoinEsperado == null || v?.pool == null) return null;
+          const disp = Math.max(0, Math.min(Number(c.lincoinEsperado), Math.floor((v.pool as number) - v.clientes)));
+          return Math.max(0, disp - margenCosto(disp));
+      };
+      const mesLargo = new Date(`${linMes}-15T12:00:00`).toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
+      const enviarDesde = (prov: 'Mouv' | 'Finity') => setLinForm({ tipo: 'enviar', proveedor: prov, monto: '', fecha: hoyBog(), descripcion: `Utilidad de ${mesLargo}`, soporte: null, soporteNombre: null, llaveId: (linLlaves ?? [])[0]?.id ?? '', otp: '', opId: crypto.randomUUID() });
+      const ESTADO_ENVIO: Record<string, { l: string; c: string }> = {
+          enviando: { l: 'Enviando', c: '#FBBF24' }, en_proceso: { l: 'En proceso', c: '#FBBF24' }, por_confirmar: { l: 'Por confirmar', c: '#FBBF24' },
+          enviado: { l: 'Llegó', c: '#4ADE80' }, no_salio: { l: 'No salió', c: '#878E88' }, devuelto: { l: 'Devuelto', c: '#F87171' },
+      };
+      const revisarEnvio = async (id: string) => {
+          setLinRevisando(id);
+          const r = await pedirAdmin({ action: 'caja_envio_estado', id }).catch(() => null);
+          setLinRevisando(null);
+          if (!r?.ok) { showToast(r?.error ?? 'No se pudo revisar el envío.'); return; }
+          const txt: Record<string, string> = { enviado: 'El envío llegó.', devuelto: 'El proveedor devolvió el envío: el retiro se anuló y la plata volvió a la bolsa.', en_proceso: 'Sigue en proceso en el proveedor.', por_confirmar: 'Todavía sin confirmar.' };
+          showToast(r.mensaje ?? txt[r.estado] ?? 'Revisado.', 4500);
+          setLinVer(v => v + 1);
+      };
+      const enviarAhora = async () => {
+          if (!linForm) return;
+          setCajaOcupada(true);
+          const r = await pedirAdmin({ action: 'caja_enviar_empresa', proveedor: linForm.proveedor, llaveId: linForm.llaveId, monto: Number(linForm.monto), descripcion: linForm.descripcion, otp: linForm.otp, opId: linForm.opId }).catch(() => null);
+          setCajaOcupada(false);
+          if (r?.ok) {
+              showToast(`Enviado: ${fmt(Number(linForm.monto))} desde ${linForm.proveedor}. Queda «en proceso» hasta que el proveedor confirme.`, 5000);
+              setLinForm(null); setLinVer(v => v + 1); setCajaVer(v => v + 1); return;
+          }
+          if (r?.porConfirmar || r?.duplicado) { showToast(r.error, 7000); setLinForm(null); setLinVer(v => v + 1); return; }
+          showToast(r?.error ?? 'No se pudo enviar.', 5000);
+          setLinForm(f => f && ({ ...f, otp: '' }));
+      };
       const kpi = (l: string, v: string, sub: string, color = '#F4F4F2') => (
           <div style={{ ...CARD, padding: 16 }}>
               <p style={{ margin: 0, fontSize: 12, color: '#878E88' }}>{l}</p>
@@ -3942,6 +4007,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               {!c.apertura ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja abre hoy a las 23:59 (o desde Tesorería › Cierre de caja).</p> : <>
                                   {fila(`Saldo de apertura · ${new Date(c.apertura.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}`, c.apertura.lincoin)}
                                   {fila('+ Utilidad de los cargues', c.utilidadDesdeApertura, { signo: c.utilidadDesdeApertura < 0 ? '−' : '+', color: '#4ADE80' })}
+                                  {/* La caja suma desde que se abrió; lo de antes ya quedó dentro del
+                                      saldo de apertura (era lo que había en la bolsa ese día). Sin esta
+                                      línea parecía que faltaba utilidad del mes. */}
+                                  {(() => { const delMes = Number(fuentes.find(f => f.n === c.proveedor)?.total ?? 0); return delMes !== c.utilidadDesdeApertura ? (
+                                      <p style={{ margin: '0 0 4px', fontSize: 11, color: 'rgba(244,244,242,0.45)', lineHeight: 1.45 }}>
+                                          Utilidad de {mesLargo} en {c.proveedor} (todo el mes): {fmt(delMes)}. Aquí solo suma la de después de la apertura del {new Date(c.apertura.at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}: la de antes ya estaba en la bolsa ese día y entró en el saldo de apertura.
+                                      </p>
+                                  ) : null; })()}
                                   {fila('− Retiros de utilidad', c.retirosDesdeApertura, { signo: '−' })}
                                   {fila('± Movimientos externos y aportes', c.externosDesdeApertura, { signo: c.externosDesdeApertura < 0 ? '−' : '+' })}
                                   <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)', marginTop: 4, paddingTop: 4 }}>
@@ -3953,11 +4026,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                       <span>Diferencia sin explicar</span><span style={{ whiteSpace: 'nowrap' }}>{c.dif == null ? '—' : signo(c.dif)}</span>
                                   </div>
                                   {c.dif != null && c.dif !== 0 && <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>}
+                                  {(() => { const mx = paraEnviar(c.proveedor); return (
+                                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                                          <span style={{ fontSize: 12, color: '#878E88' }}>Para enviar a la empresa: <b style={{ color: '#F4F4F2' }}>{mx == null ? '—' : fmt(mx)}</b></span>
+                                          <button onClick={() => enviarDesde(c.proveedor)} disabled={!mx} className="inline-flex items-center"
+                                              style={{ gap: 6, background: mx ? '#4ADE80' : 'rgba(255,255,255,0.08)', color: mx ? '#0C0E0D' : 'rgba(244,244,242,0.45)', border: 'none', borderRadius: 9, padding: '7px 12px', fontWeight: 800, fontSize: 12, cursor: mx ? 'pointer' : 'not-allowed' }}>
+                                              <ArrowUpCircle size={13} /> Enviar a la empresa
+                                          </button>
+                                      </div>
+                                  ); })()}
                               </>}
                           </div>
                       );
                   })}
               </div>
+          </div>
+
+          {/* Las llaves a las que puede salir la utilidad. */}
+          <div style={CARD}>
+              <div className="flex items-start justify-between flex-wrap" style={{ gap: 10, marginBottom: 10 }}>
+                  <div style={{ minWidth: 0, flex: '1 1 320px' }}>
+                      <p style={ROT}>Llaves Bre-B de Lincoin</p>
+                      <p style={{ margin: '4px 0 0', fontSize: 11.5, color: 'rgba(244,244,242,0.45)', lineHeight: 1.5 }}>La utilidad solo puede salir de las bolsas a estas llaves. Las inscribe el dueño con su código 2FA y el titular sale del directorio Bre-B.</p>
+                  </div>
+                  {esDueno && (
+                      <button onClick={() => setLinLlaveForm({ llave: '', consulta: null, alias: '', otp: '', ocupado: false, error: null })} className="inline-flex items-center"
+                          style={{ gap: 6, background: 'transparent', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, padding: '7px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                          <Plus size={13} /> Inscribir llave
+                      </button>
+                  )}
+              </div>
+              {linLlaves == null ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Cargando…</p>
+                : linLlaves.length === 0 ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Todavía no hay llaves inscritas.{esDueno ? ' Inscribe la de la cuenta bancaria de la empresa.' : ' Pídele al dueño que inscriba la de la empresa.'}</p>
+                : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {linLlaves.map(l => (
+                          <div key={l.id} className="flex items-center justify-between" style={{ gap: 10, background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '9px 12px' }}>
+                              <span style={{ minWidth: 0 }}>
+                                  <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{l.alias ? `${l.alias} · ` : ''}{l.titular}</span>
+                                  <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflowWrap: 'anywhere' }}>{[l.llave, l.banco, l.documento ? `Doc. ${l.documento}` : ''].filter(Boolean).join(' · ')}</span>
+                              </span>
+                              {esDueno && <button disabled={cajaOcupada} onClick={() => cajaAccion({ action: 'caja_llave_quitar', id: l.id }, 'Llave quitada.')}
+                                  style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer', flexShrink: 0 }}>Quitar</button>}
+                          </div>
+                      ))}
+                  </div>
+                )}
           </div>
 
           <div style={{ ...CARD, padding: 0 }}>
@@ -3975,7 +4089,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                   <tr key={m.id} style={{ opacity: m.anulado ? 0.5 : 1 }}>
                                       <td style={{ padding: '10px 18px', fontSize: 12, color: '#b9beba', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{new Date(`${m.fecha}T12:00:00`).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}</td>
                                       <td style={{ padding: '10px 18px', fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>
-                                          <span className="inline-flex items-center" style={{ gap: 6 }}>{t.signo > 0 ? <ArrowDownCircle size={13} style={{ color: '#4ADE80' }} /> : <ArrowUpCircle size={13} style={{ color: '#F87171' }} />}{t.l}</span>
+                                          <span className="inline-flex items-center" style={{ gap: 6 }}>{t.signo > 0 ? <ArrowDownCircle size={13} style={{ color: '#4ADE80' }} /> : <ArrowUpCircle size={13} style={{ color: '#F87171' }} />}{m.envio && m.envio.estado !== 'costo' ? 'Enviado a la empresa' : t.l}</span>
+                                          {m.envio && m.envio.estado !== 'costo' && (() => { const e = ESTADO_ENVIO[m.envio.estado] ?? { l: m.envio.estado, c: '#878E88' }; const pendiente = !m.anulado && ['enviando', 'en_proceso', 'por_confirmar'].includes(m.envio.estado); return (
+                                              <span className="flex items-center flex-wrap" style={{ gap: 6, marginTop: 3, fontSize: 10.5, fontWeight: 500, color: '#878E88' }}>
+                                                  <span>Bre-B · {m.envio.titular}{m.envio.llave ? ` · ${m.envio.llave}` : ''}</span>
+                                                  <span style={{ fontWeight: 800, color: e.c }}>{e.l}</span>
+                                                  {pendiente && <button disabled={linRevisando === m.id} onClick={() => revisarEnvio(m.id)} style={{ fontSize: 10.5, fontWeight: 700, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{linRevisando === m.id ? 'Revisando…' : 'Revisar'}</button>}
+                                              </span>
+                                          ); })()}
                                           {m.anulado && <><br /><span style={{ fontSize: 10.5, color: '#878E88', fontWeight: 500 }}>Anulado por {m.anulado.por} · {m.anulado.motivo}</span></>}
                                       </td>
                                       <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.proveedor}</td>
@@ -4013,7 +4134,52 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                   <span style={{ display: 'block', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{TIPOS[k].desc}</span>
                               </button>
                           ))}
+                          {/* Este sí mueve plata: sale de la bolsa por Bre-B. */}
+                          <button onClick={() => setLinForm(f => f && ({ ...f, tipo: 'enviar', descripcion: f.descripcion || `Utilidad de ${mesLargo}`, llaveId: f.llaveId || (linLlaves ?? [])[0]?.id || '' }))} className="col-span-2"
+                              style={{ textAlign: 'left', padding: '8px 10px', borderRadius: 10, cursor: 'pointer', color: '#F4F4F2', background: linForm.tipo === 'enviar' ? 'rgba(74,222,128,0.10)' : 'transparent', border: linForm.tipo === 'enviar' ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
+                              <span className="inline-flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 700 }}><ArrowUpCircle size={13} style={{ color: '#4ADE80' }} /> Enviar a la empresa · Bre-B</span>
+                              <span style={{ display: 'block', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>Sale de verdad de la bolsa por Bre-B a una llave de Lincoin y queda como retiro de utilidad</span>
+                          </button>
                       </div>
+                      {linForm.tipo === 'enviar' ? (() => {
+                          const mx = paraEnviar(linForm.proveedor);
+                          const monto = Number(linForm.monto || 0);
+                          const pasa = mx != null && monto > mx;
+                          const listo = !!linForm.llaveId && monto >= 5000 && !pasa && String(linForm.otp ?? '').length === 6 && linForm.descripcion.trim().length >= 3;
+                          return (<>
+                              <div className="grid grid-cols-2" style={{ gap: 8 }}>
+                                  <div><label style={RF}>Bolsa</label>
+                                      <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Mouv</option><option>Finity</option></select></div>
+                                  <div><label style={RF}>Para enviar</label>
+                                      <p style={{ margin: 0, padding: '9px 0', fontSize: 16, fontWeight: 800, color: '#4ADE80' }}>{mx == null ? '—' : fmt(mx)}</p></div>
+                              </div>
+                              <label style={RF}>Llave de Lincoin</label>
+                              {(linLlaves ?? []).length === 0
+                                  ? <p style={{ margin: 0, fontSize: 12.5, color: '#FBBF24', lineHeight: 1.5 }}>No hay llaves de Lincoin inscritas. {esDueno ? 'Inscríbela en «Llaves Bre-B de Lincoin», debajo del saldo por bolsa.' : 'Pídele al dueño que la inscriba.'}</p>
+                                  : <select value={linForm.llaveId} onChange={e => setLinForm(f => f && ({ ...f, llaveId: e.target.value }))} style={CAMPO}>
+                                      {(linLlaves ?? []).map(l => <option key={l.id} value={l.id}>{l.alias ? `${l.alias} · ` : ''}{l.titular} · {l.llave}</option>)}
+                                  </select>}
+                              <label style={RF}>Monto (COP)</label>
+                              <div className="flex" style={{ gap: 6 }}>
+                                  <input inputMode="numeric" value={linForm.monto ? Number(linForm.monto).toLocaleString('es-CO') : ''} placeholder="0" onChange={e => setLinForm(f => f && ({ ...f, monto: e.target.value.replace(/\D/g, '') }))} style={{ ...CAMPO, fontSize: 18, fontWeight: 800, flex: 1 }} />
+                                  <button disabled={!mx} onClick={() => mx && setLinForm(f => f && ({ ...f, monto: String(mx) }))} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '0 12px', fontWeight: 700, fontSize: 12, cursor: mx ? 'pointer' : 'not-allowed', opacity: mx ? 1 : 0.5 }}>Todo</button>
+                              </div>
+                              {pasa && <p style={{ margin: '5px 0 0', fontSize: 11.5, color: '#F87171' }}>Supera lo que hay de Lincoin en {linForm.proveedor} ({fmt(mx ?? 0)}).</p>}
+                              {monto > 0 && monto < 5000 && <p style={{ margin: '5px 0 0', fontSize: 11.5, color: '#878E88' }}>El mínimo es 5.000.</p>}
+                              <label style={RF}>Descripción</label>
+                              <input value={linForm.descripcion} onChange={e => setLinForm(f => f && ({ ...f, descripcion: e.target.value }))} style={CAMPO} />
+                              <label style={RF}>Tu código 2FA</label>
+                              <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={linForm.otp ?? ''} placeholder="000000" onChange={e => setLinForm(f => f && ({ ...f, otp: e.target.value.replace(/\D/g, '').slice(0, 6) }))} style={{ ...CAMPO, letterSpacing: 6, fontWeight: 800, fontSize: 16 }} />
+                              <p style={{ margin: '10px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>La plata sale ahora mismo de la bolsa de {linForm.proveedor} por Bre-B y no se puede deshacer. Queda como retiro de utilidad, y el costo de la transferencia se anota aparte.</p>
+                              <div className="flex" style={{ gap: 8, marginTop: 14 }}>
+                                  <button onClick={() => setLinForm(null)} disabled={cajaOcupada} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+                                  <button disabled={cajaOcupada || !listo} onClick={enviarAhora}
+                                      style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: listo ? 'pointer' : 'not-allowed', background: listo ? '#4ADE80' : 'rgba(255,255,255,0.08)', color: listo ? '#0C0E0D' : 'rgba(244,244,242,0.45)' }}>
+                                      {cajaOcupada ? 'Enviando…' : monto ? `Enviar ${fmt(monto)}` : 'Enviar'}
+                                  </button>
+                              </div>
+                          </>);
+                      })() : (<>
                       <div className="grid grid-cols-2" style={{ gap: 8 }}>
                           <div><label style={RF}>Bolsa</label>
                               <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Finity</option><option>Mouv</option></select></div>
@@ -4036,9 +4202,58 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       <div className="flex" style={{ gap: 8, marginTop: 14 }}>
                           <button onClick={() => setLinForm(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
                           <button disabled={cajaOcupada || !linForm.monto || linForm.descripcion.trim().length < 3}
-                              onClick={async () => { if (await cajaAccion({ action: 'caja_movimiento_crear', ...linForm, monto: Number(linForm.monto) }, 'Movimiento registrado.')) setLinForm(null); }}
+                              onClick={async () => { const { llaveId: _l, otp: _o, opId: _p, ...mov } = linForm; if (await cajaAccion({ action: 'caja_movimiento_crear', ...mov, monto: Number(linForm.monto) }, 'Movimiento registrado.')) setLinForm(null); }}
                               style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer', background: !linForm.monto || linForm.descripcion.trim().length < 3 ? 'rgba(255,255,255,0.08)' : '#4ADE80', color: !linForm.monto || linForm.descripcion.trim().length < 3 ? 'rgba(244,244,242,0.45)' : '#0C0E0D' }}>{cajaOcupada ? 'Registrando…' : 'Registrar'}</button>
                       </div>
+                      </>)}
+                  </div>
+              </div>
+          )}
+
+          {/* Inscribir una llave de Lincoin (solo el dueño) */}
+          {linLlaveForm && (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !linLlaveForm.ocupado && setLinLlaveForm(null)}>
+                  <div onClick={e => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', maxHeight: 'calc(100dvh - 24px)', overflowY: 'auto', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
+                      <div className="flex items-center justify-between">
+                          <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Inscribir llave de Lincoin</p>
+                          <button onClick={() => setLinLlaveForm(null)} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
+                      </div>
+                      <p style={{ margin: '6px 0 0', fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>La llave Bre-B de la cuenta bancaria de la empresa. Se consulta en el directorio para ver a nombre de quién está antes de inscribirla.</p>
+                      <label style={RF}>Llave</label>
+                      <div className="flex" style={{ gap: 6 }}>
+                          <input value={linLlaveForm.llave} onChange={e => setLinLlaveForm(f => f && ({ ...f, llave: e.target.value, consulta: null, error: null }))} placeholder="Celular, correo, documento o @llave" style={{ ...CAMPO, flex: 1 }} />
+                          <button disabled={linLlaveForm.ocupado || linLlaveForm.llave.trim().length < 3}
+                              onClick={async () => {
+                                  setLinLlaveForm(f => f && ({ ...f, ocupado: true, error: null }));
+                                  const r = await pedirAdmin({ action: 'caja_llave_consultar', llave: linLlaveForm.llave.trim() }).catch(() => null);
+                                  setLinLlaveForm(f => f && ({ ...f, ocupado: false, consulta: r?.ok ? r : null, error: r?.ok ? null : (r?.error ?? 'No se pudo consultar.') }));
+                              }}
+                              style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '0 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{linLlaveForm.ocupado && !linLlaveForm.consulta ? '…' : 'Consultar'}</button>
+                      </div>
+                      {linLlaveForm.error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#F87171' }}>{linLlaveForm.error}</p>}
+                      {linLlaveForm.consulta && (<>
+                          <div style={{ marginTop: 10, background: 'rgba(74,222,128,0.07)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 10, padding: '10px 12px' }}>
+                              <p style={{ margin: 0, fontSize: 11, color: '#878E88' }}>A nombre de</p>
+                              <p style={{ margin: '2px 0 0', fontSize: 14, fontWeight: 800, color: '#F4F4F2' }}>{linLlaveForm.consulta.titular}</p>
+                              <p style={{ margin: '2px 0 0', fontSize: 12, color: '#878E88' }}>{[linLlaveForm.consulta.documento ? `Doc. ${linLlaveForm.consulta.documento}` : '', linLlaveForm.consulta.banco].filter(Boolean).join(' · ')}</p>
+                          </div>
+                          <label style={RF}>Nombre corto (opcional)</label>
+                          <input value={linLlaveForm.alias} onChange={e => setLinLlaveForm(f => f && ({ ...f, alias: e.target.value.slice(0, 60) }))} placeholder="Ej.: Bancolombia empresa" style={CAMPO} />
+                          <label style={RF}>Tu código 2FA</label>
+                          <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={linLlaveForm.otp} placeholder="000000" onChange={e => setLinLlaveForm(f => f && ({ ...f, otp: e.target.value.replace(/\D/g, '').slice(0, 6) }))} style={{ ...CAMPO, letterSpacing: 6, fontWeight: 800, fontSize: 16 }} />
+                          <p style={{ margin: '8px 0 0', fontSize: 11.5, color: '#FBBF24', lineHeight: 1.5 }}>Revisa que el titular sea la empresa: a esta llave podrá salir la utilidad de Lincoin.</p>
+                          <div className="flex" style={{ gap: 8, marginTop: 12 }}>
+                              <button onClick={() => setLinLlaveForm(null)} style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+                              <button disabled={linLlaveForm.ocupado || linLlaveForm.otp.length !== 6}
+                                  onClick={async () => {
+                                      setLinLlaveForm(f => f && ({ ...f, ocupado: true, error: null }));
+                                      const r = await pedirAdmin({ action: 'caja_llave_inscribir', llave: linLlaveForm.consulta.llave || linLlaveForm.llave.trim(), alias: linLlaveForm.alias, otp: linLlaveForm.otp }).catch(() => null);
+                                      if (r?.ok) { showToast('Llave inscrita.'); setLinLlaveForm(null); setLinVer(v => v + 1); return; }
+                                      setLinLlaveForm(f => f && ({ ...f, ocupado: false, otp: '', error: r?.error ?? 'No se pudo inscribir.' }));
+                                  }}
+                                  style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: 'pointer', background: linLlaveForm.otp.length === 6 ? '#4ADE80' : 'rgba(255,255,255,0.08)', color: linLlaveForm.otp.length === 6 ? '#0C0E0D' : 'rgba(244,244,242,0.45)' }}>{linLlaveForm.ocupado ? 'Inscribiendo…' : 'Inscribir'}</button>
+                          </div>
+                      </>)}
                   </div>
               </div>
           )}

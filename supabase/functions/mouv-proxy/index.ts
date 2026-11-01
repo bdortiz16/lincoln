@@ -2102,6 +2102,109 @@ serve(async (req: Request) => {
     if (!g.ok) caller.admin = false
   }
 
+  // ── Caja de Lincoin: la utilidad sale de las bolsas por Bre-B ─────────
+  // Solo las llama admin-data con la llave de servicio, DESPUÉS de revisar el
+  // rol, el código 2FA de la operación, que la llave sea una de las de
+  // Lincoin y que el monto quepa en lo que es de Lincoin en esa bolsa. Acá no
+  // hay saldo de cliente que debitar: la plata es de Lincoin y sale directo
+  // de la bolsa (Mouv con su envío; Finity con la Cuenta 2 de Bre-B).
+  if (action === 'lincoin_llave' || action === 'lincoin_breb_enviar' || action === 'lincoin_envio_estado') {
+    if (!caller.servicio) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+    const quien = String(payload.por ?? '') || null
+    const soloDig = (v: unknown) => String(v ?? '').replace(/\D/g, '')
+    // El mismo documento con o sin dígito de verificación (901234567 /
+    // 9012345678): el directorio lo devuelve de una forma y se inscribe de otra.
+    const mismoDocumento = (x: unknown, y: unknown) => {
+      const a = soloDig(x).replace(/^0+/, ''), b = soloDig(y).replace(/^0+/, '')
+      if (!a || !b) return false
+      if (a === b) return true
+      const [largo, corto] = a.length > b.length ? [a, b] : [b, a]
+      return largo.length === corto.length + 1 && corto.length >= 8 && largo.startsWith(corto)
+    }
+
+    // A nombre de quién está una llave (para inscribirla).
+    if (action === 'lincoin_llave') {
+      const llave = String(payload.llave ?? '').trim()
+      if (!llave) return json(400, { ok: false, error: 'missing_key', message: 'Escribe la llave.' })
+      const rr = await mouvResolveBrebKey(llave, String(payload.tipo ?? ''))
+      if (rr.found) return json(200, { ok: true, encontrada: true, llave: rr.matchedKey, tipo: rr.keyType ?? null, titular: rr.fullName ?? null, documento: soloDig(rr.idValue) || null, banco: rr.bank ?? null })
+      if (rr.caido) return json(200, { ok: false, error: 'directorio_caido', message: 'El directorio Bre-B no responde en este momento. Intenta de nuevo en unos minutos.' })
+      return json(200, { ok: true, encontrada: false })
+    }
+
+    if (action === 'lincoin_breb_enviar') {
+      const proveedor = String(payload.proveedor ?? '')
+      const monto = Math.round(Number(payload.monto))
+      const llave = String(payload.llave ?? '').trim()
+      const tipo = String(payload.tipo ?? '')
+      const titular = String(payload.titular ?? '').trim()
+      const documento = soloDig(payload.documento)
+      if (!['Mouv', 'Finity'].includes(proveedor) || !(monto >= 1000) || !llave || !documento) {
+        return json(400, { ok: false, noSalio: true, message: 'Faltan datos del envío. No salió nada.' })
+      }
+      // La llave tiene que seguir a nombre de quien se inscribió: se le
+      // pregunta al directorio justo antes de mandar. Una llave que cambió de
+      // dueño después de inscrita no se paga.
+      const rr = await mouvResolveBrebKey(llave, tipo)
+      if (rr.found && soloDig(rr.idValue) && !mismoDocumento(rr.idValue, documento)) {
+        await logAudit(quien, 'lincoin.breb_titular_cambio', { proveedor, monto, inscrito: documento, ahora: soloDig(rr.idValue), titular: rr.fullName ?? null })
+        return json(200, { ok: false, noSalio: true, message: `Esa llave ya no está a nombre de ${titular || 'Lincoin'}${rr.fullName ? `: ahora es de ${rr.fullName}` : ''}. No se envió nada. Quítala de las llaves de Lincoin.` })
+      }
+      if (!rr.found && rr.caido) return json(200, { ok: false, noSalio: true, message: 'El directorio Bre-B no responde en este momento, así que no se envió nada. Intenta de nuevo en unos minutos.' })
+      if (!rr.found && proveedor === 'Mouv') return json(200, { ok: false, noSalio: true, message: 'Esa llave ya no aparece en Bre-B. No se envió nada.' })
+
+      if (proveedor === 'Mouv') {
+        // El costo que Mouv le cobra a la bolsa por la transferencia (se
+        // registra aparte para que la caja cuadre).
+        const q = await mouvQuoteBreb(monto, llave, tipo).catch(() => null)
+        const r = await mouvPayout('BREB', { key: llave, keyType: tipo, holderName: titular, documentNumber: documento, reference: 'Utilidad Lincoin' }, monto)
+        const desconocido = !r.ok && (r.status === 0 || r.status >= 500)
+        await logAudit(quien, 'lincoin.breb_enviar', { proveedor, monto, llave: enmascarar(llave), ok: r.ok, status: r.status, ref: r.providerRef ?? null, referencia: r.referencia ?? null })
+        if (r.ok) return json(200, { ok: true, ref: r.providerRef ?? null, referencia: r.referencia ?? null, titular: r.targetName ?? titular, costo: q?.ok ? Math.round(q.feeCop) : null })
+        const motivo = String(r.data?.message ?? r.data?.error?.message ?? r.data?.error ?? '').slice(0, 200)
+        return json(200, {
+          ok: false, desconocido, noSalio: !desconocido, ref: r.providerRef ?? null, referencia: r.referencia ?? null,
+          message: desconocido
+            ? 'Mouv no contestó a tiempo: no sabemos si el envío salió. No lo repitas; revisa su estado en unos minutos.'
+            : `Mouv no aceptó el envío${motivo && !JERGA_TECNICA.test(motivo) ? ` (${motivo})` : ''}. No salió nada.`,
+        })
+      }
+
+      // Finity (Bre-B Cuenta 2): crear muestra el titular y el costo sin mover
+      // plata; si el titular no es el inscrito, no se confirma.
+      const prep = await finityPrepararBreb(quien ?? '', { key: llave, keyType: tipo }, monto, [titular])
+      if (!prep.ok) {
+        await logAudit(quien, 'lincoin.breb_enviar', { proveedor, monto, llave: enmascarar(llave), ok: false, paso: prep.paso ?? null })
+        return json(200, { ok: false, noSalio: true, message: prep.mensaje ? prep.mensaje.replace(/ Tu saldo fue devuelto\.?/, '') : 'Finity no aceptó el envío. No salió nada.' })
+      }
+      const conf = await finityConfirmarBreb(quien ?? '', prep)
+      await logAudit(quien, 'lincoin.breb_enviar', { proveedor, monto, llave: enmascarar(llave), ok: conf.ok, ref: conf.providerRef ?? null, desconocido: !!conf.desenlaceDesconocido })
+      if (conf.ok) return json(200, { ok: true, ref: conf.providerRef ?? null, titular: conf.titular ?? titular, costo: conf.costoProveedor ?? null })
+      return json(200, {
+        ok: false, desconocido: !!conf.desenlaceDesconocido, noSalio: !conf.desenlaceDesconocido, ref: conf.providerRef ?? null,
+        message: conf.desenlaceDesconocido
+          ? 'Finity no contestó a tiempo: no sabemos si el envío salió. No lo repitas; revisa su estado en unos minutos.'
+          : 'Finity no confirmó el envío. No salió nada.',
+      })
+    }
+
+    // Estado de un envío ya hecho: enviado, devuelto o en proceso.
+    const proveedor = String(payload.proveedor ?? '')
+    const ref = String(payload.ref ?? '').trim()
+    if (!ref || !['Mouv', 'Finity'].includes(proveedor)) return json(400, { ok: false, message: 'Ese envío no tiene referencia del proveedor.' })
+    if (proveedor === 'Mouv') {
+      const st = await mouvTransferStatus(ref, payload.creadaAt ? String(payload.creadaAt) : null)
+      const estado = st.verdict === 'completed' ? 'enviado' : st.verdict === 'returned' ? 'devuelto' : 'en_proceso'
+      return json(200, { ok: true, estado, detalle: st.state || null })
+    }
+    const st = await finityCall('withdrawal_status', quien ?? '', { id: ref })
+    if (!st || st.ok !== true) return json(200, { ok: true, estado: 'en_proceso', detalle: 'sin respuesta de Finity' })
+    const d = (st.data ?? {}) as any
+    const s = String(d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ?? d?.order?.status ?? d?.attributes?.status ?? '').toUpperCase()
+    const estado = RE_FINITY_FALLO.test(s) ? 'devuelto' : RE_FINITY_OK.test(s) ? 'enviado' : 'en_proceso'
+    return json(200, { ok: true, estado, detalle: s || null })
+  }
+
   // ── Consultar una llave Bre-B (directorio Mouv): devuelve el TITULAR
   //    (nombre, documento) y su BANCO para autollenar la inscripción de
   //    beneficiario. Cualquier usuario autenticado puede consultar (es su

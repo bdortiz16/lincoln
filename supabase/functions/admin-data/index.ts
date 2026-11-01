@@ -214,13 +214,68 @@ async function abrirCaja(por: Record<string, unknown> | null): Promise<string[]>
 // Retiros, externos y aportes registrados (caja_movimientos), sin anulados.
 const SIGNO_MOV: Record<string, 1 | -1> = { retiro: -1, egreso: -1, ingreso: 1, aporte: 1 }
 async function movimientosCaja(desdeFecha: string, hastaFecha?: string): Promise<any[]> {
-  let q = db.from('caja_movimientos').select('id, fecha, tipo, proveedor, monto, descripcion, soporte_nombre, por, creado_at, anulado')
-    .gte('fecha', desdeFecha).order('fecha', { ascending: false }).order('creado_at', { ascending: false }).limit(2000)
-  if (hastaFecha) q = q.lte('fecha', hastaFecha)
-  const { data, error } = await q
+  const leer = (cols: string) => {
+    let q = db.from('caja_movimientos').select(cols)
+      .gte('fecha', desdeFecha).order('fecha', { ascending: false }).order('creado_at', { ascending: false }).limit(2000)
+    if (hastaFecha) q = q.lte('fecha', hastaFecha)
+    return q
+  }
+  const base = 'id, fecha, tipo, proveedor, monto, descripcion, soporte_nombre, por, creado_at, anulado'
+  // `envio` (los envíos Bre-B a la empresa) llega con la migración
+  // 2026_zz22. Sin ella, pedirla rompe la consulta entera y la caja quedaba
+  // sin movimientos: se vuelve a leer sin esa columna.
+  let { data, error } = await leer(`${base}, envio`)
+  if (error) ({ data, error } = await leer(base))
   if (error) return []
   return (data ?? []) as any[]
 }
+
+// ── Enviar la utilidad a la empresa ───────────────────────────────────
+// Las llaves Bre-B de Lincoin las inscribe el dueño (con el titular que da
+// el directorio y su código 2FA) y viven en private_config, que ni el
+// navegador ni una sesión de cliente pueden leer. Solo a esas llaves puede
+// salir la utilidad: con una sesión de admin robada no se manda la plata a
+// un tercero.
+const LLAVES_LINCOIN = 'lincoin_llaves_breb'
+async function llavesLincoin(): Promise<any[]> {
+  const { data } = await db.from('private_config').select('value').eq('key', LLAVES_LINCOIN).maybeSingle()
+  try { const v = JSON.parse(String((data as any)?.value ?? '[]')); return Array.isArray(v) ? v : [] } catch { return [] }
+}
+async function guardarLlavesLincoin(llaves: any[]): Promise<string | null> {
+  const { error } = await db.from('private_config').upsert({ key: LLAVES_LINCOIN, value: JSON.stringify(llaves) })
+  return error ? error.message : null
+}
+// mouv-proxy con la llave de servicio: sus acciones lincoin_* solo atienden
+// esa llave, nunca una sesión del navegador.
+async function mouvInterno(cuerpo: Record<string, unknown>, ms = 100_000): Promise<any> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/mouv-proxy`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(ms),
+    })
+    return await r.json().catch(() => ({ ok: false, sinRespuesta: true }))
+  } catch { return { ok: false, sinRespuesta: true } }
+}
+// Lo que de verdad se puede sacar de una bolsa: lo menor entre lo que le
+// toca a Lincoin según la caja y lo que sobra HOY en la bolsa después de los
+// saldos de los clientes. Si la caja no cuadra (falta plata), manda la bolsa:
+// la utilidad nunca sale con plata de clientes. Sin cifra en vivo, no hay
+// tope confiable y no se envía.
+async function disponibleLincoin(proveedor: string): Promise<{ ok: true; disponible: number; esperado: number; real: number } | { ok: false; error: string }> {
+  const c = CAJA.find(x => x.proveedor === proveedor)
+  if (!c) return { ok: false, error: 'Bolsa inválida.' }
+  const [estado, bolsas, oblig] = await Promise.all([estadoCaja(), bolsasProveedores(), obligacionesTodas()])
+  const e = estado.find(x => x.proveedor === proveedor)
+  if (!e?.apertura || e.lincoinEsperado == null) return { ok: false, error: `La caja de ${proveedor} no está abierta todavía.` }
+  const bolsa = bolsas[proveedor]
+  if (bolsa == null || !oblig || oblig.parcial) return { ok: false, error: `No se pudo leer en vivo la bolsa de ${proveedor} y los saldos de los clientes, así que no se envía nada. Intenta de nuevo en un momento.` }
+  const real = Math.floor(bolsa - Number(oblig.valor[c.rail] ?? 0))
+  return { ok: true, disponible: Math.max(0, Math.min(Number(e.lincoinEsperado), real)), esperado: Number(e.lincoinEsperado), real }
+}
+// Margen para el costo de la transferencia, que el proveedor le cobra a la
+// misma bolsa: se deja libre para que no salga de la plata de los clientes.
+const margenCostoEnvio = (monto: number) => Math.ceil(monto * 0.002) + 2000
+const enmascararLlave = (v: string) => { const t = String(v ?? ''); return t.length > 4 ? `${'•'.repeat(Math.min(6, t.length - 4))}${t.slice(-4)}` : t }
 const fechaBogota = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 10)
 
 async function estadoCaja() {
@@ -1467,6 +1522,12 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
   lincoin_resumen: ['plata.ver', 'tesoreria'],
+  // Enviar la utilidad a la empresa por Bre-B: dueño y Tesorería, con su
+  // código 2FA en cada envío. Inscribir o quitar las llaves de Lincoin es
+  // solo del dueño (no figuran acá).
+  caja_llaves_get: ['plata.ver', 'tesoreria'],
+  caja_enviar_empresa: 'tesoreria',
+  caja_envio_estado: 'tesoreria',
   tesoreria_detalle: ['plata.ver', 'tesoreria'],
   caja_movimiento_soporte: ['plata.ver', 'tesoreria'],
   caja_movimiento_crear: 'tesoreria',
@@ -3148,6 +3209,7 @@ Deno.serve(async (req: Request) => {
         // La caja: abrirla, corregir la apertura, ocultar un movimiento
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar',
         'caja_movimiento_crear', 'caja_movimiento_anular',
+        'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -4758,7 +4820,8 @@ Deno.serve(async (req: Request) => {
             total: Math.round(porCliente[id].total), fuentes: Object.fromEntries(Object.entries(porCliente[id].fuentes).map(([k, v]) => [k, Math.round(v)])) }))
           .sort((a, b) => b.total - a.total)
         const movs = await movimientosCaja(desde, hasta)
-        const quien = (a: any) => !a ? '—' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
+        // Un envío que el proveedor rechazó o devolvió lo anula el sistema solo.
+        const quien = (a: any) => !a ? '—' : a.sistema ? 'Lincoin (automático)' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
         return json({
           ok: true, desde, hasta,
           fuentes: ['Finity', 'Mouv', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
@@ -4766,6 +4829,7 @@ Deno.serve(async (req: Request) => {
           clientes,
           movimientos: movs.map(m => ({ id: m.id, fecha: m.fecha, tipo: m.tipo, proveedor: m.proveedor, monto: Number(m.monto), descripcion: m.descripcion,
             soporte: m.soporte_nombre ?? null, por: quien(m.por), esMio: String(m.por?.id ?? '') === yoIdL,
+            envio: m.envio ? { estado: m.envio.estado ?? null, titular: m.envio.titular ?? null, llave: m.envio.llave ?? null, ref: m.envio.ref ?? null, costoDe: m.envio.costoDe ?? null, detalle: m.envio.detalle ?? null } : null,
             anulado: m.anulado ? { motivo: m.anulado.motivo, por: quien(m.anulado.por), at: m.anulado.at } : null })),
           caja: await estadoCaja(),
         })
@@ -4806,6 +4870,176 @@ Deno.serve(async (req: Request) => {
         if (!upd?.length) return json({ ok: false, error: 'Ese movimiento no existe o ya estaba anulado.' }, 404)
         await auditAdmin(req, 'caja.movimiento_anulado', { id, motivo })
         return json({ ok: true })
+      }
+
+      // ── Llaves Bre-B de Lincoin ────────────────────────────────────────
+      if (body.action === 'caja_llaves_get') {
+        const llaves = await llavesLincoin()
+        return json({ ok: true, llaves: llaves.map(l => ({ id: l.id, alias: l.alias ?? null, llave: l.llave, titular: l.titular, documento: l.documento, banco: l.banco ?? null, at: l.at ?? null })) })
+      }
+      // A nombre de quién está una llave, antes de inscribirla. Solo el dueño.
+      if (body.action === 'caja_llave_consultar') {
+        const llave = String(body.llave ?? '').trim().slice(0, 120)
+        if (llave.length < 3) return json({ ok: false, error: 'Escribe la llave.' }, 400)
+        const r = await mouvInterno({ action: 'lincoin_llave', llave, por: auth.userId ?? null }, 30_000)
+        if (r?.sinRespuesta) return json({ ok: false, error: 'No se pudo consultar el directorio Bre-B. Intenta de nuevo.' }, 502)
+        if (!r?.ok) return json({ ok: false, error: r?.message ?? 'No se pudo consultar la llave.' }, 502)
+        if (!r.encontrada) return json({ ok: false, error: 'Esa llave no aparece en Bre-B. Revísala.' }, 404)
+        return json({ ok: true, llave: r.llave, tipo: r.tipo, titular: r.titular, documento: r.documento, banco: r.banco })
+      }
+      // Inscribir una llave de Lincoin: el servidor vuelve a consultar el
+      // titular (no se confía en lo que mande la pantalla). Solo el dueño,
+      // con su código 2FA.
+      if (body.action === 'caja_llave_inscribir') {
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+        const llave = String(body.llave ?? '').trim().slice(0, 120)
+        const alias = String(body.alias ?? '').trim().slice(0, 60)
+        const r = await mouvInterno({ action: 'lincoin_llave', llave, por: auth.userId ?? null }, 30_000)
+        if (!r?.ok || !r.encontrada) return json({ ok: false, error: r?.message ?? 'Esa llave no aparece en Bre-B. Revísala.' }, 400)
+        if (!r.documento || !r.titular) return json({ ok: false, error: 'El directorio no dio el titular y el documento de esa llave, así que no se puede inscribir.' }, 400)
+        const llaves = await llavesLincoin()
+        if (llaves.some(l => String(l.llave) === String(r.llave))) return json({ ok: false, error: 'Esa llave ya está inscrita.' }, 409)
+        if (llaves.length >= 10) return json({ ok: false, error: 'Ya hay 10 llaves inscritas. Quita una para inscribir otra.' }, 400)
+        const nueva = { id: crypto.randomUUID(), llave: String(r.llave), tipo: r.tipo ?? null, titular: String(r.titular), documento: String(r.documento), banco: r.banco ?? null, alias: alias || null, por: await autorDe(auth), at: new Date().toISOString() }
+        const err = await guardarLlavesLincoin([...llaves, nueva])
+        if (err) return errorGenerico('caja_llave_inscribir', { message: err })
+        await auditAdmin(req, 'caja.llave_inscrita', { id: nueva.id, llave: enmascararLlave(nueva.llave), titular: nueva.titular, documento: nueva.documento })
+        return json({ ok: true })
+      }
+      if (body.action === 'caja_llave_quitar') {
+        const id = String(body.id ?? '')
+        const llaves = await llavesLincoin()
+        const l = llaves.find(x => x.id === id)
+        if (!l) return json({ ok: true })
+        const err = await guardarLlavesLincoin(llaves.filter(x => x.id !== id))
+        if (err) return errorGenerico('caja_llave_quitar', { message: err })
+        await auditAdmin(req, 'caja.llave_quitada', { id, llave: enmascararLlave(l.llave), titular: l.titular })
+        return json({ ok: true })
+      }
+
+      // ── Enviar la utilidad a la empresa (Bre-B desde la bolsa) ────────
+      // Orden a propósito:
+      //   1. 2FA de esta operación, llave de Lincoin y tope real de la bolsa.
+      //   2. El retiro se REGISTRA antes de mandar: así un segundo envío
+      //      simultáneo ya ve el disponible descontado, y si algo se cae a
+      //      mitad de camino queda la constancia.
+      //   3. Se manda. Si el proveedor dice que no, el retiro se anula solo
+      //      (la plata no salió). Si no contesta, queda «por confirmar»: no
+      //      se adivina, se revisa el estado después.
+      if (body.action === 'caja_enviar_empresa') {
+        const proveedor = String(body.proveedor ?? '')
+        const monto = Math.round(Number(body.monto))
+        const descripcion = String(body.descripcion ?? '').trim().slice(0, 300)
+        const opId = String(body.opId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        if (!CAJA.some(c => c.proveedor === proveedor)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
+        if (!isFinite(monto) || monto < 5000) return json({ ok: false, error: 'El monto mínimo es 5.000.' }, 400)
+        if (!opId) return json({ ok: false, error: 'Falta el identificador de la operación. Recarga la página.' }, 400)
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+        const llave = (await llavesLincoin()).find(l => l.id === String(body.llaveId ?? ''))
+        if (!llave) return json({ ok: false, error: 'Elige una de las llaves de Lincoin.' }, 400)
+        // Un doble clic o un reintento con la misma operación no manda dos veces.
+        const clave = `caja_envio:${opId}`
+        const c = await reclamarCandado(db, clave, 86_400, String(auth.userId ?? ''), 'caja_enviar_empresa')
+        if (c === 'ocupado') return json({ ok: false, duplicado: true, error: 'Este envío ya se hizo (o se está haciendo). Revisa la lista de movimientos antes de repetirlo.' }, 409)
+        if (c === 'error') return json({ ok: false, error: 'No se pudo asegurar el envío contra duplicados. No se envió nada; intenta de nuevo.' }, 503)
+        // Un solo envío por bolsa a la vez: el disponible se calcula y se
+        // descuenta sin que otro envío se meta en el medio.
+        const claveBolsa = `caja_envio_bolsa:${proveedor}`
+        if ((await reclamarCandado(db, claveBolsa, 180, String(auth.userId ?? ''), 'caja_enviar_empresa')) !== 'ok') {
+          await soltarCandado(db, clave)
+          return json({ ok: false, error: `Hay otro envío desde ${proveedor} en curso. Espera a que termine.` }, 409)
+        }
+        // Hasta que el retiro quede registrado, nada salió: si algo se cae
+        // antes, el intento se libera para poder repetirlo.
+        let registrado = false
+        try {
+          const disp = await disponibleLincoin(proveedor)
+          if (!disp.ok) { await soltarCandado(db, clave); return json({ ok: false, error: (disp as { error: string }).error }, 409) }
+          const margen = margenCostoEnvio(monto)
+          if (monto + margen > disp.disponible) {
+            await soltarCandado(db, clave)
+            const maximo = Math.max(0, disp.disponible - margenCostoEnvio(disp.disponible))
+            return json({ ok: false, error: `En ${proveedor} hay ${disp.disponible.toLocaleString('es-CO')} de Lincoin para enviar (se deja ${margen.toLocaleString('es-CO')} para el costo de la transferencia). Puedes enviar hasta ${maximo.toLocaleString('es-CO')}.` }, 400)
+          }
+          const por = await autorDe(auth)
+          const hoy = hoyBogota()
+          const envioBase = { estado: 'enviando', llaveId: llave.id, llave: enmascararLlave(llave.llave), titular: llave.titular, documento: llave.documento, opId, at: new Date().toISOString() }
+          const { data: ins, error: insErr } = await db.from('caja_movimientos').insert({
+            fecha: hoy, tipo: 'retiro', proveedor, monto, por,
+            descripcion: descripcion || `Utilidad enviada a ${llave.alias || llave.titular} por Bre-B`,
+            envio: envioBase,
+          }).select('id').single()
+          if (insErr) {
+            await soltarCandado(db, clave)
+            const falta = /envio/.test(String(insErr.message ?? ''))
+            return json({ ok: false, error: falta ? 'Falta correr la migración 2026_zz22_caja_envios.sql en Supabase. No se envió nada.' : 'No se pudo registrar el retiro, así que no se envió nada. Intenta de nuevo.' }, 500)
+          }
+          const movId = String((ins as any).id)
+          registrado = true
+          const r = await mouvInterno({ action: 'lincoin_breb_enviar', proveedor, monto, llave: llave.llave, tipo: llave.tipo ?? '', titular: llave.titular, documento: llave.documento, por: auth.userId ?? null })
+          const ahora = new Date().toISOString()
+          if (r?.ok) {
+            await db.from('caja_movimientos').update({ envio: { ...envioBase, estado: 'en_proceso', ref: r.ref ?? null, referencia: r.referencia ?? null, titularProveedor: r.titular ?? null, costo: r.costo ?? null, enviadoAt: ahora } }).eq('id', movId)
+            // El costo de la transferencia sale de la misma bolsa: se anota
+            // como egreso para que la caja cuadre.
+            const costo = Math.round(Number(r.costo) || 0)
+            if (costo > 0) {
+              await db.from('caja_movimientos').insert({ fecha: hoy, tipo: 'egreso', proveedor, monto: costo, por, descripcion: `Costo de la transferencia Bre-B de la utilidad (${llave.alias || llave.titular})`, envio: { estado: 'costo', costoDe: movId } })
+            }
+            await auditAdmin(req, 'caja.envio_empresa', { id: movId, proveedor, monto, llave: enmascararLlave(llave.llave), titular: llave.titular, ref: r.ref ?? null, costo: costo || null })
+            return json({ ok: true, id: movId, estado: 'en_proceso', ref: r.ref ?? null, costo: costo || null })
+          }
+          if (r?.noSalio) {
+            await db.from('caja_movimientos').update({
+              envio: { ...envioBase, estado: 'no_salio', detalle: String(r.message ?? '').slice(0, 300) },
+              anulado: { motivo: `El envío no salió: ${String(r.message ?? 'el proveedor no lo aceptó').slice(0, 250)}`, por: { sistema: 'envío Bre-B' }, at: ahora },
+            }).eq('id', movId)
+            await soltarCandado(db, clave)
+            await auditAdmin(req, 'caja.envio_empresa_no_salio', { id: movId, proveedor, monto, motivo: r.message ?? null })
+            return json({ ok: false, error: r.message ?? 'El proveedor no aceptó el envío. No salió nada.' }, 400)
+          }
+          // Sin respuesta clara: puede haber salido. Queda registrado como
+          // retiro y «por confirmar»; NO se libera el candado de la operación.
+          await db.from('caja_movimientos').update({ envio: { ...envioBase, estado: 'por_confirmar', ref: r?.ref ?? null, referencia: r?.referencia ?? null, detalle: String(r?.message ?? 'sin respuesta del proveedor').slice(0, 300) } }).eq('id', movId)
+          await auditAdmin(req, 'caja.envio_empresa_incierto', { id: movId, proveedor, monto, ref: r?.ref ?? null })
+          return json({ ok: false, porConfirmar: true, id: movId, error: r?.message ?? 'El proveedor no contestó a tiempo: no sabemos si el envío salió. NO lo repitas; revisa su estado en unos minutos.' }, 202)
+        } catch (e) {
+          if (!registrado) await soltarCandado(db, clave)
+          throw e
+        } finally {
+          await soltarCandado(db, claveBolsa)
+        }
+      }
+
+      // Estado de un envío a la empresa: el proveedor dice si llegó, si lo
+      // devolvió o si sigue en proceso. Devuelto = la plata volvió a la bolsa:
+      // el retiro se anula solo.
+      if (body.action === 'caja_envio_estado') {
+        const id = String(body.id ?? '')
+        if (!UUID_RE.test(id)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        const { data: m, error } = await db.from('caja_movimientos').select('id, proveedor, monto, envio, anulado, creado_at').eq('id', id).maybeSingle()
+        if (error || !m) return json({ ok: false, error: 'Ese envío no existe.' }, 404)
+        const env = ((m as any).envio ?? {}) as Record<string, any>
+        if (!env.estado || env.estado === 'costo') return json({ ok: false, error: 'Ese movimiento no es un envío por Bre-B.' }, 400)
+        if ((m as any).anulado || ['enviado', 'no_salio', 'devuelto'].includes(String(env.estado))) return json({ ok: true, estado: env.estado })
+        if (!env.ref) return json({ ok: true, estado: env.estado, sinReferencia: true, mensaje: 'El proveedor no devolvió referencia de este envío: revísalo en su portal. Si no salió, el dueño puede anular el retiro.' })
+        const r = await mouvInterno({ action: 'lincoin_envio_estado', proveedor: (m as any).proveedor, ref: env.ref, creadaAt: (m as any).creado_at, por: auth.userId ?? null }, 60_000)
+        if (!r?.ok) return json({ ok: true, estado: env.estado, mensaje: 'El proveedor no contestó. Intenta de nuevo en un momento.' })
+        const ahora = new Date().toISOString()
+        if (r.estado === 'enviado') {
+          await db.from('caja_movimientos').update({ envio: { ...env, estado: 'enviado', detalle: r.detalle ?? null, confirmadoAt: ahora } }).eq('id', id)
+        } else if (r.estado === 'devuelto') {
+          await db.from('caja_movimientos').update({
+            envio: { ...env, estado: 'devuelto', detalle: r.detalle ?? null },
+            anulado: { motivo: 'El proveedor devolvió el envío: la plata volvió a la bolsa.', por: { sistema: 'envío Bre-B' }, at: ahora },
+          }).eq('id', id)
+          await auditAdmin(req, 'caja.envio_empresa_devuelto', { id, proveedor: (m as any).proveedor, monto: Number((m as any).monto) })
+        } else if (env.estado !== 'en_proceso') {
+          await db.from('caja_movimientos').update({ envio: { ...env, estado: 'en_proceso', detalle: r.detalle ?? null } }).eq('id', id)
+        }
+        return json({ ok: true, estado: r.estado })
       }
 
       // El comprobante de un movimiento (se pide aparte: no viaja en la lista).
