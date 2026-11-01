@@ -3,6 +3,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda } from '../_shared/coinsenda-llave.ts'
+import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
@@ -3279,7 +3280,7 @@ Deno.serve(async (req: Request) => {
         'caja_movimiento_crear', 'caja_movimiento_anular',
         'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
         // La llave con la que Lincoin firma ante Coinsenda
-        'coinsenda_llave_generar',
+        'coinsenda_llave_generar', 'coinsenda_config_guardar',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -5011,6 +5012,68 @@ Deno.serve(async (req: Request) => {
         if (err) return errorGenerico('coinsenda_llave_generar', { message: err })
         await auditAdmin(req, previa ? 'coinsenda.llave_reemplazada' : 'coinsenda.llave_generada', { huella: nueva.huella, anterior: previa?.huella ?? null })
         return json({ ok: true, llave: { publica: nueva.publica, huella: nueva.huella, at, por } })
+      }
+      // Con qué cuenta firma Lincoin: el correo con el que se entra a
+      // Coinsenda. Va dentro del token firmado; sin él no hay sesión.
+      if (body.action === 'coinsenda_config_get') {
+        const c = await configCoinsenda(db)
+        return json({ ok: true, email: c.email ?? null, dominio: c.dominio, ultimaPrueba: c.ultimaPrueba ?? null })
+      }
+      if (body.action === 'coinsenda_config_guardar') {
+        const email = String(body.email ?? '').trim().toLowerCase().slice(0, 120)
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'Escribe el correo con el que entras a Coinsenda.' }, 400)
+        const err = await guardarConfigCoinsenda(db, { email, telefono: null })
+        if (err) return errorGenerico('coinsenda_config_guardar', { message: err })
+        await auditAdmin(req, 'coinsenda.cuenta_configurada', { email })
+        return json({ ok: true })
+      }
+      // Probar la conexión SIN mover plata: inicia sesión con la llave, y lee
+      // el perfil, las billeteras y los medios de envío (con sus costos y
+      // topes). Es lo primero que hay que ver funcionar antes de enviar.
+      if (body.action === 'coinsenda_probar') {
+        const cfg = await configCoinsenda(db)
+        if (!cfg.email && !cfg.telefono) return json({ ok: false, error: 'Primero guarda el correo de la cuenta de Coinsenda.' }, 400)
+        const llaveC = await estadoLlaveCoinsenda(db)
+        if (!llaveC && !Deno.env.get('COINSENDA_PRIVATE_KEY')) return json({ ok: false, error: 'Primero genera la llave y regístrala en Coinsenda.' }, 400)
+        const cli = new ClienteCoinsenda(db, cfg, 25_000)
+        const pasos: { paso: string; ok: boolean; detalle?: string }[] = []
+        // Solo campos de primer y segundo nivel, y listas cortas: es para
+        // mirarlo en el panel, no para volcar respuestas enteras.
+        const plano = (v: unknown, prof = 0): unknown => {
+          if (v === null || typeof v !== 'object') return v
+          if (prof >= 2) return Array.isArray(v) ? `[${v.length}]` : '{…}'
+          if (Array.isArray(v)) return v.slice(0, 30).map(x => plano(x, prof + 1))
+          return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 40).map(([k, x]) => [k, plano(x, prof + 1)]))
+        }
+        const lista = (r: RespuestaCoinsenda) => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.data) ? r.data.data : []
+        const terminar = async (ok: boolean, extra: Record<string, unknown> = {}) => {
+          const detalle = pasos.find(p => !p.ok)?.detalle ?? null
+          await guardarConfigCoinsenda(db, { ultimaPrueba: { at: new Date().toISOString(), ok, detalle } })
+          await auditAdmin(req, 'coinsenda.prueba_conexion', { ok, detalle })
+          return json({ ok, pasos, ...extra })
+        }
+        const login = await cli.login()
+        if (!exitoso(login) || !jwtDe(login)) {
+          const pista = login.status === 401 || login.status === 403
+            ? ` Revisa que ${cfg.email ?? 'el correo'} sea el de la cuenta de Coinsenda y que la clave registrada allá tenga la huella ${llaveC?.huella ?? '(la del secreto)'}.`
+            : ''
+          pasos.push({ paso: 'Iniciar sesión', ok: false, detalle: describirFallo(login, 'iniciar sesión') + pista })
+          return terminar(false)
+        }
+        pasos.push({ paso: 'Iniciar sesión', ok: true })
+        const uid = await cli.userId()
+        const perfil = await cli.pedir('transaction', 'GET', '/users/{id}/profile')
+        pasos.push(exitoso(perfil) ? { paso: 'Perfil', ok: true } : { paso: 'Perfil', ok: false, detalle: describirFallo(perfil, 'leer el perfil') })
+        const cuentas = await cli.pedir('account', 'GET', '/users/{id}/accounts', { filter: { id: uid } })
+        pasos.push(exitoso(cuentas) ? { paso: 'Billeteras', ok: true } : { paso: 'Billeteras', ok: false, detalle: describirFallo(cuentas, 'leer las billeteras') })
+        const provs = await cli.pedir('withdraw', 'GET', '/withdrawProviders', { filter: { where: { enabled: true, visible: true }, limit: 200 } })
+        pasos.push(exitoso(provs) ? { paso: 'Medios de envío', ok: true } : { paso: 'Medios de envío', ok: false, detalle: describirFallo(provs, 'leer los medios de envío') })
+        const pd = perfil.data?.data ?? perfil.data ?? {}
+        return terminar(pasos.every(p => p.ok), {
+          perfil: exitoso(perfil) ? plano(Object.fromEntries(Object.entries(pd).filter(([, x]) => x === null || typeof x !== 'object'))) : null,
+          billeteras: exitoso(cuentas) ? plano(lista(cuentas)) : [],
+          proveedores: exitoso(provs) ? plano(lista(provs)) : [],
+        })
       }
 
       // ── Enviar la utilidad a la empresa (Bre-B desde la bolsa) ────────

@@ -2,7 +2,8 @@
 // Admin → Coinsenda: el aliado detrás de la Cuenta 3 de Bre-B y de ACH en los
 // envíos de los clientes. El cliente nunca ve este nombre; solo el admin.
 //
-// Hoy esta pestaña hace una cosa: la llave de la API. Coinsenda autentica a
+// Hoy esta pestaña tiene la llave de la API y la prueba de conexión (el
+// correo de la cuenta + iniciar sesión y leer, sin mover plata). Coinsenda autentica a
 // Lincoin con una pareja RS256: la pública se registra en su panel (Ajustes →
 // Desarrollador) y con la privada firma el servidor. La pareja la crea el
 // servidor con el 2FA del dueño y la privada se queda guardada allá, cifrada:
@@ -149,11 +150,158 @@ export const AdminCoinsenda: React.FC = () => {
         )}
       </div>
 
+      {!error && <Conexion hayLlave={!!llave || desdeSecreto} />}
+
       <div style={{ background: C.card, border: `1px solid ${C.b1}`, borderRadius: 13, padding: '16px 18px' }}>
         <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Envíos por Cuenta 3</p>
         <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
-          Para los clientes siguen en "Próximamente". Se activan cuando la API de Coinsenda quede conectada con esta llave.
+          Para los clientes siguen en "Próximamente". Se activan cuando la prueba de conexión pase y quede conectado el envío.
         </p>
+      </div>
+    </div>
+  );
+};
+
+// ── La cuenta con la que firma Lincoin y la prueba de conexión ─────────
+// La prueba NO mueve plata: inicia sesión con la llave y lee el perfil, las
+// billeteras y los medios de envío, con sus costos y topes.
+type Paso = { paso: string; ok: boolean; detalle?: string };
+type Prueba = { ok: boolean; pasos: Paso[]; perfil?: any; billeteras?: any[]; proveedores?: any[]; error?: string };
+
+const num = (v: unknown) => { const n = Number(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n.toLocaleString('es-CO') : String(v ?? '—'); };
+const costos = (p: any): string => {
+  const c = p?.provider?.costs;
+  if (!c || typeof c !== 'object') return '—';
+  return Object.entries(c).map(([k, v]: [string, any]) => `${k}: ${v && typeof v === 'object' ? [v.fixed != null ? `$${num(v.fixed)}` : '', Number(v.percent) ? `${v.percent} %` : ''].filter(Boolean).join(' + ') || '0' : String(v)}`).join(' · ');
+};
+const VerDetalle: React.FC<{ v: unknown }> = ({ v }) => {
+  const [abierto, setAbierto] = useState(false);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button onClick={() => setAbierto(a => !a)} style={{ ...btnSec, padding: '4px 9px', fontSize: 11, color: C.sub }}>{abierto ? 'Ocultar detalle' : 'Ver detalle'}</button>
+      {abierto && <pre style={{ fontFamily: MONO, fontSize: 11, color: C.sub, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 9, padding: 10, marginTop: 6, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{JSON.stringify(v, null, 2)}</pre>}
+    </div>
+  );
+};
+
+const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
+  const [email, setEmail] = useState<string | null>(null);
+  const [borrador, setBorrador] = useState('');
+  const [editando, setEditando] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+  const [ultima, setUltima] = useState<{ at: string; ok: boolean; detalle?: string | null } | null>(null);
+  const [probando, setProbando] = useState(false);
+  const [prueba, setPrueba] = useState<Prueba | null>(null);
+
+  useEffect(() => {
+    pedirAdmin({ action: 'coinsenda_config_get' }).then(r => {
+      if (r?.ok) { setEmail(r.email ?? null); setBorrador(r.email ?? ''); setEditando(!r.email); setUltima(r.ultimaPrueba ?? null); }
+    }).catch(() => {});
+  }, []);
+
+  const guardar = async () => {
+    setGuardando(true); setMsg(null);
+    const r = await pedirAdmin({ action: 'coinsenda_config_guardar', email: borrador.trim() }).catch(() => null);
+    setGuardando(false);
+    if (r?.ok) { setEmail(borrador.trim().toLowerCase()); setEditando(false); setMsg({ ok: true, texto: 'Guardado.' }); }
+    else setMsg({ ok: false, texto: r?.needs2fa ? 'Tu sesión necesita el 2FA para cambiar esto. Sal y vuelve a entrar con tu código.' : (r?.error ?? 'No se pudo guardar.') });
+  };
+
+  const probar = async () => {
+    setProbando(true); setPrueba(null);
+    const r = await pedirAdmin({ action: 'coinsenda_probar' }).catch(() => null);
+    setProbando(false);
+    if (r && Array.isArray(r.pasos)) { setPrueba(r); setUltima({ at: new Date().toISOString(), ok: !!r.ok, detalle: r.pasos.find((p: Paso) => !p.ok)?.detalle ?? null }); }
+    else setPrueba({ ok: false, pasos: [], error: r?.error ?? 'No se pudo probar la conexión.' });
+  };
+
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.b1}`, borderRadius: 13, padding: '16px 18px' }}>
+      <p style={{ fontSize: 14.5, fontWeight: 700, margin: 0 }}>Conexión</p>
+      <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
+        El correo con el que entras a Coinsenda: va dentro del token que firma la llave.
+      </p>
+
+      <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '14px 0 6px' }}>CORREO DE LA CUENTA</p>
+      {!editando && email ? (
+        <div className="flex items-center" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13.5, fontWeight: 600 }}>{email}</span>
+          <button style={{ ...btnSec, padding: '5px 11px', color: C.sub }} onClick={() => { setEditando(true); setMsg(null); }}>Cambiar</button>
+        </div>
+      ) : (
+        <div className="flex items-center" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <input value={borrador} onChange={e => setBorrador(e.target.value)} placeholder="correo@empresa.com" type="email" autoComplete="off"
+            onKeyDown={e => { if (e.key === 'Enter' && !guardando) guardar(); }}
+            style={{ fontFamily: FONT, flex: '1 1 220px', minWidth: 0, boxSizing: 'border-box', background: 'rgba(255,255,255,0.045)', border: `1px solid ${C.b2}`, borderRadius: 9, padding: '9px 11px', color: C.text, fontSize: 13, outline: 'none' }} />
+          <button style={{ ...btnPri, opacity: guardando ? 0.5 : 1 }} disabled={guardando} onClick={guardar}>{guardando ? 'Guardando…' : 'Guardar'}</button>
+          {email && <button style={btnSec} disabled={guardando} onClick={() => { setEditando(false); setBorrador(email); setMsg(null); }}>Cancelar</button>}
+        </div>
+      )}
+      {msg && <p style={{ fontSize: 12.5, color: msg.ok ? C.green : C.red, margin: '8px 0 0' }}>{msg.texto}</p>}
+
+      <div style={{ borderTop: `1px solid ${C.b1}`, marginTop: 14, paddingTop: 14 }}>
+        <div className="flex items-center justify-between" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>Probar conexión</p>
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '2px 0 0' }}>No mueve plata: inicia sesión y lee billeteras y medios de envío.</p>
+          </div>
+          <button style={{ ...btnPri, opacity: (!hayLlave || !email || probando) ? 0.45 : 1, cursor: (!hayLlave || !email || probando) ? 'not-allowed' : 'pointer' }}
+            disabled={!hayLlave || !email || probando} onClick={probar}>{probando ? 'Probando…' : 'Probar conexión'}</button>
+        </div>
+        {(!hayLlave || !email) && <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0' }}>{!hayLlave ? 'Primero genera la llave y regístrala en Coinsenda.' : 'Primero guarda el correo de la cuenta.'}</p>}
+        {ultima && !prueba && (
+          <p style={{ fontSize: 11.5, color: ultima.ok ? C.green : C.amber, margin: '8px 0 0', lineHeight: 1.45 }}>
+            Última prueba: {fecha(ultima.at)} · {ultima.ok ? 'conectado' : `falló${ultima.detalle ? ` — ${ultima.detalle}` : ''}`}
+          </p>
+        )}
+
+        {prueba && (
+          <div style={{ marginTop: 12 }} className="space-y-3">
+            {prueba.error && <p style={{ fontSize: 12.5, color: C.red, margin: 0 }}>{prueba.error}</p>}
+            {prueba.pasos.map(p => (
+              <div key={p.paso} className="flex items-start" style={{ gap: 8 }}>
+                <span style={{ color: p.ok ? C.green : C.red, fontWeight: 800, fontSize: 13, lineHeight: '18px', width: 14, flexShrink: 0 }}>{p.ok ? '✓' : '✗'}</span>
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>{p.paso}</p>
+                  {p.detalle && <p style={{ fontSize: 12, color: C.red, margin: '2px 0 0', lineHeight: 1.45, wordBreak: 'break-word' }}>{p.detalle}</p>}
+                </div>
+              </div>
+            ))}
+
+            {!!prueba.billeteras?.length && (
+              <div>
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 6px' }}>BILLETERAS</p>
+                <div className="space-y-1.5">
+                  {prueba.billeteras.map((b: any, i: number) => (
+                    <div key={b?.id ?? i} className="flex items-center justify-between" style={{ gap: 10, padding: '8px 11px', borderRadius: 9, background: C.elev, border: `1px solid ${C.b1}` }}>
+                      <span style={{ fontSize: 12.5, minWidth: 0 }}><b>{String(b?.currency ?? '—').toUpperCase()}</b> <span style={{ color: C.sub }}>· {String(b?.type ?? '—')}{b?.name ? ` · ${b.name}` : ''}</span></span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: 'nowrap' }}>{b?.available != null ? `$${num(b.available)} disponible` : '—'}</span>
+                    </div>
+                  ))}
+                </div>
+                <VerDetalle v={prueba.billeteras} />
+              </div>
+            )}
+
+            {!!prueba.proveedores?.length && (
+              <div>
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 6px' }}>MEDIOS DE ENVÍO</p>
+                <div className="space-y-1.5">
+                  {prueba.proveedores.map((p: any, i: number) => (
+                    <div key={p?.id ?? i} style={{ padding: '8px 11px', borderRadius: 9, background: C.elev, border: `1px solid ${C.b1}` }}>
+                      <p style={{ fontSize: 12.5, margin: 0 }}><b>{String(p?.provider_type ?? '—')}</b> <span style={{ color: C.sub }}>· {String(p?.currency ?? '').toUpperCase()}{p?.name ? ` · ${p.name}` : ''}</span></p>
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
+                        Mín. {p?.min_amount != null ? `$${num(p.min_amount)}` : '—'} · Máx. {p?.max_amount != null ? `$${num(p.max_amount)}` : '—'} · Costo {costos(p)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <VerDetalle v={prueba.proveedores} />
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
