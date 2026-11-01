@@ -5039,11 +5039,11 @@ Deno.serve(async (req: Request) => {
         const pasos: { paso: string; ok: boolean; detalle?: string }[] = []
         // Solo campos de primer y segundo nivel, y listas cortas: es para
         // mirarlo en el panel, no para volcar respuestas enteras.
-        const plano = (v: unknown, prof = 0): unknown => {
+        const plano = (v: unknown, prof = 0, max = 2): unknown => {
           if (v === null || typeof v !== 'object') return v
-          if (prof >= 2) return Array.isArray(v) ? `[${v.length}]` : '{…}'
-          if (Array.isArray(v)) return v.slice(0, 30).map(x => plano(x, prof + 1))
-          return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 40).map(([k, x]) => [k, plano(x, prof + 1)]))
+          if (prof >= max) return Array.isArray(v) ? `[${v.length}]` : '{…}'
+          if (Array.isArray(v)) return v.slice(0, 30).map(x => plano(x, prof + 1, max))
+          return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 80).map(([k, x]) => [k, plano(x, prof + 1, max)]))
         }
         const lista = (r: RespuestaCoinsenda) => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.data) ? r.data.data : []
         const terminar = async (ok: boolean, extra: Record<string, unknown> = {}) => {
@@ -5066,20 +5066,33 @@ Deno.serve(async (req: Request) => {
         pasos.push(exitoso(perfil) ? { paso: 'Perfil', ok: true } : { paso: 'Perfil', ok: false, detalle: describirFallo(perfil, 'leer el perfil') })
         const cuentas = await cli.pedir('account', 'GET', '/users/{id}/accounts', { filter: { id: uid } })
         pasos.push(exitoso(cuentas) ? { paso: 'Billeteras', ok: true } : { paso: 'Billeteras', ok: false, detalle: describirFallo(cuentas, 'leer las billeteras') })
-        const provs = await cli.pedir('withdraw', 'GET', '/withdrawProviders', { filter: { where: { enabled: true, visible: true }, limit: 200 } })
+        // Sin filtrar por enabled/visible: con ese filtro la cuenta devolvió 44
+        // medios y ninguno en COP. Se leen todos y la pantalla muestra si cada
+        // uno está habilitado y visible.
+        const provs = await cli.pedir('withdraw', 'GET', '/withdrawProviders', { filter: { limit: 200 } })
         pasos.push(exitoso(provs) ? { paso: 'Medios de envío', ok: true } : { paso: 'Medios de envío', ok: false, detalle: describirFallo(provs, 'leer los medios de envío') })
         const pd = perfil.data?.data ?? perfil.data ?? {}
         // Solo lo de pesos: la cuenta trae también billeteras y medios cripto
         // que Lincoin no usa. Se filtra ANTES de recortar la lista, para que
         // la de COP no quede por fuera del recorte.
-        const esCop = (x: any) => String(x?.currency ?? '').toLowerCase() === 'cop'
+        // La moneda puede venir como texto ('cop') o como objeto ({ currency: 'cop' }).
+        const monedaDe = (x: any): string => String(x?.currency && typeof x.currency === 'object' ? (x.currency.currency ?? x.currency.symbol ?? '') : (x?.currency ?? '')).toLowerCase()
+        const esCop = (x: any) => monedaDe(x) === 'cop'
         const todasB: any[] = exitoso(cuentas) ? lista(cuentas) : []
         const todosP: any[] = exitoso(provs) ? lista(provs) : []
         return terminar(pasos.every(p => p.ok), {
           perfil: exitoso(perfil) ? plano(Object.fromEntries(Object.entries(pd).filter(([, x]) => x === null || typeof x !== 'object'))) : null,
           billeteras: plano(todasB.filter(esCop)),
-          proveedores: plano(todosP.filter(esCop)),
+          // Más profundidad para los de COP: ahí van los costos (provider.costs)
+          // y lo que pide cada alta (info_needed: bancos, tipos de cuenta).
+          proveedores: plano(todosP.filter(esCop), 0, 5),
           otras: { billeteras: todasB.filter(x => !esCop(x)).length, proveedores: todosP.filter(x => !esCop(x)).length },
+          // Resumen de los demás medios (tipo, moneda, nombre, estado), para
+          // ver qué trae la cuenta sin volcar cada uno entero.
+          otrosMedios: todosP.filter(x => !esCop(x)).slice(0, 80).map(x => ({
+            tipo: x?.provider_type ?? null, moneda: monedaDe(x) || null, nombre: x?.name ?? x?.provider?.name ?? null,
+            habilitado: x?.enabled ?? null, visible: x?.visible ?? null,
+          })),
         })
       }
 

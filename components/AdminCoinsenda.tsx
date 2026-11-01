@@ -166,9 +166,9 @@ export const AdminCoinsenda: React.FC = () => {
 // La prueba NO mueve plata: inicia sesión con la llave y lee el perfil, las
 // billeteras y los medios de envío, con sus costos y topes.
 type Paso = { paso: string; ok: boolean; detalle?: string };
-type Prueba = { ok: boolean; pasos: Paso[]; perfil?: any; billeteras?: any[]; proveedores?: any[]; otras?: { billeteras?: number; proveedores?: number }; error?: string };
+type Prueba = { ok: boolean; pasos: Paso[]; perfil?: any; billeteras?: any[]; proveedores?: any[]; otras?: { billeteras?: number; proveedores?: number }; otrosMedios?: any[]; error?: string };
 
-const esCop = (x: any) => String(x?.currency ?? '').toLowerCase() === 'cop';
+const esCop = (x: any) => String(x?.currency && typeof x.currency === 'object' ? (x.currency.currency ?? x.currency.symbol ?? '') : (x?.currency ?? '')).toLowerCase() === 'cop';
 const esOtraMoneda = (x: any) => !esCop(x);
 const copDe = (xs?: any[]) => (xs ?? []).filter(esCop);
 const num = (v: unknown) => { const n = Number(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n.toLocaleString('es-CO') : String(v ?? '—'); };
@@ -301,7 +301,11 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
                 <div className="space-y-1.5">
                   {copDe(prueba.proveedores).map((p: any, i: number) => (
                     <div key={p?.id ?? i} style={{ padding: '8px 11px', borderRadius: 9, background: C.elev, border: `1px solid ${C.b1}` }}>
-                      <p style={{ fontSize: 12.5, margin: 0 }}><b>{String(p?.provider_type ?? '—')}</b> <span style={{ color: C.sub }}>· {String(p?.currency ?? '').toUpperCase()}{p?.name ? ` · ${p.name}` : ''}</span></p>
+                      <p style={{ fontSize: 12.5, margin: 0 }}>
+                        <b>{String(p?.provider_type ?? '—')}</b> <span style={{ color: C.sub }}>· COP{p?.name ? ` · ${p.name}` : ''}</span>
+                        {p?.enabled === false && <span style={{ color: C.amber }}> · deshabilitado</span>}
+                        {p?.visible === false && <span style={{ color: C.amber }}> · no visible</span>}
+                      </p>
                       <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
                         Mín. {p?.min_amount != null ? `$${num(p.min_amount)}` : '—'} · Máx. {p?.max_amount != null ? `$${num(p.max_amount)}` : '—'} · Costo {costos(p)}
                       </p>
@@ -309,6 +313,15 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
                   ))}
                 </div>
                 <VerDetalle v={copDe(prueba.proveedores)} />
+              </div>
+            )}
+            {prueba.ok && !copDe(prueba.proveedores).length && (
+              <p style={{ fontSize: 12, color: C.amber, margin: 0, lineHeight: 1.5 }}>La cuenta no devolvió medios de envío en COP. Sin ellos no se puede enviar: hay que pedirle a Coinsenda que los habilite para esta cuenta.</p>
+            )}
+            {!!prueba.otrosMedios?.length && (
+              <div>
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 0' }}>MEDIOS DE OTRAS MONEDAS</p>
+                <VerDetalle v={prueba.otrosMedios} />
               </div>
             )}
             {prueba.ok && !copDe(prueba.billeteras).length && (
