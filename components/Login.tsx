@@ -25,7 +25,7 @@ interface LoginProps {
 export const errorDePortal = (portal: string, rolCuenta?: string): string | null => {
   if (!rolCuenta || rolCuenta === 'admin' || portal === 'contador' || rolCuenta === portal) return null;
   if (rolCuenta === 'personal') return 'Esta cuenta es de Operadores. Este es el portal de Empresas: entra por Operadores en lincoin.me/ingresar_personas.';
-  if (rolCuenta === 'contador') return 'Esta cuenta es de contador. Entra por Empresas → Contabilidad.';
+  if (rolCuenta === 'contador') return 'Esta cuenta es de contador o revisor fiscal. Entra por Empresas → Contabilidad y revisor.';
   return 'Esta cuenta es de Empresas. Este es el portal de Operadores: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
 };
 
@@ -322,7 +322,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
       <h1 className="text-2xl font-bold text-[#0C0E0D] text-center mb-10 anim-fade-up">
         {userRole === 'business' ? <>¡Te damos la bienvenida a Lincoin<br />empresas!</>
-          : userRole === 'contador' ? <>Contabilidad<br /><span className="text-base font-semibold text-slate-600">Entra con tu cuenta y luego escribe el ID de la empresa</span></>
+          : userRole === 'contador' ? <>Contabilidad y revisor<br /><span className="text-base font-semibold text-slate-600">Entra con tu cuenta y luego escribe el ID de la empresa</span></>
           : <>¡Te damos la bienvenida a Lincoin!</>}
       </h1>
 
@@ -415,7 +415,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
 
         <div className="flex justify-between items-center text-sm pt-2">
           <div className="text-slate-900">
-            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">{userRole === 'contador' ? 'Crea tu cuenta de contador' : 'Regístrate'}</button>
+            ¿Eres nuevo? <button onClick={onRegisterClick} className="text-[#0C0E0D] font-bold hover:underline">{userRole === 'contador' ? 'Crea tu cuenta de contador o revisor' : 'Regístrate'}</button>
           </div>
           <button onClick={() => setIsForgotModalOpen(true)} className="text-slate-800 hover:text-[#0C0E0D] transition-colors">
             Recuperar contraseña

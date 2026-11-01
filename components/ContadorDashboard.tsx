@@ -215,7 +215,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
         {/* Logo — no se rediseña: wordmark Archivo 800 y el punto verde. */}
         <div style={{ padding: '0 10px 22px' }}>
           <p style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.6px', color: C.text, margin: 0, lineHeight: 1 }}>Lincoin<span style={{ color: C.verde }}>.</span></p>
-          <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2.2px', color: C.sub, margin: '6px 0 0' }}>CONTABILIDAD</p>
+          <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2.2px', color: C.sub, margin: '6px 0 0' }}>CONTABILIDAD Y REVISOR</p>
         </div>
 
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 1, minHeight: 0, overflowY: 'auto' }}>
@@ -239,7 +239,7 @@ export const ContadorDashboard: React.FC<{ onLogout: () => void }> = ({ onLogout
             <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.1)', display: 'grid', placeItems: 'center', color: C.sub, fontWeight: 800, fontSize: 12 }}>{inicial}</span>
             <span style={{ minWidth: 0, flex: 1 }}>
               <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{miNombre}</span>
-              <span style={{ display: 'block', fontSize: 10.5, color: C.sub }}>Contador · contabilidad y facturación</span>
+              <span style={{ display: 'block', fontSize: 10.5, color: C.sub }}>Contador o revisor fiscal</span>
             </span>
           </div>
           <Fila etiqueta="Cerrar sesión" icono={I.puerta} onClick={() => setConfirmarSalir(true)} />

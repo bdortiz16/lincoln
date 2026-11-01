@@ -239,7 +239,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             /* PERSONAL FORM */
             <div className="space-y-6 max-w-lg mx-auto lg:mx-0 w-full animate-in fade-in duration-500">
                 <h1 className="text-2xl font-bold text-[#0C0E0D] text-center lg:text-left mb-4">
-                  {esContador ? 'Crea tu cuenta para Contabilidad' : 'Regístrate como operador'}
+                  {esContador ? 'Crea tu cuenta para Contabilidad y revisor' : 'Regístrate como operador'}
                 </h1>
 
                 {esOperador && (
@@ -381,7 +381,7 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                 </button>
 
                 <div className="text-center text-sm text-slate-900 mt-8">
-                    ¿Ya tienes una cuenta {esContador ? 'de contabilidad' : 'de operador'}? <button onClick={onLoginClick} className="text-[#5d87ff] font-bold underline hover:text-[#0C0E0D]">Iniciar sesión</button>
+                    ¿Ya tienes una cuenta {esContador ? 'de contabilidad o revisor' : 'de operador'}? <button onClick={onLoginClick} className="text-[#5d87ff] font-bold underline hover:text-[#0C0E0D]">Iniciar sesión</button>
                 </div>
             </div>
         ) : (

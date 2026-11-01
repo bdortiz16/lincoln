@@ -122,7 +122,7 @@ export const AccesoContadorPanel: React.FC<{ onCambio?: (solicitudes: Vinculo[])
 // la ficha de la empresa.
 export const ExplicacionContador: React.FC = () => (
   <p style={{ fontSize: 12.5, color: C.sub, margin: '5px 0 0', lineHeight: 1.5 }}>
-    Tu contador entra por <b style={{ color: C.text }}>Empresas → Contabilidad</b> con su propia cuenta, escribe tu ID, y tú lo apruebas aquí. Ve esta pantalla (movimientos, comprobantes y facturas) y además <b style={{ color: C.text }}>opera tu facturación</b>: emite facturas en tu Siigo y configura el modelo, los ítems y las credenciales. No ve saldos operables ni puede hacer envíos.
+    Tu contador o tu revisor fiscal entra por <b style={{ color: C.text }}>Empresas → Contabilidad y revisor</b> con su propia cuenta, escribe tu ID, y tú lo apruebas aquí. Ve esta pantalla (movimientos, comprobantes y facturas) y además <b style={{ color: C.text }}>opera tu facturación</b>: emite facturas en tu Siigo y configura el modelo, los ítems y las credenciales. No ve saldos operables ni puede hacer envíos.
   </p>
 );
 

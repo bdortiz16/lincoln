@@ -5,7 +5,8 @@ import { Logo } from './Logo';
 interface RoleSelectionProps {
   onSelectPersonal: () => void;
   onSelectBusiness: () => void;
-  /** Empresas → Contabilidad: la entrada del contador, con su propia cuenta. */
+  /** Empresas → Contabilidad y revisor: la entrada del contador o del
+   *  revisor fiscal, con su propia cuenta. Los dos tienen el mismo acceso. */
   onSelectContador: () => void;
   /** "Abre tu cuenta aquí": registro de una cuenta Persona. */
   onRegisterPersonal?: () => void;
@@ -79,9 +80,9 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <BookOpen className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
               </div>
-              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Contabilidad</h3>
+              <h3 style={{ fontFamily: ARCHIVO, fontWeight: 700, fontSize: 22, color: '#F4F4F2', marginBottom: 8 }}>Contabilidad y revisor</h3>
               <p style={{ color: '#8F8F8A', fontSize: 13.5, lineHeight: 1.5, marginBottom: 20 }}>
-                Para el contador: revisa la contabilidad de la empresa con el acceso que ella te dio.
+                Para el contador o el revisor fiscal: revisa la contabilidad de la empresa con el acceso que ella te dio.
               </p>
               <span className="mt-auto flex items-center gap-2" style={{ color: '#4ADE80', fontWeight: 700, fontSize: 14 }}>
                 Ingresar <ChevronRight size={15} />
@@ -115,7 +116,8 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectPersonal, 
             </button>
 
             {/* EMPRESAS: al tocar, se abre el paso con las dos entradas —
-                Usuario (la cuenta de la empresa) y Contabilidad (el contador). */}
+                Usuario (la cuenta de la empresa) y Contabilidad y revisor (el
+                contador o el revisor fiscal). */}
             <button onClick={() => setPaso('empresas')} className="role-card group relative flex flex-col items-center text-center transition-all duration-300" style={cardStyle}>
               <div className="rc-circle flex items-center justify-center rounded-full transition-all duration-300 group-hover:scale-105" style={circleStyle}>
                 <Building2 className="transition-colors duration-300" style={{ width: 34, height: 34, color: '#F4F4F2' }} strokeWidth={1.8} />
