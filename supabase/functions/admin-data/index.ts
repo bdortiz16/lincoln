@@ -2,7 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
-import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda } from '../_shared/coinsenda-llave.ts'
+import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda, cuentaCoinsendaDe, secretoLlave, CUENTAS_COINSENDA, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
@@ -151,11 +151,20 @@ async function obligacionesTodas(): Promise<{ valor: Record<string, number>; par
 // ── Caja de Lincoin ──────────────────────────────────────────────────────
 // bolsa del proveedor = saldos de los clientes + lo de Lincoin + (lo que se
 // mueve por fuera) ± diferencia. Ver 2026_zz20_caja_lincoin.sql.
-// Coinsenda respalda el "Saldo Cuenta 3" de los clientes (COP_C3): de ahí
-// salen Bre-B · Cuenta 3 y ACH · Cuenta 3 (decisión del 1 nov).
-const CAJA = [{ proveedor: 'Mouv', rail: 'COP_BREB' }, { proveedor: 'Finity', rail: 'COP_ACH' }, { proveedor: 'Coinsenda', rail: 'COP_C3' }] as const
+// Coinsenda: Lincoin tiene DOS cuentas allá, y cada una es su propia bolsa.
+//   · 'Coinsenda'   = Cuenta 3, respalda el "Saldo Cuenta 3" (COP_C3).
+//   · 'Coinsenda 2' = Cuenta 4, respalda el "Saldo Cuenta 4" (COP_C4).
+// De cada una salen su Bre-B y su ACH (decisión del 1 nov). El nombre de la
+// primera se queda como estaba porque ya puede tener caja y movimientos.
+const CAJA = [
+  { proveedor: 'Mouv', rail: 'COP_BREB' }, { proveedor: 'Finity', rail: 'COP_ACH' },
+  { proveedor: 'Coinsenda', rail: 'COP_C3' }, { proveedor: 'Coinsenda 2', rail: 'COP_C4' },
+] as const
+const PROV_COINSENDA: Record<CuentaCoinsenda, 'Coinsenda' | 'Coinsenda 2'> = { 3: 'Coinsenda', 4: 'Coinsenda 2' }
+const RAIL_COINSENDA: Record<CuentaCoinsenda, 'COP_C3' | 'COP_C4'> = { 3: 'COP_C3', 4: 'COP_C4' }
+const esBolsaCoinsenda = (p: string) => p === 'Coinsenda' || p === 'Coinsenda 2'
 const hoyBogota = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
-const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : null }
+const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : x === 'COP_C4' ? 'Coinsenda 2' : null }
 
 // La utilidad de Lincoin en un cargue: la de su contabilidad, MENOS el 0,10 %
 // de Bre-B en Mouv. Ese 0,10 % es un costo de Mouv (lo confirmó
@@ -176,7 +185,7 @@ async function utilidadPorProveedor(desdeIso: string): Promise<Record<string, nu
     .select(`id, currency, ${SELECT_UTILIDAD}`)
     .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
     .gte('created_at', desdeIso), { tope: 100_000 })
-  const out: Record<string, number> = { Mouv: 0, Finity: 0, Coinsenda: 0 }
+  const out: Record<string, number> = { Mouv: 0, Finity: 0, Coinsenda: 0, 'Coinsenda 2': 0 }
   for (const t of filas as any[]) { const p = provDeRiel(t.currency); if (p) out[p] += utilidadLincoin(t) }
   return out
 }
@@ -187,22 +196,31 @@ async function bolsasProveedores(): Promise<Record<string, number | null>> {
   const h = { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` }
   const pedir = (fn: string) => fetch(`${SUPABASE_URL}/functions/v1/${fn}`, { method: 'POST', headers: h, body: JSON.stringify({ action: 'treasury_balances' }), signal: AbortSignal.timeout(25_000) })
     .then(r => r.json()).catch(() => null)
-  const [m, f, c] = await Promise.all([pedir('mouv-proxy'), pedir('finity-proxy'), bolsaCoinsenda().catch(() => null)])
+  const [m, f, c, c4] = await Promise.all([pedir('mouv-proxy'), pedir('finity-proxy'), bolsaCoinsenda(3).catch(() => null), bolsaCoinsenda(4).catch(() => null)])
   const num = (v: unknown) => { const n = Number(v); return v != null && v !== '' && isFinite(n) ? n : null }
   return {
     Mouv: m && !m.error && m.ok !== false ? num(m.breb ?? m.total) : null,
     Finity: f && !f.error && f.ok !== false ? num(f.cop) : null,
     Coinsenda: c,
+    'Coinsenda 2': c4,
   }
 }
 
-// La bolsa de Coinsenda: el disponible de su billetera COP (la misma de donde
-// salen los envíos de la Cuenta 3). null = no configurada o no respondió.
-async function bolsaCoinsenda(): Promise<number | null> {
-  const cfg = await configCoinsenda(db)
-  if (!cfg.email && !cfg.telefono) return null
-  const b = await billeteraCop(new ClienteCoinsenda(db, cfg, 20_000))
-  return 'error' in b || !Number.isFinite(b.disponible) ? null : b.disponible
+// La bolsa de una cuenta de Coinsenda: el disponible de su billetera COP (la
+// misma de donde salen los envíos de esa cuenta). null = no configurada o no
+// respondió.
+async function bolsaCoinsenda(cuenta: CuentaCoinsenda): Promise<number | null> {
+  const b = await leerBolsaCoinsenda(cuenta)
+  return 'cop' in b ? b.cop : null
+}
+async function leerBolsaCoinsenda(cuenta: CuentaCoinsenda): Promise<{ cop: number } | { error: string; sinConfigurar?: boolean }> {
+  const cfg = await configCoinsenda(db, cuenta)
+  if (!cfg.email && !cfg.telefono) return { error: `La Cuenta ${cuenta} de Coinsenda no está configurada (Admin → Coinsenda).`, sinConfigurar: true }
+  try {
+    const b = await billeteraCop(new ClienteCoinsenda(db, cfg, 20_000))
+    if ('error' in b) return { error: b.error }
+    return Number.isFinite(b.disponible) ? { cop: b.disponible } : { error: 'Coinsenda no devolvió el disponible de la billetera COP.' }
+  } catch (e) { return { error: String((e as Error)?.message ?? e).slice(0, 200) } }
 }
 
 // Abre la caja de los proveedores que todavía no la tienen: todo lo que
@@ -1608,6 +1626,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // solo del dueño (no figuran acá).
   caja_llaves_get: ['plata.ver', 'tesoreria'],
   coinsenda_bolsa: ['plata.ver', 'tesoreria'],
+  coinsenda_dashboard: ['plata.ver', 'tesoreria'],
   caja_enviar_empresa: 'tesoreria',
   caja_envio_estado: 'tesoreria',
   tesoreria_detalle: ['plata.ver', 'tesoreria'],
@@ -1636,7 +1655,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
 }
 
 const PAIS_POR_MONEDA: Record<string, string> = {
-  COP: 'CO', COP_BREB: 'CO', COP_ACH: 'CO', COP_C3: 'CO',
+  COP: 'CO', COP_BREB: 'CO', COP_ACH: 'CO', COP_C3: 'CO', COP_C4: 'CO',
   BRL: 'BR', MXN: 'MX',
   USD: 'US', USDT: 'US', USDT_TRON: 'US', USDC: 'US', EURC: 'US',
 }
@@ -3293,7 +3312,7 @@ Deno.serve(async (req: Request) => {
         'caja_movimiento_crear', 'caja_movimiento_anular',
         'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
         // La llave con la que Lincoin firma ante Coinsenda
-        'coinsenda_llave_generar', 'coinsenda_config_guardar', 'coinsenda_cuenta3_set',
+        'coinsenda_llave_generar', 'coinsenda_config_guardar', 'coinsenda_cuenta3_set', 'coinsenda_cuenta_set',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -4234,7 +4253,7 @@ Deno.serve(async (req: Request) => {
         for (const t of filasOps) if (t.type === 'load' && t.reverso && Array.isArray(t.reverso.ajustes)) for (const x of t.reverso.ajustes) if (x?.id != null) ajustesEnReversos.add(String(x.id))
         const rielDe = (t: any) => {
           const r = String(t.rail ?? t.currency ?? '').toUpperCase()
-          return r === 'COP_ACH' || r === 'ACH' ? 'ACH' : r === 'COP_BREB' || r === 'BREB' ? 'Bre-B' : r === 'COP_C3' ? 'Cuenta 3' : r === 'COP' ? 'Saldo Lincoin' : String(t.currency ?? '')
+          return r === 'COP_ACH' || r === 'ACH' ? 'ACH' : r === 'COP_BREB' || r === 'BREB' ? 'Bre-B' : r === 'COP_C3' ? 'Cuenta 3' : r === 'COP_C4' ? 'Cuenta 4' : r === 'COP' ? 'Saldo Lincoin' : String(t.currency ?? '')
         }
         const idsDelPeriodo = new Set<string>()
         for (const t of filasOps) {
@@ -4908,7 +4927,7 @@ Deno.serve(async (req: Request) => {
         const quien = (a: any) => !a ? '—' : a.sistema ? 'Lincoin (automático)' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
         return json({
           ok: true, desde, hasta,
-          fuentes: ['Finity', 'Mouv', 'Coinsenda', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
+          fuentes: ['Finity', 'Mouv', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
           porDia: nDias <= 92 ? porDia : null,
           clientes,
           cajaMes: await cajaDelMes(desde, hasta, aUtc(desde), aUtc(hasta, true)),
@@ -5006,79 +5025,109 @@ Deno.serve(async (req: Request) => {
       // ── Coinsenda: la llave con la que Lincoin firma ante su API ───────
       // Solo el dueño (no figuran en PERMISO_DE_ACCION). El panel ve la
       // pública y su huella; la privada se genera y se queda en el servidor.
+      // Lincoin tiene DOS cuentas en Coinsenda (Cuenta 3 y Cuenta 4): todas
+      // estas acciones llevan `cuenta` (3 si no viene, que era la única).
       if (body.action === 'coinsenda_llave_estado') {
-        return json({ ok: true, llave: await estadoLlaveCoinsenda(db), desdeSecreto: !!Deno.env.get('COINSENDA_PRIVATE_KEY') })
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        return json({ ok: true, cuenta: cuentaCs, llave: await estadoLlaveCoinsenda(db, cuentaCs), desdeSecreto: !!Deno.env.get(secretoLlave(cuentaCs)) })
       }
       // Generar la pareja. Con su código 2FA, y si ya hay una, solo con
       // `reemplazar`: una llave nueva deja sin efecto la registrada en
       // Coinsenda hasta que se pegue la nueva allá.
       if (body.action === 'coinsenda_llave_generar') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
         const otpErr = await requireAdminOtp(auth.userId, body.otp)
         if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
         if (!FIELD_ENC_KEY) return json({ ok: false, error: 'Falta FIELD_ENC_KEY en los secretos del servidor: sin ella la llave no se puede guardar cifrada.' }, 500)
-        const previa = await estadoLlaveCoinsenda(db)
-        if (previa && body.reemplazar !== true) return json({ ok: false, existe: true, error: 'Ya hay una llave generada. Si haces otra, la registrada en Coinsenda deja de servir hasta que pegues la nueva.' }, 409)
+        const previa = await estadoLlaveCoinsenda(db, cuentaCs)
+        if (previa && body.reemplazar !== true) return json({ ok: false, existe: true, error: `Ya hay una llave generada para la Cuenta ${cuentaCs}. Si haces otra, la registrada en Coinsenda deja de servir hasta que pegues la nueva.` }, 409)
         const nueva = await generarParCoinsenda()
         const at = new Date().toISOString()
         const por = await autorDe(auth)
-        const err = await guardarLlaveCoinsenda(db, { ...nueva, at, por })
+        const err = await guardarLlaveCoinsenda(db, { ...nueva, at, por }, cuentaCs)
         if (err) return errorGenerico('coinsenda_llave_generar', { message: err })
-        await auditAdmin(req, previa ? 'coinsenda.llave_reemplazada' : 'coinsenda.llave_generada', { huella: nueva.huella, anterior: previa?.huella ?? null })
+        await auditAdmin(req, previa ? 'coinsenda.llave_reemplazada' : 'coinsenda.llave_generada', { cuenta: cuentaCs, huella: nueva.huella, anterior: previa?.huella ?? null })
         return json({ ok: true, llave: { publica: nueva.publica, huella: nueva.huella, at, por } })
       }
-      // La bolsa de Coinsenda para la Billetera y la caja: el disponible de la
-      // billetera COP. Igual que Mouv y Finity, lo puede ver quien ve la plata.
+      // Las bolsas de Coinsenda para la Billetera y la caja: el disponible de
+      // la billetera COP de cada cuenta. Igual que Mouv y Finity, lo puede ver
+      // quien ve la plata. `cop` es el de la Cuenta 3 (lo que leía la pantalla
+      // antes de la Cuenta 4).
       if (body.action === 'coinsenda_bolsa') {
-        const cfg = await configCoinsenda(db)
-        if (!cfg.email && !cfg.telefono) return json({ ok: false, error: 'Coinsenda no está configurado (Admin → Coinsenda).' })
-        const b = await billeteraCop(new ClienteCoinsenda(db, cfg, 20_000))
-        if ('error' in b) return json({ ok: false, error: b.error })
-        return json({ ok: true, cop: Number.isFinite(b.disponible) ? b.disponible : null })
+        const [b3, b4] = await Promise.all([leerBolsaCoinsenda(3), leerBolsaCoinsenda(4)])
+        const fila = (b: Awaited<ReturnType<typeof leerBolsaCoinsenda>>) => 'cop' in b ? { cop: b.cop } : { cop: null, error: b.error, sinConfigurar: b.sinConfigurar === true }
+        return json({ ok: true, cop: 'cop' in b3 ? b3.cop : null, cuentas: { 3: fila(b3), 4: fila(b4) } })
       }
       // Con qué cuenta firma Lincoin: el correo con el que se entra a
       // Coinsenda. Va dentro del token firmado; sin él no hay sesión.
       if (body.action === 'coinsenda_config_get') {
-        const c = await configCoinsenda(db)
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        const c = await configCoinsenda(db, cuentaCs)
         const { data: ac } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
-        const c3 = ((ac as any)?.settings?.cuenta3 ?? {}) as Record<string, unknown>
-        return json({ ok: true, email: c.email ?? null, dominio: c.dominio, ultimaPrueba: c.ultimaPrueba ?? null, cuenta3: { breb: c3.breb === true, ach: c3.ach === true } })
+        const sw = (n: CuentaCoinsenda) => { const x = ((ac as any)?.settings?.[`cuenta${n}`] ?? {}) as Record<string, unknown>; return { breb: x.breb === true, ach: x.ach === true } }
+        return json({ ok: true, cuenta: cuentaCs, email: c.email ?? null, dominio: c.dominio, ultimaPrueba: c.ultimaPrueba ?? null, interruptores: sw(cuentaCs), cuenta3: sw(3) })
       }
-      // Encender o apagar la Cuenta 3 para los clientes (Bre-B y ACH por
-      // separado). Va en la configuración pública (app_config.settings.cuenta3)
-      // porque la pantalla del cliente la lee para quitar el "Próximamente";
-      // el servidor de envíos la vuelve a revisar en cada envío. Solo el
-      // dueño, con su sesión en 2FA, y solo si la conexión ya pasó la prueba.
-      if (body.action === 'coinsenda_cuenta3_set') {
+      // Encender o apagar una cuenta para los clientes (Bre-B y ACH por
+      // separado). Va en la configuración pública (app_config.settings.cuenta3
+      // / cuenta4) porque la pantalla del cliente la lee para quitar el
+      // "Próximamente"; el servidor de envíos la vuelve a revisar en cada
+      // envío. Solo el dueño, con su sesión en 2FA, y solo si la conexión de
+      // ESA cuenta ya pasó la prueba. (coinsenda_cuenta3_set queda por si una
+      // pestaña abierta todavía la manda: siempre es la Cuenta 3.)
+      if (body.action === 'coinsenda_cuenta_set' || body.action === 'coinsenda_cuenta3_set') {
+        const cuentaCs: CuentaCoinsenda = body.action === 'coinsenda_cuenta3_set' ? 3 : cuentaCoinsendaDe(body.cuenta)
+        const clave = `cuenta${cuentaCs}`
         const quiere = { breb: body.breb === true, ach: body.ach === true }
         if (quiere.breb || quiere.ach) {
-          const c = await configCoinsenda(db)
-          if ((c.ultimaPrueba as any)?.ok !== true) return json({ ok: false, error: 'Primero dale «Probar conexión» y que pase: sin eso los envíos no saldrían.' }, 400)
+          const c = await configCoinsenda(db, cuentaCs)
+          if ((c.ultimaPrueba as any)?.ok !== true) return json({ ok: false, error: `Primero dale «Probar conexión» a la Cuenta ${cuentaCs} y que pase: sin eso los envíos no saldrían.` }, 400)
         }
         const { data: ac, error: eAc } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
-        if (eAc) return errorGenerico('coinsenda_cuenta3_set', eAc)
+        if (eAc) return errorGenerico('coinsenda_cuenta_set', eAc)
         const settings = ((ac as any)?.settings ?? {}) as Record<string, any>
-        const antes = { breb: settings.cuenta3?.breb === true, ach: settings.cuenta3?.ach === true }
-        const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, cuenta3: quiere } }).eq('id', 1)
-        if (eUp) return errorGenerico('coinsenda_cuenta3_set', eUp)
-        await auditAdmin(req, 'coinsenda.cuenta3_cambio', { antes, ahora: quiere })
-        return json({ ok: true, cuenta3: quiere })
+        const antes = { breb: settings[clave]?.breb === true, ach: settings[clave]?.ach === true }
+        const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, [clave]: quiere } }).eq('id', 1)
+        if (eUp) return errorGenerico('coinsenda_cuenta_set', eUp)
+        await auditAdmin(req, `coinsenda.cuenta${cuentaCs}_cambio`, { cuenta: cuentaCs, antes, ahora: quiere })
+        return json({ ok: true, cuenta: cuentaCs, interruptores: quiere, [clave]: quiere })
       }
       if (body.action === 'coinsenda_config_guardar') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
         const email = String(body.email ?? '').trim().toLowerCase().slice(0, 120)
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'Escribe el correo con el que entras a Coinsenda.' }, 400)
-        const err = await guardarConfigCoinsenda(db, { email, telefono: null })
+        // Cada cuenta es una cuenta DISTINTA de Coinsenda: con el mismo correo
+        // las dos bolsas serían la misma billetera contada dos veces.
+        const otraN: CuentaCoinsenda = cuentaCs === 3 ? 4 : 3
+        const otra = await configCoinsenda(db, otraN)
+        if (otra.email && String(otra.email).toLowerCase() === email) return json({ ok: false, error: `Ese correo ya es el de la Cuenta ${otraN}. La Cuenta ${cuentaCs} tiene que ser otra cuenta de Coinsenda.` }, 400)
+        // Cambiar el correo es cambiar de cuenta (otra billetera): se apagan
+        // sus envíos y hay que volver a probar la conexión antes de encenderlos.
+        const actual = await configCoinsenda(db, cuentaCs)
+        const cambia = !!actual.email && String(actual.email).toLowerCase() !== email
+        const err = await guardarConfigCoinsenda(db, cuentaCs, { email, telefono: null, ...(cambia ? { ultimaPrueba: null } : {}) })
         if (err) return errorGenerico('coinsenda_config_guardar', { message: err })
-        await auditAdmin(req, 'coinsenda.cuenta_configurada', { email })
-        return json({ ok: true })
+        let apagada = false
+        if (cambia) {
+          const { data: ac } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          const settings = ((ac as any)?.settings ?? {}) as Record<string, any>
+          const clave = `cuenta${cuentaCs}`
+          if (settings[clave]?.breb === true || settings[clave]?.ach === true) {
+            const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, [clave]: { breb: false, ach: false } } }).eq('id', 1)
+            apagada = !eUp
+          }
+        }
+        await auditAdmin(req, 'coinsenda.cuenta_configurada', { cuenta: cuentaCs, email, anterior: cambia ? actual.email : undefined, apagada })
+        return json({ ok: true, cambia, apagada })
       }
       // Probar la conexión SIN mover plata: inicia sesión con la llave, y lee
       // el perfil, las billeteras y los medios de envío (con sus costos y
       // topes). Es lo primero que hay que ver funcionar antes de enviar.
       if (body.action === 'coinsenda_probar') {
-        const cfg = await configCoinsenda(db)
-        if (!cfg.email && !cfg.telefono) return json({ ok: false, error: 'Primero guarda el correo de la cuenta de Coinsenda.' }, 400)
-        const llaveC = await estadoLlaveCoinsenda(db)
-        if (!llaveC && !Deno.env.get('COINSENDA_PRIVATE_KEY')) return json({ ok: false, error: 'Primero genera la llave y regístrala en Coinsenda.' }, 400)
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        const cfg = await configCoinsenda(db, cuentaCs)
+        if (!cfg.email && !cfg.telefono) return json({ ok: false, error: `Primero guarda el correo de la Cuenta ${cuentaCs} de Coinsenda.` }, 400)
+        const llaveC = await estadoLlaveCoinsenda(db, cuentaCs)
+        if (!llaveC && !Deno.env.get(secretoLlave(cuentaCs))) return json({ ok: false, error: `Primero genera la llave de la Cuenta ${cuentaCs} y regístrala en Coinsenda.` }, 400)
         const cli = new ClienteCoinsenda(db, cfg, 25_000)
         const pasos: { paso: string; ok: boolean; detalle?: string }[] = []
         // Solo campos de primer y segundo nivel, y listas cortas: es para
@@ -5090,10 +5139,11 @@ Deno.serve(async (req: Request) => {
           return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 80).map(([k, x]) => [k, plano(x, prof + 1, max)]))
         }
         const lista = (r: RespuestaCoinsenda) => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.data) ? r.data.data : []
+        let uidPrueba: string | null = null
         const terminar = async (ok: boolean, extra: Record<string, unknown> = {}) => {
           const detalle = pasos.find(p => !p.ok)?.detalle ?? null
-          await guardarConfigCoinsenda(db, { ultimaPrueba: { at: new Date().toISOString(), ok, detalle } })
-          await auditAdmin(req, 'coinsenda.prueba_conexion', { ok, detalle })
+          await guardarConfigCoinsenda(db, cuentaCs, { ultimaPrueba: { at: new Date().toISOString(), ok, detalle, userId: uidPrueba } })
+          await auditAdmin(req, 'coinsenda.prueba_conexion', { cuenta: cuentaCs, ok, detalle })
           return json({ ok, pasos, ...extra })
         }
         const login = await cli.login()
@@ -5106,6 +5156,16 @@ Deno.serve(async (req: Request) => {
         }
         pasos.push({ paso: 'Iniciar sesión', ok: true })
         const uid = await cli.userId()
+        uidPrueba = uid
+        // Las dos cuentas tienen que ser usuarios distintos de Coinsenda (un
+        // alias de correo puede llevar a la misma): si no, la misma billetera
+        // contaría como dos bolsas.
+        const otraN: CuentaCoinsenda = cuentaCs === 3 ? 4 : 3
+        const uidOtra = ((await configCoinsenda(db, otraN)).ultimaPrueba as any)?.userId ?? null
+        if (uid && uidOtra && String(uidOtra) === String(uid)) {
+          pasos.push({ paso: 'Cuenta distinta', ok: false, detalle: `Esta es la misma cuenta de Coinsenda que la Cuenta ${otraN}. Usa el correo de la otra cuenta.` })
+          return terminar(false)
+        }
         const perfil = await cli.pedir('transaction', 'GET', '/users/{id}/profile')
         pasos.push(exitoso(perfil) ? { paso: 'Perfil', ok: true } : { paso: 'Perfil', ok: false, detalle: describirFallo(perfil, 'leer el perfil') })
         const cuentas = await cli.pedir('account', 'GET', '/users/{id}/accounts', { filter: { id: uid } })
@@ -5139,6 +5199,88 @@ Deno.serve(async (req: Request) => {
           })),
         })
       }
+      // El tablero de la pestaña Coinsenda: por cada cuenta, la bolsa en vivo
+      // y cuánto de ella es de los clientes, los envíos y su estado (hoy y el
+      // mes) y la utilidad de los envíos (comisión cobrada − costo de
+      // Coinsenda), por riel. Solo lee: no mueve nada.
+      if (body.action === 'coinsenda_dashboard') {
+        const hoy = hoyBogota()
+        const isoBogota = (ymd: string) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 5 * 3600_000).toISOString()
+        const inicioHoy = isoBogota(hoy), inicioMes = isoBogota(`${hoy.slice(0, 7)}-01`)
+        const SELECT_ENVIO = 'id, user_id, amount, currency, status, created_at, rail:raw_data->>rail, feeCop:raw_data->>feeCop, costo:raw_data->>costoProveedorCop, cuentaC:raw_data->coinsenda->>cuenta, cuentaBreb:raw_data->>cuentaBreb, cuentaAch:raw_data->>cuentaAch, beneficiario:raw_data->>beneficiary, refunded:raw_data->>refunded, revision:raw_data->>revisionManual'
+        const [bolsas, oblig, cfgs, llaves, acRes, delMes, recientesRes] = await Promise.all([
+          Promise.all(CUENTAS_COINSENDA.map(n => leerBolsaCoinsenda(n))),
+          obligacionesTodas(),
+          Promise.all(CUENTAS_COINSENDA.map(n => configCoinsenda(db, n))),
+          Promise.all(CUENTAS_COINSENDA.map(n => estadoLlaveCoinsenda(db, n))),
+          db.from('app_config').select('settings').eq('id', 1).maybeSingle(),
+          leerPorPaginas(() => db.from('transactions').select(SELECT_ENVIO)
+            .eq('type', 'dispersion').eq('raw_data->>proveedor', 'coinsenda').gte('created_at', inicioMes), { tope: 50_000 }),
+          db.from('transactions').select(SELECT_ENVIO)
+            .eq('type', 'dispersion').eq('raw_data->>proveedor', 'coinsenda').order('created_at', { ascending: false }).limit(40),
+        ])
+        const cuentaDeEnvio = (t: any): CuentaCoinsenda => cuentaCoinsendaDe(t.cuentaC ?? t.cuentaBreb ?? t.cuentaAch)
+        // Salió = Completado o todavía Procesando (sin devolver). Devuelto =
+        // rechazado o fallido con la plata de vuelta al cliente.
+        const estadoDe = (t: any) => t.status === 'Completado' ? 'completado' : t.status === 'Procesando' ? 'procesando' : 'devuelto'
+        const vacio = () => ({ n: 0, completados: 0, procesando: 0, devueltos: 0, monto: 0, cobrado: 0, costo: 0, utilidad: 0, porRiel: { breb: { n: 0, cobrado: 0, costo: 0, utilidad: 0 }, ach: { n: 0, cobrado: 0, costo: 0, utilidad: 0 } } })
+        const resumen: Record<string, { hoy: ReturnType<typeof vacio>; mes: ReturnType<typeof vacio> }> = {}
+        for (const n of CUENTAS_COINSENDA) resumen[n] = { hoy: vacio(), mes: vacio() }
+        for (const t of delMes.filas as any[]) {
+          const n = cuentaDeEnvio(t)
+          const est = estadoDe(t)
+          const riel = String(t.rail ?? '').toUpperCase() === 'ACH' ? 'ach' : 'breb'
+          for (const r of String(t.created_at) >= inicioHoy ? [resumen[n].hoy, resumen[n].mes] : [resumen[n].mes]) {
+            r.n++
+            if (est === 'completado') r.completados++; else if (est === 'procesando') r.procesando++; else r.devueltos++
+            if (est === 'devuelto') continue   // la comisión volvió al cliente: no hay utilidad
+            const fee = Number(t.feeCop) || 0, costo = Number(t.costo) || 0
+            r.monto += Number(t.amount) || 0
+            r.cobrado += fee; r.costo += costo; r.utilidad += fee - costo
+            const pr = r.porRiel[riel]
+            pr.n++; pr.cobrado += fee; pr.costo += costo; pr.utilidad += fee - costo
+          }
+        }
+        // Nombres de los clientes de los envíos recientes (el admin sí los ve).
+        const recientes = ((recientesRes.data ?? []) as any[])
+        const ids = Array.from(new Set(recientes.map(t => String(t.user_id)).filter(x => UUID_RE.test(x))))
+        const us = ids.length ? await usuariosPorId(ids) : []
+        const nombre = new Map(us.map((u: any) => [String(u.id), String(u.company_name || u.full_name || u.name || u.email || '')]))
+        const settings = ((acRes as any)?.data?.settings ?? {}) as Record<string, any>
+        return json({
+          ok: true, hoy, actualizado: new Date().toISOString(),
+          clientesParcial: !oblig || oblig.parcial,
+          cuentas: CUENTAS_COINSENDA.map((n, i) => {
+            const b = bolsas[i]
+            const bolsa = 'cop' in b ? b.cop : null
+            const clientes = Math.round(Number(oblig?.valor?.[RAIL_COINSENDA[n]] ?? 0))
+            const cfg = cfgs[i]
+            const up = (cfg.ultimaPrueba ?? null) as any
+            const redondear = (r: ReturnType<typeof vacio>) => ({
+              ...r, monto: Math.round(r.monto), cobrado: Math.round(r.cobrado), costo: Math.round(r.costo), utilidad: Math.round(r.utilidad),
+              porRiel: Object.fromEntries(Object.entries(r.porRiel).map(([k, v]) => [k, { ...v, cobrado: Math.round(v.cobrado), costo: Math.round(v.costo), utilidad: Math.round(v.utilidad) }])),
+            })
+            return {
+              cuenta: n, proveedor: PROV_COINSENDA[n], rail: RAIL_COINSENDA[n],
+              email: cfg.email ?? null, configurada: !!(cfg.email || cfg.telefono),
+              llave: llaves[i] ? { huella: llaves[i]!.huella, at: llaves[i]!.at } : null,
+              llaveDesdeSecreto: !!Deno.env.get(secretoLlave(n)),
+              ultimaPrueba: up ? { at: up.at ?? null, ok: up.ok === true, detalle: up.detalle ?? null } : null,
+              interruptores: { breb: settings[`cuenta${n}`]?.breb === true, ach: settings[`cuenta${n}`]?.ach === true },
+              bolsa, bolsaError: 'error' in b ? b.error : null,
+              clientes, libre: bolsa == null ? null : Math.round(bolsa - clientes),
+              hoy: redondear(resumen[n].hoy), mes: redondear(resumen[n].mes),
+            }
+          }),
+          recientes: recientes.slice(0, 40).map(t => ({
+            id: t.id, at: t.created_at, cuenta: cuentaDeEnvio(t), rail: String(t.rail ?? '').toUpperCase() === 'ACH' ? 'ACH' : 'Bre-B',
+            monto: Number(t.amount) || 0, comision: Number(t.feeCop) || 0, costo: t.costo == null ? null : Number(t.costo) || 0,
+            estado: estadoDe(t), status: t.status, revision: t.revision === 'true',
+            beneficiario: t.beneficiario ?? null, cliente: nombre.get(String(t.user_id)) || null,
+          })),
+          mesTruncado: delMes.truncado === true,
+        })
+      }
 
       // ── Enviar la utilidad a la empresa (Bre-B desde la bolsa) ────────
       // Orden a propósito:
@@ -5155,9 +5297,9 @@ Deno.serve(async (req: Request) => {
         const descripcion = String(body.descripcion ?? '').trim().slice(0, 300)
         const opId = String(body.opId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
         if (!CAJA.some(c => c.proveedor === proveedor)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
-        // La utilidad sale por Bre-B desde Mouv o Finity; desde Coinsenda
-        // todavía no hay envío a las llaves de Lincoin.
-        if (proveedor === 'Coinsenda') return json({ ok: false, error: 'Por ahora la utilidad se envía desde la bolsa de Mouv o de Finity.' }, 400)
+        // La utilidad sale por Bre-B desde Mouv o Finity; desde las cuentas de
+        // Coinsenda todavía no hay envío a las llaves de Lincoin.
+        if (esBolsaCoinsenda(proveedor)) return json({ ok: false, error: 'Por ahora la utilidad se envía desde la bolsa de Mouv o de Finity.' }, 400)
         if (!isFinite(monto) || monto < 5000) return json({ ok: false, error: 'El monto mínimo es 5.000.' }, 400)
         // Bre-B: hasta 12.000.000 por transferencia (tope de la red). Más que
         // eso se envía en partes.
@@ -5386,7 +5528,7 @@ Deno.serve(async (req: Request) => {
         if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
         const visible = (t: any) => acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc)
         const esCop = (c: unknown) => String(c ?? '').toUpperCase().startsWith('COP')
-        const prov = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : 'Saldo Lincoin' }
+        const prov = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : x === 'COP_C4' ? 'Coinsenda 2' : 'Saldo Lincoin' }
 
         // 1 · Flujo del periodo: entradas (cargues) y salidas (dispersiones)
         // completadas, en COP, por hora / día / semana.
@@ -5606,8 +5748,8 @@ Deno.serve(async (req: Request) => {
       // cuenta Bre-B (override con el secret BREB_CARGUE_FEE_PCT, en %).
       // Ej: cargue de 40.000.000 → comisión 40.000 → se acreditan 39.960.000.
       if (body.action === 'admin_credit_balance' && body.userId && body.currency && body.amount != null) {
-        // COP_C3 = Saldo Cuenta 3 (lo respalda la bolsa de Coinsenda).
-        const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH', 'COP_C3']
+        // COP_C3 / COP_C4 = Saldo Cuenta 3 / 4 (los respaldan las dos bolsas de Coinsenda).
+        const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4']
         const cur: string = body.currency
         if (!ALLOWED.includes(cur)) return json({ success: false, error: `Riel no permitido: ${cur}` }, 400)
         const { data: u } = await db.from('users').select('balances').eq('id', body.userId).single()

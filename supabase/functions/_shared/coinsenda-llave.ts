@@ -12,12 +12,24 @@
 // pantalla solo vuelve la pública, que es la que se pega en Coinsenda.
 //
 // Si algún día se prefiere manejarla como secreto de Supabase, el secreto
-// COINSENDA_PRIVATE_KEY manda sobre lo guardado. Se acepta el PEM tal cual,
-// el PEM con los saltos escritos como "\n", o el PEM en base64 (una línea).
+// COINSENDA_PRIVATE_KEY (o COINSENDA_PRIVATE_KEY_C4 para la Cuenta 4) manda
+// sobre lo guardado. Se acepta el PEM tal cual, el PEM con los saltos
+// escritos como "\n", o el PEM en base64 (una línea).
+//
+// DOS CUENTAS: Lincoin tiene dos cuentas en Coinsenda (Cuenta 3 y Cuenta 4).
+// Cada una tiene SU llave: así se puede cambiar o revocar la de una sin
+// tumbar la otra, y una llave filtrada no abre las dos. La de la Cuenta 3
+// conserva el nombre de siempre (coinsenda_llave_api) para no perder la que
+// ya está registrada allá.
 // ════════════════════════════════════════════════════════════════════
 import { encField, decField } from './field-crypto.ts'
 
+export type CuentaCoinsenda = 3 | 4
+export const CUENTAS_COINSENDA: readonly CuentaCoinsenda[] = [3, 4]
+export const cuentaCoinsendaDe = (v: unknown): CuentaCoinsenda => Number(v) === 4 ? 4 : 3
 export const LLAVE_COINSENDA = 'coinsenda_llave_api'
+const claveLlave = (cuenta: CuentaCoinsenda) => cuenta === 4 ? `${LLAVE_COINSENDA}_c4` : LLAVE_COINSENDA
+export const secretoLlave = (cuenta: CuentaCoinsenda) => cuenta === 4 ? 'COINSENDA_PRIVATE_KEY_C4' : 'COINSENDA_PRIVATE_KEY'
 const ALG = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' } as const
 
 export type LlaveCoinsenda = { publica: string; huella: string; at: string; por?: unknown }
@@ -55,8 +67,8 @@ export async function generarParCoinsenda(): Promise<{ publica: string; huella: 
 }
 
 // deno-lint-ignore no-explicit-any
-async function leerGuardada(db: any): Promise<Guardada | null> {
-  const { data } = await db.from('private_config').select('value').eq('key', LLAVE_COINSENDA).maybeSingle()
+async function leerGuardada(db: any, cuenta: CuentaCoinsenda): Promise<Guardada | null> {
+  const { data } = await db.from('private_config').select('value').eq('key', claveLlave(cuenta)).maybeSingle()
   try {
     const v = JSON.parse(String(data?.value ?? 'null'))
     return v && typeof v === 'object' && v.privadaEnc && v.publica ? v as Guardada : null
@@ -65,32 +77,32 @@ async function leerGuardada(db: any): Promise<Guardada | null> {
 
 /** Lo que puede ver el panel: la pública, su huella y quién la generó. Nunca la privada. */
 // deno-lint-ignore no-explicit-any
-export async function estadoLlaveCoinsenda(db: any): Promise<LlaveCoinsenda | null> {
-  const g = await leerGuardada(db)
+export async function estadoLlaveCoinsenda(db: any, cuenta: CuentaCoinsenda): Promise<LlaveCoinsenda | null> {
+  const g = await leerGuardada(db, cuenta)
   return g ? { publica: g.publica, huella: g.huella, at: g.at, por: g.por ?? null } : null
 }
 
 /** Guarda la llave nueva. De la anterior queda solo la huella y las fechas,
  *  para saber después cuál estuvo registrada y hasta cuándo. */
 // deno-lint-ignore no-explicit-any
-export async function guardarLlaveCoinsenda(db: any, nueva: Omit<Guardada, 'anteriores'>): Promise<string | null> {
-  const previa = await leerGuardada(db)
+export async function guardarLlaveCoinsenda(db: any, nueva: Omit<Guardada, 'anteriores'>, cuenta: CuentaCoinsenda): Promise<string | null> {
+  const previa = await leerGuardada(db, cuenta)
   const anteriores = previa
     ? [{ huella: previa.huella, at: previa.at, hasta: nueva.at }, ...(previa.anteriores ?? [])].slice(0, 10)
     : []
-  const { error } = await db.from('private_config').upsert({ key: LLAVE_COINSENDA, value: JSON.stringify({ ...nueva, anteriores }) })
+  const { error } = await db.from('private_config').upsert({ key: claveLlave(cuenta), value: JSON.stringify({ ...nueva, anteriores }) })
   return error ? error.message : null
 }
 
 /** La privada lista para firmar, o null si todavía no hay ninguna. */
 // deno-lint-ignore no-explicit-any
-export async function llavePrivadaCoinsenda(db: any): Promise<CryptoKey | null> {
-  let texto = (Deno.env.get('COINSENDA_PRIVATE_KEY') ?? '').trim()
+export async function llavePrivadaCoinsenda(db: any, cuenta: CuentaCoinsenda): Promise<CryptoKey | null> {
+  let texto = (Deno.env.get(secretoLlave(cuenta)) ?? '').trim()
   if (texto && !texto.includes('BEGIN')) {
     try { const d = atob(texto.replace(/\s+/g, '')); if (d.includes('BEGIN')) texto = d } catch { /* no era base64 */ }
   }
   if (!texto) {
-    const g = await leerGuardada(db)
+    const g = await leerGuardada(db, cuenta)
     if (!g) return null
     texto = await decField(g.privadaEnc)
   }

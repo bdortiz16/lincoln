@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-// coinsenda.ts — cliente de la API de Coinsenda (Cuenta 3 de Bre-B y ACH).
+// coinsenda.ts — cliente de la API de Coinsenda (Cuentas 3 y 4 de Bre-B y ACH).
 //
 // Hace lo mismo que su SDK oficial (@coinsenda/sdk 1.9, el que trae el
 // repositorio que genera su Studio), pero con fetch y sin dependencias: las
@@ -20,10 +20,16 @@
 //   · El SDK NO lanza con un 4xx: devuelve { status, data }. Aquí igual, y
 //     sin respuesta de la red el status es 0.
 // ════════════════════════════════════════════════════════════════════
-import { firmarJwtRS256, llavePrivadaCoinsenda } from './coinsenda-llave.ts'
+import { firmarJwtRS256, llavePrivadaCoinsenda, type CuentaCoinsenda } from './coinsenda-llave.ts'
 
+// Una configuración por cuenta (Cuenta 3 y Cuenta 4: dos cuentas distintas
+// en Coinsenda, cada una con su correo, su llave y su billetera). La de la
+// Cuenta 3 conserva el nombre de siempre.
 export const CONFIG_COINSENDA = 'coinsenda_config'
-export type ConfigCoinsenda = { email?: string | null; telefono?: string | null; dominio?: string; ultimaPrueba?: unknown }
+const claveConfig = (cuenta: CuentaCoinsenda) => cuenta === 4 ? `${CONFIG_COINSENDA}_c4` : CONFIG_COINSENDA
+// `cuenta` no se guarda: la pone configCoinsenda() al leer, para que el
+// cliente firme con la llave de ESA cuenta.
+export type ConfigCoinsenda = { cuenta: CuentaCoinsenda; email?: string | null; telefono?: string | null; dominio?: string; ultimaPrueba?: unknown }
 export type RespuestaCoinsenda = { status: number; data: any; error?: string }
 
 const DOMINIOS = new Set(['coinsenda.com', 'bitsenda.com'])
@@ -39,16 +45,16 @@ export function urlServicio(servicio: string, dominio: string): string {
 }
 
 // deno-lint-ignore no-explicit-any
-export async function configCoinsenda(db: any): Promise<ConfigCoinsenda> {
-  const { data } = await db.from('private_config').select('value').eq('key', CONFIG_COINSENDA).maybeSingle()
-  let c: ConfigCoinsenda = {}
+export async function configCoinsenda(db: any, cuenta: CuentaCoinsenda): Promise<ConfigCoinsenda> {
+  const { data } = await db.from('private_config').select('value').eq('key', claveConfig(cuenta)).maybeSingle()
+  let c: Partial<ConfigCoinsenda> = {}
   try { const v = JSON.parse(String(data?.value ?? '{}')); if (v && typeof v === 'object') c = v } catch { /* vacío */ }
-  return { ...c, dominio: DOMINIOS.has(String(c.dominio)) ? String(c.dominio) : 'coinsenda.com' }
+  return { ...c, cuenta, dominio: DOMINIOS.has(String(c.dominio)) ? String(c.dominio) : 'coinsenda.com' }
 }
 // deno-lint-ignore no-explicit-any
-export async function guardarConfigCoinsenda(db: any, cambios: Partial<ConfigCoinsenda>): Promise<string | null> {
-  const actual = await configCoinsenda(db)
-  const { error } = await db.from('private_config').upsert({ key: CONFIG_COINSENDA, value: JSON.stringify({ ...actual, ...cambios }) })
+export async function guardarConfigCoinsenda(db: any, cuenta: CuentaCoinsenda, cambios: Partial<Omit<ConfigCoinsenda, 'cuenta'>>): Promise<string | null> {
+  const { cuenta: _c, ...actual } = await configCoinsenda(db, cuenta)
+  const { error } = await db.from('private_config').upsert({ key: claveConfig(cuenta), value: JSON.stringify({ ...actual, ...cambios }) })
   return error ? error.message : null
 }
 
@@ -91,9 +97,12 @@ export class ClienteCoinsenda {
   private get identidad(): Record<string, string> {
     if (this.cfg.email) return { email: String(this.cfg.email) }
     if (this.cfg.telefono) return { phone_number: String(this.cfg.telefono) }
-    throw new Error('Falta el correo de la cuenta de Coinsenda (Admin → Coinsenda).')
+    throw new Error(`Falta el correo de la Cuenta ${this.cfg.cuenta} de Coinsenda (Admin → Coinsenda).`)
   }
-  private get claveSesion() { return `${this.dominio}|${JSON.stringify(this.identidad)}` }
+  // La cuenta va en la clave: cada cuenta firma con su llave y su sesión no
+  // se le presta a la otra.
+  private get claveSesion() { return `${this.cfg.cuenta}|${this.dominio}|${JSON.stringify(this.identidad)}` }
+  get cuenta(): CuentaCoinsenda { return this.cfg.cuenta }
 
   private async http(url: string, init: RequestInit): Promise<RespuestaCoinsenda> {
     const ctrl = new AbortController()
@@ -111,8 +120,8 @@ export class ClienteCoinsenda {
 
   /** Firma la aserción y la canjea por una sesión. */
   async login(): Promise<RespuestaCoinsenda> {
-    const llave = await llavePrivadaCoinsenda(this.db)
-    if (!llave) return { status: 0, data: null, error: 'Todavía no hay llave de la API (Admin → Coinsenda → Generar llave).' }
+    const llave = await llavePrivadaCoinsenda(this.db, this.cfg.cuenta)
+    if (!llave) return { status: 0, data: null, error: `Todavía no hay llave de la API de la Cuenta ${this.cfg.cuenta} (Admin → Coinsenda → Generar llave).` }
     const iat = Math.floor(Date.now() / 1000)
     const signed_token = await firmarJwtRS256(llave, { ...this.identidad, iat, exp: iat + 300 })
     const r = await this.http(`${urlServicio('auth', this.dominio)}/pubkey`, {
@@ -188,7 +197,7 @@ export function describirFallo(r: RespuestaCoinsenda, que: string): string {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// ENVÍOS (Cuenta 3 de Bre-B y de ACH)
+// ENVÍOS (Cuentas 3 y 4 de Bre-B y de ACH)
 //
 // Un envío en Coinsenda son tres identificadores y dos llamadas:
 //   · account_id           → la billetera COP de Lincoin de donde sale;
@@ -369,11 +378,11 @@ export async function destinoBanco(cli: ClienteCoinsenda, prov: any, d: {
   banco: string; tipoCuenta: string; numero: string; docTipo: string; docNumero: string; titular: string; correo?: string | null
 }): Promise<{ id: string; nuevo: boolean } | { error: string; status?: number; crudo?: any; datos?: boolean }> {
   const bancoK = bancoCoinsenda(prov, d.banco)
-  if (!bancoK) return { error: `El banco «${d.banco}» no está en el catálogo de la Cuenta 3.`, datos: true }
+  if (!bancoK) return { error: `El banco «${d.banco}» no está en el catálogo de la Cuenta ${cli.cuenta}.`, datos: true }
   const tipoK = tipoCuentaCoinsenda(prov, bancoK, d.tipoCuenta)
-  if (!tipoK) return { error: `La Cuenta 3 no acepta cuentas ${d.tipoCuenta} de ese banco.`, datos: true }
+  if (!tipoK) return { error: `La Cuenta ${cli.cuenta} no acepta cuentas ${d.tipoCuenta} de ese banco.`, datos: true }
   const docK = tipoDocCoinsenda(prov, d.docTipo)
-  if (!docK) return { error: `La Cuenta 3 no reconoce el tipo de documento «${d.docTipo}».`, datos: true }
+  if (!docK) return { error: `La Cuenta ${cli.cuenta} no reconoce el tipo de documento «${d.docTipo}».`, datos: true }
   const numeroCta = String(d.numero ?? '').replace(/\D/g, '')
   const lista = await destinosInscritos(cli)
   if (!Array.isArray(lista)) return lista

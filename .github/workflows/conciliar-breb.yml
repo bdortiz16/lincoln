@@ -80,12 +80,13 @@ jobs:
           # confirmar es normal y no debe pintar la corrida de rojo.
           if [ "$CODE" -ge 500 ]; then exit 1; fi
 
-      # La Cuenta 3 (Coinsenda) de Bre-B y de ACH. Coinsenda no avisa por
-      # webhook: cada retiro se relee por su id. Acepta → Completado; rechaza
+      # Las Cuentas 3 y 4 (las dos cuentas de Coinsenda) de Bre-B y de ACH.
+      # Coinsenda no avisa por webhook: cada retiro se relee por su id, con la
+      # cuenta que lo creó. Acepta → Completado; rechaza
       # → se devuelve al cliente; sin confirmar → se vuelve a confirmar el
       # MISMO retiro (no paga dos veces). Va en un paso aparte: si Coinsenda no
       # responde, no frena la conciliación de Bre-B de arriba.
-      - name: Conciliar Cuenta 3 (Coinsenda)
+      - name: Conciliar Cuentas 3 y 4 (Coinsenda)
         if: always()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

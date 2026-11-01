@@ -1146,8 +1146,9 @@ const esCop = (t: any) => String(t.currency ?? '').toUpperCase().startsWith('COP
 const rielEnvio = (t: any): string => {
   const cur = String(t.currency ?? '').toUpperCase();
   if (t.rail === 'BREB' || cur === 'COP_BREB') { const n = Number(t.cuentaBreb) || 1; return n >= 2 ? `Bre-B · Cuenta ${n}` : 'Bre-B'; }
-  if (t.rail === 'ACH' || cur === 'COP_ACH') return Number(t.cuentaAch) === 3 ? 'ACH · Cuenta 3' : 'ACH';
+  if (t.rail === 'ACH' || cur === 'COP_ACH') return Number(t.cuentaAch) >= 3 ? `ACH · Cuenta ${Number(t.cuentaAch)}` : 'ACH';
   if (cur === 'COP_C3') return 'Saldo Cuenta 3';
+  if (cur === 'COP_C4') return 'Saldo Cuenta 4';
   if (cur === 'COP') return 'Saldo Lincoin';
   if (cur.startsWith('USD')) return 'USD / USDT';
   if (cur === 'BRL') return 'Brasil';

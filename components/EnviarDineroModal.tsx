@@ -28,7 +28,7 @@ export type EnviarPrefill = {
   rail?: 'COP' | 'COP_BREB' | 'COP_ACH';
   // Método ya elegido (p. ej. desde la tarjeta Bre-B: Cuenta 1 o Cuenta 2).
   // Llega marcado en el paso "¿Cómo lo enviamos?" y se puede cambiar.
-  metodo?: 'breb' | 'breb2' | 'breb3' | 'ach' | 'ach3';
+  metodo?: 'breb' | 'breb2' | 'breb3' | 'breb4' | 'ach' | 'ach3' | 'ach4';
   form?: Partial<{
     destinationCountry: string; destinationCurrency: string; amount: string; beneficiaryType: 'personal' | 'business';
     beneficiaryName: string; documentType: string; documentNumber: string; bankName: string; accountType: string; accountNumber: string; reason: string; motivo: string; ordenanteId: string;
@@ -111,7 +111,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const [sendStep, setSendStep] = useState(1);
   // Resultado del envío para el paso 5 ("Envío en camino" / fallo): datos
   // reales de la dispersión — referencia del proveedor, costo, riel, hora.
-  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2 | 3; cuentaAch?: 1 | 3; desconocido?: boolean } | null>(null);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2 | 3 | 4; cuentaAch?: 1 | 3 | 4; desconocido?: boolean } | null>(null);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
   // ID de la external account de Mouv del contacto elegido — con él la
@@ -147,13 +147,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // Bre-B tiene dos cuentas: la 1 paga con el saldo Bre-B y la 2 con el
   // saldo ACH. El beneficiario y la llave son los mismos; cambia de qué
   // saldo sale y por dónde viaja.
-  const [brebCuenta, setBrebCuenta] = useState<1 | 2 | 3>(1);
-  // ACH también tiene cuentas: la 1 (la de siempre) y la 3, cuando el admin la
-  // activa. La 2 todavía no existe (se ve como "Próximamente").
-  const [achCuenta, setAchCuenta] = useState<1 | 3>(1);
+  const [brebCuenta, setBrebCuenta] = useState<1 | 2 | 3 | 4>(1);
+  // ACH también tiene cuentas: la 1 (la de siempre), y la 3 y la 4 cuando el
+  // admin las activa. La 2 todavía no existe (se ve como "Próximamente").
+  const [achCuenta, setAchCuenta] = useState<1 | 3 | 4>(1);
   const metodoFijoRef = useRef(false);
   // Qué conciliación vigilar después de enviar: la de Bre-B · Cuenta 1, la de
-  // ACH/Bre-B · Cuenta 2, o la de la Cuenta 3.
+  // ACH/Bre-B · Cuenta 2, o la de las Cuentas 3 y 4 ('c3' cubre las dos).
   const vigilarModo = useRef<'breb' | 'ach' | 'c3'>('breb');
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
@@ -208,11 +208,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
 
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
-  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'breb3' | 'brebX' | 'ach' | 'ach3' | 'pay' | 'cash' | null>(null);
-  // Cuenta 3 de Bre-B y de ACH: la enciende el admin (config pública
-  // cuenta3). Apagada se ve como "Próximamente". El servidor la vuelve a
-  // revisar en cada envío.
+  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'breb3' | 'breb4' | 'brebX' | 'ach' | 'ach3' | 'ach4' | 'pay' | 'cash' | null>(null);
+  // Cuentas 3 y 4 de Bre-B y de ACH: las enciende el admin (config pública
+  // cuenta3 / cuenta4). Apagadas se ven como "Próximamente". El servidor las
+  // vuelve a revisar en cada envío. Cada una paga con su propio saldo
+  // (Saldo Cuenta 3 = COP_C3, Saldo Cuenta 4 = COP_C4).
   const c3 = { breb: (config as any)?.cuenta3?.breb === true, ach: (config as any)?.cuenta3?.ach === true };
+  const c4 = { breb: (config as any)?.cuenta4?.breb === true, ach: (config as any)?.cuenta4?.ach === true };
+  const railCuenta = (n: number) => n === 4 ? 'COP_C4' : 'COP_C3';
   // Cotización de la comisión del proveedor para el paso Confirmar:
   // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
   // cliente) · ACH → Finity (precio fijo por transferencia, se descuenta al
@@ -332,7 +335,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
       const amt = getRawAmount(sendForm.amount);
       setPayoutQuote({ loading: true });
-      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? (brebCuenta === 2 ? 'BREB2' : brebCuenta === 3 ? 'BREB3' : 'BREB') : (achCuenta === 3 ? 'ACH3' : 'ACH'), amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
+      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? (brebCuenta === 2 ? 'BREB2' : brebCuenta === 3 ? 'BREB3' : brebCuenta === 4 ? 'BREB4' : 'BREB') : (achCuenta === 3 ? 'ACH3' : achCuenta === 4 ? 'ACH4' : 'ACH'), amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
           .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM && brebCuenta !== 2 ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
           .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -395,7 +398,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           // 2 la define. Aquí solo se valida que ALGUNA de las 3 cuentas
           // pueda cubrir el monto (el paso 2 exige monto + comisión por método).
           const currentBalance = sendForm.destinationCurrency === 'COP'
-              ? Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'), getBalance('COP_C3'))
+              ? Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'), getBalance('COP_C3'), getBalance('COP_C4'))
               : displayBalance(sendForm.destinationCurrency);
           if (currentBalance < rawAmount) {
               showToast(sendForm.destinationCurrency === 'COP'
@@ -606,13 +609,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           const isBreb = (sendContact?.destKind ?? 'ach') === 'breb';
           // Bre-B · Cuenta 2 paga con el saldo ACH.
           const cuenta2 = isBreb && brebCuenta === 2;
-          // Cuenta 3: Bre-B paga con el saldo Bre-B y ACH con el saldo ACH.
-          const cuenta3B = isBreb && brebCuenta === 3;
-          const cuenta3A = !isBreb && achCuenta === 3;
-          const cuenta3 = cuenta3B || cuenta3A;
-          // El saldo que se descuenta. La Cuenta 3 (Bre-B o ACH) sale del Saldo
-          // Cuenta 3, que respalda su propia bolsa.
-          const rail = cuenta3 ? 'COP_C3' : isBreb && !cuenta2 ? 'COP_BREB' : 'COP_ACH';
+          // Cuentas 3 y 4 (Bre-B o ACH): cada una sale de su propio saldo
+          // (Saldo Cuenta 3 / Saldo Cuenta 4), que respalda su propia bolsa.
+          const nCs: 3 | 4 | null = isBreb ? (brebCuenta === 3 || brebCuenta === 4 ? brebCuenta : null) : (achCuenta === 3 || achCuenta === 4 ? achCuenta : null);
+          const cuenta3B = isBreb && nCs !== null;
+          const cuenta3A = !isBreb && nCs !== null;
+          const cuenta3 = nCs !== null;
+          // El saldo que se descuenta.
+          const rail = nCs ? railCuenta(nCs) : isBreb && !cuenta2 ? 'COP_BREB' : 'COP_ACH';
           // Comisión estimada para el pre-chequeo de saldo. Bre-B = fijo $1.200
           // ($800 de Mouv + $400 de utilidad); el 0,10% NO va aquí (ya se cobró
           // en el cargue). ACH = fijo $2.500. Si el servidor ya cotizó
@@ -622,7 +626,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : Number(payoutQuote?.feeCop ?? 2500);
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
-              showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : rail === 'COP_C3' ? 'Cuenta 3' : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
+              showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : nCs ? `Cuenta ${nCs}` : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
           // UNA SOLA FUENTE. Antes la llave salía de sendContact y el nombre y
@@ -662,15 +666,15 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...ordenante, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
-                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : cuenta3B ? 'payout_breb3' : 'payout_breb') : (cuenta3A ? 'payout_ach3' : 'payout_ach'), userId: currentUser.id, amount, recipient, otp: sentOtpRef.current, idemKey }),
+                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : cuenta3B ? `payout_breb${nCs}` : 'payout_breb') : (cuenta3A ? `payout_ach${nCs}` : 'payout_ach'), userId: currentUser.id, amount, recipient, otp: sentOtpRef.current, idemKey }),
                   // La Cuenta 2 hace dos llamadas al proveedor (crear y
                   // confirmar): se le da más margen antes de declarar
                   // "no sabemos si salió".
-                  // La Cuenta 3 también: inscribe, crea y confirma.
+                  // Las Cuentas 3 y 4 también: inscriben, crean y confirman.
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), cuenta2 || cuenta3 ? 120000 : 60000)),
               ]);
-              const cuentaBreb = isBreb ? (cuenta2 ? 2 : cuenta3B ? 3 : 1) as 1 | 2 | 3 : undefined;
-              const cuentaAch = !isBreb ? (cuenta3A ? 3 : 1) as 1 | 3 : undefined;
+              const cuentaBreb = isBreb ? (cuenta2 ? 2 : nCs ?? 1) as 1 | 2 | 3 | 4 : undefined;
+              const cuentaAch = !isBreb ? (nCs ?? 1) as 1 | 3 | 4 : undefined;
               if (r?.ok) {
                   // desenlaceDesconocido: el proveedor no confirmó. Se dice tal
                   // cual ("lo estamos verificando, no lo repitas"); antes salía
@@ -820,8 +824,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
     if (p?.rail) setSendSourceRail(p.rail);
     if (p?.metodo) {
       setSendMethodSel(p.metodo);
-      setBrebCuenta(p.metodo === 'breb2' ? 2 : p.metodo === 'breb3' ? 3 : 1);
-      setAchCuenta(p.metodo === 'ach3' ? 3 : 1);
+      setBrebCuenta(p.metodo === 'breb2' ? 2 : p.metodo === 'breb3' ? 3 : p.metodo === 'breb4' ? 4 : 1);
+      setAchCuenta(p.metodo === 'ach3' ? 3 : p.metodo === 'ach4' ? 4 : 1);
       setSendForm(prev => ({ ...prev, destinationCountry: 'Colombia', destinationCurrency: 'COP' }));
     }
     setMouvDestId(null);
@@ -894,7 +898,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>
                                   {sendStep === 1 && (sendForm.destinationCurrency === 'USD' ? 'Desde tu billetera USDT' : 'Desde tu cuenta en pesos colombianos')}
                                   {sendStep === 2 && <>Enviando <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} {displayCurrency(sendForm.destinationCurrency)}</span> · <button onClick={() => setSendStep(1)} style={{ textDecoration: 'underline', color: '#F4F4F2' }}>cambiar</button></>}
-                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? (saldoUnificado ? 'Bre-B' : 'Bre-B · Cuenta 2') : sendSourceRail === 'COP_ACH' ? (achCuenta === 3 ? 'ACH · Cuenta 3' : 'ACH') : brebCuenta === 3 ? 'Bre-B · Cuenta 3' : 'Bre-B'} · solo beneficiarios inscritos</>}
+                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? (saldoUnificado ? 'Bre-B' : 'Bre-B · Cuenta 2') : sendSourceRail === 'COP_ACH' ? (achCuenta >= 3 ? `ACH · Cuenta ${achCuenta}` : 'ACH') : brebCuenta >= 3 ? `Bre-B · Cuenta ${brebCuenta}` : 'Bre-B'} · solo beneficiarios inscritos</>}
                                   {sendStep === 4 && sendMode !== 'pay' && 'Revisa los datos antes de confirmar'}
                               </p>
                           </div>
@@ -921,7 +925,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // Un envío sale de UN SOLO riel (lo define el método del
                           // paso 2), así que lo enviable de una vez es el riel MAYOR,
                           // no la suma — 'Todo' con la suma nunca pasaba la validación.
-                          const avail = isUsdt ? displayBalance('USD') : Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'), getBalance('COP_C3'));
+                          const avail = isUsdt ? displayBalance('USD') : Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'), getBalance('COP_C3'), getBalance('COP_C4'));
                           const quicks = isUsdt ? [5, 20, 50] : [10000, 50000, 200000];
                           const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
                           return (
@@ -1063,16 +1067,25 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // cuenta sale: la 1 paga con el saldo Bre-B y la 2 con
                           // el saldo ACH. 'brebX' = Bre-B elegido, cuenta aún no.
                           const permitido = (k: string) => !metodos || (metodos as readonly string[]).includes(k);
-                          type CuentaRiel = { key: 'breb' | 'breb2' | 'breb3'; n: number; rail: string; railLabel: string; fee: number };
+                          type CuentaRiel = { key: 'breb' | 'breb2' | 'breb3' | 'breb4'; n: number; rail: string; railLabel: string; fee: number };
+                          const conCs = !metodos && !saldoUnificado;
                           const BREB_CUENTAS: CuentaRiel[] = ([
                               { key: 'breb', n: 1, rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
                               { key: 'breb2', n: 2, rail: 'COP_ACH', railLabel: 'ACH', fee: 1200 },
-                              // Cuenta 3: con el saldo Bre-B, cuando el admin la activa.
-                              // Cuenta 3: con el Saldo Cuenta 3 (COP_C3), cuando el admin la activa.
-                              ...(c3.breb && !metodos && !saldoUnificado ? [{ key: 'breb3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 }] : []),
+                              // Cuentas 3 y 4: con el Saldo Cuenta 3 (COP_C3) / Saldo
+                              // Cuenta 4 (COP_C4), cuando el admin las activa.
+                              ...(c3.breb && conCs ? [{ key: 'breb3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 }] : []),
+                              ...(c4.breb && conCs ? [{ key: 'breb4' as const, n: 4, rail: 'COP_C4', railLabel: 'Cuenta 4', fee: 2500 }] : []),
                           ] as CuentaRiel[]).filter(c => permitido(c.key));
-                          // ACH · Cuenta 3 (Saldo Cuenta 3), cuando el admin la activa.
-                          const ACH3 = c3.ach && !metodos && !saldoUnificado ? { key: 'ach3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 } : null;
+                          // ACH · Cuenta 3 y ACH · Cuenta 4, cuando el admin las activa.
+                          type CuentaAch = { key: 'ach3' | 'ach4'; n: 3 | 4; rail: string; railLabel: string; fee: number };
+                          const ACH_EXTRA: CuentaAch[] = [
+                              ...(c3.ach && conCs ? [{ key: 'ach3' as const, n: 3 as const, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 }] : []),
+                              ...(c4.ach && conCs ? [{ key: 'ach4' as const, n: 4 as const, rail: 'COP_C4', railLabel: 'Cuenta 4', fee: 2500 }] : []),
+                          ];
+                          const yJoin = (xs: string[]) => xs.length <= 1 ? (xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`;
+                          const unirCuentas = (ns: number[]) => ns.length === 2 ? `Cuenta ${ns[0]} y Cuenta ${ns[1]}` : `Cuenta ${yJoin(ns.map(String))}`;
+                          const textoProx = (ns: number[]) => ns.length ? ` · ${yJoin(ns.map(n => `la ${n}`))}, próximamente` : '';
                           const METHODS = ([
                               { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
@@ -1082,9 +1095,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // Con un solo saldo (Operadores) todos los métodos salen
                           // del mismo; y "Saldo Saldo Lincoin" no se repite.
                           const lblSaldo = (railLabel: string) => saldoUnificado ? 'Saldo disponible' : railLabel.startsWith('Saldo') ? railLabel : `Saldo ${railLabel}`;
-                          const selMeta = [...BREB_CUENTAS, ...METHODS, ...(ACH3 ? [ACH3] : [])].find(x => x.key === sendMethodSel);
+                          const selMeta = [...BREB_CUENTAS, ...METHODS, ...ACH_EXTRA].find(x => x.key === sendMethodSel);
                           const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee;
-                          const brebSel = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'brebX';
+                          const brebSel = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' || sendMethodSel === 'brebX';
                           const brebAlcanza = BREB_CUENTAS.some(c => getBalance(c.rail) >= amtStep2 + c.fee);
                           // Una sola cuenta Bre-B habilitada: se elige al tocar Bre-B,
                           // sin preguntar "¿desde qué cuenta?".
@@ -1094,19 +1107,22 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // app "no dejaba enviar" (30 oct, $35 M en Saldo Lincoin y
                           // $66.958 en ACH). Se le dice qué hacer.
                           const achM = METHODS.find(m => m.key === 'ach');
-                          const achAlcanza = (!!achM && getBalance(achM.rail) >= amtStep2 + achM.fee) || (!!ACH3 && getBalance(ACH3.rail) >= amtStep2 + ACH3.fee);
+                          const achExtraAlcanza = ACH_EXTRA.find(c => getBalance(c.rail) >= amtStep2 + c.fee) ?? null;
+                          const achAlcanza = (!!achM && getBalance(achM.rail) >= amtStep2 + achM.fee) || !!achExtraAlcanza;
                           const moverPrimero = !saldoUnificado && amtStep2 > 0 && !brebAlcanza && !achAlcanza
                               && getBalance('COP') >= amtStep2;
                           const radio = (on: boolean) => <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: on ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />;
-                          // Cuentas que vienen en camino (Bre-B · Cuenta 3 y ACH ·
-                          // Cuentas 2 y 3): se muestran apagadas con "Próximamente"
+                          // Cuentas que vienen en camino (Bre-B · Cuentas 3 y 4 y ACH ·
+                          // Cuentas 2, 3 y 4): se muestran apagadas con "Próximamente"
                           // para que el cliente sepa que existen, pero no se pueden
                           // elegir hasta que el servidor las tenga conectadas. Nunca
                           // llevan el nombre del aliado que hay detrás. Solo para
                           // quien ve todos los métodos (los operadores tienen una
                           // lista cerrada y no las ven).
                           const proximas = !metodos && !saldoUnificado;
-                          const achSel = sendMethodSel === 'ach' || sendMethodSel === 'ach3';
+                          const brebProx = proximas ? [3, 4].filter(n => !BREB_CUENTAS.some(c => c.n === n)) : [];
+                          const achProx = proximas ? [2, 3, 4].filter(n => !ACH_EXTRA.some(c => c.n === n)) : [];
+                          const achSel = sendMethodSel === 'ach' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4';
                           const filaProxima = (titulo: string) => (
                               <div key={titulo} aria-disabled="true" className="w-full flex items-center gap-3"
                                   style={{ padding: '11px 14px', borderRadius: 11, opacity: 0.6, cursor: 'not-allowed', border: '1px dashed rgba(255,255,255,0.12)', background: 'transparent' }}>
@@ -1136,7 +1152,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: brebAlcanza ? '#4ADE80' : '#878E88' }}>
                                               {brebUnica
                                                   ? <>{lblSaldo(brebUnica.railLabel)}: ${Math.round(getBalance(brebUnica.rail)).toLocaleString('es-CO')}{!brebAlcanza && amtStep2 > 0 ? ` · te faltan $${Math.ceil(amtStep2 + brebUnica.fee - getBalance(brebUnica.rail)).toLocaleString('es-CO')}` : ''}</>
-                                                  : brebSel ? 'Elige de qué cuenta sale' : BREB_CUENTAS.length >= 3 ? '3 cuentas · Cuenta 1, 2 y 3' : proximas ? 'Cuenta 1 y Cuenta 2 · la 3, próximamente' : '2 cuentas · Cuenta 1 y Cuenta 2'}
+                                                  : brebSel ? 'Elige de qué cuenta sale' : `${unirCuentas(BREB_CUENTAS.map(c => c.n))}${textoProx(brebProx)}`}
                                           </span>
                                       </span>
                                       {radio(brebSel)}
@@ -1145,7 +1161,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   {brebSel && !brebUnica && (
                                       <div className="space-y-2" style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid rgba(74,222,128,0.25)' }}>
                                           <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', paddingTop: 2 }}>¿DESDE QUÉ CUENTA BRE-B?</p>
-                                          {BREB_CUENTAS.map(c => {
+                                          {[1, 2, 3, 4].map(nB => {
+                                              const c = BREB_CUENTAS.find(x => x.n === nB);
+                                              if (!c) return brebProx.includes(nB) ? filaProxima(`Bre-B · Cuenta ${nB}`) : null;
                                               const bal = getBalance(c.rail);
                                               const need = amtStep2 + c.fee;
                                               const enough = bal >= need;
@@ -1167,7 +1185,6 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                   </button>
                                               );
                                           })}
-                                          {proximas && !BREB_CUENTAS.some(c => c.key === 'breb3') && filaProxima('Bre-B · Cuenta 3')}
                                       </div>
                                   )}
                                   {METHODS.map(m => {
@@ -1177,7 +1194,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       const sel = m.key === 'ach' ? achSel : sendMethodSel === m.key;
                                       return (
                                           <React.Fragment key={m.key}>
-                                          <button type="button" onClick={() => { if (m.key === 'ach' && achSel) return; if (enough) setSendMethodSel(m.key as any); else if (m.key === 'ach' && ACH3 && achAlcanza) setSendMethodSel('ach3'); }}
+                                          <button type="button" onClick={() => { if (m.key === 'ach' && achSel) return; if (enough) setSendMethodSel(m.key as any); else if (m.key === 'ach' && achExtraAlcanza) setSendMethodSel(achExtraAlcanza.key); }}
                                               className="w-full flex items-center gap-3 text-left transition-colors"
                                               style={{ padding: '13px 15px', borderRadius: 12, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
                                                   border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
@@ -1191,25 +1208,28 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                   </span>
                                                   <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
                                                       {m.key === 'ach' && proximas && !achSel
-                                                          ? <>{lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')} · {ACH3 ? 'Cuenta 1 y Cuenta 3 · la 2, próximamente' : 'Cuenta 1 · la 2 y la 3, próximamente'}</>
+                                                          ? <>{lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')} · {unirCuentas([1, ...ACH_EXTRA.map(c => c.n)])}{textoProx(achProx)}</>
                                                           : <>{lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')}</>}
                                                       {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
                                                   </span>
                                               </span>
                                               {radio(sel)}
                                           </button>
-                                          {/* ACH: hoy sale todo por la Cuenta 1 (se elige sola al
-                                              tocar ACH); la 2 y la 3 se ven, apagadas. */}
+                                          {/* ACH: la Cuenta 1 se elige sola al tocar ACH; la 3 y la 4
+                                              salen cuando el admin las activa; las demás se ven, apagadas. */}
                                           {m.key === 'ach' && achSel && proximas && (
                                               <div className="space-y-2" style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid rgba(74,222,128,0.25)' }}>
                                                   <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', paddingTop: 2 }}>¿DESDE QUÉ CUENTA ACH?</p>
-                                                  {([{ key: 'ach' as const, n: 1, fee: m.fee, rail: m.rail, railLabel: m.railLabel, extra: null as string | null }, ...(ACH3 ? [{ key: 'ach3' as const, n: 3, fee: ACH3.fee, rail: ACH3.rail, railLabel: ACH3.railLabel, extra: 'Llega en 6 a 24 horas' }] : [])]).map(c => {
+                                                  {[1, 2, 3, 4].map(nA => {
+                                                      const ex = ACH_EXTRA.find(x => x.n === nA);
+                                                      const c = nA === 1 ? { key: 'ach' as const, n: 1, fee: m.fee, rail: m.rail, railLabel: m.railLabel, extra: null as string | null }
+                                                          : ex ? { ...ex, extra: 'Llega en 6 a 24 horas' as string | null } : null;
+                                                      if (!c) return achProx.includes(nA) ? filaProxima(`ACH · Cuenta ${nA}`) : null;
                                                       const balC = getBalance(c.rail);
                                                       const okC = balC >= amtStep2 + c.fee;
                                                       const selC = sendMethodSel === c.key;
                                                       return (
                                                           <React.Fragment key={c.key}>
-                                                          {c.n === 3 && filaProxima('ACH · Cuenta 2')}
                                                           <button type="button" onClick={() => { if (okC) setSendMethodSel(c.key); }}
                                                               className="w-full flex items-center gap-3 text-left transition-colors"
                                                               style={{ padding: '11px 14px', borderRadius: 11, opacity: okC ? 1 : 0.55, cursor: okC ? 'pointer' : 'not-allowed',
@@ -1226,8 +1246,6 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                           </React.Fragment>
                                                       );
                                                   })}
-                                                  {!ACH3 && filaProxima('ACH · Cuenta 2')}
-                                                  {!ACH3 && filaProxima('ACH · Cuenta 3')}
                                               </div>
                                           )}
                                           </React.Fragment>
@@ -1260,15 +1278,15 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           // salía por ACH con el contacto viejo.
                                           if (sendContact) {
                                               const esBrebContacto = (sendContact as any).destKind === 'breb';
-                                              const esBrebMetodo = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3';
-                                              const esAchMetodo = sendMethodSel === 'ach' || sendMethodSel === 'ach3';
+                                              const esBrebMetodo = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4';
+                                              const esAchMetodo = sendMethodSel === 'ach' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4';
                                               if (esBrebContacto !== esBrebMetodo || (!esAchMetodo && !esBrebMetodo)) setSendContact(null);
                                           }
-                                          if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'ach' || sendMethodSel === 'ach3') {
+                                          if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' || sendMethodSel === 'ach' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4') {
                                               setSendMode('bank');
-                                              setBrebCuenta(sendMethodSel === 'breb2' ? 2 : sendMethodSel === 'breb3' ? 3 : 1);
-                                              setAchCuenta(sendMethodSel === 'ach3' ? 3 : 1);
-                                              setSendSourceRail(sendMethodSel === 'breb' || sendMethodSel === 'breb3' ? 'COP_BREB' : 'COP_ACH');
+                                              setBrebCuenta(sendMethodSel === 'breb2' ? 2 : sendMethodSel === 'breb3' ? 3 : sendMethodSel === 'breb4' ? 4 : 1);
+                                              setAchCuenta(sendMethodSel === 'ach3' ? 3 : sendMethodSel === 'ach4' ? 4 : 1);
+                                              setSendSourceRail(sendMethodSel === 'breb' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' ? 'COP_BREB' : 'COP_ACH');
                                           } else {
                                               setSendMode(sendMethodSel);
                                               setSendSourceRail('COP');
@@ -1612,7 +1630,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {sendStep === 4 && sendMode === 'bank' && (() => {
                           const amt = getRawAmount(sendForm.amount);
                           const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
-                          const railLbl = isBrebM ? (brebCuenta >= 2 && !saldoUnificado ? `Bre-B · Cuenta ${brebCuenta}` : 'Bre-B') : (achCuenta === 3 ? 'ACH · Cuenta 3' : 'ACH');
+                          const railLbl = isBrebM ? (brebCuenta >= 2 && !saldoUnificado ? `Bre-B · Cuenta ${brebCuenta}` : 'Bre-B') : (achCuenta >= 3 ? `ACH · Cuenta ${achCuenta}` : 'ACH');
+                          // Las cuentas que se pueden elegir en Confirmar (la 3 y la 4
+                          // solo si el admin las activó).
+                          const nsBreb = [1, 2, ...(c3.breb ? [3] : []), ...(c4.breb ? [4] : [])] as (1 | 2 | 3 | 4)[];
+                          const nsAch = [1, ...(c3.ach ? [3] : []), ...(c4.ach ? [4] : [])] as (1 | 3 | 4)[];
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           // Todo de `destinatario`: con un beneficiario inscrito, la
                           // pantalla no puede mostrar la llave de uno y el nombre de otro.
@@ -1668,14 +1690,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               {isBrebM && !saldoUnificado && !metodos && (
                                   <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
                                       <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ENVIAR POR</span>
-                                      <div className={`grid ${c3.breb ? 'grid-cols-3' : 'grid-cols-2'}`} style={{ gap: 8, marginTop: 8 }}>
-                                          {((c3.breb ? [1, 2, 3] : [1, 2]) as (1 | 2 | 3)[]).map(n => {
+                                      <div className={`grid ${nsBreb.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`} style={{ gap: 8, marginTop: 8 }}>
+                                          {nsBreb.map(n => {
                                               const rc = n === 2 ? 'COP_ACH' : 'COP_BREB';
-                                              // La 3 paga con el Saldo Cuenta 3.
-                                              const bal = getBalance(n === 3 ? 'COP_C3' : rc);
+                                              // La 3 y la 4 pagan con su propio saldo (Saldo Cuenta 3 / 4).
+                                              const bal = getBalance(n >= 3 ? railCuenta(n) : rc);
                                               const sel = brebCuenta === n;
                                               // La comisión de cada cuenta: la cotizada si es la elegida.
-                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : n === 3 ? 2500 : 1200;
+                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : n >= 3 ? 2500 : 1200;
                                               const alcanza = bal >= amt + feeN;
                                               const bloqueada = !sel && !alcanza;
                                               return (
@@ -1687,7 +1709,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                           opacity: bloqueada ? 0.5 : 1, cursor: bloqueada ? 'not-allowed' : 'pointer' }}>
                                                       <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Cuenta {n}</span>
                                                       <span style={{ display: 'block', fontSize: 11, color: sel ? '#4ADE80' : '#878E88', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                          Saldo {n === 2 ? 'ACH' : n === 3 ? 'Cuenta 3' : 'Bre-B'} · ${Math.round(bal).toLocaleString('es-CO')}{!alcanza ? ' · no alcanza' : ''}
+                                                          Saldo {n === 2 ? 'ACH' : n >= 3 ? `Cuenta ${n}` : 'Bre-B'} · ${Math.round(bal).toLocaleString('es-CO')}{!alcanza ? ' · no alcanza' : ''}
                                                       </span>
                                                   </button>
                                               );
@@ -1695,13 +1717,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       </div>
                                   </div>
                               )}
-                              {/* ENVIAR POR (ACH): Cuenta 1 o Cuenta 3, las dos con el saldo ACH. */}
-                              {!isBrebM && c3.ach && !saldoUnificado && !metodos && (
+                              {/* ENVIAR POR (ACH): Cuenta 1 (saldo ACH), y la 3 y la 4 con su propio saldo. */}
+                              {!isBrebM && nsAch.length > 1 && !saldoUnificado && !metodos && (
                                   <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
                                       <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ENVIAR POR</span>
-                                      <div className="grid grid-cols-2" style={{ gap: 8, marginTop: 8 }}>
-                                          {([1, 3] as const).map(n => {
-                                              const bal = getBalance(n === 3 ? 'COP_C3' : 'COP_ACH');
+                                      <div className={`grid ${nsAch.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`} style={{ gap: 8, marginTop: 8 }}>
+                                          {nsAch.map(n => {
+                                              const bal = getBalance(n >= 3 ? railCuenta(n) : 'COP_ACH');
                                               const sel = achCuenta === n;
                                               const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : 2500;
                                               const alcanza = bal >= amt + feeN;
@@ -1715,7 +1737,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                           opacity: bloqueada ? 0.5 : 1, cursor: bloqueada ? 'not-allowed' : 'pointer' }}>
                                                       <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Cuenta {n}</span>
                                                       <span style={{ display: 'block', fontSize: 11, color: sel ? '#4ADE80' : '#878E88', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                          {n === 3 ? 'Llega en 6 a 24 h' : 'Ciclos ACH'} · {!alcanza ? 'no alcanza' : `$${Math.round(bal).toLocaleString('es-CO')}`}
+                                                          {n >= 3 ? 'Llega en 6 a 24 h' : 'Ciclos ACH'} · {!alcanza ? 'no alcanza' : `$${Math.round(bal).toLocaleString('es-CO')}`}
                                                       </span>
                                                   </button>
                                               );
@@ -1731,12 +1753,12 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               {/* Desglose — la comisión del proveedor se cobra al cliente */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
                                   {[
-                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${(isBrebM && brebCuenta === 3) || (!isBrebM && achCuenta === 3) ? 'Saldo Cuenta 3' : sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
+                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${isBrebM && brebCuenta >= 3 ? `Saldo Cuenta ${brebCuenta}` : !isBrebM && achCuenta >= 3 ? `Saldo Cuenta ${achCuenta}` : sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
                                       { l: saldoUnificado ? 'Comisión del envío' : `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
                                           : payoutQuote?.error ? '—'
                                           : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
                                           : 'Precio fijo · al confirmar' },
-                                      { l: 'Llega', v: isBrebM ? (brebCuenta === 3 ? 'En 1 a 5 minutos' : 'En segundos') : (achCuenta === 3 ? 'En 6 a 24 horas' : achEta()) },
+                                      { l: 'Llega', v: isBrebM ? (brebCuenta >= 3 ? 'En 1 a 5 minutos' : 'En segundos') : (achCuenta >= 3 ? 'En 6 a 24 horas' : achEta()) },
                                   ].map((row, i) => (
                                       <div key={row.l} className="flex items-center justify-between" style={{ padding: '11px 16px', fontSize: 13, borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.06)' }}>
                                           <span style={{ color: '#878E88' }}>{row.l}</span>
@@ -1988,7 +2010,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
                               : !isCop ? `Cuenta ···${last4}`
                               : isBrebS ? `Llave ···${last4} · Bre-B${cuentaBS >= 2 && !saldoUnificado ? ` · Cuenta ${cuentaBS}` : ''}`
-                              : `${dR.bank ?? 'Banco'} ···${last4} · ACH${cuentaAS === 3 ? ' · Cuenta 3' : ''}`;
+                              : `${dR.bank ?? 'Banco'} ···${last4} · ACH${cuentaAS >= 3 ? ` · Cuenta ${cuentaAS}` : ''}`;
                           const subOk = isWalletSend
                               ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
                               : !isCop
@@ -2098,8 +2120,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               id: realMov?.id ?? (sendResult?.providerRef || `TX-${Date.now()}`),
                                               type: isWalletSend ? 'send' : 'dispersion',
                                               amount: amt,
-                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS === 3 ? 'COP_C3' : 'COP_BREB') : (isCop ? (cuentaAS === 3 ? 'COP_C3' : 'COP_ACH') : sendForm.destinationCurrency)),
-                                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : cuentaAS === 3 ? { cuentaAch: 3 } : {}) } : {}),
+                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS >= 3 ? railCuenta(cuentaBS) : 'COP_BREB') : (isCop ? (cuentaAS >= 3 ? railCuenta(cuentaAS) : 'COP_ACH') : sendForm.destinationCurrency)),
+                                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : cuentaAS >= 3 ? { cuentaAch: cuentaAS } : {}) } : {}),
                                               status: receiptStatus,
                                               createdAt: sendResult?.at || new Date().toISOString(),
                                               beneficiary: name,
