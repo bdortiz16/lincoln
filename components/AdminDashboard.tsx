@@ -11,7 +11,6 @@ import {
   Eye, 
   LogOut, 
   UserCheck, 
-  Building2, 
   CreditCard, 
   Landmark, 
   Settings, 
@@ -80,7 +79,6 @@ import {
   Vault
 } from 'lucide-react';
 import { Logo } from './Logo';
-import { RatesPanel } from './AdminPersonas/sections/RatesPanel';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
@@ -101,7 +99,6 @@ import { AdminLimitesEnvio } from './AdminLimitesEnvio';
 import { AdminCupos } from './AdminCupos';
 import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
-import { AdminGowd } from './AdminGowd';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
@@ -110,12 +107,11 @@ import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
 import { CollectionWalletCard } from './CollectionWalletCard';
-import type { AdminProfile } from './AdminPersonas/lib/adminAuth';
 import { FlagImg, flagUrl } from './FlagImg';
 import { PaletteChooser } from './PaletteChooser';
 import { useExchangeRates } from '../context/ExchangeRateContext'; 
 import { useSystemConfig, Coupon } from '../context/SystemConfigContext'; 
-import { useDatabase, AdminUser, BankDetail, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
+import { useDatabase, AdminUser, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
 import { useBusquedaClientes, conLocales } from './useBusquedaClientes';
 
 const SURL_ADMIN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -286,11 +282,11 @@ const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tu
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera', lincoin: 'Lincoin',
   team: 'Equipo Admin', reports: 'Reportes', marketing: 'Marketing', config: 'Configuración',
-  banks: 'Bancos', rates: 'Tasas de Cambio', security: 'Seguridad', design: 'Diseño y Apariencia',
+  security: 'Seguridad', design: 'Diseño y Apariencia',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
   tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores',
-  otcCierres: 'Cierres OTC', gowd: 'Gowd · Brasil',
+  otcCierres: 'Cierres OTC',
 };
 
 // Cómo se llama cada pestaña DENTRO de su sección. La primera no puede
@@ -549,12 +545,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const soloTesoreria = rol === 'tesoreria';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd' | 'coinsenda'>(soloTesoreria ? 'cargues' : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'marketing' | 'config' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda'>(soloTesoreria ? 'cargues' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [ratesSaved, setRatesSaved] = useState(false);
   const [showPaletteChooser, setShowPaletteChooser] = useState(false);
   
   // Clients Logic
@@ -1301,14 +1296,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [internalReferenceId, setInternalReferenceId] = useState('');
   const [internalProofFile, setInternalProofFile] = useState<File | null>(null);
 
-  // Banks Logic
-  const [selectedBankCountry, setSelectedBankCountry] = useState('Colombia');
-  const [showBankModal, setShowBankModal] = useState(false);
-  const [editingBank, setEditingBank] = useState<BankDetail | null>(null);
-  const [bankForm, setBankForm] = useState<BankDetail>({
-      id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: ''
-  });
-
   // Team Logic
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -1344,7 +1331,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       deleteUser,
       updateUserProfile,
       bankingOptions,
-      updateBankList,
       approveDeposit,
       rejectDeposit,
       completeWithdrawal,
@@ -1849,33 +1835,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       setNewCouponCode('');
       setNewCouponDiscount('');
       showToast("Cupón creado");
-  };
-
-  const handleBankSave = () => {
-      const currentList = bankingOptions[selectedBankCountry] || [];
-      if (editingBank) {
-          const updatedList = currentList.map(b => b.id === editingBank.id ? bankForm : b);
-          updateBankList(selectedBankCountry, updatedList);
-      } else {
-          updateBankList(selectedBankCountry, [...currentList, { ...bankForm, id: Date.now().toString() }]);
-      }
-      setShowBankModal(false);
-      setEditingBank(null);
-      showToast("Cuenta guardada correctamente");
-  };
-
-  const handleQrUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          try {
-              const base64 = await fileToBase64(file);
-              setBankForm(prev => ({ ...prev, qrImageUrl: base64 }));
-              showToast("Imagen QR cargada");
-          } catch (error) {
-              console.error(error);
-              showToast("Error al cargar imagen");
-          }
-      }
   };
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4848,224 +4807,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 );
 
 
-const renderBanks = () => (
-    <div className="space-y-6 animate-in fade-in duration-300">
-        <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-bold text-slate-800">Configuración de Bancos</h2>
-            <div className="flex gap-2 items-center">
-                <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold flex items-center gap-1"><div className="w-2 h-2 rounded-full bg-green-600 animate-pulse"></div> Sistema Operativo</span>
-                <span className="text-sm text-slate-400 font-medium">14/12/2025</span>
-            </div>
-        </div>
-
-        <div className="space-y-4">
-            <h3 className="text-lg font-bold text-slate-800">Cuentas Bancarias y Redes</h3>
-            <div className="flex flex-col md:flex-row justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200">
-                <div className="flex-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">SELECCIONAR PAÍS</p>
-                    <div className="flex flex-wrap gap-2">
-                        {BANK_COUNTRIES.map(country => (
-                            <button 
-                                key={country}
-                                onClick={() => setSelectedBankCountry(country)}
-                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all border ${selectedBankCountry === country ? 'bg-[#0C0E0D] border-[#0C0E0D]' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
-                            >
-                                {country}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                <div className="flex items-end">
-                    <button onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }} className="bg-[#0C0E0D] px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 h-10 shadow-lg hover:bg-[#161A17] transition-colors">
-                        <Plus size={16}/> Agregar Cuenta
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {(bankingOptions[selectedBankCountry] || []).map(bank => (
-                <div key={bank.id} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative group">
-                    <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => { setEditingBank(bank); setBankForm(bank); setShowBankModal(true); }} className="text-slate-400 hover:text-[#0C0E0D] p-1"><Edit2 size={16}/></button>
-                        <button onClick={() => { 
-                            const newList = bankingOptions[selectedBankCountry].filter(b => b.id !== bank.id);
-                            updateBankList(selectedBankCountry, newList);
-                        }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={16}/></button>
-                    </div>
-
-                    <div className="flex items-center gap-4 mb-6">
-                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center font-bold text-sm ${bank.logoColor || 'bg-yellow-400 text-black'}`}>
-                            {bank.logoText || bank.name.substring(0,2)}
-                        </div>
-                        <div>
-                            <h4 className="font-bold text-slate-800 text-lg">{bank.name}</h4>
-                            <span className="bg-slate-50 text-[#4ADE80] text-[10px] font-bold px-2 py-0.5 rounded uppercase">{bank.type === 'qr' ? 'CÓDIGO QR' : 'CUENTA BANCARIA'}</span>
-                        </div>
-                    </div>
-
-                    <div className="flex justify-between items-end text-sm">
-                        <div className="space-y-1">
-                            <p className="text-slate-400">Cuenta / Key:</p>
-                            <p className="text-slate-400">Tipo:</p>
-                            <p className="text-slate-400">Beneficiario:</p>
-                        </div>
-                        <div className="space-y-1 text-right">
-                            <p className="font-bold text-slate-700 font-mono">{bank.accountNumber}</p>
-                            <p className="font-medium text-slate-600">{bank.accountType}</p>
-                            <p className="font-medium text-slate-600">{bank.beneficiary}</p>
-                        </div>
-                    </div>
-                </div>
-            ))}
-            
-            <div 
-                onClick={() => { setEditingBank(null); setBankForm({ id: '', name: '', type: 'bank', accountNumber: '', accountType: '', beneficiary: '', taxId: '', taxIdType: '', logoColor: 'bg-slate-100 text-slate-500', logoText: '', qrImageUrl: '' }); setShowBankModal(true); }}
-                className="border-2 border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center p-8 text-slate-400 cursor-pointer hover:border-slate-300 hover:bg-slate-50 transition-all min-h-[200px]"
-            >
-                <Plus size={32} className="mb-2"/>
-                <span className="font-bold text-sm">Agregar Nueva Cuenta</span>
-            </div>
-        </div>
-
-        {/* Bank Modal - Specific Layout Requested */}
-        {showBankModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                <div className="bg-white rounded-xl w-full max-w-md overflow-hidden animate-in zoom-in-95">
-                    <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                        <h3 className="font-bold text-xl text-slate-800">Editar Cuenta</h3>
-                        <button onClick={() => setShowBankModal(false)}><X className="text-slate-400 hover:text-slate-600" /></button>
-                    </div>
-                    
-                    <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">PAÍS</label>
-                            <div className="w-full h-12 px-4 border border-slate-200 rounded-lg bg-slate-50 text-slate-600 flex items-center">
-                                {selectedBankCountry}
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">NOMBRE BANCO/RED</label>
-                                <input type="text" value={bankForm.name} onChange={(e) => setBankForm({...bankForm, name: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">TIPO</label>
-                                <select value={bankForm.type} onChange={(e) => setBankForm({...bankForm, type: e.target.value as any})} className="w-full h-11 px-3 border border-slate-300 rounded-lg bg-white focus:border-[#0C0E0D] outline-none">
-                                    <option value="bank">Cuenta Bancaria</option>
-                                    <option value="qr">Código QR</option>
-                                    <option value="crypto">Crypto Wallet</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        {/* QR Image Area - Recreated as requested */}
-                        {bankForm.type === 'qr' && (
-                            <div className="border-2 border-dashed border-slate-200 bg-slate-50/30 rounded-xl p-4 text-center">
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-2 text-left">IMAGEN DEL CÓDIGO QR</label>
-                                <div className="flex items-center gap-4">
-                                    <div className="w-20 h-20 bg-white border border-slate-200 rounded-lg flex items-center justify-center overflow-hidden">
-                                        {bankForm.qrImageUrl ? (
-                                            <img src={bankForm.qrImageUrl} alt="QR" className="w-full h-full object-cover" />
-                                        ) : (
-                                            <QrCode size={32} className="text-slate-300" />
-                                        )}
-                                    </div>
-                                    <div className="flex-1">
-                                        <label className="cursor-pointer bg-white border border-slate-300 hover:border-[#0C0E0D] text-slate-700 font-bold text-sm py-2 px-4 rounded-lg w-full flex items-center justify-center gap-2 transition-colors">
-                                            <UploadCloud size={16}/> Subir Imagen
-                                            <input type="file" className="hidden" accept="image/*" onChange={handleQrUpload}/>
-                                        </label>
-                                        <p className="text-[10px] text-slate-400 mt-2 text-left">Formatos aceptados: JPG, PNG</p>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">{bankForm.type === 'qr' ? 'REFERENCIA/LINK DEL QR' : 'NÚMERO DE CUENTA'}</label>
-                            <input 
-                                type="text" 
-                                value={bankForm.accountNumber} 
-                                onChange={(e) => setBankForm({...bankForm, accountNumber: e.target.value})} 
-                                className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" 
-                                placeholder={bankForm.type === 'qr' ? "Opcional si subes imagen" : "000-000000-00"}
-                            />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">{bankForm.type === 'crypto' ? 'RED (NETWORK)' : 'TIPO CUENTA'}</label>
-                                <input type="text" value={bankForm.accountType} onChange={(e) => setBankForm({...bankForm, accountType: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" placeholder="Ej: Ahorros / TRC20"/>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">BENEFICIARIO</label>
-                                <input type="text" value={bankForm.beneficiary} onChange={(e) => setBankForm({...bankForm, beneficiary: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">TIPO ID</label>
-                                <input type="text" value={bankForm.taxIdType} onChange={(e) => setBankForm({...bankForm, taxIdType: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" placeholder="NIT/RUT"/>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">NÚMERO ID</label>
-                                <input type="text" value={bankForm.taxId} onChange={(e) => setBankForm({...bankForm, taxId: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">COLOR LOGO (TAILWIND)</label>
-                                <input type="text" value={bankForm.logoColor} onChange={(e) => setBankForm({...bankForm, logoColor: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none text-xs" placeholder="bg-yellow-400 text-black"/>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">TEXTO LOGO (2 LETRAS)</label>
-                                <input type="text" value={bankForm.logoText} onChange={(e) => setBankForm({...bankForm, logoText: e.target.value})} className="w-full h-11 px-3 border border-slate-300 rounded-lg focus:border-[#0C0E0D] outline-none" />
-                            </div>
-                        </div>
-
-                        <button onClick={handleBankSave} className="w-full h-12 bg-[#0C0E0D] font-bold rounded-lg hover:bg-[#161A17] shadow-lg mt-4">
-                            Guardar Cuenta
-                        </button>
-                    </div>
-                </div>
-            </div>
-        )}
-    </div>
-);
-
-const renderRates = () => {
-  const handleSaveRates = () => {
-    // Persistence happens automatically via localStorage in ExchangeRateContext
-    // This button just gives user confirmation feedback
-    setRatesSaved(true);
-    showToast('Tasas y fees guardados correctamente');
-    setTimeout(() => setRatesSaved(false), 2500);
-  };
-  // Perfil sintético para el RatesPanel compartido (mismo componente del
-  // admin de Personas): este admin entra con rol 'admin' de la app, que
-  // equivale a super_admin del panel de tasas.
-  const ratesProfile: AdminProfile = {
-    id: currentUser?.id ?? 'admin',
-    email: currentUser?.email ?? '',
-    fullName: currentUser?.companyName || currentUser?.name || 'Admin',
-    role: 'super_admin',
-    assignedCurrency: null,
-  };
-  return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-        {/* Sistema de tasas UNIFICADO (el mismo del admin Personas):
-            FastForex + fx_rate_snapshots en vivo + ventana nocturna +
-            modo API/Manual por par + Tiers de comisión. Una sola fuente
-            de verdad para apps y paneles. */}
-        <RatesPanel profile={ratesProfile} />
-
-    </div>
-  );
-};
+// Bancos y Tasas de Cambio se quitaron de este panel (1 nov, pedido del
+// dueño), igual que Gowd. Las tasas las sigue publicando el cron en
+// fx_rate_snapshots y el admin de Personas conserva su panel de tasas.
 
 // renderTeam() se eliminó: guardaba nombres en un JSON de configuración y no
 // creaba ni restringía ningún acceso. Dejarla, aunque fuera sin usar, invitaba
@@ -6000,14 +5744,11 @@ const renderDesign = () => (
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                             {grupoTesoreria}
                             <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />
-                            <AdminSidebarItem icon={Landmark} label="Gowd" active={activeTab === 'gowd'} onClick={() => navTo('gowd')} />
                             <AdminSidebarItem icon={Zap} label="Coinsenda" active={activeTab === 'coinsenda'} onClick={() => navTo('coinsenda')} />
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
                         </> },
                         { key: 'finanzas', title: 'Finanzas', items: <>
                             <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />
-                            <AdminSidebarItem icon={Building2} label="Bancos" active={activeTab === 'banks'} onClick={() => navTo('banks')} />
-                            <AdminSidebarItem icon={TrendingUp} label="Tasas de Cambio" active={activeTab === 'rates'} onClick={() => navTo('rates')} />
                             <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />
                         </> },
                         { key: 'sistema', title: 'Sistema', items: <>
@@ -6175,8 +5916,6 @@ const renderDesign = () => (
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}
                 {activeTab === 'design' && renderDesign()}
-                {activeTab === 'banks' && renderBanks()}
-                {activeTab === 'rates' && renderRates()}
                 {activeTab === 'team' && <AdminEquipo />}
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
@@ -6202,7 +5941,6 @@ const renderDesign = () => (
                   <AdminGasFreeSection />
                 </>)}
                 {activeTab === 'otcConfig' && <AdminContabilidad />}
-                {activeTab === 'gowd' && <AdminGowd />}
                 {activeTab === 'coinsenda' && <AdminCoinsenda />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}
