@@ -3,7 +3,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda, cuentaCoinsendaDe, secretoLlave, CUENTAS_COINSENDA, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
-import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
+import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, cuentaDeLlave, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
@@ -3312,7 +3312,7 @@ Deno.serve(async (req: Request) => {
         'caja_movimiento_crear', 'caja_movimiento_anular',
         'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
         // La llave con la que Lincoin firma ante Coinsenda
-        'coinsenda_llave_generar', 'coinsenda_config_guardar', 'coinsenda_cuenta3_set', 'coinsenda_cuenta_set',
+        'coinsenda_llave_generar', 'coinsenda_config_guardar', 'coinsenda_cuenta3_set', 'coinsenda_cuenta_set', 'coinsenda_llave_compartir',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -5029,7 +5029,34 @@ Deno.serve(async (req: Request) => {
       // estas acciones llevan `cuenta` (3 si no viene, que era la única).
       if (body.action === 'coinsenda_llave_estado') {
         const cuentaCs = cuentaCoinsendaDe(body.cuenta)
-        return json({ ok: true, cuenta: cuentaCs, llave: await estadoLlaveCoinsenda(db, cuentaCs), desdeSecreto: !!Deno.env.get(secretoLlave(cuentaCs)) })
+        // La Cuenta 4 puede firmar con la llave de la Cuenta 3 (subcuenta de
+        // Coinsenda): entonces se muestra esa, que es la que está registrada.
+        const compartida = cuentaDeLlave(await configCoinsenda(db, cuentaCs)) !== cuentaCs
+        return json({
+          ok: true, cuenta: cuentaCs, llave: await estadoLlaveCoinsenda(db, cuentaCs), desdeSecreto: !!Deno.env.get(secretoLlave(cuentaCs)),
+          compartida, llaveCompartida: compartida ? await estadoLlaveCoinsenda(db, 3) : null, compartidaDesdeSecreto: compartida && !!Deno.env.get(secretoLlave(3)),
+        })
+      }
+      // Que la Cuenta 4 firme con la llave de la Cuenta 3 (o vuelva a la suya).
+      // Cambia con qué se firma: se borra la última prueba y se apagan sus
+      // envíos hasta volver a probar, igual que al cambiar el correo.
+      if (body.action === 'coinsenda_llave_compartir') {
+        if (cuentaCoinsendaDe(body.cuenta) !== 4) return json({ ok: false, error: 'Solo la Cuenta 4 puede usar la llave de la Cuenta 3.' }, 400)
+        const compartir = body.compartir === true
+        if (compartir && !(await estadoLlaveCoinsenda(db, 3)) && !Deno.env.get(secretoLlave(3))) return json({ ok: false, error: 'La Cuenta 3 todavía no tiene llave.' }, 400)
+        const actual = await configCoinsenda(db, 4)
+        if ((actual.llaveCompartida === true) === compartir) return json({ ok: true, compartida: compartir, apagada: false })
+        const err = await guardarConfigCoinsenda(db, 4, { llaveCompartida: compartir, ultimaPrueba: null })
+        if (err) return errorGenerico('coinsenda_llave_compartir', { message: err })
+        let apagada = false
+        const { data: ac } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        const settings = ((ac as any)?.settings ?? {}) as Record<string, any>
+        if (settings.cuenta4?.breb === true || settings.cuenta4?.ach === true) {
+          const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, cuenta4: { breb: false, ach: false } } }).eq('id', 1)
+          apagada = !eUp
+        }
+        await auditAdmin(req, 'coinsenda.llave_compartida', { cuenta: 4, compartir, apagada })
+        return json({ ok: true, compartida: compartir, apagada })
       }
       // Generar la pareja. Con su código 2FA, y si ya hay una, solo con
       // `reemplazar`: una llave nueva deja sin efecto la registrada en
@@ -5039,6 +5066,7 @@ Deno.serve(async (req: Request) => {
         const otpErr = await requireAdminOtp(auth.userId, body.otp)
         if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
         if (!FIELD_ENC_KEY) return json({ ok: false, error: 'Falta FIELD_ENC_KEY en los secretos del servidor: sin ella la llave no se puede guardar cifrada.' }, 500)
+        if (cuentaDeLlave(await configCoinsenda(db, cuentaCs)) !== cuentaCs) return json({ ok: false, error: `La Cuenta ${cuentaCs} está usando la llave de la Cuenta 3. Para generar una propia, primero elige «Usar una llave propia».` }, 409)
         const previa = await estadoLlaveCoinsenda(db, cuentaCs)
         if (previa && body.reemplazar !== true) return json({ ok: false, existe: true, error: `Ya hay una llave generada para la Cuenta ${cuentaCs}. Si haces otra, la registrada en Coinsenda deja de servir hasta que pegues la nueva.` }, 409)
         const nueva = await generarParCoinsenda()
@@ -5126,8 +5154,9 @@ Deno.serve(async (req: Request) => {
         const cuentaCs = cuentaCoinsendaDe(body.cuenta)
         const cfg = await configCoinsenda(db, cuentaCs)
         if (!cfg.email && !cfg.telefono) return json({ ok: false, error: `Primero guarda el correo de la Cuenta ${cuentaCs} de Coinsenda.` }, 400)
-        const llaveC = await estadoLlaveCoinsenda(db, cuentaCs)
-        if (!llaveC && !Deno.env.get(secretoLlave(cuentaCs))) return json({ ok: false, error: `Primero genera la llave de la Cuenta ${cuentaCs} y regístrala en Coinsenda.` }, 400)
+        const deLlave = cuentaDeLlave(cfg)
+        const llaveC = await estadoLlaveCoinsenda(db, deLlave)
+        if (!llaveC && !Deno.env.get(secretoLlave(deLlave))) return json({ ok: false, error: `Primero genera la llave de la Cuenta ${deLlave} y regístrala en Coinsenda.` }, 400)
         const cli = new ClienteCoinsenda(db, cfg, 25_000)
         const pasos: { paso: string; ok: boolean; detalle?: string }[] = []
         // Solo campos de primer y segundo nivel, y listas cortas: es para
@@ -5212,7 +5241,7 @@ Deno.serve(async (req: Request) => {
           Promise.all(CUENTAS_COINSENDA.map(n => leerBolsaCoinsenda(n))),
           obligacionesTodas(),
           Promise.all(CUENTAS_COINSENDA.map(n => configCoinsenda(db, n))),
-          Promise.all(CUENTAS_COINSENDA.map(n => estadoLlaveCoinsenda(db, n))),
+          Promise.all(CUENTAS_COINSENDA.map(async n => estadoLlaveCoinsenda(db, cuentaDeLlave(await configCoinsenda(db, n))))),
           db.from('app_config').select('settings').eq('id', 1).maybeSingle(),
           leerPorPaginas(() => db.from('transactions').select(SELECT_ENVIO)
             .eq('type', 'dispersion').eq('raw_data->>proveedor', 'coinsenda').gte('created_at', inicioMes), { tope: 50_000 }),
@@ -5264,7 +5293,8 @@ Deno.serve(async (req: Request) => {
               cuenta: n, proveedor: PROV_COINSENDA[n], rail: RAIL_COINSENDA[n],
               email: cfg.email ?? null, configurada: !!(cfg.email || cfg.telefono),
               llave: llaves[i] ? { huella: llaves[i]!.huella, at: llaves[i]!.at } : null,
-              llaveDesdeSecreto: !!Deno.env.get(secretoLlave(n)),
+              llaveDesdeSecreto: !!Deno.env.get(secretoLlave(cuentaDeLlave(cfg))),
+              llaveCompartida: cuentaDeLlave(cfg) !== n,
               ultimaPrueba: up ? { at: up.at ?? null, ok: up.ok === true, detalle: up.detalle ?? null } : null,
               interruptores: { breb: settings[`cuenta${n}`]?.breb === true, ach: settings[`cuenta${n}`]?.ach === true },
               bolsa, bolsaError: 'error' in b ? b.error : null,

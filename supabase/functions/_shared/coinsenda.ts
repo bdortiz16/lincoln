@@ -29,7 +29,16 @@ export const CONFIG_COINSENDA = 'coinsenda_config'
 const claveConfig = (cuenta: CuentaCoinsenda) => cuenta === 4 ? `${CONFIG_COINSENDA}_c4` : CONFIG_COINSENDA
 // `cuenta` no se guarda: la pone configCoinsenda() al leer, para que el
 // cliente firme con la llave de ESA cuenta.
-export type ConfigCoinsenda = { cuenta: CuentaCoinsenda; email?: string | null; telefono?: string | null; dominio?: string; ultimaPrueba?: unknown }
+export type ConfigCoinsenda = { cuenta: CuentaCoinsenda; email?: string | null; telefono?: string | null; dominio?: string; ultimaPrueba?: unknown; llaveCompartida?: boolean }
+
+// En Coinsenda una SUBCUENTA comparte la clave pública de la cuenta
+// principal (lo mostró el panel de Desarrollador el 1 nov: la subcuenta ya
+// tenía registrada la misma clave) y solo cambia el correo. Por eso la
+// Cuenta 4 puede firmar con la llave de la Cuenta 3 (llaveCompartida) y su
+// propio correo; el correo distinto es lo que hace que Coinsenda abra la
+// sesión de la subcuenta y no la de la principal.
+export const cuentaDeLlave = (cfg: Pick<ConfigCoinsenda, 'cuenta' | 'llaveCompartida'>): CuentaCoinsenda =>
+  cfg.cuenta === 4 && cfg.llaveCompartida === true ? 3 : cfg.cuenta
 export type RespuestaCoinsenda = { status: number; data: any; error?: string }
 
 const DOMINIOS = new Set(['coinsenda.com', 'bitsenda.com'])
@@ -120,8 +129,9 @@ export class ClienteCoinsenda {
 
   /** Firma la aserción y la canjea por una sesión. */
   async login(): Promise<RespuestaCoinsenda> {
-    const llave = await llavePrivadaCoinsenda(this.db, this.cfg.cuenta)
-    if (!llave) return { status: 0, data: null, error: `Todavía no hay llave de la API de la Cuenta ${this.cfg.cuenta} (Admin → Coinsenda → Generar llave).` }
+    const deLlave = cuentaDeLlave(this.cfg)
+    const llave = await llavePrivadaCoinsenda(this.db, deLlave)
+    if (!llave) return { status: 0, data: null, error: `Todavía no hay llave de la API de la Cuenta ${deLlave} (Admin → Coinsenda → Generar llave).` }
     const iat = Math.floor(Date.now() / 1000)
     const signed_token = await firmarJwtRS256(llave, { ...this.identidad, iat, exp: iat + 300 })
     const r = await this.http(`${urlServicio('auth', this.dominio)}/pubkey`, {
