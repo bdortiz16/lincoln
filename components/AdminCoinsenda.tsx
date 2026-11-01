@@ -166,8 +166,11 @@ export const AdminCoinsenda: React.FC = () => {
 // La prueba NO mueve plata: inicia sesión con la llave y lee el perfil, las
 // billeteras y los medios de envío, con sus costos y topes.
 type Paso = { paso: string; ok: boolean; detalle?: string };
-type Prueba = { ok: boolean; pasos: Paso[]; perfil?: any; billeteras?: any[]; proveedores?: any[]; error?: string };
+type Prueba = { ok: boolean; pasos: Paso[]; perfil?: any; billeteras?: any[]; proveedores?: any[]; otras?: { billeteras?: number; proveedores?: number }; error?: string };
 
+const esCop = (x: any) => String(x?.currency ?? '').toLowerCase() === 'cop';
+const esOtraMoneda = (x: any) => !esCop(x);
+const copDe = (xs?: any[]) => (xs ?? []).filter(esCop);
 const num = (v: unknown) => { const n = Number(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n.toLocaleString('es-CO') : String(v ?? '—'); };
 const costos = (p: any): string => {
   const c = p?.provider?.costs;
@@ -269,26 +272,34 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
               </div>
             ))}
 
-            {!!prueba.billeteras?.length && (
+            {/* Solo lo de pesos: Coinsenda devuelve también billeteras y medios
+                de otras monedas (cripto) que Lincoin no usa y no se muestran. */}
+            {prueba.pasos.length > 0 && (() => {
+              const otrasB = Number(prueba.otras?.billeteras ?? (prueba.billeteras ?? []).filter(esOtraMoneda).length);
+              const otrosP = Number(prueba.otras?.proveedores ?? (prueba.proveedores ?? []).filter(esOtraMoneda).length);
+              return (otrasB + otrosP) > 0 ? <p style={{ fontSize: 11.5, color: C.sub, margin: 0 }}>Se muestra solo lo de COP ({otrasB} billeteras y {otrosP} medios de otras monedas ocultos).</p> : null;
+            })()}
+
+            {!!copDe(prueba.billeteras).length && (
               <div>
-                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 6px' }}>BILLETERAS</p>
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 6px' }}>BILLETERAS COP</p>
                 <div className="space-y-1.5">
-                  {prueba.billeteras.map((b: any, i: number) => (
+                  {copDe(prueba.billeteras).map((b: any, i: number) => (
                     <div key={b?.id ?? i} className="flex items-center justify-between" style={{ gap: 10, padding: '8px 11px', borderRadius: 9, background: C.elev, border: `1px solid ${C.b1}` }}>
                       <span style={{ fontSize: 12.5, minWidth: 0 }}><b>{String(b?.currency ?? '—').toUpperCase()}</b> <span style={{ color: C.sub }}>· {String(b?.type ?? '—')}{b?.name ? ` · ${b.name}` : ''}</span></span>
                       <span style={{ fontSize: 12.5, fontWeight: 700, whiteSpace: 'nowrap' }}>{b?.available != null ? `$${num(b.available)} disponible` : '—'}</span>
                     </div>
                   ))}
                 </div>
-                <VerDetalle v={prueba.billeteras} />
+                <VerDetalle v={copDe(prueba.billeteras)} />
               </div>
             )}
 
-            {!!prueba.proveedores?.length && (
+            {!!copDe(prueba.proveedores).length && (
               <div>
-                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 6px' }}>MEDIOS DE ENVÍO</p>
+                <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '6px 0 6px' }}>MEDIOS DE ENVÍO COP</p>
                 <div className="space-y-1.5">
-                  {prueba.proveedores.map((p: any, i: number) => (
+                  {copDe(prueba.proveedores).map((p: any, i: number) => (
                     <div key={p?.id ?? i} style={{ padding: '8px 11px', borderRadius: 9, background: C.elev, border: `1px solid ${C.b1}` }}>
                       <p style={{ fontSize: 12.5, margin: 0 }}><b>{String(p?.provider_type ?? '—')}</b> <span style={{ color: C.sub }}>· {String(p?.currency ?? '').toUpperCase()}{p?.name ? ` · ${p.name}` : ''}</span></p>
                       <p style={{ fontSize: 11.5, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
@@ -297,8 +308,11 @@ const Conexion: React.FC<{ hayLlave: boolean }> = ({ hayLlave }) => {
                     </div>
                   ))}
                 </div>
-                <VerDetalle v={prueba.proveedores} />
+                <VerDetalle v={copDe(prueba.proveedores)} />
               </div>
+            )}
+            {prueba.ok && !copDe(prueba.billeteras).length && (
+              <p style={{ fontSize: 12, color: C.amber, margin: 0 }}>La cuenta no tiene billetera COP: hay que abrirla en Coinsenda para poder enviar.</p>
             )}
           </div>
         )}

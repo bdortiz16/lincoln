@@ -5069,10 +5069,17 @@ Deno.serve(async (req: Request) => {
         const provs = await cli.pedir('withdraw', 'GET', '/withdrawProviders', { filter: { where: { enabled: true, visible: true }, limit: 200 } })
         pasos.push(exitoso(provs) ? { paso: 'Medios de envío', ok: true } : { paso: 'Medios de envío', ok: false, detalle: describirFallo(provs, 'leer los medios de envío') })
         const pd = perfil.data?.data ?? perfil.data ?? {}
+        // Solo lo de pesos: la cuenta trae también billeteras y medios cripto
+        // que Lincoin no usa. Se filtra ANTES de recortar la lista, para que
+        // la de COP no quede por fuera del recorte.
+        const esCop = (x: any) => String(x?.currency ?? '').toLowerCase() === 'cop'
+        const todasB: any[] = exitoso(cuentas) ? lista(cuentas) : []
+        const todosP: any[] = exitoso(provs) ? lista(provs) : []
         return terminar(pasos.every(p => p.ok), {
           perfil: exitoso(perfil) ? plano(Object.fromEntries(Object.entries(pd).filter(([, x]) => x === null || typeof x !== 'object'))) : null,
-          billeteras: exitoso(cuentas) ? plano(lista(cuentas)) : [],
-          proveedores: exitoso(provs) ? plano(lista(provs)) : [],
+          billeteras: plano(todasB.filter(esCop)),
+          proveedores: plano(todosP.filter(esCop)),
+          otras: { billeteras: todasB.filter(x => !esCop(x)).length, proveedores: todosP.filter(x => !esCop(x)).length },
         })
       }
 
