@@ -102,6 +102,7 @@ import { AdminCupos } from './AdminCupos';
 import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
+import { AdminCoinsenda } from './AdminCoinsenda';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
@@ -548,7 +549,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const soloTesoreria = rol === 'tesoreria';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd'>(soloTesoreria ? 'cargues' : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'marketing' | 'config' | 'banks' | 'rates' | 'security' | 'design' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'gowd' | 'coinsenda'>(soloTesoreria ? 'cargues' : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -5961,6 +5962,7 @@ const renderDesign = () => (
                             {grupoTesoreria}
                             <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />
                             <AdminSidebarItem icon={Landmark} label="Gowd" active={activeTab === 'gowd'} onClick={() => navTo('gowd')} />
+                            <AdminSidebarItem icon={Zap} label="Coinsenda" active={activeTab === 'coinsenda'} onClick={() => navTo('coinsenda')} />
                             <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />
                         </> },
                         { key: 'finanzas', title: 'Finanzas', items: <>
@@ -6162,6 +6164,7 @@ const renderDesign = () => (
                 </>)}
                 {activeTab === 'otcConfig' && <AdminContabilidad />}
                 {activeTab === 'gowd' && <AdminGowd />}
+                {activeTab === 'coinsenda' && <AdminCoinsenda />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}

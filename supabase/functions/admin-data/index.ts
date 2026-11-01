@@ -2,6 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
+import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
@@ -3277,6 +3278,8 @@ Deno.serve(async (req: Request) => {
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar',
         'caja_movimiento_crear', 'caja_movimiento_anular',
         'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
+        // La llave con la que Lincoin firma ante Coinsenda
+        'coinsenda_llave_generar',
         // Cambian cuentas o el estado de cumplimiento
         // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
         //  que también usan los clientes con su propia cuenta. Ahí lo que
@@ -4984,6 +4987,30 @@ Deno.serve(async (req: Request) => {
         if (err) return errorGenerico('caja_llave_quitar', { message: err })
         await auditAdmin(req, 'caja.llave_quitada', { id, llave: enmascararLlave(l.llave), titular: l.titular })
         return json({ ok: true })
+      }
+
+      // ── Coinsenda: la llave con la que Lincoin firma ante su API ───────
+      // Solo el dueño (no figuran en PERMISO_DE_ACCION). El panel ve la
+      // pública y su huella; la privada se genera y se queda en el servidor.
+      if (body.action === 'coinsenda_llave_estado') {
+        return json({ ok: true, llave: await estadoLlaveCoinsenda(db), desdeSecreto: !!Deno.env.get('COINSENDA_PRIVATE_KEY') })
+      }
+      // Generar la pareja. Con su código 2FA, y si ya hay una, solo con
+      // `reemplazar`: una llave nueva deja sin efecto la registrada en
+      // Coinsenda hasta que se pegue la nueva allá.
+      if (body.action === 'coinsenda_llave_generar') {
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+        if (!FIELD_ENC_KEY) return json({ ok: false, error: 'Falta FIELD_ENC_KEY en los secretos del servidor: sin ella la llave no se puede guardar cifrada.' }, 500)
+        const previa = await estadoLlaveCoinsenda(db)
+        if (previa && body.reemplazar !== true) return json({ ok: false, existe: true, error: 'Ya hay una llave generada. Si haces otra, la registrada en Coinsenda deja de servir hasta que pegues la nueva.' }, 409)
+        const nueva = await generarParCoinsenda()
+        const at = new Date().toISOString()
+        const por = await autorDe(auth)
+        const err = await guardarLlaveCoinsenda(db, { ...nueva, at, por })
+        if (err) return errorGenerico('coinsenda_llave_generar', { message: err })
+        await auditAdmin(req, previa ? 'coinsenda.llave_reemplazada' : 'coinsenda.llave_generada', { huella: nueva.huella, anterior: previa?.huella ?? null })
+        return json({ ok: true, llave: { publica: nueva.publica, huella: nueva.huella, at, por } })
       }
 
       // ── Enviar la utilidad a la empresa (Bre-B desde la bolsa) ────────
