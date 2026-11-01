@@ -1071,6 +1071,25 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const moverPrimero = !saldoUnificado && amtStep2 > 0 && !brebAlcanza && !achAlcanza
                               && getBalance('COP') >= amtStep2;
                           const radio = (on: boolean) => <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: on ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />;
+                          // Cuentas que vienen en camino (Bre-B · Cuenta 3 y ACH ·
+                          // Cuentas 2 y 3): se muestran apagadas con "Próximamente"
+                          // para que el cliente sepa que existen, pero no se pueden
+                          // elegir hasta que el servidor las tenga conectadas. Nunca
+                          // llevan el nombre del aliado que hay detrás. Solo para
+                          // quien ve todos los métodos (los operadores tienen una
+                          // lista cerrada y no las ven).
+                          const proximas = !metodos && !saldoUnificado;
+                          const achSel = sendMethodSel === 'ach';
+                          const filaProxima = (titulo: string) => (
+                              <div key={titulo} aria-disabled="true" className="w-full flex items-center gap-3"
+                                  style={{ padding: '11px 14px', borderRadius: 11, opacity: 0.6, cursor: 'not-allowed', border: '1px dashed rgba(255,255,255,0.12)', background: 'transparent' }}>
+                                  <span className="flex-1 min-w-0">
+                                      <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{titulo}</span>
+                                      <span style={{ display: 'block', fontSize: 11.5, marginTop: 2, color: '#878E88' }}>Aún no está disponible</span>
+                                  </span>
+                                  <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999, whiteSpace: 'nowrap' }}>PRÓXIMAMENTE</span>
+                              </div>
+                          );
                           return (
                           <div className="space-y-4">
                               <div className="space-y-2">
@@ -1090,7 +1109,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: brebAlcanza ? '#4ADE80' : '#878E88' }}>
                                               {brebUnica
                                                   ? <>{lblSaldo(brebUnica.railLabel)}: ${Math.round(getBalance(brebUnica.rail)).toLocaleString('es-CO')}{!brebAlcanza && amtStep2 > 0 ? ` · te faltan $${Math.ceil(amtStep2 + brebUnica.fee - getBalance(brebUnica.rail)).toLocaleString('es-CO')}` : ''}</>
-                                                  : brebSel ? 'Elige de qué cuenta sale' : '2 cuentas · Cuenta 1 y Cuenta 2'}
+                                                  : brebSel ? 'Elige de qué cuenta sale' : proximas ? 'Cuenta 1 y Cuenta 2 · la 3, próximamente' : '2 cuentas · Cuenta 1 y Cuenta 2'}
                                           </span>
                                       </span>
                                       {radio(brebSel)}
@@ -1120,6 +1139,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                   </button>
                                               );
                                           })}
+                                          {proximas && filaProxima('Bre-B · Cuenta 3')}
                                       </div>
                                   )}
                                   {METHODS.map(m => {
@@ -1128,7 +1148,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       const enough = bal >= need;
                                       const sel = sendMethodSel === m.key;
                                       return (
-                                          <button key={m.key} type="button" onClick={() => { if (enough) setSendMethodSel(m.key as any); }}
+                                          <React.Fragment key={m.key}>
+                                          <button type="button" onClick={() => { if (enough) setSendMethodSel(m.key as any); }}
                                               className="w-full flex items-center gap-3 text-left transition-colors"
                                               style={{ padding: '13px 15px', borderRadius: 12, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
                                                   border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
@@ -1141,12 +1162,36 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                       {m.time}{m.fee > 0 ? ` · $${m.fee.toLocaleString('es-CO')} por envío` : ''}
                                                   </span>
                                                   <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
-                                                      {lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')}
+                                                      {m.key === 'ach' && proximas && !achSel
+                                                          ? <>Cuenta 1 · {lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')} · la 2 y la 3, próximamente</>
+                                                          : <>{lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')}</>}
                                                       {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
                                                   </span>
                                               </span>
                                               {radio(sel)}
                                           </button>
+                                          {/* ACH: hoy sale todo por la Cuenta 1 (se elige sola al
+                                              tocar ACH); la 2 y la 3 se ven, apagadas. */}
+                                          {m.key === 'ach' && achSel && proximas && (
+                                              <div className="space-y-2" style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid rgba(74,222,128,0.25)' }}>
+                                                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', paddingTop: 2 }}>¿DESDE QUÉ CUENTA ACH?</p>
+                                                  <button type="button" onClick={() => { if (enough) setSendMethodSel('ach'); }}
+                                                      className="w-full flex items-center gap-3 text-left transition-colors"
+                                                      style={{ padding: '11px 14px', borderRadius: 11, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
+                                                          border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
+                                                      <span className="flex-1 min-w-0">
+                                                          <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>ACH · Cuenta 1</span>
+                                                          <span style={{ display: 'block', fontSize: 11.5, marginTop: 2, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
+                                                              {lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')}
+                                                          </span>
+                                                      </span>
+                                                      {radio(true)}
+                                                  </button>
+                                                  {filaProxima('ACH · Cuenta 2')}
+                                                  {filaProxima('ACH · Cuenta 3')}
+                                              </div>
+                                          )}
+                                          </React.Fragment>
                                       );
                                   })}
                               </div>

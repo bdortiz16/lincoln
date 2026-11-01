@@ -3061,6 +3061,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const _cot = new Date(Date.now() - 5 * 3600 * 1000);
                   const _dow = _cot.getUTCDay(); const _hr = _cot.getUTCHours();
                   const achOpen = _dow >= 1 && _dow <= 5 && _hr >= 7 && _hr < 18;
+                  // Cuenta que viene en camino: se ve apagada y con
+                  // "Próximamente", sin saldo ni botón, y nunca con el nombre
+                  // del aliado que hay detrás.
+                  const cuentaProxima = (n: number) => (
+                      <div key={`prox-${n}`} aria-disabled="true" className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px dashed rgba(255,255,255,0.1)', background: 'transparent', opacity: 0.65 }}>
+                          <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta {n}</span> · Aún no disponible</p>
+                          <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>PRÓXIMAMENTE</span>
+                      </div>
+                  );
                   return (
                   <>
                   <div>
@@ -3127,6 +3136,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                               className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                                       </div>
                                   ))}
+                                  {cuentaProxima(3)}
                               </div>
                               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '10px 0 0' }}>Dispersa por llave Bre-B a cualquier banco en Colombia, en segundos. Hasta 12 M por envío.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
@@ -3157,15 +3167,28 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   </div>
                                   <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap' }}>HORARIO</span>
                               </div>
-                              <p style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-1px', color: '#F4F4F2', marginTop: 16 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
-                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '8px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío${achMaxPersona && achMaxPersona < achMaxEnvio ? ` (${millones(achMaxPersona)} si el beneficiario es una persona)` : ''}.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
+                              {/* Tres cuentas ACH: hoy envía la 1; la 2 y la 3 vienen en
+                                  camino y se ven apagadas, sin nombrar al aliado. */}
+                              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                  <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
+                                      <div style={{ minWidth: 0 }}>
+                                          <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta 1</span> · Saldo ACH</p>
+                                          <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
+                                      </div>
+                                      <button onClick={() => { if (achOpen) openSendMoney(undefined, { metodo: 'ach' }); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'}
+                                          style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', background: 'transparent', cursor: (!achOpen || achBal <= 0) ? 'not-allowed' : 'pointer' }}
+                                          className="hover:text-[#4ADE80] transition-colors">Enviar</button>
+                                  </div>
+                                  {cuentaProxima(2)}
+                                  {cuentaProxima(3)}
+                              </div>
+                              <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '10px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío${achMaxPersona && achMaxPersona < achMaxEnvio ? ` (${millones(achMaxPersona)} si el beneficiario es una persona)` : ''}.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
                                   <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>
-                              <button onClick={() => { if (achOpen) openSendMoney(undefined, { metodo: 'ach' }); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'} style={{ fontSize: 12, fontWeight: 600, color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', cursor: achOpen ? 'pointer' : 'not-allowed' }} className="transition-colors">Enviar dinero</button>
                               <button onClick={() => { setBrebMoveOpen(true); setBrebDir('to_peso'); }} style={{ fontSize: 12, fontWeight: 600, color: '#F4F4F2' }} className="hover:text-[#4ADE80] transition-colors">Mover saldo</button>
                           </div>
                       </div>
