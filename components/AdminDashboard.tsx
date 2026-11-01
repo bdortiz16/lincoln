@@ -104,7 +104,7 @@ import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminGowd } from './AdminGowd';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { sonarCampana, campanaActiva } from './campanaOtc';
-import { Zap, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
+import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
@@ -641,7 +641,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // actualizaba tras un cargue (había que recargar la página). El objeto vivo
   // se deriva de allUsers más abajo.
   const [carguesClientId, setCarguesClientId] = useState<string | null>(null);
-  const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+  const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH' | 'COP_C3'>('COP');
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
   const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
@@ -669,6 +669,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [mouvPool, setMouvPool] = useState<{ loading: boolean; total?: number | null; breb?: number | null; ach?: number | null; error?: string } | null>(null);
   // Saldo COP de la tesorería Finity (respalda el riel ACH), análogo a Mouv.
   const [finityPool, setFinityPool] = useState<{ loading: boolean; cop?: number | null; usdt?: number | null; error?: string } | null>(null);
+  // Bolsa de Coinsenda: el disponible de su billetera COP. Respalda el "Saldo
+  // Cuenta 3" de los clientes (COP_C3), como Mouv el Bre-B y Finity el ACH.
+  const [coinsendaPool, setCoinsendaPool] = useState<{ loading: boolean; cop?: number | null; error?: string } | null>(null);
+  const loadCoinsendaPool = async () => {
+    setCoinsendaPool({ loading: true });
+    const r = await pedirAdmin({ action: 'coinsenda_bolsa' }).catch(() => null);
+    if (r?.ok) setCoinsendaPool({ loading: false, cop: r.cop ?? null });
+    else setCoinsendaPool({ loading: false, error: r?.error ?? 'No se pudo leer la bolsa de Coinsenda.' });
+  };
   // Resolver conversión trabada: el USDT llegó al proveedor pero el COP no se
   // acreditó → se acredita a mano y se cierra el movimiento.
   const [stuckRef, setStuckRef] = useState('');
@@ -1011,6 +1020,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   useEffect(() => {
     if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !mouvPool) loadMouvPool();
     if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !finityPool) loadFinityPool();
+    if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !coinsendaPool) loadCoinsendaPool();
     if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -1230,7 +1240,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // tipo 'enviar': la utilidad sale de la bolsa por Bre-B a una llave de
   // Lincoin (queda como retiro). opId es uno por intento: un doble clic o un
   // reintento tras un «no sabemos si salió» no manda dos veces.
-  const [linForm, setLinForm] = useState<null | { tipo: 'retiro' | 'egreso' | 'ingreso' | 'aporte' | 'enviar'; proveedor: 'Mouv' | 'Finity'; monto: string; fecha: string; descripcion: string; soporte: string | null; soporteNombre: string | null; llaveId?: string; otp?: string; opId?: string }>(null);
+  const [linForm, setLinForm] = useState<null | { tipo: 'retiro' | 'egreso' | 'ingreso' | 'aporte' | 'enviar'; proveedor: 'Mouv' | 'Finity' | 'Coinsenda'; monto: string; fecha: string; descripcion: string; soporte: string | null; soporteNombre: string | null; llaveId?: string; otp?: string; opId?: string }>(null);
   // Llaves Bre-B de Lincoin (las inscribe el dueño) y su formulario.
   const [linLlaves, setLinLlaves] = useState<any[] | null>(null);
   const [linLlaveForm, setLinLlaveForm] = useState<null | { llave: string; consulta: any | null; alias: string; otp: string; ocupado: boolean; error: string | null }>(null);
@@ -2300,6 +2310,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         COP:      { label: 'Saldo Lincoin', sub: 'Cuenta principal · COP', corto: 'Saldo Lincoin', icon: Wallet },
         COP_BREB: { label: 'Mouv',          sub: 'Bre-B y ACH',            corto: 'Mouv',          icon: Zap },
         COP_ACH:  { label: 'Finity',        sub: 'Bre-B y ACH',            corto: 'Finity',        icon: Landmark },
+        // El cliente lo ve como "Saldo Cuenta 3"; aquí va el proveedor.
+        COP_C3:   { label: 'Coinsenda',     sub: 'Cuenta 3 · Bre-B y ACH', corto: 'Coinsenda',     icon: Send },
       };
 
       // ── Respaldo y utilidad por riel ──────────────────────────────
@@ -2317,15 +2329,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         : allUsers.reduce((s, u) => s + Number((u.balances as any)?.[code] ?? 0), 0);
       const obligBreb = obligOf('COP_BREB');
       const obligAch  = obligOf('COP_ACH');
+      const obligC3   = obligOf('COP_C3');
       const brebPool  = Number(mouvPool?.breb ?? mouvPool?.total ?? 0);
       const achPool   = Number(finityPool?.cop ?? 0);
+      const c3Pool    = Number(coinsendaPool?.cop ?? 0);
       const freeBreb  = brebPool - obligBreb;   // disponible para cargar Bre-B (= utilidad Mouv)
       const freeAch   = achPool - obligAch;     // disponible para cargar ACH   (= utilidad Finity)
+      const freeC3    = c3Pool - obligC3;       // disponible para cargar Cuenta 3 (= utilidad Coinsenda)
       // Disponible/utilidad del riel actualmente elegido (para el guard del cargue).
       const poolReady = carguesRail === 'COP_BREB' ? (mouvPool && !mouvPool.loading && !mouvPool.error)
                       : carguesRail === 'COP_ACH'  ? (finityPool && !finityPool.loading && !finityPool.error)
+                      : carguesRail === 'COP_C3'   ? (coinsendaPool && !coinsendaPool.loading && !coinsendaPool.error && coinsendaPool.cop != null)
                       : false;
-      const freeForRail = carguesRail === 'COP_BREB' ? freeBreb : carguesRail === 'COP_ACH' ? freeAch : Infinity;
+      const freeForRail = carguesRail === 'COP_BREB' ? freeBreb : carguesRail === 'COP_ACH' ? freeAch : carguesRail === 'COP_C3' ? freeC3 : Infinity;
 
       // Guard anti sobre-acreditación: un cargue en Bre-B/ACH NO puede
       // comprometer más de lo que la bolsa del proveedor tiene libre (si no,
@@ -2334,7 +2350,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const cRaw = carguesConfirm?.raw ?? 0;
       const cFee = (carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly) ? Math.round(cRaw * 0.10 / 100) : 0;
       const cNet = cRaw - cFee;
-      const guardActive = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH') && !!poolReady;
+      const guardActive = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH' || carguesRail === 'COP_C3') && !!poolReady;
       const cargueExceeds = guardActive && cNet > freeForRail + 0.5;
       const cargueShortfall = cargueExceeds ? Math.round(cNet - freeForRail) : 0;
 
@@ -2343,7 +2359,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       // cuánto entra, en qué cuenta y si excede lo disponible en la bolsa.
       const montoVista = usandoAcct ? (acctCalc.listo ? acctCalc.copToClient : 0) : (Number(carguesAmount) || 0);
       const netoVista = montoVista - ((carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly) ? Math.round(montoVista * 0.10 / 100) : 0);
-      const excedeVista = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH') && !!poolReady && montoVista > 0 && netoVista > freeForRail + 0.5;
+      const excedeVista = carguesDir === 'credit' && !carguesRecordOnly && (carguesRail === 'COP_BREB' || carguesRail === 'COP_ACH' || carguesRail === 'COP_C3') && !!poolReady && montoVista > 0 && netoVista > freeForRail + 0.5;
       const elegirCliente = (u: User) => {
         setCarguesClientId(u.id); setCarguesMsg(null); setCarguesSearch('');
         // El cursor sigue al primer dato que falta: la operación o el monto.
@@ -2374,6 +2390,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
           detalle: mouvPool && !mouvPool.loading && !mouvPool.error ? `Bre-B ${mouvPool.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'} · ACH ${mouvPool.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}` : null },
         { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool, detalle: null },
+        { rail: 'COP_C3' as const, label: 'Coinsenda', icon: Send, pool: c3Pool, oblig: obligC3, free: freeC3, loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 3 · billetera COP' },
       ];
 
       return (
@@ -2523,7 +2540,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                     <div style={{ minWidth: 0 }}>
                       <p style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>{carguesClient.name} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11.5 }}>· {carguesClient.email}</span></p>
                       <p style={{ margin: '3px 0 0', fontSize: 11.5, color: '#878E88' }}>
-                        {(['COP', 'COP_BREB', 'COP_ACH'] as const).map((code, i) => (
+                        {(['COP', 'COP_BREB', 'COP_ACH', 'COP_C3'] as const).map((code, i) => (
                           <React.Fragment key={code}>{i ? ' · ' : ''}{railMeta[code].corto} <b style={{ color: '#F4F4F2' }}>{formatMoney(bal(carguesClient, code), '')}</b></React.Fragment>
                         ))}
                       </p>
@@ -2561,11 +2578,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               <div>
                 <label style={ROTULO}>Destino</label>
                 {/* En el celular van uno debajo del otro: en tres columnas no cabían. */}
-                <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 8 }}>
-                  {(['COP', 'COP_BREB', 'COP_ACH'] as const).map(code => {
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4" style={{ gap: 8 }}>
+                  {(['COP', 'COP_BREB', 'COP_ACH', 'COP_C3'] as const).map(code => {
                     const M = railMeta[code];
                     const active = carguesRail === code;
-                    const libre = code === 'COP_BREB' ? freeBreb : code === 'COP_ACH' ? freeAch : null;
+                    const libre = code === 'COP_BREB' ? freeBreb : code === 'COP_ACH' ? freeAch : code === 'COP_C3' ? (coinsendaPool?.cop != null ? freeC3 : null) : null;
                     return (
                       <button key={code} onClick={() => setCarguesRail(code)}
                         style={{ textAlign: 'left', cursor: 'pointer', borderRadius: 12, padding: '11px 12px', color: '#F4F4F2', background: active ? 'rgba(74,222,128,0.10)' : 'transparent', border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
@@ -3192,8 +3209,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const bolsas = [
         { n: 'Mouv', icon: Zap, pool: Number(mouvPool?.breb ?? mouvPool?.total ?? 0), oblig: obligOf('COP_BREB'), loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
         { n: 'Finity', icon: Landmark, pool: Number(finityPool?.cop ?? 0), oblig: obligOf('COP_ACH'), loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
+        { n: 'Coinsenda', icon: Send, pool: Number(coinsendaPool?.cop ?? 0), oblig: obligOf('COP_C3'), loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool },
       ];
-      const comprometido = obligOf('COP_BREB') + obligOf('COP_ACH');
+      const comprometido = obligOf('COP_BREB') + obligOf('COP_ACH') + obligOf('COP_C3');
       const pendingRailMoves = (getAllTransactions() as any[]).filter(t => t.type === 'rail_move' && t.status === 'Pendiente');
 
       const pr = d?.porResolver;
@@ -3511,8 +3529,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       <div className="flex justify-between" style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 5 }}>
                           <span>{barras.length ? etiquetaBarra(0) : ''}</span><span>{barras.length ? etiquetaBarra(barras.length - 1) : ''}</span>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                          {['Mouv', 'Finity'].map(n => (
+                      <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                          {['Mouv', 'Finity', 'Coinsenda'].map(n => (
                               <div key={n} style={{ fontSize: 12, color: '#878E88' }}>
                                   <b style={{ color: '#F4F4F2' }}>{n}</b> · entra {millones(f.porProveedor?.[n]?.ent ?? 0)} · sale {millones(f.porProveedor?.[n]?.sal ?? 0)}
                               </div>
@@ -3528,7 +3546,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           <p style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.8px', color: d.utilidadMes.total >= 0 ? '#4ADE80' : '#F87171' }}>{millones(d.utilidadMes.total)} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span></p>
                           <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88' }}>De la contabilidad de {d.utilidadMes.conContabilidad} cargues{d.utilidadMes.sinContabilidad ? ` · ${d.utilidadMes.sinContabilidad} sin contabilidad` : ''}</p>
                           <div className="flex" style={{ gap: 14, marginTop: 10, fontSize: 12, color: '#878E88' }}>
-                              {['Mouv', 'Finity'].map(n => <span key={n}>{n} <b style={{ color: '#F4F4F2' }}>{millones(d.utilidadMes.porProveedor?.[n] ?? 0)}</b></span>)}
+                              {['Mouv', 'Finity', 'Coinsenda'].map(n => <span key={n}>{n} <b style={{ color: '#F4F4F2' }}>{millones(d.utilidadMes.porProveedor?.[n] ?? 0)}</b></span>)}
                           </div>
                       </>}
                   </div>
@@ -3788,6 +3806,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const vivo: Record<string, { pool: number | null; clientes: number }> = {
           Mouv: { pool: mouvPool && !mouvPool.loading && !mouvPool.error ? Number(mouvPool.breb ?? mouvPool.total ?? 0) : null, clientes: oblig('COP_BREB') },
           Finity: { pool: finityPool && !finityPool.loading && !finityPool.error ? Number(finityPool.cop ?? 0) : null, clientes: oblig('COP_ACH') },
+          Coinsenda: { pool: coinsendaPool && !coinsendaPool.loading && !coinsendaPool.error && coinsendaPool.cop != null ? Number(coinsendaPool.cop) : null, clientes: oblig('COP_C3') },
       };
       const cajaP: any[] = (d?.caja ?? []).map((c: any) => ({ ...c, dif: c.lincoinEsperado != null && vivo[c.proveedor]?.pool != null ? Math.round((vivo[c.proveedor].pool as number) - vivo[c.proveedor].clientes - c.lincoinEsperado) : null }));
       const saldoLincoin = cajaP.reduce((a, c) => a + Number(c.lincoinEsperado ?? 0), 0);
@@ -3845,7 +3864,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               // seguía con la cifra de antes, y la diferencia salía igual al
               // envío. Se lee ya y otra vez en un rato (el proveedor tarda en
               // descontarlo).
-              const leer = linForm.proveedor === 'Mouv' ? loadMouvPool : loadFinityPool;
+              const leer = linForm.proveedor === 'Mouv' ? loadMouvPool : linForm.proveedor === 'Coinsenda' ? loadCoinsendaPool : loadFinityPool;
               leer(); setTimeout(leer, 30_000);
               setLinForm(null); setLinVer(v => v + 1); setCajaVer(v => v + 1); return;
           }
@@ -4070,9 +4089,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                   <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)', marginTop: 4, paddingTop: 4 }}>
                                       {fila(esMesActual ? '= Lincoin hoy' : `= Lincoin al cierre de ${mesCorto}`, cm.cierre, { fuerte: true, color: '#4ADE80' })}
                                       {esMesActual && fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
-                                      {esMesActual && (() => { const bolsa = c.proveedor === 'Mouv' ? mouvPool : finityPool; return (
+                                      {esMesActual && (() => { const bolsa = c.proveedor === 'Mouv' ? mouvPool : c.proveedor === 'Coinsenda' ? coinsendaPool : finityPool; return (
                                           <div className="flex justify-end">
-                                              <button onClick={() => (c.proveedor === 'Mouv' ? loadMouvPool : loadFinityPool)()} disabled={!!bolsa?.loading}
+                                              <button onClick={() => (c.proveedor === 'Mouv' ? loadMouvPool : c.proveedor === 'Coinsenda' ? loadCoinsendaPool : loadFinityPool)()} disabled={!!bolsa?.loading}
                                                   className="inline-flex items-center" style={{ gap: 5, background: 'none', border: 'none', padding: '2px 0', color: '#878E88', fontSize: 11, cursor: 'pointer' }}>
                                                   <RefreshCw size={11} className={bolsa?.loading ? 'animate-spin' : ''} /> {bolsa?.loading ? 'Leyendo la bolsa…' : 'Leer la bolsa de nuevo'}
                                               </button>
@@ -4094,7 +4113,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                               ? <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24', lineHeight: 1.45 }}>Hay {fmt(enCamino)} enviados a la empresa todavía en proceso: ya se restaron de «Lincoin hoy», pero la bolsa puede tardar en reflejarlo. Lee la bolsa de nuevo en unos minutos antes de registrar nada.</p>
                                               : <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>;
                                       })()}
-                                      {(() => { const mx = paraEnviar(c.proveedor); return (
+                                      {c.proveedor === 'Coinsenda' ? (
+                                          // La utilidad sale por Bre-B a las llaves de Lincoin desde
+                                          // Mouv o Finity; desde Coinsenda todavía no.
+                                          <p style={{ margin: '10px 0 0', paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)', fontSize: 11.5, color: '#878E88' }}>La utilidad de esta bolsa se mueve a mano por ahora: el envío a la empresa sale desde Mouv o Finity.</p>
+                                      ) : (() => { const mx = paraEnviar(c.proveedor); return (
                                           <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
                                               <span style={{ fontSize: 12, color: '#878E88' }}>Para enviar a la empresa: <b style={{ color: '#F4F4F2' }}>{mx == null ? '—' : fmt(mx)}</b></span>
                                               <button onClick={() => enviarDesde(c.proveedor)} disabled={!mx} className="inline-flex items-center"
@@ -4268,7 +4291,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       })() : (<>
                       <div className="grid grid-cols-2" style={{ gap: 8 }}>
                           <div><label style={RF}>Bolsa</label>
-                              <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Finity</option><option>Mouv</option></select></div>
+                              <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Finity</option><option>Mouv</option><option>Coinsenda</option></select></div>
                           <div><label style={RF}>Fecha</label>
                               <input type="date" max={hoyBog()} value={linForm.fecha} onChange={e => setLinForm(f => f && ({ ...f, fecha: e.target.value }))} style={CAMPO} /></div>
                       </div>

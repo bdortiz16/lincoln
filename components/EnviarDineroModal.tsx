@@ -395,7 +395,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           // 2 la define. Aquí solo se valida que ALGUNA de las 3 cuentas
           // pueda cubrir el monto (el paso 2 exige monto + comisión por método).
           const currentBalance = sendForm.destinationCurrency === 'COP'
-              ? Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'))
+              ? Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'), getBalance('COP_C3'))
               : displayBalance(sendForm.destinationCurrency);
           if (currentBalance < rawAmount) {
               showToast(sendForm.destinationCurrency === 'COP'
@@ -610,7 +610,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           const cuenta3B = isBreb && brebCuenta === 3;
           const cuenta3A = !isBreb && achCuenta === 3;
           const cuenta3 = cuenta3B || cuenta3A;
-          const rail = isBreb && !cuenta2 ? 'COP_BREB' : 'COP_ACH';
+          // El saldo que se descuenta. La Cuenta 3 (Bre-B o ACH) sale del Saldo
+          // Cuenta 3, que respalda su propia bolsa.
+          const rail = cuenta3 ? 'COP_C3' : isBreb && !cuenta2 ? 'COP_BREB' : 'COP_ACH';
           // Comisión estimada para el pre-chequeo de saldo. Bre-B = fijo $1.200
           // ($800 de Mouv + $400 de utilidad); el 0,10% NO va aquí (ya se cobró
           // en el cargue). ACH = fijo $2.500. Si el servidor ya cotizó
@@ -620,7 +622,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : Number(payoutQuote?.feeCop ?? 2500);
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
-              showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
+              showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : rail === 'COP_C3' ? 'Cuenta 3' : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
               return;
           }
           // UNA SOLA FUENTE. Antes la llave salía de sendContact y el nombre y
@@ -919,7 +921,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // Un envío sale de UN SOLO riel (lo define el método del
                           // paso 2), así que lo enviable de una vez es el riel MAYOR,
                           // no la suma — 'Todo' con la suma nunca pasaba la validación.
-                          const avail = isUsdt ? displayBalance('USD') : Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'));
+                          const avail = isUsdt ? displayBalance('USD') : Math.max(getBalance('COP'), getBalance('COP_BREB'), getBalance('COP_ACH'), getBalance('COP_C3'));
                           const quicks = isUsdt ? [5, 20, 50] : [10000, 50000, 200000];
                           const setAmt = (n: number) => setSendForm({ ...sendForm, amount: formatInputNumber(String(Math.floor(n))) });
                           return (
@@ -1066,10 +1068,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               { key: 'breb', n: 1, rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
                               { key: 'breb2', n: 2, rail: 'COP_ACH', railLabel: 'ACH', fee: 1200 },
                               // Cuenta 3: con el saldo Bre-B, cuando el admin la activa.
-                              ...(c3.breb && !metodos && !saldoUnificado ? [{ key: 'breb3' as const, n: 3, rail: 'COP_BREB', railLabel: 'Bre-B', fee: 2500 }] : []),
+                              // Cuenta 3: con el Saldo Cuenta 3 (COP_C3), cuando el admin la activa.
+                              ...(c3.breb && !metodos && !saldoUnificado ? [{ key: 'breb3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 }] : []),
                           ] as CuentaRiel[]).filter(c => permitido(c.key));
-                          // ACH · Cuenta 3 (saldo ACH), cuando el admin la activa.
-                          const ACH3 = c3.ach && !metodos && !saldoUnificado ? { key: 'ach3' as const, n: 3, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 } : null;
+                          // ACH · Cuenta 3 (Saldo Cuenta 3), cuando el admin la activa.
+                          const ACH3 = c3.ach && !metodos && !saldoUnificado ? { key: 'ach3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 } : null;
                           const METHODS = ([
                               { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
@@ -1091,7 +1094,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // app "no dejaba enviar" (30 oct, $35 M en Saldo Lincoin y
                           // $66.958 en ACH). Se le dice qué hacer.
                           const achM = METHODS.find(m => m.key === 'ach');
-                          const achAlcanza = !!achM && getBalance(achM.rail) >= amtStep2 + Math.min(achM.fee, ACH3?.fee ?? achM.fee);
+                          const achAlcanza = (!!achM && getBalance(achM.rail) >= amtStep2 + achM.fee) || (!!ACH3 && getBalance(ACH3.rail) >= amtStep2 + ACH3.fee);
                           const moverPrimero = !saldoUnificado && amtStep2 > 0 && !brebAlcanza && !achAlcanza
                               && getBalance('COP') >= amtStep2;
                           const radio = (on: boolean) => <span style={{ width: 17, height: 17, borderRadius: '50%', flexShrink: 0, border: on ? '5px solid #4ADE80' : '1.5px solid rgba(255,255,255,0.25)' }} />;
@@ -1174,7 +1177,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       const sel = m.key === 'ach' ? achSel : sendMethodSel === m.key;
                                       return (
                                           <React.Fragment key={m.key}>
-                                          <button type="button" onClick={() => { if (m.key === 'ach' && achSel) return; if (enough) setSendMethodSel(m.key as any); }}
+                                          <button type="button" onClick={() => { if (m.key === 'ach' && achSel) return; if (enough) setSendMethodSel(m.key as any); else if (m.key === 'ach' && ACH3 && achAlcanza) setSendMethodSel('ach3'); }}
                                               className="w-full flex items-center gap-3 text-left transition-colors"
                                               style={{ padding: '13px 15px', borderRadius: 12, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
                                                   border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
@@ -1200,8 +1203,9 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           {m.key === 'ach' && achSel && proximas && (
                                               <div className="space-y-2" style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid rgba(74,222,128,0.25)' }}>
                                                   <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', paddingTop: 2 }}>¿DESDE QUÉ CUENTA ACH?</p>
-                                                  {([{ key: 'ach' as const, n: 1, fee: m.fee, extra: null as string | null }, ...(ACH3 ? [{ key: 'ach3' as const, n: 3, fee: ACH3.fee, extra: 'Llega en 6 a 24 horas' }] : [])]).map(c => {
-                                                      const okC = bal >= amtStep2 + c.fee;
+                                                  {([{ key: 'ach' as const, n: 1, fee: m.fee, rail: m.rail, railLabel: m.railLabel, extra: null as string | null }, ...(ACH3 ? [{ key: 'ach3' as const, n: 3, fee: ACH3.fee, rail: ACH3.rail, railLabel: ACH3.railLabel, extra: 'Llega en 6 a 24 horas' }] : [])]).map(c => {
+                                                      const balC = getBalance(c.rail);
+                                                      const okC = balC >= amtStep2 + c.fee;
                                                       const selC = sendMethodSel === c.key;
                                                       return (
                                                           <React.Fragment key={c.key}>
@@ -1213,8 +1217,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                               <span className="flex-1 min-w-0">
                                                                   <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>ACH · Cuenta {c.n}</span>
                                                                   <span style={{ display: 'block', fontSize: 11.5, marginTop: 2, fontWeight: 600, color: okC ? '#4ADE80' : '#878E88' }}>
-                                                                      {lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')} · ${c.fee.toLocaleString('es-CO')} por envío{c.extra ? ` · ${c.extra}` : ''}
-                                                                      {!okC && amtStep2 > 0 ? ` · te faltan $${Math.ceil(amtStep2 + c.fee - bal).toLocaleString('es-CO')}` : ''}
+                                                                      {lblSaldo(c.railLabel)}: ${Math.round(balC).toLocaleString('es-CO')} · ${c.fee.toLocaleString('es-CO')} por envío{c.extra ? ` · ${c.extra}` : ''}
+                                                                      {!okC && amtStep2 > 0 ? ` · te faltan $${Math.ceil(amtStep2 + c.fee - balC).toLocaleString('es-CO')}` : ''}
                                                                   </span>
                                                               </span>
                                                               {radio(selC)}
@@ -1667,7 +1671,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       <div className={`grid ${c3.breb ? 'grid-cols-3' : 'grid-cols-2'}`} style={{ gap: 8, marginTop: 8 }}>
                                           {((c3.breb ? [1, 2, 3] : [1, 2]) as (1 | 2 | 3)[]).map(n => {
                                               const rc = n === 2 ? 'COP_ACH' : 'COP_BREB';
-                                              const bal = getBalance(rc);
+                                              // La 3 paga con el Saldo Cuenta 3.
+                                              const bal = getBalance(n === 3 ? 'COP_C3' : rc);
                                               const sel = brebCuenta === n;
                                               // La comisión de cada cuenta: la cotizada si es la elegida.
                                               const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : n === 3 ? 2500 : 1200;
@@ -1682,7 +1687,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                           opacity: bloqueada ? 0.5 : 1, cursor: bloqueada ? 'not-allowed' : 'pointer' }}>
                                                       <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Cuenta {n}</span>
                                                       <span style={{ display: 'block', fontSize: 11, color: sel ? '#4ADE80' : '#878E88', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                          Saldo {n === 2 ? 'ACH' : 'Bre-B'} · ${Math.round(bal).toLocaleString('es-CO')}{!alcanza ? ' · no alcanza' : ''}
+                                                          Saldo {n === 2 ? 'ACH' : n === 3 ? 'Cuenta 3' : 'Bre-B'} · ${Math.round(bal).toLocaleString('es-CO')}{!alcanza ? ' · no alcanza' : ''}
                                                       </span>
                                                   </button>
                                               );
@@ -1696,7 +1701,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ENVIAR POR</span>
                                       <div className="grid grid-cols-2" style={{ gap: 8, marginTop: 8 }}>
                                           {([1, 3] as const).map(n => {
-                                              const bal = getBalance('COP_ACH');
+                                              const bal = getBalance(n === 3 ? 'COP_C3' : 'COP_ACH');
                                               const sel = achCuenta === n;
                                               const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : 2500;
                                               const alcanza = bal >= amt + feeN;
@@ -1726,7 +1731,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               {/* Desglose — la comisión del proveedor se cobra al cliente */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
                                   {[
-                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
+                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${(isBrebM && brebCuenta === 3) || (!isBrebM && achCuenta === 3) ? 'Saldo Cuenta 3' : sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
                                       { l: saldoUnificado ? 'Comisión del envío' : `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
                                           : payoutQuote?.error ? '—'
                                           : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
@@ -2093,7 +2098,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               id: realMov?.id ?? (sendResult?.providerRef || `TX-${Date.now()}`),
                                               type: isWalletSend ? 'send' : 'dispersion',
                                               amount: amt,
-                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : 'COP_BREB') : (isCop ? 'COP_ACH' : sendForm.destinationCurrency)),
+                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS === 3 ? 'COP_C3' : 'COP_BREB') : (isCop ? (cuentaAS === 3 ? 'COP_C3' : 'COP_ACH') : sendForm.destinationCurrency)),
                                               ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : cuentaAS === 3 ? { cuentaAch: 3 } : {}) } : {}),
                                               status: receiptStatus,
                                               createdAt: sendResult?.at || new Date().toISOString(),

@@ -3,7 +3,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda } from '../_shared/coinsenda-llave.ts'
-import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
+import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
@@ -151,9 +151,11 @@ async function obligacionesTodas(): Promise<{ valor: Record<string, number>; par
 // ── Caja de Lincoin ──────────────────────────────────────────────────────
 // bolsa del proveedor = saldos de los clientes + lo de Lincoin + (lo que se
 // mueve por fuera) ± diferencia. Ver 2026_zz20_caja_lincoin.sql.
-const CAJA = [{ proveedor: 'Mouv', rail: 'COP_BREB' }, { proveedor: 'Finity', rail: 'COP_ACH' }] as const
+// Coinsenda respalda el "Saldo Cuenta 3" de los clientes (COP_C3): de ahí
+// salen Bre-B · Cuenta 3 y ACH · Cuenta 3 (decisión del 1 nov).
+const CAJA = [{ proveedor: 'Mouv', rail: 'COP_BREB' }, { proveedor: 'Finity', rail: 'COP_ACH' }, { proveedor: 'Coinsenda', rail: 'COP_C3' }] as const
 const hoyBogota = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
-const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : null }
+const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : null }
 
 // La utilidad de Lincoin en un cargue: la de su contabilidad, MENOS el 0,10 %
 // de Bre-B en Mouv. Ese 0,10 % es un costo de Mouv (lo confirmó
@@ -174,7 +176,7 @@ async function utilidadPorProveedor(desdeIso: string): Promise<Record<string, nu
     .select(`id, currency, ${SELECT_UTILIDAD}`)
     .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
     .gte('created_at', desdeIso), { tope: 100_000 })
-  const out: Record<string, number> = { Mouv: 0, Finity: 0 }
+  const out: Record<string, number> = { Mouv: 0, Finity: 0, Coinsenda: 0 }
   for (const t of filas as any[]) { const p = provDeRiel(t.currency); if (p) out[p] += utilidadLincoin(t) }
   return out
 }
@@ -185,12 +187,22 @@ async function bolsasProveedores(): Promise<Record<string, number | null>> {
   const h = { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` }
   const pedir = (fn: string) => fetch(`${SUPABASE_URL}/functions/v1/${fn}`, { method: 'POST', headers: h, body: JSON.stringify({ action: 'treasury_balances' }), signal: AbortSignal.timeout(25_000) })
     .then(r => r.json()).catch(() => null)
-  const [m, f] = await Promise.all([pedir('mouv-proxy'), pedir('finity-proxy')])
+  const [m, f, c] = await Promise.all([pedir('mouv-proxy'), pedir('finity-proxy'), bolsaCoinsenda().catch(() => null)])
   const num = (v: unknown) => { const n = Number(v); return v != null && v !== '' && isFinite(n) ? n : null }
   return {
     Mouv: m && !m.error && m.ok !== false ? num(m.breb ?? m.total) : null,
     Finity: f && !f.error && f.ok !== false ? num(f.cop) : null,
+    Coinsenda: c,
   }
+}
+
+// La bolsa de Coinsenda: el disponible de su billetera COP (la misma de donde
+// salen los envíos de la Cuenta 3). null = no configurada o no respondió.
+async function bolsaCoinsenda(): Promise<number | null> {
+  const cfg = await configCoinsenda(db)
+  if (!cfg.email && !cfg.telefono) return null
+  const b = await billeteraCop(new ClienteCoinsenda(db, cfg, 20_000))
+  return 'error' in b || !Number.isFinite(b.disponible) ? null : b.disponible
 }
 
 // Abre la caja de los proveedores que todavía no la tienen: todo lo que
@@ -1595,6 +1607,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // código 2FA en cada envío. Inscribir o quitar las llaves de Lincoin es
   // solo del dueño (no figuran acá).
   caja_llaves_get: ['plata.ver', 'tesoreria'],
+  coinsenda_bolsa: ['plata.ver', 'tesoreria'],
   caja_enviar_empresa: 'tesoreria',
   caja_envio_estado: 'tesoreria',
   tesoreria_detalle: ['plata.ver', 'tesoreria'],
@@ -1623,7 +1636,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
 }
 
 const PAIS_POR_MONEDA: Record<string, string> = {
-  COP: 'CO', COP_BREB: 'CO', COP_ACH: 'CO',
+  COP: 'CO', COP_BREB: 'CO', COP_ACH: 'CO', COP_C3: 'CO',
   BRL: 'BR', MXN: 'MX',
   USD: 'US', USDT: 'US', USDT_TRON: 'US', USDC: 'US', EURC: 'US',
 }
@@ -4221,7 +4234,7 @@ Deno.serve(async (req: Request) => {
         for (const t of filasOps) if (t.type === 'load' && t.reverso && Array.isArray(t.reverso.ajustes)) for (const x of t.reverso.ajustes) if (x?.id != null) ajustesEnReversos.add(String(x.id))
         const rielDe = (t: any) => {
           const r = String(t.rail ?? t.currency ?? '').toUpperCase()
-          return r === 'COP_ACH' || r === 'ACH' ? 'ACH' : r === 'COP_BREB' || r === 'BREB' ? 'Bre-B' : r === 'COP' ? 'Saldo Lincoin' : String(t.currency ?? '')
+          return r === 'COP_ACH' || r === 'ACH' ? 'ACH' : r === 'COP_BREB' || r === 'BREB' ? 'Bre-B' : r === 'COP_C3' ? 'Cuenta 3' : r === 'COP' ? 'Saldo Lincoin' : String(t.currency ?? '')
         }
         const idsDelPeriodo = new Set<string>()
         for (const t of filasOps) {
@@ -4895,7 +4908,7 @@ Deno.serve(async (req: Request) => {
         const quien = (a: any) => !a ? '—' : a.sistema ? 'Lincoin (automático)' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
         return json({
           ok: true, desde, hasta,
-          fuentes: ['Finity', 'Mouv', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
+          fuentes: ['Finity', 'Mouv', 'Coinsenda', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
           porDia: nDias <= 92 ? porDia : null,
           clientes,
           cajaMes: await cajaDelMes(desde, hasta, aUtc(desde), aUtc(hasta, true)),
@@ -5012,6 +5025,15 @@ Deno.serve(async (req: Request) => {
         if (err) return errorGenerico('coinsenda_llave_generar', { message: err })
         await auditAdmin(req, previa ? 'coinsenda.llave_reemplazada' : 'coinsenda.llave_generada', { huella: nueva.huella, anterior: previa?.huella ?? null })
         return json({ ok: true, llave: { publica: nueva.publica, huella: nueva.huella, at, por } })
+      }
+      // La bolsa de Coinsenda para la Billetera y la caja: el disponible de la
+      // billetera COP. Igual que Mouv y Finity, lo puede ver quien ve la plata.
+      if (body.action === 'coinsenda_bolsa') {
+        const cfg = await configCoinsenda(db)
+        if (!cfg.email && !cfg.telefono) return json({ ok: false, error: 'Coinsenda no está configurado (Admin → Coinsenda).' })
+        const b = await billeteraCop(new ClienteCoinsenda(db, cfg, 20_000))
+        if ('error' in b) return json({ ok: false, error: b.error })
+        return json({ ok: true, cop: Number.isFinite(b.disponible) ? b.disponible : null })
       }
       // Con qué cuenta firma Lincoin: el correo con el que se entra a
       // Coinsenda. Va dentro del token firmado; sin él no hay sesión.
@@ -5133,6 +5155,9 @@ Deno.serve(async (req: Request) => {
         const descripcion = String(body.descripcion ?? '').trim().slice(0, 300)
         const opId = String(body.opId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
         if (!CAJA.some(c => c.proveedor === proveedor)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
+        // La utilidad sale por Bre-B desde Mouv o Finity; desde Coinsenda
+        // todavía no hay envío a las llaves de Lincoin.
+        if (proveedor === 'Coinsenda') return json({ ok: false, error: 'Por ahora la utilidad se envía desde la bolsa de Mouv o de Finity.' }, 400)
         if (!isFinite(monto) || monto < 5000) return json({ ok: false, error: 'El monto mínimo es 5.000.' }, 400)
         // Bre-B: hasta 12.000.000 por transferencia (tope de la red). Más que
         // eso se envía en partes.
@@ -5361,7 +5386,7 @@ Deno.serve(async (req: Request) => {
         if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
         const visible = (t: any) => acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc)
         const esCop = (c: unknown) => String(c ?? '').toUpperCase().startsWith('COP')
-        const prov = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : 'Saldo Lincoin' }
+        const prov = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : 'Saldo Lincoin' }
 
         // 1 · Flujo del periodo: entradas (cargues) y salidas (dispersiones)
         // completadas, en COP, por hora / día / semana.
@@ -5581,7 +5606,8 @@ Deno.serve(async (req: Request) => {
       // cuenta Bre-B (override con el secret BREB_CARGUE_FEE_PCT, en %).
       // Ej: cargue de 40.000.000 → comisión 40.000 → se acreditan 39.960.000.
       if (body.action === 'admin_credit_balance' && body.userId && body.currency && body.amount != null) {
-        const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH']
+        // COP_C3 = Saldo Cuenta 3 (lo respalda la bolsa de Coinsenda).
+        const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH', 'COP_C3']
         const cur: string = body.currency
         if (!ALLOWED.includes(cur)) return json({ success: false, error: `Riel no permitido: ${cur}` }, 400)
         const { data: u } = await db.from('users').select('balances').eq('id', body.userId).single()

@@ -3844,12 +3844,14 @@ serve(async (req: Request) => {
     // rieles. Todo lo demás —inscripción, AML, titular de la llave, motivo,
     // topes— es el mismo proceso.
     const brebFinity = action === 'payout_breb2'
-    // Cuenta 3 (Coinsenda), de Bre-B o de ACH. Cada riel paga con su saldo:
-    // Bre-B · Cuenta 3 con el saldo Bre-B y ACH · Cuenta 3 con el saldo ACH.
-    // Todo el resto —2FA, AML, titular, cupo, candados— es el mismo proceso.
+    // Cuenta 3 (Coinsenda), de Bre-B o de ACH. Las dos pagan con el "Saldo
+    // Cuenta 3" del cliente (COP_C3), que respalda la bolsa de Coinsenda —
+    // igual que Mouv respalda el saldo Bre-B y Finity el ACH (decisión del
+    // 1 nov; antes salían del saldo Bre-B y del ACH). Todo el resto —2FA,
+    // AML, titular, cupo, candados— es el mismo proceso.
     const cuenta3 = action === 'payout_breb3' || action === 'payout_ach3'
-    const railCol = rail === 'BREB' && !brebFinity ? 'COP_BREB' : 'COP_ACH'
-    const saldoLabel = railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
+    const railCol = cuenta3 ? 'COP_C3' : rail === 'BREB' && !brebFinity ? 'COP_BREB' : 'COP_ACH'
+    const saldoLabel = railCol === 'COP_C3' ? 'Cuenta 3' : railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
     // Los nombres que conocemos del beneficiario. Con la Cuenta 2 se comparan
     // con el titular que devuelve Finity antes de confirmar el envío.
     const nombresTitular: string[] = []
@@ -4495,7 +4497,7 @@ serve(async (req: Request) => {
         let falta = Number((totalDebit - en(railCol)).toFixed(2))
         if (falta > 0) {
           const mov: Record<string, number> = {}
-          for (const f of ['COP', railCol === 'COP_BREB' ? 'COP_ACH' : 'COP_BREB']) {
+          for (const f of railCol === 'COP_C3' ? ['COP'] : ['COP', railCol === 'COP_BREB' ? 'COP_ACH' : 'COP_BREB']) {
             if (falta <= 0) break
             const disp = en(f)
             if (disp <= 0) continue

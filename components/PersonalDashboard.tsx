@@ -1923,7 +1923,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const beneficiary = tx.beneficiary || tx.recipient?.holderName || '';
     const sub = beneficiary ? `a ${beneficiary}${dateStr ? ` · ${dateStr}` : ''}` : dateStr;
     const Icon: React.ElementType =
-      tx.type === 'dispersion' ? (tx.currency === 'COP_ACH' && tx.rail !== 'BREB' ? Landmark : Zap)
+      tx.type === 'dispersion' ? ((tx.currency === 'COP_ACH' || tx.currency === 'COP_C3') && tx.rail !== 'BREB' ? Landmark : Zap)
       : tx.type === 'load' ? ArrowDownLeft
       : tx.type === 'send' || tx.type === 'pay_sent' ? Send
       : tx.type === 'pay_received' || tx.type === 'referral_payout' ? ArrowDownLeft
@@ -1941,7 +1941,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // Lincoin (COP), Bre-B (COP_BREB) y ACH (COP_ACH); USD incluye USDT
       // (USD/USDT_TRON). Sin esto, el detalle COP solo mostraba Saldo Lincoin.
       if (walletCode) {
-          const group = walletCode === 'COP' ? ['COP', 'COP_BREB', 'COP_ACH']
+          const group = walletCode === 'COP' ? ['COP', 'COP_BREB', 'COP_ACH', 'COP_C3']
               : walletCode === 'USD' ? ['USD', 'USDT', 'USDT_TRON']
               : [walletCode];
           filtered = filtered.filter(tx => group.includes(String(tx.currency)) || group.includes(String(tx.currency || '').split('_')[0]));
@@ -2292,7 +2292,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
               })()}
               {/* COP — cuenta local (BreB + ACH vía Mouv) */}
               {(() => {
-                const cop = getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH');
+                const cop = getBalance('COP') + getBalance('COP_BREB') + getBalance('COP_ACH') + getBalance('COP_C3');
                 const usdt = displayBalance('USD');
                 const rate = getRate('USD', 'COP');
                 return (
@@ -2945,7 +2945,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
 
               {selectedWalletCode === 'COP' ? (() => {
                   const _cop = getBalance('COP'), _breb = getBalance('COP_BREB'), _ach = getBalance('COP_ACH');
-                  const _total = _cop + _breb + _ach; const _rate = getRate('USD', 'COP');
+                  // El Saldo Cuenta 3 también es parte de los pesos del cliente.
+                  const _total = _cop + _breb + _ach + getBalance('COP_C3'); const _rate = getRate('USD', 'COP');
                   return (
                   <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 16, padding: '26px 28px' }} className="flex flex-col lg:flex-row lg:items-start justify-between gap-8">
                       <div>
@@ -3059,6 +3060,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const cop = getBalance('COP');
                   const brebBal = getBalance('COP_BREB');
                   const achBal = getBalance('COP_ACH');
+                  // Saldo Cuenta 3: de ahí salen Bre-B · Cuenta 3 y ACH · Cuenta 3.
+                  const c3Bal = getBalance('COP_C3');
                   // Estado del riel ACH: L–V 7:00–18:00 hora Colombia (UTC-5).
                   const _cot = new Date(Date.now() - 5 * 3600 * 1000);
                   const _dow = _cot.getUTCDay(); const _hr = _cot.getUTCHours();
@@ -3130,7 +3133,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   {([
                                       { n: 1, bal: brebBal, sub: 'Saldo Bre-B', metodo: 'breb' as 'breb' | 'breb2' | 'breb3' },
                                       { n: 2, bal: achBal, sub: 'Usa tu saldo ACH', metodo: 'breb2' as 'breb' | 'breb2' | 'breb3' },
-                                      ...(c3B ? [{ n: 3, bal: brebBal, sub: 'Saldo Bre-B', metodo: 'breb3' as 'breb' | 'breb2' | 'breb3' }] : []),
+                                      ...(c3B ? [{ n: 3, bal: c3Bal, sub: 'Saldo Cuenta 3', metodo: 'breb3' as 'breb' | 'breb2' | 'breb3' }] : []),
                                   ]).map(c => (
                                       <div key={c.n} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
                                           <div style={{ minWidth: 0 }}>
@@ -3189,11 +3192,11 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   {c3A ? (
                                       <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
                                           <div style={{ minWidth: 0 }}>
-                                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta 3</span> · Saldo ACH · llega en 6 a 24 h</p>
-                                              <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
+                                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta 3</span> · Saldo Cuenta 3 · llega en 6 a 24 h</p>
+                                              <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(c3Bal).toLocaleString('es-CO')}</p>
                                           </div>
-                                          <button onClick={() => openSendMoney(undefined, { metodo: 'ach3' })} disabled={achBal <= 0}
-                                              style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', color: achBal <= 0 ? '#878E88' : '#F4F4F2', background: 'transparent', cursor: achBal <= 0 ? 'not-allowed' : 'pointer' }}
+                                          <button onClick={() => openSendMoney(undefined, { metodo: 'ach3' })} disabled={c3Bal <= 0}
+                                              style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', color: c3Bal <= 0 ? '#878E88' : '#F4F4F2', background: 'transparent', cursor: c3Bal <= 0 ? 'not-allowed' : 'pointer' }}
                                               className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                                       </div>
                                   ) : cuentaProxima(3)}
@@ -3879,7 +3882,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // pesos — el sufijo del riel va como contexto, no como ticker.
   const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
   const railOfCurrency = (c?: string): string | null =>
-    c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : null;
+    c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : c === 'COP_C3' ? 'Cuenta 3' : null;
   // El riel de UN movimiento. Bre-B · Cuenta 2 se paga con el saldo ACH
   // (moneda COP_ACH) pero es un envío por llave: se mira el riel del envío,
   // no la moneda. Si no, el comprobante decía "ACH" en una transferencia Bre-B.
@@ -4374,7 +4377,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const benInitials = benName ? benName.split(/\s+/).filter(Boolean).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase() : '';
     const isCop = String(tx.currency || '').startsWith('COP');
     const isBrebTx = esBrebDisp;
-    const railLabel = isBrebTx ? `Bre-B${nCuentaTx >= 2 ? ` · Cuenta ${nCuentaTx}` : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' ? (achCuenta3 ? 'ACH · Cuenta 3 · Colombia' : 'ACH · Colombia') : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
+    const railLabel = isBrebTx ? `Bre-B${nCuentaTx >= 2 ? ` · Cuenta ${nCuentaTx}` : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' || achCuenta3 ? (achCuenta3 ? 'ACH · Cuenta 3 · Colombia' : 'ACH · Colombia') : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
     const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
     // Cargue Bre-B con comisión de recepción: desglose transparente en el
     // detalle (Monto recibido − Comisión 0,10% = Acreditado). El número grande
@@ -4400,7 +4403,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         { label: 'Acreditado a tu saldo', value: `${formatMoney(tx.amount, tx.currency)} COP`, green: true },
       ] : []),
       ...(isDispersion && dispDest ? [{ label: isBrebTx ? 'Llave destino' : 'Cuenta destino', value: dispDest, mono: true, copy: dispDest }] : []),
-      ...(isDispersion && tx.currency === 'COP_ACH' && !esBrebDisp && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
+      ...(isDispersion && (tx.currency === 'COP_ACH' || tx.currency === 'COP_C3') && !esBrebDisp && tx.bank ? [{ label: 'Banco', value: String(tx.bank).split('·')[0].trim() }] : []),
       ...(isMouvConvert && mouvFromAmount != null ? [{ label: 'Debitado de', value: `Billetera USDT · −${Number(mouvFromAmount).toFixed(2)} USDT` }] : []),
       ...(isMouvConvert && mouvRate != null ? [{ label: 'Tasa aplicada', value: `1 USDT = ${Number(mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP` }] : []),
       ...(isGasfreeDeposit && depTxId ? [{ label: 'TxID', value: truncMid(depTxId, 8, 8), mono: true, copy: depTxId }] : []),
