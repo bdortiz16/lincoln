@@ -3828,6 +3828,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           setCajaOcupada(false);
           if (r?.ok) {
               showToast(`Enviado: ${fmt(Number(linForm.monto))} desde ${linForm.proveedor}. Queda «en proceso» hasta que el proveedor confirme.`, 5000);
+              // La bolsa en vivo se leyó al abrir la pestaña: sin volver a
+              // leerla, el retiro ya restaba en «Lincoin hoy» pero la bolsa
+              // seguía con la cifra de antes, y la diferencia salía igual al
+              // envío. Se lee ya y otra vez en un rato (el proveedor tarda en
+              // descontarlo).
+              const leer = linForm.proveedor === 'Mouv' ? loadMouvPool : loadFinityPool;
+              leer(); setTimeout(leer, 30_000);
               setLinForm(null); setLinVer(v => v + 1); setCajaVer(v => v + 1); return;
           }
           if (r?.porConfirmar || r?.duplicado) { showToast(r.error, 7000); setLinForm(null); setLinVer(v => v + 1); return; }
@@ -4029,13 +4036,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                   <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)', marginTop: 4, paddingTop: 4 }}>
                                       {fila(esMesActual ? '= Lincoin hoy' : `= Lincoin al cierre de ${mesCorto}`, cm.cierre, { fuerte: true, color: '#4ADE80' })}
                                       {esMesActual && fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
+                                      {esMesActual && (() => { const bolsa = c.proveedor === 'Mouv' ? mouvPool : finityPool; return (
+                                          <div className="flex justify-end">
+                                              <button onClick={() => (c.proveedor === 'Mouv' ? loadMouvPool : loadFinityPool)()} disabled={!!bolsa?.loading}
+                                                  className="inline-flex items-center" style={{ gap: 5, background: 'none', border: 'none', padding: '2px 0', color: '#878E88', fontSize: 11, cursor: 'pointer' }}>
+                                                  <RefreshCw size={11} className={bolsa?.loading ? 'animate-spin' : ''} /> {bolsa?.loading ? 'Leyendo la bolsa…' : 'Leer la bolsa de nuevo'}
+                                              </button>
+                                          </div>
+                                      ); })()}
                                   </div>
                                   {esMesActual ? <>
                                       <div className="flex justify-between" style={{ gap: 10, marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
                                           background: c.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${c.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: c.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
                                           <span>Diferencia sin explicar</span><span style={{ whiteSpace: 'nowrap' }}>{c.dif == null ? '—' : signo(c.dif)}</span>
                                       </div>
-                                      {c.dif != null && c.dif !== 0 && <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>}
+                                      {(() => {
+                                          if (c.dif == null || c.dif === 0) return null;
+                                          // Un envío a la empresa recién hecho ya resta en «Lincoin hoy»,
+                                          // pero el proveedor tarda en descontarlo de la bolsa: no es un
+                                          // movimiento que falte registrar.
+                                          const enCamino = movs.filter(m => !m.anulado && m.proveedor === c.proveedor && m.envio && ['enviando', 'en_proceso', 'por_confirmar'].includes(m.envio.estado)).reduce((a, m) => a + Number(m.monto), 0);
+                                          return enCamino > 0
+                                              ? <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24', lineHeight: 1.45 }}>Hay {fmt(enCamino)} enviados a la empresa todavía en proceso: ya se restaron de «Lincoin hoy», pero la bolsa puede tardar en reflejarlo. Lee la bolsa de nuevo en unos minutos antes de registrar nada.</p>
+                                              : <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>;
+                                      })()}
                                       {(() => { const mx = paraEnviar(c.proveedor); return (
                                           <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
                                               <span style={{ fontSize: 12, color: '#878E88' }}>Para enviar a la empresa: <b style={{ color: '#F4F4F2' }}>{mx == null ? '—' : fmt(mx)}</b></span>
