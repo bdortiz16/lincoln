@@ -3733,7 +3733,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setCajaEditar(null)}>
                   <div onClick={e => e.stopPropagation()} style={{ width: 400, maxWidth: '100%', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
                       <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Saldo de apertura · {cajaEditar.proveedor}</p>
-                      <p style={{ margin: '6px 0 10px', fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Lo que era de Lincoin en la bolsa el día de la apertura. Queda en la auditoría quién lo cambió y el valor anterior.</p>
+                      <p style={{ margin: '6px 0 10px', fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Lo que era de Lincoin en la bolsa el 1.º del mes en que se abrió la caja: desde ese día cuenta la utilidad de los cargues. Queda en la auditoría quién lo cambió y el valor anterior.</p>
                       <input inputMode="numeric" value={cajaEditar.monto ? Number(cajaEditar.monto.replace(/[^\d-]/g, '') || 0).toLocaleString('es-CO') : ''} onChange={e => setCajaEditar(c => c && ({ ...c, monto: e.target.value.replace(/[^\d-]/g, '') }))}
                           style={{ width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 18, fontWeight: 800 }} />
                       <input value={cajaEditar.nota} onChange={e => setCajaEditar(c => c && ({ ...c, nota: e.target.value }))} placeholder="Nota (de dónde sale la cifra)"
@@ -4014,16 +4014,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               {!c.apertura ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja abre hoy a las 23:59 (o desde Tesorería › Cierre de caja).</p>
                                : !cm?.abierta ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja de {c.proveedor} abrió el {fechaAp}: en {mesLargo} todavía no había caja.</p>
                                : <>
-                                  {fila(cm.abreEnElMes ? `Saldo de apertura · ${fechaAp}` : `Saldo al empezar ${mesCorto}`, cm.inicio)}
+                                  {fila(cm.abreEnElMes ? `Saldo al empezar ${mesCorto} · apertura` : `Saldo al empezar ${mesCorto}`, cm.inicio)}
                                   {fila(`+ Utilidad de los cargues de ${mesCorto}`, cm.utilidad, { signo: cm.utilidad < 0 ? '−' : '+', color: '#4ADE80' })}
-                                  {/* El mes en que se abrió la caja solo suma desde la apertura: lo
-                                      de antes ya estaba en la bolsa ese día y entró en el saldo de
-                                      apertura. Sin esta línea parecía que faltaba utilidad. */}
-                                  {(() => { const delMes = Number(fuentes.find(f => f.n === c.proveedor)?.total ?? 0); return cm.abreEnElMes && delMes !== cm.utilidad ? (
+                                  {/* Cada mes suma su utilidad completa (del 1 al último día). En el
+                                      mes en que se abrió la caja, el saldo de apertura se toma como el
+                                      que había el 1.º: si no lo era, el dueño lo corrige. */}
+                                  {cm.abreEnElMes && (
                                       <p style={{ margin: '0 0 4px', fontSize: 11, color: 'rgba(244,244,242,0.45)', lineHeight: 1.45 }}>
-                                          En {mesCorto} la caja abrió el {fechaAp}: la utilidad de antes de esa fecha ({fmt(delMes)} en todo el mes) ya estaba en la bolsa ese día y entró en el saldo de apertura. Desde el mes siguiente esta línea es la utilidad del mes completo.
+                                          La caja se abrió el {fechaAp} con este saldo, y se toma como lo que Lincoin tenía en la bolsa el 1.º de {mesCorto}. Si ese día había otra cifra, corrígela en Tesorería › Cierre de caja (Editar apertura).
                                       </p>
-                                  ) : null; })()}
+                                  )}
                                   {fila(`− Retiros de utilidad de ${mesCorto}`, cm.retiros, { signo: '−' })}
                                   {fila('± Movimientos externos y aportes', cm.externos, { signo: cm.externos < 0 ? '−' : '+' })}
                                   <div style={{ borderTop: '1px solid rgba(255,255,255,0.14)', marginTop: 4, paddingTop: 4 }}>

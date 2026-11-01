@@ -278,25 +278,38 @@ const margenCostoEnvio = (monto: number) => Math.ceil(monto * 0.002) + 2000
 const enmascararLlave = (v: string) => { const t = String(v ?? ''); return t.length > 4 ? `${'•'.repeat(Math.min(6, t.length - 4))}${t.slice(-4)}` : t }
 const fechaBogota = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 10)
 
+// LA CAJA VA POR MESES CALENDARIO. El saldo de apertura se toma como el que
+// Lincoin tenía el 1.º del mes en que se abrió la caja, y desde ese día
+// cuentan la utilidad de los cargues y los movimientos. Así cada mes —también
+// el de la apertura— suma su utilidad completa, del 1 al último día. Antes la
+// apertura (29 oct) cortaba octubre: solo contaban los 3 últimos días y la
+// tarjeta del mes mostraba una utilidad que no era la del mes.
+// Devuelve la fecha (Bogotá) y el instante UTC del 1.º de ese mes.
+const inicioCaja = (abiertaAt: unknown) => {
+  const mes = fechaBogota(String(abiertaAt)).slice(0, 7)
+  return { fecha: `${mes}-01`, iso: new Date(Date.parse(`${mes}-01T00:00:00Z`) + 5 * 3600_000).toISOString() }
+}
+
 async function estadoCaja() {
   const { data: aps } = await db.from('caja_apertura').select('*')
   const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
   const { data: fotos } = await db.from('caja_cierres').select('*').order('fecha', { ascending: false }).limit(4)
-  const primera = ((aps ?? []) as any[]).map(a => String(a.abierta_at)).sort()[0]
+  const primera = ((aps ?? []) as any[]).map(a => inicioCaja(a.abierta_at).iso).sort()[0]
   const utilidad = primera ? await utilidadPorProveedor(primera) : { Mouv: 0, Finity: 0 }
-  // La utilidad se cuenta desde la apertura de CADA proveedor.
+  // La utilidad se cuenta desde el 1.º del mes de apertura de CADA proveedor.
   const porProv: Record<string, number> = {}
   for (const c of CAJA) {
     const a = aperturas.get(c.proveedor)
-    porProv[c.proveedor] = a ? (String(a.abierta_at) === primera ? utilidad[c.proveedor] : (await utilidadPorProveedor(String(a.abierta_at)))[c.proveedor]) : 0
+    const ini = a ? inicioCaja(a.abierta_at).iso : null
+    porProv[c.proveedor] = a ? (ini === primera ? utilidad[c.proveedor] : (await utilidadPorProveedor(ini!))[c.proveedor]) : 0
   }
-  // Movimientos de Lincoin desde la apertura de cada bolsa.
+  // Movimientos de Lincoin desde ese mismo día, en cada bolsa.
   const primeraFecha = primera ? fechaBogota(primera) : null
   const movs = primeraFecha ? (await movimientosCaja(primeraFecha)).filter(m => !m.anulado) : []
   return CAJA.map(c => {
     const a = aperturas.get(c.proveedor)
     const ultima = ((fotos ?? []) as any[]).find(f => f.proveedor === c.proveedor) ?? null
-    const desde = a ? fechaBogota(String(a.abierta_at)) : null
+    const desde = a ? inicioCaja(a.abierta_at).fecha : null
     const deEsta = desde ? movs.filter(m => m.proveedor === c.proveedor && String(m.fecha) >= desde) : []
     const retiros = deEsta.filter(m => m.tipo === 'retiro').reduce((acc, m) => acc + Number(m.monto), 0)
     const externos = deEsta.filter(m => m.tipo !== 'retiro').reduce((acc, m) => acc + (SIGNO_MOV[m.tipo] ?? 0) * Number(m.monto), 0)
@@ -311,16 +324,15 @@ async function estadoCaja() {
   })
 }
 
-// La caja de UN mes, por bolsa. La de estadoCaja() suma todo desde la
-// apertura y no vuelve a empezar; el tablero se mira por mes: con qué
-// arrancó Lincoin en cada bolsa el día 1, cuánto dejaron los cargues ESE
-// mes, qué se retiró o se movió por fuera, y con cuánto cerró. El mes en que
-// se abrió la caja arranca con el saldo de apertura y solo suma desde ese
-// día (lo de antes ya estaba en la bolsa y entró en la apertura).
+// La caja de UN mes, por bolsa. La de estadoCaja() suma todo desde el
+// arranque y no vuelve a empezar; el tablero se mira por mes: con qué
+// arrancó Lincoin en cada bolsa el día 1, cuánto dejaron los cargues ESE mes
+// (del 1 al último día), qué se retiró o se movió por fuera, y con cuánto
+// cerró. El mes en que se abrió la caja arranca con el saldo de apertura.
 async function cajaDelMes(desde: string, hasta: string, inicioIso: string, finIso: string) {
   const { data: aps } = await db.from('caja_apertura').select('*')
   const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
-  const tsAp = (a: any) => Date.parse(String(a.abierta_at))
+  const tsAp = (a: any) => Date.parse(inicioCaja(a.abierta_at).iso)
   const primera = ((aps ?? []) as any[]).map(tsAp).filter(Number.isFinite).sort((x, y) => x - y)[0]
   if (!Number.isFinite(primera)) return CAJA.map(c => ({ proveedor: c.proveedor, abierta: false }))
   const tInicio = Date.parse(inicioIso), tFin = Math.min(Date.parse(finIso), Date.now())
@@ -346,7 +358,7 @@ async function cajaDelMes(desde: string, hasta: string, inicioIso: string, finIs
   return CAJA.map(c => {
     const a = aperturas.get(c.proveedor)
     if (!a) return { proveedor: c.proveedor, abierta: false }
-    const desdeAp = fechaBogota(String(a.abierta_at))
+    const desdeAp = inicioCaja(a.abierta_at).fecha
     if (Date.parse(finIso) <= tsAp(a)) return { proveedor: c.proveedor, abierta: false, abreDespues: true, aperturaAt: a.abierta_at }
     const deEsta = movs.filter(m => m.proveedor === c.proveedor && String(m.fecha) >= desdeAp)
     const suma = (lista: any[], tipo: 'retiro' | 'otros') => lista
