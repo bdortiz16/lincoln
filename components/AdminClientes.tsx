@@ -122,20 +122,20 @@ const I = {
 // exterior (Perú, Brasil…) → una por movimiento, porque no facturan en
 // Colombia. Por defecto lo decide el país del registro; acá se ajusta.
 // Separa Contabilidad y el Excel que va para la contadora.
-const ModeloFactura: React.FC<{ userId: string; showToast?: (t: string, ms?: number, tipo?: string) => void }> = ({ userId, showToast }) => {
-  const [m, setM] = useState<{ modelo: 'colombia' | 'exterior'; pais: string | null; manual: boolean } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+// País de la empresa → modelo de facturación. Igual que modeloPorPais del
+// servidor (_shared/modelo-factura.ts): sin país cuenta como Colombia.
+type ModeloCli = { modelo: 'colombia' | 'exterior'; pais: string | null; manual: boolean };
+const esColombia = (p: unknown) => {
+  const s = String(p ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+  return !s || ['colombia', 'co', 'col', 'republica de colombia'].includes(s);
+};
+const PAISES_EXTERIOR = ['Perú', 'Brasil', 'Chile', 'Ecuador', 'México', 'Panamá', 'Argentina', 'Venezuela', 'Bolivia', 'Paraguay', 'Uruguay', 'Estados Unidos', 'España'];
+
+// El modelo del cliente lo lee el panel una vez y lo comparten la cabecera,
+// Editar cliente y este control: si cada uno lo leyera por su lado, cambiarlo
+// en uno dejaba a los otros mostrando el valor viejo.
+const ModeloFactura: React.FC<{ userId: string; m: ModeloCli | null; error: string | null; onCambio: (m: ModeloCli) => void; showToast?: (t: string, ms?: number, tipo?: string) => void }> = ({ userId, m, error, onCambio, showToast }) => {
   const [guardando, setGuardando] = useState(false);
-  useEffect(() => {
-    let vivo = true;
-    setM(null); setError(null);
-    pedirAdmin({ action: 'cliente_modelo_factura', userId }).then((r: any) => {
-      if (!vivo) return;
-      if (r?.ok) setM({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
-      else setError(r?.permisoDenegado ? 'Tu rol no ve la facturación.' : (r?.error ?? 'No se pudo leer.'));
-    });
-    return () => { vivo = false; };
-  }, [userId]);
   const valor = !m ? '' : m.manual ? m.modelo : 'auto';
   const cambiar = async (v: string) => {
     if (!m || v === valor) return;
@@ -143,11 +143,11 @@ const ModeloFactura: React.FC<{ userId: string; showToast?: (t: string, ms?: num
     const r: any = await pedirAdmin({ action: 'cliente_modelo_factura_set', userId, modelo: v });
     setGuardando(false);
     if (r?.ok) {
-      setM({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
+      onCambio({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
       showToast?.(`Facturación: ${r.nombre}.`);
     } else showToast?.(r?.permisoDenegado ? 'Tu rol no permite cambiar la facturación.' : (r?.error ?? 'No se pudo guardar.'), 7000, 'error');
   };
-  const porPais = m ? (m.pais ? m.pais : 'sin país') : '';
+  const porPais = m ? (m.pais ? m.pais : 'sin país: el país se pone en Editar') : '';
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.b1}` }}>
       <div style={{ minWidth: 0 }}>
@@ -245,6 +245,13 @@ export const AdminClientes: React.FC<{
   const [editando, setEditando] = useState(false);
   const [edNombre, setEdNombre] = useState('');
   const [edRol, setEdRol] = useState<'personal' | 'business'>('business');
+  // País de la empresa en Editar cliente: decide la facturación de Lincoin
+  // (Colombia → factura diaria; exterior → por movimiento).
+  const [edOrigen, setEdOrigen] = useState<'colombia' | 'exterior'>('colombia');
+  const [edPais, setEdPais] = useState('');
+  const [edGuardando, setEdGuardando] = useState(false);
+  const [modeloCli, setModeloCli] = useState<ModeloCli | null>(null);
+  const [modeloErr, setModeloErr] = useState<string | null>(null);
   const [angosta, setAngosta] = useState(false);
   const [listaAbierta, setListaAbierta] = useState(true);
 
@@ -334,6 +341,17 @@ export const AdminClientes: React.FC<{
   // refleja al instante en los saldos que se están mirando. Si llegó por
   // enlace y no está cargado, se pide al servidor.
   const sel: any = selId ? porId.get(selId) ?? res.filas[selId] ?? null : null;
+  useEffect(() => {
+    let vivo = true;
+    setModeloCli(null); setModeloErr(null);
+    if (!selId) return;
+    pedirAdmin({ action: 'cliente_modelo_factura', userId: selId }).then((r: any) => {
+      if (!vivo) return;
+      if (r?.ok) setModeloCli({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
+      else setModeloErr(r?.permisoDenegado ? 'Tu rol no ve la facturación.' : (r?.error ?? 'No se pudo leer.'));
+    }).catch(() => { if (vivo) setModeloErr('No se pudo leer.'); });
+    return () => { vivo = false; };
+  }, [selId]);
   useEffect(() => {
     if (selId && !sel && typeof asegurarUsuarios === 'function') asegurarUsuarios([selId]);
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
@@ -579,6 +597,15 @@ export const AdminClientes: React.FC<{
                         : verificado(sel) ? <Pill tono="ok">KYC VERIFICADO</Pill>
                           : <Pill>KYC PENDIENTE</Pill>}
                       <Pill>{ROT_TIPO[tipoDe(sel)]}</Pill>
+                      {modeloCli && (
+                        <span title={modeloCli.modelo === 'exterior' ? 'Empresa del exterior: Lincoin le factura cada movimiento' : 'Empresa de Colombia: una factura por día, al día siguiente'}>
+                          <Pill tono={modeloCli.modelo === 'exterior' ? 'curso' : 'neutro'}>
+                            {modeloCli.modelo === 'exterior'
+                              ? `EXTERIOR${modeloCli.pais && !esColombia(modeloCli.pais) ? ` · ${modeloCli.pais.toUpperCase()}` : ''}`
+                              : modeloCli.pais ? 'COLOMBIA' : 'COLOMBIA · SIN PAÍS'}
+                          </Pill>
+                        </span>
+                      )}
                     </div>
                     <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0' }}>
                       {sel.email} · Cliente desde {fecha(sel.createdAt ?? sel.created_at)} · Último acceso {fechaHora(sel.lastLogin ?? sel.raw_data?.lastLoginAt)}
@@ -586,7 +613,14 @@ export const AdminClientes: React.FC<{
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, position: 'relative', flexWrap: 'wrap' }}>
-                  <button onClick={() => { setEdNombre(sel.name ?? ''); setEdRol(sel.role === 'business' ? 'business' : 'personal'); setEditando(true); }} style={btnSec}><Ico d={I.lapiz} /> Editar</button>
+                  <button onClick={() => {
+                    setEdNombre(sel.name ?? ''); setEdRol(sel.role === 'business' ? 'business' : 'personal');
+                    const p = modeloCli?.pais ?? sel.companyCountry ?? null;
+                    const ext = modeloCli ? modeloCli.modelo === 'exterior' : !esColombia(p);
+                    setEdOrigen(ext ? 'exterior' : 'colombia');
+                    setEdPais(ext && p && !esColombia(p) ? String(p) : '');
+                    setEditando(true);
+                  }} style={btnSec}><Ico d={I.lapiz} /> Editar</button>
                   <button onClick={sincronizar} disabled={sincronizando} style={{ ...btnSec, opacity: sincronizando ? 0.6 : 1 }}><Ico d={I.refrescar} /> Sincronizar</button>
                   <button onClick={() => setMenu(v => !v)} style={{ ...btnSec, padding: '8px 10px' }}><Ico d={I.puntos} /></button>
                   {menu && (
@@ -680,7 +714,8 @@ export const AdminClientes: React.FC<{
               {tab === 'resumen' && <Resumen sel={sel} movs={movsDe(sel.id)} saldo={saldo} totalUsd={totalUsd}
                 alternar={alternar} bloqueado={bloqueado} setConfirmar={setConfirmar} setEscrito={setEscrito}
                 toggleUserBlock={toggleUserBlock} refreshData={refreshData} showToast={showToast}
-                nota={nota} setNota={setNota} guardarNota={guardarNota} setTab={setTab} angosta={angosta} />}
+                nota={nota} setNota={setNota} guardarNota={guardarNota} setTab={setTab} angosta={angosta}
+                modeloCli={modeloCli} modeloErr={modeloErr} setModeloCli={setModeloCli} />}
 
               {tab === 'movimientos' && <>
                 {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
@@ -787,18 +822,72 @@ export const AdminClientes: React.FC<{
                 El tipo decide qué producto ve el cliente al entrar. Cambiarlo a la ligera lo deja en una app que no le corresponde.
               </p>
             </div>
+            <div style={{ marginTop: 14 }}>
+              <Etiqueta>PAÍS DE LA EMPRESA</Etiqueta>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                {(['colombia', 'exterior'] as const).map(o => (
+                  <button key={o} onClick={() => setEdOrigen(o)} disabled={!modeloCli}
+                    style={{
+                      flex: 1, height: 40, borderRadius: 9, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, cursor: modeloCli ? 'pointer' : 'not-allowed',
+                      background: edOrigen === o ? 'rgba(74,222,128,0.07)' : 'transparent',
+                      border: `1px solid ${edOrigen === o ? 'rgba(74,222,128,0.35)' : C.b2}`,
+                      color: edOrigen === o ? C.text : C.sub, opacity: modeloCli ? 1 : 0.5,
+                    }}>{o === 'colombia' ? 'Colombia' : 'Exterior'}</button>
+                ))}
+              </div>
+              {edOrigen === 'exterior' && (
+                <>
+                  <select value={PAISES_EXTERIOR.includes(edPais) ? edPais : edPais ? '__otro' : ''} disabled={!modeloCli}
+                    onChange={e => setEdPais(e.target.value === '__otro' ? ' ' : e.target.value)} aria-label="País de la empresa"
+                    style={{ width: '100%', height: 40, marginTop: 8, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 10px', color: edPais ? C.text : C.sub, fontSize: 13, fontFamily: FONT }}>
+                    <option value="">Elige el país…</option>
+                    {PAISES_EXTERIOR.map(p => <option key={p} value={p}>{p}</option>)}
+                    <option value="__otro">Otro país…</option>
+                  </select>
+                  {edPais && !PAISES_EXTERIOR.includes(edPais) && (
+                    <input value={edPais.trimStart()} onChange={e => setEdPais(e.target.value || ' ')} placeholder="Escribe el país" autoFocus
+                      style={{ width: '100%', height: 40, marginTop: 8, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 13px', color: C.text, fontSize: 13, outline: 'none', fontFamily: FONT }} />
+                  )}
+                </>
+              )}
+              <p style={{ fontSize: 11, color: modeloErr ? C.red : C.dim, margin: '7px 0 0', lineHeight: 1.5 }}>
+                {modeloErr ? `No se puede cambiar el país: ${modeloErr}`
+                  : !modeloCli ? 'Cargando…'
+                    : edOrigen === 'exterior'
+                      ? 'Empresa del exterior: Lincoin le factura cada movimiento (no factura en Colombia).'
+                      : 'Empresa de Colombia: Lincoin le factura una vez al día, al día siguiente, con todo lo que movió.'}
+                {modeloCli?.manual ? ' Al guardar el país se quita el ajuste a mano de Controles de cuenta.' : ''}
+              </p>
+            </div>
             <div style={{ display: 'flex', gap: 9, marginTop: 20 }}>
               <button onClick={() => setEditando(false)} style={{ ...btnSec, flex: 1, height: 44, justifyContent: 'center' }}>Cancelar</button>
               <button
-                disabled={!edNombre.trim()}
+                disabled={!edNombre.trim() || edGuardando}
                 onClick={async () => {
-                  await updateUserProfile?.(sel.id, { name: edNombre.trim(), role: edRol });
-                  setEditando(false);
-                  await refreshData?.();
-                  showToast?.('Cliente actualizado.');
+                  // El país va por su propia acción del servidor (con 2FA y
+                  // auditoría): decide cómo se le factura. Solo si cambió.
+                  const paisNuevo = edOrigen === 'colombia' ? 'Colombia' : edPais.trim();
+                  if (edOrigen === 'exterior' && (!paisNuevo || esColombia(paisNuevo))) { showToast?.('Elige el país de la empresa del exterior.', 6000, 'error'); return; }
+                  const paisAntes = modeloCli?.pais ?? null;
+                  const cambioPais = !!modeloCli && (
+                    modeloCli.manual
+                    || (edOrigen === 'colombia' ? !(paisAntes && esColombia(paisAntes)) : paisNuevo.toLowerCase() !== String(paisAntes ?? '').trim().toLowerCase())
+                  );
+                  setEdGuardando(true);
+                  try {
+                    if (cambioPais) {
+                      const r: any = await pedirAdmin({ action: 'cliente_modelo_factura_set', userId: sel.id, modelo: 'auto', pais: paisNuevo });
+                      if (!r?.ok) { showToast?.(r?.permisoDenegado ? 'Tu rol no permite cambiar el país de la empresa.' : (r?.error ?? 'No se pudo guardar el país.'), 7000, 'error'); return; }
+                      setModeloCli({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
+                    }
+                    await updateUserProfile?.(sel.id, { name: edNombre.trim(), role: edRol, ...(cambioPais ? { companyCountry: paisNuevo } : {}) });
+                    setEditando(false);
+                    await refreshData?.();
+                    showToast?.(cambioPais ? `Cliente actualizado · ${edOrigen === 'exterior' ? `exterior (${paisNuevo}): factura por movimiento` : 'Colombia: factura diaria'}.` : 'Cliente actualizado.');
+                  } finally { setEdGuardando(false); }
                 }}
-                style={{ ...btnPri, flex: 1, height: 44, justifyContent: 'center', opacity: edNombre.trim() ? 1 : 0.5 }}>
-                Guardar cambios
+                style={{ ...btnPri, flex: 1, height: 44, justifyContent: 'center', opacity: edNombre.trim() && !edGuardando ? 1 : 0.5 }}>
+                {edGuardando ? 'Guardando…' : 'Guardar cambios'}
               </button>
             </div>
           </div>
@@ -811,7 +900,7 @@ export const AdminClientes: React.FC<{
 };
 
 // ── Tab: Resumen ─────────────────────────────────────────────────────────
-const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloqueado, setConfirmar, setEscrito, toggleUserBlock, refreshData, showToast, nota, setNota, guardarNota, setTab, angosta }) => {
+const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloqueado, setConfirmar, setEscrito, toggleUserBlock, refreshData, showToast, nota, setNota, guardarNota, setTab, angosta, modeloCli, modeloErr, setModeloCli }) => {
   const raw = sel.raw_data ?? {};
   const notas: any[] = Array.isArray(raw.notasInternas) ? raw.notasInternas : [];
   const btnSec: React.CSSProperties = {
@@ -902,7 +991,7 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
               {[
                 { l: 'RAZÓN SOCIAL', v: sel.name || '—' },
                 { l: 'NIT', v: raw.nit ?? sel.document_number ?? raw.documentNumber ?? '—' },
-                { l: 'PAÍS · CIUDAD', v: [raw.country ?? 'Colombia', raw.city].filter(Boolean).join(' · ') },
+                { l: 'PAÍS · CIUDAD', v: [modeloCli?.pais ?? sel.companyCountry ?? raw.companyCountry ?? raw.country ?? 'Sin país', sel.companyCity ?? raw.city].filter(Boolean).join(' · ') },
                 { l: 'ID CLIENTE', v: sel.id, mono: true, copiar: true },
                 { l: 'REPRESENTANTE', v: raw.legalRep ?? raw.representante ?? '—' },
                 { l: 'VERIFICADO POR', v: raw.kycProvider ? `${raw.kycProvider} · ${fecha(raw.kycVerifiedAt)}` : (sel.kycStatus === 'verified' ? `Verificado · ${fecha(raw.kycVerifiedAt)}` : 'Sin verificar') },
@@ -952,7 +1041,7 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
                 </div>
               );
             })}
-            <ModeloFactura userId={sel.id} showToast={showToast} />
+            <ModeloFactura userId={sel.id} m={modeloCli} error={modeloErr} onCambio={setModeloCli} showToast={showToast} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
               <button
                 onClick={() => showToast?.('Todavía no está conectado: el restablecimiento hay que hacerlo desde soporte.', 7000)}

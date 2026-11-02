@@ -4829,21 +4829,40 @@ Deno.serve(async (req: Request) => {
       // exterior → una por movimiento. Por defecto lo decide el país del
       // registro; acá se ajusta a mano (tabla lincoin_modelo_cliente, zz28).
       // 'auto' borra el ajuste y vuelve a mandar el país.
+      //
+      // Con `pais` (Editar cliente → país de la empresa) se corrige también
+      // users.company_country: muchas empresas se registraron sin país y
+      // quedaban como Colombia aunque fueran de Brasil o Perú. Va por aquí y
+      // no por save_user para que quede con 2FA y en la auditoría: el país
+      // decide cómo se le factura.
       if (body.action === 'cliente_modelo_factura' || body.action === 'cliente_modelo_factura_set') {
         const uidM = String(body.userId ?? '')
         if (!UUID_RE.test(uidM)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
         if (body.action === 'cliente_modelo_factura_set') {
           const nuevo = String(body.modelo ?? '')
           if (!['colombia', 'exterior', 'auto'].includes(nuevo)) return json({ ok: false, error: 'Modelo inválido.' }, 400)
+          const paisNuevo = body.pais == null ? null : String(body.pais).replace(/\s+/g, ' ').trim()
+          if (paisNuevo != null && !/^[\p{L}][\p{L} .'-]{1,59}$/u.test(paisNuevo)) return json({ ok: false, error: 'Escribe el país de la empresa (solo letras).' }, 400)
           const antes = (await modelosDe(db, [uidM])).get(uidM)
+          if (paisNuevo != null) {
+            const { data: filaU } = await db.from('users').select('id, role').eq('id', uidM).maybeSingle()
+            if (!filaU) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+            if ((filaU as any).role === 'admin') return json({ ok: false, error: 'Esa cuenta es de un administrador.' }, 400)
+            const up = await db.from('users').update({ company_country: paisNuevo }).eq('id', uidM)
+            if (up.error) return json({ ok: false, error: `No se pudo guardar el país: ${up.error.message}` }, 500)
+          }
           const r = nuevo === 'auto'
             ? await db.from('lincoin_modelo_cliente').delete().eq('user_id', uidM)
             : await db.from('lincoin_modelo_cliente').upsert({ user_id: uidM, modelo: nuevo, por: auth.email ?? auth.userId ?? null, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
           if (r.error) {
             const sinTabla = /lincoin_modelo_cliente|schema cache|does not exist/i.test(String(r.error.message))
-            return json({ ok: false, error: sinTabla ? 'Falta correr la migración 2026_zz28_modelo_factura_cliente.sql en Supabase.' : r.error.message }, sinTabla ? 409 : 500)
+            // Sin la tabla no hay ajuste a mano que borrar: 'auto' ya es lo
+            // que rige, y el país (si vino) ya quedó guardado.
+            if (!(sinTabla && nuevo === 'auto')) {
+              return json({ ok: false, error: sinTabla ? 'Falta correr la migración 2026_zz28_modelo_factura_cliente.sql en Supabase.' : r.error.message }, sinTabla ? 409 : 500)
+            }
           }
-          await auditAdmin(req, 'admin.cliente_modelo_factura', { userId: uidM, antes: antes?.modelo ?? null, antesManual: antes?.manual ?? null, ahora: nuevo })
+          await auditAdmin(req, 'admin.cliente_modelo_factura', { userId: uidM, antes: antes?.modelo ?? null, antesManual: antes?.manual ?? null, ahora: nuevo, ...(paisNuevo != null ? { paisAntes: antes?.pais ?? null, pais: paisNuevo } : {}) })
         }
         const m = (await modelosDe(db, [uidM])).get(uidM)!
         return json({ ok: true, modelo: m.modelo, pais: m.pais, manual: m.manual, nombre: NOMBRE_MODELO[m.modelo] })

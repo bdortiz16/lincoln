@@ -40,13 +40,19 @@ export async function modelosDe(db: any, ids: string[]): Promise<Map<string, Mod
   const manuales = new Map<string, ModeloFactura>()
   for (let i = 0; i < unicos.length; i += 150) {
     const parte = unicos.slice(i, i + 150)
-    const [{ data: us }, man] = await Promise.all([
-      db.from('users').select('id, country, pais:raw_data->>companyCountry').in('id', parte),
+    const [usR, man] = await Promise.all([
+      db.from('users').select('id, country, company_country, pais:raw_data->>companyCountry').in('id', parte),
       db.from('lincoin_modelo_cliente').select('user_id, modelo').in('user_id', parte),
     ])
+    // Una base sin la columna company_country no deja a nadie sin país.
+    const us = usR?.error
+      ? (await db.from('users').select('id, country, pais:raw_data->>companyCountry').in('id', parte)).data
+      : usR?.data
     for (const m of ((man?.data ?? []) as any[])) if (m?.modelo === 'colombia' || m?.modelo === 'exterior') manuales.set(String(m.user_id), m.modelo)
     for (const u of (us ?? []) as any[]) {
-      const pais = String(u.country ?? u.pais ?? '').trim() || null
+      // Primero el país de la EMPRESA (el que se corrige en Editar cliente);
+      // users.country es el del registro y en cuentas viejas viene vacío.
+      const pais = [u.company_country, u.pais, u.country].map(x => String(x ?? '').trim()).find(Boolean) || null
       const manual = manuales.get(String(u.id))
       out.set(String(u.id), { modelo: manual ?? modeloPorPais(pais), pais, manual: !!manual })
     }
