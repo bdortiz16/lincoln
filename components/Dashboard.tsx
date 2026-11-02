@@ -71,6 +71,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { useExchangeRates } from '../context/ExchangeRateContext';
 import { FlagImg, FlagSelect } from './FlagImg';
+import { llamarFuncion } from '../lib/edge';
 
 // ... (Existing Interfaces and Constants: DESTINATION_BANKS, INITIAL_WALLET_CARDS, etc. - kept same)
 interface DashboardProps {
@@ -270,20 +271,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     } catch { /* sin sesión */ }
     return `Bearer ${SKEY}`;
   };
-  const callEmailOtp = async (action: string, extra: Record<string, unknown> = {}) => {
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    try {
-      const r = await fetch(`${SURL}/functions/v1/email-otp`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-        body: JSON.stringify({ action, userId: currentUser?.id, email: currentUser?.email, ...extra }),
-      });
-      return await r.json();
-    } catch { return { ok: false, error: 'network' }; }
-  };
+  // Con el token de la sesión: el servidor solo manda el código a la cuenta
+  // que llama (antes bastaba la llave pública y un userId).
+  const callEmailOtp = (action: string, extra: Record<string, unknown> = {}) =>
+    llamarFuncion('email-otp', { action, userId: currentUser?.id, email: currentUser?.email, ...extra }, 20000);
   const sendDisableOtp = async () => {
     setDisableOtp(s => ({ ...s, sending: true, error: '' }));
-    const r = await callEmailOtp('send');
+    const r = await callEmailOtp('send', { proposito: 'desactivar_2fa' });
     setDisableOtp(s => ({ ...s, sending: false, sent: r?.ok !== false, to: r?.to, error: r?.ok === false ? (r.message || 'No se pudo enviar el código.') : '' }));
   };
 

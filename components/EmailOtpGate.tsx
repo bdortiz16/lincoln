@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { llamarFuncion } from '../lib/edge';
 
 // Puerta de verificación por correo tras el login (Google incluido).
 // Envía un código de 6 dígitos al correo del usuario y no deja pasar al
@@ -63,14 +64,10 @@ export const EmailOtpGate: React.FC<Props> = ({ userId, email, onVerified, onLog
   const inputRef = useRef<HTMLInputElement>(null);
   const sentOnce = useRef(false);
 
-  const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-  const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+  // Con el token de la sesión: el servidor solo manda y valida el código de
+  // la cuenta que está entrando (antes bastaba la llave pública y un userId).
   const call = (action: string, extra: Record<string, unknown> = {}) =>
-    fetch(`${SURL}/functions/v1/email-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-      body: JSON.stringify({ action, userId, email, ...extra }),
-    }).then(r => r.json()).catch(() => null);
+    llamarFuncion('email-otp', { action, userId, email, ...extra }, 20000).catch(() => null);
 
   const send = async () => {
     if (sending || cooldown > 0) return;

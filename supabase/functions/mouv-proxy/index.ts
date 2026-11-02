@@ -3963,7 +3963,19 @@ serve(async (req: Request) => {
     //    activa, el código TOTP se valida AQUÍ antes de mover un peso — no
     //    basta con haber pasado la pantalla del navegador. (Admin/AdminBypass
     //    exceptuado: es una operación de soporte.) ────────────────────────────
-    if (!caller.admin && seg.mfa === true) {
+    // SIN 2FA NO SE ENVÍA. La app ya lo decía ("para enviar dinero primero
+    // activa la verificación en dos pasos") pero solo lo aplicaba la pantalla:
+    // acá el código se pedía únicamente a quien tenía el 2FA activo, así que
+    // con la contraseña de una cuenta SIN 2FA se llamaba esta acción directo
+    // y la plata salía sin segundo factor. Activar el 2FA por primera vez
+    // pide además un código al correo (admin-data mfa_set), así que quien
+    // solo tiene la contraseña tampoco puede ponerse uno propio.
+    const mfaActivo = seg.mfa === true || seg.mfa === 'true'
+    if (!caller.admin && !mfaActivo) {
+      await logAudit(userId, 'mouv.envio_sin_2fa', { action })
+      return json(403, { error: 'mfa_no_activo', message: 'Para enviar dinero activa primero la verificación en dos pasos (2FA) en Seguridad.' })
+    }
+    if (!caller.admin && mfaActivo) {
       // 2FA activo pero el secreto no está: puede ser una escritura de otro
       // proceso a medio camino. Se relee una vez antes de concluir nada.
       if (!seg.enc && !seg.plano) seg = (await leerSeguridad()) ?? seg

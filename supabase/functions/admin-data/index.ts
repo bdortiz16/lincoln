@@ -650,6 +650,32 @@ async function requireMfaSession(req: Request, userId: string | undefined): Prom
   }
 }
 
+// Plata que SALE de la cuenta de un cliente (por su propia mano). Para el
+// panel, "cuenta sin 2FA → pasa" (requireMfaSession); para enviar dinero, la
+// regla de producto es otra y la app ya la mostraba: "para enviar dinero
+// primero activa la verificación en dos pasos". Solo la pantalla la aplicaba,
+// así que con la contraseña de una cuenta sin 2FA se pedía un retiro llamando
+// directo. Acá: 2FA activo y ESTA sesión verificada con él (en las últimas
+// 24 h, como el resto del sistema). null = puede seguir.
+async function faltaSegundoFactorCliente(req: Request, userId: string): Promise<string | null> {
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    const raw = (u as any)?.raw_data ?? {}
+    if (raw.mfaEnabled !== true && raw.mfaEnabled !== 'true') {
+      return 'Para enviar dinero activa primero la verificación en dos pasos (2FA) en Seguridad.'
+    }
+    const sid = sessionIdOf(req)
+    const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const hit = sid ? list.find((x: any) => x?.sid === sid && (x?.stage ?? 'full') === 'full') : null
+    if (!hit || Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) {
+      return 'Confirma la operación con el código de tu app de verificación en dos pasos y vuelve a intentarlo.'
+    }
+    return null
+  } catch {
+    return 'No pudimos comprobar tu verificación en dos pasos. Intenta de nuevo.'
+  }
+}
+
 // Exige el código 2FA del admin para ESTA operación concreta (no basta con
 // que la sesión lo haya pasado al entrar). Se usa en el cargue: mueve dinero
 // real y queda con contabilidad, así que se confirma una por una.
@@ -2592,6 +2618,8 @@ Deno.serve(async (req: Request) => {
         if ((uR as any).is_blocked === true || rawR.blacklisted === true || rawR.isBlocked === true) {
           return json({ ok: false, error: 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.' }, 403)
         }
+        // Enviar dinero exige el 2FA (y que esta sesión lo haya pasado).
+        { const f2 = await faltaSegundoFactorCliente(req, uidR); if (f2) return json({ ok: false, error: f2, needs2fa: true }, 403) }
         // El mismo botón apretado dos veces (o un reintento tras perder la
         // respuesta) no descuenta dos veces.
         const idem = String(selfServiceBody.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
@@ -2746,6 +2774,59 @@ Deno.serve(async (req: Request) => {
         if (raw.mfaEnabled) {
           const falta = await requireMfaSession(req, String(selfServiceBody.userId))
           if (falta) return json({ error: 'Para cambiar tu verificación en dos pasos, primero ingresa con tu código actual.' }, 403)
+        } else {
+          // ── ACTIVARLO POR PRIMERA VEZ PIDE EL CORREO ─────────────────────
+          // Bastaba la sesión, o sea la contraseña. Y como enviar dinero exige
+          // el 2FA, quien tuviera solo la contraseña de una cuenta SIN 2FA le
+          // ponía uno con SU celular y desde ahí enviaba. La puerta del código
+          // por correo del ingreso vive en la pantalla y no lo impedía: el
+          // servidor no sabe si se pasó. Ahora el servidor manda un código al
+          // correo del titular (el correo dice "están activando tu 2FA") y no
+          // activa nada hasta recibirlo. Quien robó la contraseña no tiene el
+          // correo. La pantalla lo pide sola con `pideCodigoCorreo`.
+          const uidS = String(selfServiceBody.userId)
+          const codigoCorreo = String(selfServiceBody.codigoCorreo ?? '').replace(/\D/g, '')
+          // Freno: 10 códigos de correo errados en una hora y se corta. El
+          // servidor de códigos ya limita 5 intentos por código; esto limita
+          // pedir códigos nuevos para seguir probando.
+          try {
+            const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+              .eq('user_id', uidS).eq('action', 'security.mfa_alta_codigo_correo_invalido')
+              .gte('created_at', new Date(Date.now() - 3600_000).toISOString())
+            if ((count ?? 0) >= 10) return json({ success: false, error: 'Demasiados códigos incorrectos. Espera una hora antes de volver a intentar activar la verificación en dos pasos.' }, 429)
+          } catch { /* si no se puede contar, sigue con el límite por código */ }
+          if (!codigoCorreo) {
+            const env = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+              body: JSON.stringify({ action: 'send', userId: uidS, proposito: 'activar_2fa' }),
+            }).then(x => x.json()).catch(() => null)
+            return json({
+              success: false, pideCodigoCorreo: true, enviado: !!env?.ok,
+              error: env?.ok
+                ? 'Para activar la verificación en dos pasos, escribe el código que te enviamos al correo.'
+                : 'No pudimos enviarte el código al correo. Intenta de nuevo en un momento.',
+            })
+          }
+          if (!/^\d{6}$/.test(codigoCorreo)) return json({ success: false, pideCodigoCorreo: true, error: 'El código del correo son 6 dígitos.' })
+          const ver = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify({ action: 'verify', userId: uidS, code: codigoCorreo }),
+          }).then(x => x.json()).catch(() => null)
+          if (!ver?.ok) {
+            // Un código ya usado, vencido o sin pedir no es adivinar: no cuenta.
+            if (!['used', 'no_code', 'expired'].includes(String(ver?.error ?? ''))) {
+              await auditAdmin(req, 'security.mfa_alta_codigo_correo_invalido', { userId: uidS, motivo: ver?.error ?? 'sin respuesta' })
+            }
+            return json({ success: false, pideCodigoCorreo: true, error: ver?.message ?? 'El código del correo no es válido o ya venció.' })
+          }
+          // Se relee: verificar el código escribió en raw_data (lo marca usado)
+          // y guardar sobre la copia vieja lo desharía.
+          const { data: u2 } = await db.from('users').select('raw_data').eq('id', uidS).single()
+          for (const k of Object.keys(raw)) delete (raw as any)[k]
+          Object.assign(raw, (u2 as any)?.raw_data ?? {})
+          if (raw.mfaEnabled) return json({ success: false, error: 'Tu cuenta ya tiene la verificación en dos pasos activa. Recarga la página.' })
         }
         try { raw.totpSecretEnc = await encField(secret) }
         catch { return json({ error: 'La Bóveda no está disponible para guardar el secreto. No se activó el 2FA.' }, 503) }
@@ -2759,6 +2840,7 @@ Deno.serve(async (req: Request) => {
         raw.mfaBackupHashes = await Promise.all(codes.map(hashBackup))
         const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
         if (error) return json({ error: error.message }, 500)
+        await auditAdmin(req, 'security.mfa_enabled', { userId: String(selfServiceBody.userId) })
         return json({ success: true, backupCodes: codes })
       }
 

@@ -49,6 +49,25 @@ function codigoNuevo(): string {
   return String(100000 + (n[0] % 900000))
 }
 
+// Comparación en tiempo constante para la llave de servicio.
+function igualSeguro(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(String(a ?? ''))
+  const y = new TextEncoder().encode(String(b ?? ''))
+  let d = x.length ^ y.length
+  const n = Math.max(x.length, y.length)
+  for (let i = 0; i < n; i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
+
+// Para qué es el código. Sale en el correo: si alguien con la contraseña
+// intenta activar el 2FA con su propio celular, el titular recibe un correo
+// que lo dice con todas las letras, no un "intento de ingreso" genérico.
+const PROPOSITOS: Record<string, { asunto: string; intro: string }> = {
+  login: { asunto: 'es tu código de Lincoin', intro: 'Alguien está intentando iniciar sesión en tu cuenta Lincoin. Usa este código para continuar:' },
+  activar_2fa: { asunto: 'es tu código para activar la verificación en dos pasos', intro: 'Alguien está activando la verificación en dos pasos (2FA) en tu cuenta Lincoin. Si eres tú, usa este código para confirmarlo:' },
+  desactivar_2fa: { asunto: 'es tu código para desactivar la verificación en dos pasos', intro: 'Alguien está desactivando la verificación en dos pasos (2FA) de tu cuenta Lincoin. Si eres tú, usa este código para confirmarlo:' },
+}
+
 function findUser(email?: string, userId?: string) {
   if (userId) return db.from('users').select('id, email, full_name, raw_data').eq('id', userId).maybeSingle()
   // Comparación sin mayúsculas pero SIN comodines: con '%' o '_' en el correo,
@@ -96,7 +115,7 @@ async function anotarEnvio(ip: string, claveCorreo: string) {
 
 // Espacio fino cada 3 dígitos para leer mejor el código (482 916).
 const spacedCode = (c: string) => c.replace(/(\d{3})(\d{3})/, '$1 $2')
-const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?: string; time?: string; userId?: string }) => `
+const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?: string; time?: string; userId?: string; intro?: string }) => `
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
 <body style="margin:0;padding:0;background:#F0EFEB">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0EFEB"><tr><td align="center" style="padding:28px 14px">
@@ -107,7 +126,7 @@ const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?:
     <td align="right" style="font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">Correo de seguridad</td>
   </tr></table>
   <p style="font-family:'Archivo',Arial,sans-serif;font-size:19px;font-weight:800;color:#15181A;margin:26px 0 10px">Tu código de acceso</p>
-  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 20px">Hola${name ? `, ${escHtml(name)}` : ''}. Alguien está intentando iniciar sesión en tu cuenta Lincoin. Usa este código para continuar:</p>
+  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 20px">Hola${name ? `, ${escHtml(name)}` : ''}. ${meta.intro ?? PROPOSITOS.login.intro}</p>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background:#F4F4F1;border-radius:10px;padding:22px">
     <span style="font-family:'Courier New',monospace;font-size:32px;font-weight:800;letter-spacing:10px;color:#15181A">${spacedCode(code)}</span>
   </td></tr></table>
@@ -139,10 +158,30 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}))
     const action = String(body.action ?? '')
-    const email = body.email ? String(body.email).trim() : undefined
-    const userId = body.userId ? String(body.userId) : undefined
-    if (!email && !userId) return json(400, { error: 'missing_identity' })
     if (!['send', 'verify', 'is_trusted'].includes(action)) return json(400, { error: 'bad_action' })
+
+    // ── QUIÉN PIDE EL CÓDIGO ─────────────────────────────────────────────
+    // Esto se llamaba con la llave pública y un userId o un correo en el
+    // cuerpo: cualquiera podía mandarle códigos a una cuenta ajena, gastarle
+    // los intentos de su código (y dejar al titular con "demasiados
+    // intentos") o validar uno a nombre de otro. Ahora:
+    //   · el servidor (admin-data, con la llave de servicio) pide por la
+    //     cuenta que diga el cuerpo;
+    //   · desde el navegador, solo por la cuenta de la SESIÓN que llama —
+    //     lo que diga el cuerpo se ignora.
+    // Todos los usos del navegador son con la sesión ya abierta (la puerta
+    // del ingreso, desactivar el 2FA), así que no se pierde ninguno.
+    const tokenLlamada = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+    const servicio = !!tokenLlamada && !!SERVICE_KEY && igualSeguro(tokenLlamada, SERVICE_KEY)
+    let propioId: string | null = null
+    if (!servicio && tokenLlamada) {
+      try { const { data: { user: yo } } = await db.auth.getUser(tokenLlamada); propioId = yo?.id ?? null } catch { propioId = null }
+    }
+    if (!servicio && !propioId) return json(401, { ok: false, error: 'unauthorized', message: 'Tu sesión venció. Vuelve a iniciar sesión.' })
+    const email = servicio && body.email ? String(body.email).trim() : undefined
+    const userId = servicio ? (body.userId ? String(body.userId) : undefined) : String(propioId)
+    if (!email && !userId) return json(400, { error: 'missing_identity' })
+    const proposito = PROPOSITOS[String(body.proposito ?? '')] ?? PROPOSITOS.login
 
     // IP del cliente, la que pone el proxy de la plataforma.
     const clientIp = ipDe(req)
@@ -235,8 +274,9 @@ Deno.serve(async (req) => {
         headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: `Lincoin <${FROM_EMAIL}>`, to: [user.email],
-          subject: `${spacedCode(code)} es tu código de Lincoin`,
+          subject: `${spacedCode(code)} ${proposito.asunto}`,
           html: otpEmailHtml(code, String(user.full_name ?? '').split(' ')[0] ?? '', {
+            intro: proposito.intro,
             device: deviceFromUA(req.headers.get('user-agent') ?? ''),
             loc: await approxLocation(clientIp),
             time: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'medium', timeStyle: 'short' }) + ' (GMT-5)',

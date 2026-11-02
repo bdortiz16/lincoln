@@ -104,6 +104,25 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
   return null
 }
 
+// Envío on-chain del PROPIO cliente: el 2FA es obligatorio. require2FA deja
+// pasar a quien no lo tiene activo (lo usan también caminos del equipo), y con
+// eso la contraseña de una cuenta sin 2FA bastaba para mandar sus USDT a
+// cualquier dirección — un envío que en la red no se devuelve. La app ya pedía
+// el 2FA para enviar; ahora también el servidor.
+async function require2FAEnvio(userId: string, otp: unknown): Promise<string | null> {
+  const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
+  if (raw.mfaEnabled !== true && raw.mfaEnabled !== 'true') {
+    return 'Para enviar dinero activa primero la verificación en dos pasos (2FA) en Seguridad.'
+  }
+  let secret = ''
+  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+  if (!secret || !(await verifyTOTPServer(secret, String(otp ?? '')))) {
+    return 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.'
+  }
+  return null
+}
+
 // ── Ajuste de la tasa (los "puntos" que Lincoin le baja al proveedor) ──────
 // Misma clave que lee finity-proxy al servir la tasa. Se lee acá otra vez —y
 // no se confía en lo que mande el navegador— porque este es el número con el
@@ -3218,7 +3237,7 @@ Deno.serve(async (req) => {
     if (action === 'my_send') {
       if (!userId || !toAddress || !amount) return err('Faltan userId, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      const mfaErr = await require2FA(userId, body.otp)
+      const mfaErr = await require2FAEnvio(userId, body.otp)
       if (mfaErr) return err(mfaErr, 403)
       // CANDADO CONTRA EL DOBLE ENVÍO. Un envío de USDT en la red NO se puede
       // revertir, y acá no había ningún control: dos toques seguidos al botón
@@ -3369,7 +3388,7 @@ Deno.serve(async (req) => {
     if (action === 'my_archived_send') {
       if (!userId || body.index == null || !toAddress || !amount) return err('Faltan userId, index, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      const mfaErr = await require2FA(userId, body.otp)
+      const mfaErr = await require2FAEnvio(userId, body.otp)
       if (mfaErr) return err(mfaErr, 403)
       { const dup = await candadoEnvioUsdt(userId, body.idemKey, `archivada${Number(body.index)}`, String(toAddress), Number(amount)); if (dup) return err(dup, 409) }
       return ok(await myArchivedSend(userId, Number(body.index), String(toAddress), Number(amount)))
@@ -3382,7 +3401,7 @@ Deno.serve(async (req) => {
     if (action === 'my_wallet_send') {
       if (!userId || !body.id || !toAddress || !amount) return err('Faltan userId, id, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      const mfaErr = await require2FA(userId, body.otp)   // envío on-chain → 2FA server-side
+      const mfaErr = await require2FAEnvio(userId, body.otp)   // envío on-chain → 2FA server-side
       if (mfaErr) return err(mfaErr, 403)
       { const dup = await candadoEnvioUsdt(userId, body.idemKey, `wallet${String(body.id)}`, String(toAddress), Number(amount)); if (dup) return err(dup, 409) }
       return ok(await myWalletSend(userId, String(body.id), String(toAddress), Number(amount)))

@@ -13,6 +13,7 @@ import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { Lock, LogOut, ShieldCheck, Fingerprint } from 'lucide-react';
 import { SelectorPais, paisElegido, olvidarPais, type PaisDisponible } from './SelectorPais';
 import { ActivarDosPasosColaborador } from './ActivarDosPasosColaborador';
+import { PromptCodigo2fa } from './PromptCodigo2fa';
 
 // /colaboradores entra por aquí mismo: el mismo panel, con la puerta del
 // equipo interno. Cambian los textos, no las reglas (las pone el servidor).
@@ -242,6 +243,10 @@ const AdminEmpresasInner: React.FC = () => {
                     verdad está en el servidor; esto es la parte visible. */}
                 <AdminIdleGuard userId={currentUser.id} onCerrar={async () => { await logoutUser(); }} />
                 <PuertaDePais onSalir={async () => { await logoutUser(); }} />
+                {/* La ventana de códigos para lo que se hace ANTES del panel
+                    (p. ej. el colaborador activando su 2FA, que pide el código
+                    del correo). El panel monta la suya encima. */}
+                <PromptCodigo2fa />
             </>
         );
     }

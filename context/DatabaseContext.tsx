@@ -4,7 +4,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
 import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 import { llamarFuncion } from '../lib/edge';
-import { conCodigo2fa } from '../lib/codigo2fa';
+import { conCodigo2fa, conCodigoCorreo } from '../lib/codigo2fa';
 
 // --- TYPES ---
 
@@ -2154,11 +2154,15 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // guardado legacy (texto plano) para no romper la activación.
         try {
           const SURL = SUPABASE_URL_FOR_FN; const SKEY = SUPABASE_ANON_FOR_FN; const token = getStoredToken();
-          const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          // Activarlo por primera vez pide un código al CORREO (el servidor lo
+          // manda y responde pideCodigoCorreo): sin eso, quien tuviera solo la
+          // contraseña se ponía su propio 2FA y enviaba dinero. La ventana del
+          // código lo pide y se repite la llamada con él.
+          const r: any = await conCodigoCorreo((codigoCorreo?: string) => fetch(`${SURL}/functions/v1/admin-data`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-            body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId }),
-          }).then(x => x.json()).catch(() => null);
+            body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId, ...(codigoCorreo ? { codigoCorreo } : {}) }),
+          }).then(x => x.json()).catch(() => null));
           // Los códigos de respaldo se devuelven UNA sola vez: aquí. La tarjeta
           // de Seguridad los muestra para que el titular los guarde. Después ya
           // no se pueden volver a leer (en la base solo queda su hash).

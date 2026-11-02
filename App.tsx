@@ -8,6 +8,8 @@ import { LandingPage } from './components/LandingPage';
 import { RoleSelection } from './components/RoleSelection';
 import { ToastProvider } from './components/AdminPersonas/lib/toast';
 import { EmailOtpGate, deviceId, recuerdoLocal } from './components/EmailOtpGate';
+import { llamarFuncion } from './lib/edge';
+import { PromptCodigo2fa } from './components/PromptCodigo2fa';
 import { IdleGuard } from './components/IdleGuard';
 import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
@@ -380,20 +382,15 @@ const App: React.FC = () => {
     setDeviceTrusted(null);
     (async () => {
       try {
-        const SURL = (import.meta as any).env?.VITE_SUPABASE_URL || '';
-        const SKEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
-        const r = await fetch(`${SURL}/functions/v1/email-otp`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'is_trusted', userId: uid, email: currentUser?.email, deviceId: deviceId() }),
-        });
-        const d = await r.json();
+        // Con el token de la sesión: el servidor responde solo por la cuenta
+        // que llama.
+        const d = await llamarFuncion('email-otp', { action: 'is_trusted', userId: uid, email: currentUser?.email, deviceId: deviceId() }, 15000);
         if (!vivo) return;
         // Si el servidor NO conoce esta acción, la versión desplegada es
         // anterior a este cambio: entonces manda la marca local de siempre.
         // Sin esto, el navegador nuevo contra el servidor viejo pedía el
         // código en cada ingreso — el arreglo empeoraba el problema.
-        if (d?.error === 'bad_action' || !r.ok) { setDeviceTrusted(recuerdoLocal(uid)); return; }
+        if (d?.error === 'bad_action' || d?.ok !== true) { setDeviceTrusted(recuerdoLocal(uid)); return; }
         setDeviceTrusted(!!d?.trusted);
       } catch {
         // Sin respuesta, el respaldo local. Si tampoco hay marca, se pide el
@@ -785,6 +782,10 @@ const App: React.FC = () => {
             onLogout={() => logoutUser('salir desde la verificación por correo')}
           />
         ) : <Suspense fallback={<SplashScreen />}>{renderView()}</Suspense>}
+
+        {/* Ventana de códigos que pide el servidor (p. ej. el código del
+            correo al activar el 2FA por primera vez). */}
+        {currentUser && <PromptCodigo2fa />}
 
         {/* LOGOUT OVERLAY */}
         {loggingOut && (

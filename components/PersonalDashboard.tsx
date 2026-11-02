@@ -484,20 +484,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Desactivar 2FA exige un CÓDIGO DE CORREO (que nadie lo apague sin acceso al
   // correo). Se envía un OTP al correo del titular y hay que ingresarlo.
   const [disableOtp, setDisableOtp] = useState<{ sent: boolean; code: string; sending: boolean; busy: boolean; error: string; to?: string }>({ sent: false, code: '', sending: false, busy: false, error: '' });
-  const callEmailOtp = async (action: string, extra: Record<string, unknown> = {}) => {
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    try {
-      const r = await fetch(`${SURL}/functions/v1/email-otp`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-        body: JSON.stringify({ action, userId: currentUser?.id, email: currentUser?.email, ...extra }),
-      });
-      return await r.json();
-    } catch { return { ok: false, error: 'network' }; }
-  };
+  // Con el token de la sesión: el servidor solo manda el código a la cuenta
+  // que llama (antes bastaba la llave pública y un userId).
+  const callEmailOtp = (action: string, extra: Record<string, unknown> = {}) =>
+    llamarFuncion('email-otp', { action, userId: currentUser?.id, email: currentUser?.email, ...extra }, 20000);
   const sendDisableOtp = async () => {
     setDisableOtp(s => ({ ...s, sending: true, error: '' }));
-    const r = await callEmailOtp('send');
+    const r = await callEmailOtp('send', { proposito: 'desactivar_2fa' });
     setDisableOtp(s => ({ ...s, sending: false, sent: r?.ok !== false, to: r?.to, error: r?.ok === false ? (r.message || 'No se pudo enviar el código.') : '' }));
   };
   // Arranca en true: hasta la 1ª verificación de MFA, el envío dice
@@ -2967,7 +2960,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <p style={{ marginTop: 9, fontSize: 13.5, color: '#878E88' }}>{_rate ? `≈ ${(_total / _rate).toLocaleString('es-CO', { maximumFractionDigits: 2 })} USDT · tasa ${Math.round(_rate).toLocaleString('es-CO')}` : 'Saldo Lincoin · Bre-B · ACH'}</p>
                       </div>
                       <div className="flex gap-2.5 flex-wrap">
-                          <button onClick={() => { setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><RefreshCw size={15} /> Convertir</button>
+                          <button onClick={() => { setOtcRail(null); setMouvMode('converter'); setSelectedWalletCode('USD'); setActiveView('mouv'); }} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><RefreshCw size={15} /> Convertir</button>
                           <button onClick={() => handleLoadClick('COP')} style={{ background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontWeight: 600, fontSize: 13.5, padding: '11px 18px', borderRadius: 9 }} className="hover:bg-white/[0.09] transition-colors flex items-center gap-2"><Plus size={15} /> Cargar</button>
                           <button onClick={() => { openSendMoney(); }} disabled={isBlocked || !isKycVerified} style={{ fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 9, opacity: (isBlocked || !isKycVerified) ? 0.6 : 1 }} className="lincoin-btn-white transition-colors flex items-center gap-2"><Send size={15} /> Enviar dinero</button>
                       </div>
