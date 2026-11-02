@@ -141,7 +141,11 @@ export const AdminClientes: React.FC<{
   const [busquedaViva, setBusquedaViva] = useState('');
   const [chip, setChip] = useState<'todos' | 'empresas' | 'personas' | 'contadores' | 'pendientes'>('todos');
   // Qué es cada cuenta: Empresa (rol business), Contador (rol contador, o con
-  // acceso aprobado o pedido a la contabilidad de alguna empresa) o Persona.
+  // acceso aprobado o pedido a la contabilidad de alguna empresa) u Operador.
+  // Desde el 1 nov 2026 no hay registro de personas naturales: las cuentas
+  // que no son empresa ni contador son OPERADORES (personas del equipo de una
+  // empresa). Internamente el tipo sigue llamándose 'persona' (así lo
+  // devuelve la base), pero en pantalla dice Operador.
   const idsContadores = useMemo(() => {
     const set = new Set<string>();
     for (const u of todos as any[]) {
@@ -160,7 +164,7 @@ export const AdminClientes: React.FC<{
   // de los contadores de TODAS las empresas); si no, se deduce de lo cargado.
   const tipoDe = (u: any): 'empresa' | 'contador' | 'persona' => u?.tipoCuenta === 'empresa' || u?.tipoCuenta === 'contador' || u?.tipoCuenta === 'persona' ? u.tipoCuenta
     : u?.role === 'business' ? 'empresa' : idsContadores.has(String(u?.id)) ? 'contador' : 'persona';
-  const ROT_TIPO = { empresa: 'EMPRESA', contador: 'CONTADOR', persona: 'PERSONA' } as const;
+  const ROT_TIPO = { empresa: 'EMPRESA', contador: 'CONTADOR', persona: 'OPERADOR' } as const;
   const [selId, setSelId] = useState<string | null>(null);
   const [tab, setTab] = useState<'resumen' | 'movimientos' | 'envios' | 'kyc' | 'brasil' | 'limites' | 'auditoria'>('resumen');
   const [brasilAbierto, setBrasilAbierto] = useState(false);
@@ -438,8 +442,8 @@ export const AdminClientes: React.FC<{
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 11 }}>
               <button onClick={() => setChip('todos')} style={chipStyle(chip === 'todos')}>Todos{conteo('todos')}</button>
               <button onClick={() => setChip('empresas')} style={chipStyle(chip === 'empresas')}>Empresas{conteo('empresas')}</button>
-              <button onClick={() => setChip('personas')} style={chipStyle(chip === 'personas')}>Personas{conteo('personas')}</button>
-              {!res.sinFuncionBase && <button onClick={() => setChip('contadores')} style={chipStyle(chip === 'contadores')}>Contadores{conteo('contadores')}</button>}
+              <button onClick={() => setChip('personas')} style={chipStyle(chip === 'personas')}>Operadores{conteo('personas')}</button>
+              <button onClick={() => setChip('contadores')} style={chipStyle(chip === 'contadores')}>Contadores{conteo('contadores')}</button>
               <button onClick={() => setChip('pendientes')} style={chipStyle(chip === 'pendientes')}>Pendientes{conteo('pendientes')}</button>
             </div>
 
@@ -726,7 +730,7 @@ export const AdminClientes: React.FC<{
                       background: edRol === rr ? 'rgba(74,222,128,0.07)' : 'transparent',
                       border: `1px solid ${edRol === rr ? 'rgba(74,222,128,0.35)' : C.b2}`,
                       color: edRol === rr ? C.text : C.sub,
-                    }}>{rr === 'business' ? 'Empresa' : 'Persona'}</button>
+                    }}>{rr === 'business' ? 'Empresa' : 'Operador'}</button>
                 ))}
               </div>
               <p style={{ fontSize: 11, color: C.dim, margin: '7px 0 0', lineHeight: 1.5 }}>

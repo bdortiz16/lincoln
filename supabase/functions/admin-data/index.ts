@@ -6411,17 +6411,48 @@ Deno.serve(async (req: Request) => {
           const d = data as { total?: number; conteos?: Record<string, number>; usuarios?: Record<string, unknown>[] }
           return json({ ok: true, total: Number(d.total) || 0, conteos: d.conteos ?? null, pagina, porPagina, usuarios: (d.usuarios ?? []).map(usuarioParaPanel) })
         }
-        // Respaldo sin la función de la base: filtra por texto y por tipo
-        // simple; "contadores" no se puede saber sin ella.
+        // Respaldo sin la función de la base (falta 2026_zz12): filtra por
+        // texto y por tipo con las MISMAS reglas que admin_buscar_usuarios.
+        // Antes solo sabía "empresas" y "pendientes": el chip de operadores
+        // (antes "Personas") mostraba también empresas y contadores, y el de
+        // contadores ni aparecía. Contador = rol 'contador', o con acceso
+        // aprobado o pedido en la contabilidad de alguna empresa; operador =
+        // lo que no es empresa, ni contador, ni del equipo.
         const limpio = q.replace(/[,()"\\%*]/g, ' ').trim()
-        let consulta = db.from('users').select('*', { count: 'exact' })
-        if (limpio) consulta = consulta.or(['email', 'full_name', 'company_name'].map(c => `${c}.ilike.*${limpio}*`).join(','))
-        if (tipo === 'empresas') consulta = consulta.eq('role', 'business')
-        if (tipo === 'pendientes') consulta = consulta.in('kyc_status', ['pending', 'in_review'])
-        const { data: filas, count, error: e2 } = await consulta.order('created_at', { ascending: false, nullsFirst: false }).range(pagina * porPagina, pagina * porPagina + porPagina - 1)
+        const contIds = new Set<string>()
+        try {
+          const { data: cr } = await db.from('users').select('id').eq('role', 'contador').limit(5000)
+          for (const r of (cr ?? []) as any[]) contIds.add(String(r.id))
+          const { data: emp } = await db.from('users').select('c:raw_data->contadores, s:raw_data->contadoresSolicitudes')
+            .eq('role', 'business').or('raw_data->contadores.not.is.null,raw_data->contadoresSolicitudes.not.is.null').limit(5000)
+          for (const e of (emp ?? []) as any[]) for (const l of [e.c, e.s]) if (Array.isArray(l)) for (const c of l) if (c?.id) contIds.add(String(c.id))
+        } catch { /* sin la lista, nadie se marca como contador */ }
+        const listaCont = [...contIds].filter(id => UUID_RE.test(id))
+        const enLista = `(${listaCont.join(',')})`
+        // "No es tal rol" incluye a las cuentas sin rol guardado: un neq solo
+        // las dejaba afuera (en SQL, NULL <> 'admin' no es verdadero).
+        const noEs = (consulta: any, rol: string) => consulta.or(`role.is.null,role.neq.${rol}`)
+        const filtrar = (consulta: any, t: string) => {
+          consulta = noEs(consulta, 'admin')
+          if (limpio) consulta = consulta.or(['email', 'full_name', 'company_name'].map(c => `${c}.ilike.*${limpio}*`).join(','))
+          if (t === 'empresas') consulta = consulta.eq('role', 'business')
+          if (t === 'pendientes') consulta = consulta.in('kyc_status', ['pending', 'in_review'])
+          if (t === 'contadores') consulta = listaCont.length ? noEs(consulta, 'business').in('id', listaCont) : consulta.eq('id', '00000000-0000-0000-0000-000000000000')
+          if (t === 'personas') { consulta = noEs(consulta, 'business'); if (listaCont.length) consulta = consulta.not('id', 'in', enLista) }
+          return consulta
+        }
+        const { data: filas, count, error: e2 } = await filtrar(db.from('users').select('*', { count: 'exact' }), tipo)
+          .order('created_at', { ascending: false, nullsFirst: false }).range(pagina * porPagina, pagina * porPagina + porPagina - 1)
         if (e2) return json({ ok: false, error: e2.message }, 500)
-        const sinEquipo = ((filas ?? []) as Record<string, unknown>[]).filter(u => u.role !== 'admin')
-        return json({ ok: true, total: Math.max(0, (count ?? 0) - (((filas ?? []) as any[]).length - sinEquipo.length)), conteos: null, pagina, porPagina, usuarios: sinEquipo.map(usuarioParaPanel), sinFuncionBase: true })
+        // Los conteos de cada chip, con el mismo texto buscado.
+        const conteos: Record<string, number> = {}
+        await Promise.all(['todos', 'empresas', 'personas', 'contadores', 'pendientes'].map(async t => {
+          const { count: n } = await filtrar(db.from('users').select('id', { count: 'exact', head: true }), t)
+          if (typeof n === 'number') conteos[t] = n
+        }))
+        const tipoFila = (u: Record<string, unknown>) => u.role === 'business' ? 'empresa' : contIds.has(String(u.id)) ? 'contador' : 'persona'
+        const usuarios = ((filas ?? []) as Record<string, unknown>[]).map(u => ({ ...usuarioParaPanel(u), _tipo: tipoFila(u) }))
+        return json({ ok: true, total: count ?? 0, conteos, pagina, porPagina, usuarios, sinFuncionBase: true })
       }
 
       // Usuarios puntuales (los que el panel tiene abiertos o necesita para

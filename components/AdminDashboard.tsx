@@ -2460,7 +2460,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   <label style={{ ...ROTULO, marginBottom: 0 }}>Cliente</label>
                   {!carguesClient && (
                     <div style={{ display: 'flex', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: 2 }}>
-                      {([['business', 'Empresas'], ['personal', 'Personas'], ['todos', 'Todos']] as const).map(([k, l]) => (
+                      {([['business', 'Empresas'], ['personal', 'Operadores'], ['todos', 'Todos']] as const).map(([k, l]) => (
                         <button key={k} onClick={() => setCarguesTipo(k)}
                           style={{ border: 'none', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', background: carguesTipo === k ? '#F4F4F2' : 'transparent', color: carguesTipo === k ? '#0C0E0D' : '#878E88' }}>{l}</button>
                       ))}
@@ -3965,7 +3965,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                           <tr key={c.id}>
                                               <td style={TD}>
                                                   <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{c.nombre}</span>
-                                                  <span style={{ display: 'block', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{c.empresa ? 'Empresa' : 'Persona'}</span>
+                                                  <span style={{ display: 'block', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{c.empresa ? 'Empresa' : 'Operador'}</span>
                                               </td>
                                               <td style={{ ...TD, fontSize: 12.5, color: '#b9beba', whiteSpace: 'nowrap' }}>
                                                   {c.cargues}<span style={{ color: 'rgba(244,244,242,0.45)' }}>{c.conContabilidad < c.cargues ? ` · ${c.conContabilidad} con contabilidad` : ''}</span>
