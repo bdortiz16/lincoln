@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { pedirMouv } from './adminApi';
+import { pedirMouv, pedirAdmin } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente } from './excelMovimientosCliente';
 import { descargarXlsx } from '../lib/xlsx';
@@ -117,6 +117,56 @@ const I = {
 };
 
 // ── La vista ─────────────────────────────────────────────────────────────
+// ── Cómo se le factura (factura de Lincoin) ──────────────────
+// Colombia → una factura por día (día vencido) con todo lo que movió;
+// exterior (Perú, Brasil…) → una por movimiento, porque no facturan en
+// Colombia. Por defecto lo decide el país del registro; acá se ajusta.
+// Separa Contabilidad y el Excel que va para la contadora.
+const ModeloFactura: React.FC<{ userId: string; showToast?: (t: string, ms?: number, tipo?: string) => void }> = ({ userId, showToast }) => {
+  const [m, setM] = useState<{ modelo: 'colombia' | 'exterior'; pais: string | null; manual: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    setM(null); setError(null);
+    pedirAdmin({ action: 'cliente_modelo_factura', userId }).then((r: any) => {
+      if (!vivo) return;
+      if (r?.ok) setM({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
+      else setError(r?.permisoDenegado ? 'Tu rol no ve la facturación.' : (r?.error ?? 'No se pudo leer.'));
+    });
+    return () => { vivo = false; };
+  }, [userId]);
+  const valor = !m ? '' : m.manual ? m.modelo : 'auto';
+  const cambiar = async (v: string) => {
+    if (!m || v === valor) return;
+    setGuardando(true);
+    const r: any = await pedirAdmin({ action: 'cliente_modelo_factura_set', userId, modelo: v });
+    setGuardando(false);
+    if (r?.ok) {
+      setM({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
+      showToast?.(`Facturación: ${r.nombre}.`);
+    } else showToast?.(r?.permisoDenegado ? 'Tu rol no permite cambiar la facturación.' : (r?.error ?? 'No se pudo guardar.'), 7000, 'error');
+  };
+  const porPais = m ? (m.pais ? m.pais : 'sin país') : '';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 0', borderTop: `1px solid ${C.b1}` }}>
+      <div style={{ minWidth: 0 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>Facturación Lincoin</p>
+        <p style={{ fontSize: 11.5, color: C.sub, margin: 0 }}>
+          {error ? error : !m ? 'Cargando…' : m.modelo === 'colombia' ? 'Una factura por día, al día siguiente' : 'Una factura por movimiento'}
+          {m && !m.manual ? ` · según el país (${porPais})` : m?.manual ? ' · ajustado a mano' : ''}
+        </p>
+      </div>
+      <select value={valor} disabled={!m || guardando} onChange={e => cambiar(e.target.value)} aria-label="Facturación Lincoin"
+        style={{ height: 34, borderRadius: 9, border: `1px solid ${C.b2}`, background: C.elev, color: C.text, fontSize: 12.5, fontWeight: 600, padding: '0 8px', fontFamily: FONT, maxWidth: 190 }}>
+        <option value="auto">Según el país{m && !m.manual ? ` (${m.modelo === 'colombia' ? 'Colombia' : 'exterior'})` : ''}</option>
+        <option value="colombia">Colombia · diaria</option>
+        <option value="exterior">Exterior · por movimiento</option>
+      </select>
+    </div>
+  );
+};
+
 export const AdminClientes: React.FC<{
   showToast?: (t: string, ms?: number, tipo?: string) => void;
   // Herramientas que ya existían en el panel y siguen viviendo allá porque
@@ -902,6 +952,7 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
                 </div>
               );
             })}
+            <ModeloFactura userId={sel.id} showToast={showToast} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
               <button
                 onClick={() => showToast?.('Todavía no está conectado: el restablecimiento hay que hacerlo desde soporte.', 7000)}

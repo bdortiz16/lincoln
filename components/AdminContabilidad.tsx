@@ -116,6 +116,18 @@ const ESTADO_FACTURA: Record<string, { txt: string; cls: string }> = {
   omitida: { txt: 'No aplica', cls: 'bg-slate-50 text-slate-500 border-slate-200' },
 };
 const FUENTE: Record<string, string> = { registrada: 'registrada', estimada: 'estimada', sin_dato: 'sin dato', manual: 'confirmada a mano' };
+// Cómo se le factura a cada cliente: Colombia → una factura por día (día
+// vencido) con todo lo del día; exterior → una por movimiento.
+const MODELO: Record<string, { corto: string; largo: string }> = {
+  colombia: { corto: 'Colombia · diaria', largo: 'Una factura por día (día vencido) con todo lo que movió' },
+  exterior: { corto: 'Exterior · por movimiento', largo: 'Una factura por cada movimiento' },
+};
+const ChipModelo: React.FC<{ modelo?: string; manual?: boolean }> = ({ modelo, manual }) => !modelo ? null : (
+  <span title={MODELO[modelo]?.largo + (manual ? ' · ajustado a mano en la ficha del cliente' : ' · según el país del registro')}
+    className={`inline-block text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border whitespace-nowrap ${modelo === 'exterior' ? 'border-sky-300 text-sky-700' : 'border-slate-300 text-slate-500'}`}>
+    {MODELO[modelo]?.corto ?? modelo}
+  </span>
+);
 
 
 const Kpi: React.FC<{ titulo: string; valor: string; detalle?: string; acento?: boolean }> = ({ titulo, valor, detalle, acento }) => (
@@ -235,6 +247,27 @@ const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando 
           : t.utilidadEstimada > 0 ? `${cop(t.utilidadEstimada)} estimada (mesa OTC)` : `Cargues ${cop(t.utilidadCargues)} · Conv. ${cop(t.utilidadConversiones)}`} />
         <Kpi titulo="Facturas Lincoin" valor={`${f.emitida ?? 0} emitidas`} detalle={`${t.porFacturar ?? 0} por facturar · ${f.error ?? 0} con error · ${f.revision ?? 0} por revisar${f.incierta ? ` · ${f.incierta} por verificar en Siigo` : ''}${f.emitiendo ? ` · ${f.emitiendo} emitiendo` : ''}`} />
       </div>
+      {t.porModelo && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {(['colombia', 'exterior'] as const).map(k => {
+            const m = t.porModelo[k] ?? {};
+            return (
+              <div key={k} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{MODELO[k].corto}</p>
+                  <span className="text-[11px] text-slate-400">{m.clientes ?? 0} cliente{m.clientes === 1 ? '' : 's'}</span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5">{MODELO[k].largo}</p>
+                <p className="text-lg font-extrabold text-slate-800 mt-2">{cop(m.facturadoCop)} <span className="text-xs font-semibold text-slate-400">facturado</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {k === 'colombia' ? `${m.facturasDiarias ?? 0} factura${m.facturasDiarias === 1 ? '' : 's'} diaria${m.facturasDiarias === 1 ? '' : 's'}` : `${m.facturadas ?? 0} factura${m.facturadas === 1 ? '' : 's'}`}
+                  {' · '}{m.porFacturar ?? 0} operaci{m.porFacturar === 1 ? 'ón' : 'ones'} por facturar{m.facturasConError ? ` · ${m.facturasConError} con error` : ''} · utilidad {cop(m.utilidad)}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {t.ajustes > 0 && (
         <Aviso>Hay {t.ajustes} ajuste{t.ajustes === 1 ? '' : 's'} (débito) por {cop(t.ajustadoCop)} sin vincular a un cargue. Si corrigen un cargue hecho por error, ábrelos en Clientes → el cliente → Ajustes y vincúlalos: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>
       )}
@@ -285,13 +318,16 @@ const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando 
 // ── Clientes ────────────────────────────────────────────────
 const Clientes: React.FC<{ datos: any; cargando: boolean; sel: Seleccion; onAviso: (m: string, ok: boolean) => void }> = ({ datos, cargando, sel, onAviso }) => {
   const [q, setQ] = useState('');
+  const [modelo, setModelo] = useState<'todos' | 'colombia' | 'exterior'>('todos');
   const [abierto, setAbierto] = useState<any | null>(null);
   const lista: any[] = datos?.clientes ?? [];
   const filtrados = useMemo(() => {
     const n = q.trim().toLowerCase();
-    if (!n) return lista;
-    return lista.filter(c => String(c.nombre ?? '').toLowerCase().includes(n) || String(c.email ?? '').toLowerCase().includes(n) || String(c.documento ?? '').includes(n));
-  }, [lista, q]);
+    const porModelo = modelo === 'todos' ? lista : lista.filter(c => (c.modelo ?? 'colombia') === modelo);
+    if (!n) return porModelo;
+    return porModelo.filter(c => String(c.nombre ?? '').toLowerCase().includes(n) || String(c.email ?? '').toLowerCase().includes(n) || String(c.documento ?? '').includes(n));
+  }, [lista, q, modelo]);
+  const cuantos = (k: string) => lista.filter(c => (c.modelo ?? 'colombia') === k).length;
 
   if (abierto) return <DetalleCliente cliente={abierto} sel={sel} onVolver={() => setAbierto(null)} onAviso={onAviso} />;
 
@@ -304,6 +340,12 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; sel: Seleccion; onAvis
             className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-sm bg-white" />
         </div>
         <BotonInforme clientes={filtrados} sel={sel} listo={!cargando && !!datos} onAviso={onAviso} />
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {([['todos', `Todos · ${lista.length}`], ['colombia', `${MODELO.colombia.corto} · ${cuantos('colombia')}`], ['exterior', `${MODELO.exterior.corto} · ${cuantos('exterior')}`]] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setModelo(k)}
+            className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${modelo === k ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
+        ))}
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
         <table className="w-full text-xs min-w-[900px]">
@@ -326,6 +368,7 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; sel: Seleccion; onAvis
                 <td className="px-4 py-2.5">
                   <p className="font-semibold text-slate-800 truncate max-w-[240px]">{c.nombre}</p>
                   <p className="text-[10px] text-slate-400 truncate max-w-[240px]">{c.documento ? `${c.documento} · ` : ''}{c.email ?? ''}</p>
+                  <div className="mt-1"><ChipModelo modelo={c.modelo} manual={c.modeloManual} /></div>
                 </td>
                 <td className="px-3 py-2.5 text-right text-slate-600">{c.cargues}</td>
                 <td className="px-3 py-2.5 text-right">
@@ -352,6 +395,14 @@ const Clientes: React.FC<{ datos: any; cargando: boolean; sel: Seleccion; onAvis
       </div>
     </div>
   );
+};
+
+// "2026-11-01" → "01 nov 2026". Con siguiente=true, del instante ISO da el
+// día siguiente en Colombia (cuando sale la factura diaria).
+const fechaDia = (v: string, siguiente = false) => {
+  const dia = siguiente ? new Date(Date.parse(v) - 5 * 3600_000 + 86400000).toISOString().slice(0, 10) : v.slice(0, 10);
+  const d = new Date(`${dia}T12:00:00Z`);
+  return isNaN(d.getTime()) ? v : d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
 };
 
 // Tasa en COP por USD, sin decimales de más.
@@ -552,6 +603,10 @@ const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => v
   const rieles = useMemo(() => Array.from(new Set(detalle.map(d => String(d.riel ?? '')).filter(Boolean))), [detalle]);
   const fechaDe = (id: string) => { const d = detalle.find(x => String(x.id) === id); return d ? new Date(d.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
   const aviso = (m: string, ok: boolean) => { onAviso(m, ok); cargar(); };
+  // Cliente de Colombia: lo que tiene utilidad registrada va en la factura
+  // DIARIA (la emite el sistema al día siguiente); no se factura suelto. Lo
+  // estimado o sin dato sí: se confirma y se emite aparte, como antes.
+  const vaEnDiaria = (d: any) => (c.modelo ?? 'colombia') === 'colombia' && d.liq?.facturable && d.liq?.fuente === 'registrada' && Number(d.liq?.utilidadCop) > 0;
 
   // Los totales de lo que se está viendo. Un cargue anulado vale 0 y su
   // débito vinculado NO se resta aparte (el par cargue + reversa da cero UNA
@@ -592,6 +647,12 @@ const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => v
           <button onClick={onVolver} className="text-[11px] text-slate-400 hover:text-slate-600 font-bold mb-1 flex items-center gap-1"><ChevronLeft size={12} /> Todos los clientes</button>
           <h4 className="font-bold text-slate-800 text-base">{c.nombre}</h4>
           <p className="text-xs text-slate-500">{c.documento ? `${c.documento} · ` : ''}{c.email ?? ''}</p>
+          {c.modelo && (
+            <p className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+              <ChipModelo modelo={c.modelo} manual={c.modeloManual} />
+              <span>{MODELO[c.modelo]?.largo}{c.pais ? ` · ${c.pais}` : ''}{c.modeloManual ? ' · ajustado a mano' : ''}. Se cambia en Clientes → ficha → Controles de cuenta.</span>
+            </p>
+          )}
           <p className="text-[11px] text-slate-400 mt-1">Sus envíos y pagos están en Clientes → ficha del cliente → Envíos y pagos.</p>
         </div>
         <div className="flex gap-2">
@@ -704,6 +765,8 @@ const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => v
                     {l ? (
                       <div className="space-y-1">
                         {l.facturable ? <EstadoFactura estado={d.factura?.estado} /> : d.factura?.estado === 'emitida' ? <span className="text-[10px] font-bold text-red-600">Factura emitida: anúlala en Siigo</span> : <span className="text-[10px] text-slate-400">No aplica</span>}
+                        {d.factura?.diaria && <p className="text-[10px] text-slate-500">En la diaria del {fechaDia(d.factura.diaria)}</p>}
+                        {!d.factura && vaEnDiaria(d) && <p className="text-[10px] text-slate-500 max-w-[200px]">Va en la factura diaria (sale el {fechaDia(String(d.created_at), true)})</p>}
                         {d.factura?.numero && <p className="text-[10px] font-semibold text-slate-600">{d.factura.numero}</p>}
                         {(d.factura?.error || (!l.facturable && !anulado && l.nota)) && <p className="text-[10px] text-slate-500 max-w-[220px] break-words">{d.factura?.error ?? l.nota}</p>}
                       </div>
@@ -711,7 +774,9 @@ const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => v
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex flex-col items-end gap-1.5">
-                      {l?.facturable && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={l} onHecho={aviso} />}
+                      {l?.facturable && (d.factura?.diaria
+                        ? (['error', 'incierta', 'pendiente'].includes(String(d.factura.estado)) && <BotonFacturar txId={String(d.factura.clave)} estado={d.factura.estado} onHecho={aviso} />)
+                        : !vaEnDiaria(d) && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={l} onHecho={aviso} />)}
                       {d.venta && !anulado && d.factura?.estado !== 'emitida' && d.factura?.estado !== 'emitiendo' && <CorregirVenta fila={d} onHecho={aviso} />}
                     </div>
                   </td>
@@ -934,8 +999,10 @@ const Facturacion: React.FC<{ onAviso: (m: string, ok: boolean) => void }> = ({ 
               {facturas.map(f => (
                 <tr key={f.id} className="align-top">
                   <td className="px-4 py-2.5">
-                    <p className="font-semibold text-slate-700">{f.tipo === 'cargue' ? 'Cargue' : 'Conversión'}</p>
-                    <p className="text-[10px] text-slate-400">{fecha(f.operacion_at)}</p>
+                    <p className="font-semibold text-slate-700">{f.tipo === 'diaria' ? 'Factura diaria' : f.tipo === 'cargue' ? 'Cargue' : 'Conversión'}</p>
+                    <p className="text-[10px] text-slate-400">{f.tipo === 'diaria'
+                      ? `Del ${fechaDia(String(f.transaction_id).split(':')[2] ?? '')}${String(f.transaction_id).split(':')[3] ? ` · complementaria ${String(f.transaction_id).split(':')[3]}` : ''}`
+                      : fecha(f.operacion_at)}</p>
                   </td>
                   <td className="px-3 py-2.5 text-slate-700 max-w-[200px] truncate">{f.cliente ?? '—'}</td>
                   <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(f.total)}</td>

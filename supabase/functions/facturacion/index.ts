@@ -50,6 +50,7 @@ import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '..
 import { domicilioEmpresa } from '../_shared/rues.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { liquidacionDe, type Liquidacion } from '../_shared/liquidacion-lincoin.ts'
+import { modelosDe, diaBogota, rangoDiaBogota, claveDiaria, leerClaveDiaria } from '../_shared/modelo-factura.ts'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { igualSeguro } from '../_shared/admin-auth.ts'
 
@@ -2675,6 +2676,18 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   if (!opts.manual && !ops.includes(liq.tipo)) return { ok: true, estado: 'omitida', motivo: `Las ${OPERACIONES_LINCOIN[liq.tipo]?.toLowerCase() ?? liq.tipo} no se facturan solas (Configuración).` }
   if (!opts.manual && cfg.desde && Date.parse(String(t.created_at)) < Date.parse(String(cfg.desde))) return { ok: true, estado: 'omitida', motivo: 'Operación anterior a la fecha desde la que se factura sola.' }
 
+  // EMPRESA DE COLOMBIA: no lleva factura por movimiento. Va en la factura
+  // DIARIA de su cliente (día vencido, todo lo del día), que arma
+  // ponerseAlDia. A mano sí se deja emitir una sola (la diaria no incluye una
+  // operación cuya utilidad hay que confirmar), salvo que ya esté adentro de
+  // una diaria enviada: se facturaría dos veces.
+  const modeloCli = (await modelosDe(db, [String(t.user_id)])).get(String(t.user_id))?.modelo ?? 'colombia'
+  if (modeloCli === 'colombia') {
+    if (!opts.manual) return { ok: true, estado: 'diaria', motivo: 'Empresa de Colombia: va en la factura diaria del día siguiente.' }
+    const enDiaria = await diariaQueIncluye(String(t.user_id), String(t.id), diaBogota(String(t.created_at)))
+    if (enDiaria) return { ok: false, error: `Esta operación ya va en la factura diaria del ${enDiaria.dia}${enDiaria.numero ? ` (${enDiaria.numero})` : ''}.` }
+  }
+
   // La fila de la factura: una por operación. Si ya existe, se usa esa.
   const ahora = () => new Date().toISOString()
   const ins = await db.from('facturas_lincoin').upsert({
@@ -2732,6 +2745,40 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   }
   if (terceros == null || totalOp == null || terceros < 0) return { ok: false, error: 'Los valores de la operación no cuadran (terceros negativo o faltante). Revisá el movimiento.' }
 
+  const fechaOp = new Date(Date.parse(String(t.created_at)) - 5 * 3600_000).toISOString().slice(0, 10)
+  const tipoTxt = liq.tipo === 'cargue' ? 'Cargue' : 'Conversión'
+  const refOp = String(rd.otcRef ?? String(t.id).slice(0, 8))
+  return enviarFilaLincoin({
+    cfg, fila, userId: String(t.user_id), porVerificar, manual: !!opts.manual, adminId: opts.adminId ?? null,
+    totalOp, terceros, utilidad: utilidad!, fuente,
+    ctx: { tipo: tipoTxt, fecha: fechaOp, usd: liq.usd != null ? `${liq.usd.toLocaleString('es-CO', { maximumFractionDigits: 2 })} USD` : '', ref: refOp },
+    // La marca de la operación va PRIMERO en las observaciones: es con lo que
+    // se la reconoce en Siigo si un envío queda sin respuesta.
+    marcaOp: `${tipoTxt} del ${fechaOp} · ref ${refOp}`,
+    desdeVerificar: String(fila.updated_at ?? fila.created_at ?? t.created_at),
+    detalle: { liq },
+    marcar,
+  })
+}
+
+// El envío a Siigo de UNA factura de Lincoin, ya decidido qué y cuánto: lo
+// usan la factura por movimiento (emitirLincoin) y la diaria (emitirDiaria).
+// Una sola copia: dos copias de algo que se manda a la DIAN se desincronizan.
+type EnvioLincoin = {
+  cfg: any; fila: any; userId: string; porVerificar: boolean; manual: boolean; adminId?: string | null
+  totalOp: number; terceros: number; utilidad: number; fuente: string
+  // tipo, fecha, usd y ref para las descripciones (el cliente se agrega acá).
+  ctx: Record<string, string>
+  marcaOp: string
+  desdeVerificar: string
+  // Lo que queda en facturas_lincoin.detalle junto a lo enviado y respondido.
+  detalle: Record<string, unknown>
+  marcar: (patch: Record<string, unknown>, cuenta?: boolean) => Promise<void>
+}
+async function enviarFilaLincoin(p: EnvioLincoin): Promise<any> {
+  const { cfg, fila, userId, porVerificar, manual, adminId, totalOp, terceros, utilidad, fuente, marcar } = p
+  const detalleExtra = p.detalle
+  const ahora = () => new Date().toISOString()
   const falla = async (e: string, extra: Record<string, unknown> = {}) => { await marcar({ estado: 'error', error: e, total: totalOp, terceros, utilidad, utilidad_fuente: fuente, ...extra }); return { ok: false, error: e } }
   const faltan = ['document_id', 'seller_id', 'payment_id', 'item_terceros', 'item_comision'].filter(k => !cfg[k])
   if (faltan.length) return falla(`Falta elegir en Configuración: ${faltan.join(', ')}.`)
@@ -2742,7 +2789,7 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   const partner = cfg.partner_id || 'Lincoin'
   const tk = await tokenDe(CLAVE_TOKEN_LINCOIN, cfg)
   if ('error' in tk) return falla(tk.error)
-  const cli = await clienteLincoin(String(t.user_id))
+  const cli = await clienteLincoin(userId)
   if ('error' in cli) return falla(cli.error)
   const cp = cli.cp
 
@@ -2774,19 +2821,14 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   if (!iva) return falla(`El ítem de comisión (${itemC}) no tiene IVA en Siigo y no se eligió uno en Configuración. La comisión va gravada: ponele el IVA al ítem en Siigo.`)
 
   const hoy = hoyColombia()
-  const fechaOp = new Date(Date.parse(String(t.created_at)) - 5 * 3600_000).toISOString().slice(0, 10)
-  const ctx: Record<string, string> = {
-    tipo: liq.tipo === 'cargue' ? 'Cargue' : 'Conversión', fecha: fechaOp, cliente: cp.nombre,
-    usd: liq.usd != null ? `${liq.usd.toLocaleString('es-CO', { maximumFractionDigits: 2 })} USD` : '',
-    ref: String(rd.otcRef ?? String(t.id).slice(0, 8)),
-  }
+  const ctx: Record<string, string> = { ...p.ctx, cliente: cp.nombre }
   const plantilla = (s: string) => s.replace(/\{(\w+)\}/g, (_m, k) => ctx[k] ?? '').replace(/\s+·\s+·/g, ' ·').trim()
   const descT = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros · {tipo} {fecha}').slice(0, 500)
   const descC = plantilla(cfg.desc_comision || 'Comisión Lincoin · {tipo} {fecha}').slice(0, 500)
-  // La marca de la operación va PRIMERO: es con lo que se la reconoce en
-  // Siigo si un envío queda sin respuesta, y al final la cortaba el tope de
-  // 500 caracteres cuando la observación configurada es larga.
-  const marcaOp = `${ctx.tipo} del ${fechaOp} · ref ${ctx.ref}`
+  // La marca va PRIMERO: es con lo que se la reconoce en Siigo si un envío
+  // queda sin respuesta, y al final la cortaba el tope de 500 caracteres
+  // cuando la observación configurada es larga.
+  const marcaOp = p.marcaOp
   const observations = [
     marcaOp,
     cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros, valor de la operación que corresponde al cliente; no constituye ingreso propio de Lincoin. Ítem 2: comisión de Lincoin por la operación, IVA incluido.`,
@@ -2817,7 +2859,7 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   // Antes de reenviar una incierta: ¿ya está en Siigo? Si está, se adopta
   // (queda 'emitida' con sus datos). Si no se pudo preguntar, no se envía.
   if (porVerificar) {
-    const b = await buscarFacturaLincoinEnSiigo(tk.token, partner, cp.identification, String(fila.updated_at ?? fila.created_at ?? t.created_at), marcaOp, totalOp)
+    const b = await buscarFacturaLincoinEnSiigo(tk.token, partner, cp.identification, p.desdeVerificar, marcaOp, totalOp)
     if (!b.ok) {
       await marcar({ estado: 'incierta', error: `${MSG_INCIERTA} (No se pudo consultar Siigo ahora.)` }, false)
       return { ok: false, incierta: true, error: 'No se pudo verificar en Siigo si la factura ya existe. No se reenvió. Revísala en Siigo Nube antes de reintentar.' }
@@ -2828,7 +2870,7 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
       await marcar({
         estado: 'emitida', error: null, numero: numero0, siigo_id: d0.id != null ? String(d0.id) : null,
         cufe: d0.stamp?.cufe ?? null, url: d0.public_url ?? null, emitida_at: ahora(),
-        detalle: { adoptada: true, respuesta: d0, ...(opts.adminId ? { por: opts.adminId } : {}) },
+        detalle: { adoptada: true, respuesta: d0, ...detalleExtra, ...(adminId ? { por: adminId } : {}) },
       }, false)
       return { ok: true, estado: 'emitida', numero: numero0, adoptada: true }
     }
@@ -2836,7 +2878,7 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
 
   // Pausa de última hora (solo la automática) y CANDADO: un solo envío a la
   // DIAN por operación, aunque lleguen el aviso, el cron y un clic a la vez.
-  if (!opts.manual) {
+  if (!manual) {
     const v = await leerConfigLincoin()
     if (!v.cfg?.activo) { await marcar({ estado: 'pendiente', error: 'Facturación pausada antes de enviar a Siigo.' }, false); return { ok: true, estado: 'pendiente' } }
   }
@@ -2878,23 +2920,184 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
     // Queda 'incierta' — no es un 'error' que se reintenta con un botón:
     // antes de reenviarla se busca en Siigo.
     if (r.status === 0 || r.status >= 500) {
-      await marcar({ estado: 'incierta', error: MSG_INCIERTA, ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+      await marcar({ estado: 'incierta', error: MSG_INCIERTA, ...valores, detalle: { enviado: arm.cuerpo, intentos, ...detalleExtra } })
       return { ok: false, incierta: true, error: MSG_INCIERTA }
     }
     if (r.status === 409 && esDuplicadoSiigo(motivoDe(r)) && Number(fila.intentos ?? 0) + 1 < REINTENTOS_DUPLICADO) {
-      await marcar({ estado: 'pendiente', error: 'Siigo la tomó como duplicada de otra factura parecida emitida segundos antes. Se reintenta sola en unos minutos.', ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+      await marcar({ estado: 'pendiente', error: 'Siigo la tomó como duplicada de otra factura parecida emitida segundos antes. Se reintenta sola en unos minutos.', ...valores, detalle: { enviado: arm.cuerpo, intentos, ...detalleExtra } })
       return { ok: false, reintento: true, error: 'Siigo la tomó como duplicada; se reintenta sola.' }
     }
-    return falla(`Siigo rechazó la factura — ${motivoDe(r)}`, { ...valores, detalle: { enviado: arm.cuerpo, intentos, liq } })
+    return falla(`Siigo rechazó la factura — ${motivoDe(r)}`, { ...valores, detalle: { enviado: arm.cuerpo, intentos, ...detalleExtra } })
   }
   const d = r.data ?? {}
   const numero = d.name ?? (d.number != null ? `${d.prefix ?? ''}${d.number}` : null) ?? String(d.id ?? '')
   await marcar({
     estado: 'emitida', error: null, numero, siigo_id: d.id != null ? String(d.id) : null,
     cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null, emitida_at: ahora(), ...valores,
-    detalle: { enviado: arm.cuerpo, respuesta: d, intentos, liq, ...(opts.adminId ? { por: opts.adminId } : {}) },
+    detalle: { enviado: arm.cuerpo, respuesta: d, intentos, ...detalleExtra, ...(adminId ? { por: adminId } : {}) },
   })
   return { ok: true, estado: 'emitida', numero, ...valores, cufe: d.stamp?.cufe ?? null, url: d.public_url ?? null }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  FACTURA DIARIA (empresas de Colombia)
+//
+//  Una factura por cliente y por día, al día siguiente (día vencido), con
+//  todo lo que movió ese día: la misma factura de mandato de siempre
+//  (ingresos para terceros + comisión de Lincoin con IVA), sumada.
+//
+//  Qué entra: cargues y conversiones completados ese día (hora de Colombia),
+//  facturables, con la utilidad REGISTRADA y mayor que cero. Lo que no entra
+//  queda anotado en detalle.fuera: una utilidad estimada o sin dato se
+//  confirma y se factura sola desde Contabilidad (como antes); una
+//  operación sin utilidad no lleva comisión.
+//
+//  La fila vive en facturas_lincoin con transaction_id "dia:<cliente>:<día>"
+//  y tipo 'diaria'; detalle.txs son las operaciones que cubre. Una operación
+//  que aparece tarde (después de enviada la del día) va en una complementaria
+//  ":2". Mismos estados y mismo envío que la de por movimiento
+//  (enviarFilaLincoin): candado, 'incierta' verificada en Siigo antes de
+//  reenviar, error/revision esperan a una persona.
+// ══════════════════════════════════════════════════════════════════
+const ESTADOS_ENVIADOS = ['emitida', 'emitiendo', 'incierta']
+
+// ¿Esta operación ya va dentro de una factura diaria enviada?
+async function diariaQueIncluye(userId: string, txId: string, dia: string): Promise<{ dia: string; numero: string | null } | null> {
+  try {
+    const { data } = await db.from('facturas_lincoin').select('transaction_id, estado, numero, txs:detalle->txs')
+      .like('transaction_id', `${claveDiaria(userId, dia)}%`)
+    for (const f of (data ?? []) as any[]) {
+      if (ESTADOS_ENVIADOS.includes(String(f.estado)) && Array.isArray(f.txs) && f.txs.map(String).includes(txId)) return { dia, numero: f.numero ?? null }
+    }
+  } catch { /* sin tabla */ }
+  return null
+}
+
+async function emitirDiaria(userId: string, dia: string, opts: { manual?: boolean; adminId?: string | null; clave?: string } = {}): Promise<any> {
+  const { cfg, falta } = await leerConfigLincoin()
+  if (falta) return { ok: false, error: MIGRACION_LINCOIN }
+  if (!cfg) return { ok: false, error: 'Primero configurá el Siigo de Lincoin en Contabilidad → Facturación.' }
+  if (!opts.manual && !cfg.activo) return { ok: true, estado: 'omitida', motivo: 'La facturación de Lincoin está pausada.' }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return { ok: false, error: 'Día inválido.' }
+  // Día vencido: el día tiene que haber terminado en Colombia.
+  if (dia >= hoyColombia()) return { ok: false, error: 'La factura diaria sale al día siguiente: ese día todavía no termina.' }
+  const modelo = (await modelosDe(db, [userId])).get(userId)?.modelo ?? 'colombia'
+  if (modelo !== 'colombia') return { ok: false, error: 'Este cliente se factura por movimiento (exterior), no por día.' }
+
+  const ahora = () => new Date().toISOString()
+  const { desde, hasta } = rangoDiaBogota(dia)
+  const ops: string[] = Array.isArray(cfg.operaciones) ? cfg.operaciones : Object.keys(OPERACIONES_LINCOIN)
+
+  // Las facturas diarias que ya hay de ese día (la primera y complementarias).
+  const { data: filasDia, error: eDia } = await db.from('facturas_lincoin')
+    .select('id, transaction_id, estado, numero, total, terceros, utilidad, detalle, intentos, created_at, updated_at')
+    .like('transaction_id', `${claveDiaria(userId, dia)}%`).order('id', { ascending: true })
+  if (eDia) return { ok: false, error: faltaTablaLincoin(eDia.message) ? MIGRACION_LINCOIN : eDia.message }
+  const filas = (filasDia ?? []) as any[]
+  // La abierta del día (pendiente, con error, en revisión, u omitida porque
+  // ese día no había nada): se reusa antes de abrir una complementaria.
+  let fila: any = opts.clave ? filas.find(f => f.transaction_id === opts.clave) ?? null : filas.find(f => !ESTADOS_ENVIADOS.includes(String(f.estado))) ?? null
+  if (opts.clave && !fila) return { ok: false, error: 'No se encontró esa factura diaria.' }
+  if (fila?.estado === 'emitida' && fila.numero) return { ok: true, estado: 'emitida', numero: fila.numero, yaEstaba: true }
+  if (fila?.estado === 'emitiendo' && Date.parse(String(fila.updated_at)) > Date.now() - 180000) return { ok: false, error: 'Esta factura se está emitiendo. Esperá un momento y recargá.' }
+  // 'incierta' o un 'emitiendo' viejo: pudo crearse en Siigo con SUS valores.
+  // No se recalcula nada: se verifica en Siigo y, si no está, se manda igual.
+  const porVerificar = !!fila && (fila.estado === 'incierta' || fila.estado === 'emitiendo')
+
+  let incluidas: any[] = []
+  let fuera: any[] = []
+  if (porVerificar) {
+    incluidas = Array.isArray(fila.detalle?.ops) ? fila.detalle.ops : []
+    fuera = Array.isArray(fila.detalle?.fuera) ? fila.detalle.fuera : []
+  } else {
+    const { data: txs } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data')
+      .eq('user_id', userId).in('type', ['load', 'convert']).eq('status', 'Completado')
+      .gte('created_at', desde).lt('created_at', hasta).order('created_at', { ascending: true }).limit(2000)
+    const lista = (txs ?? []) as any[]
+    const idsCierre = Array.from(new Set(lista.map(t => String(t.raw_data?.otcCloseId ?? '')).filter(Boolean)))
+    const cierres = new Map<string, any>()
+    if (idsCierre.length) {
+      const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').in('id', idsCierre)
+      for (const c of (data ?? []) as any[]) cierres.set(String(c.id), c)
+    }
+    // Lo que ya salió en otra diaria del día, o con factura propia.
+    const cubiertas = new Set<string>()
+    for (const f of filas) if (f !== fila && ESTADOS_ENVIADOS.includes(String(f.estado)) && Array.isArray(f.detalle?.txs)) for (const x of f.detalle.txs) cubiertas.add(String(x))
+    const propias = new Map<string, string>()
+    for (let i = 0; i < lista.length; i += 200) {
+      const { data } = await db.from('facturas_lincoin').select('transaction_id, estado').in('transaction_id', lista.slice(i, i + 200).map(t => String(t.id)))
+      for (const f of (data ?? []) as any[]) propias.set(String(f.transaction_id), String(f.estado))
+    }
+    for (const t of lista) {
+      const id = String(t.id)
+      const liq = liquidacionDe(t, t.raw_data?.otcCloseId ? cierres.get(String(t.raw_data.otcCloseId)) ?? null : null)
+      if (!liq || !ops.includes(liq.tipo) || !liq.facturable) continue
+      if (!opts.manual && cfg.desde && Date.parse(String(t.created_at)) < Date.parse(String(cfg.desde))) continue
+      if (cubiertas.has(id) || ESTADOS_ENVIADOS.includes(propias.get(id) ?? '')) continue
+      if (liq.fuente !== 'registrada') { fuera.push({ id, motivo: 'Utilidad estimada o sin dato: confírmala en Contabilidad y se factura sola.' }); continue }
+      if (!(Number(liq.utilidadCop) > 0) || liq.tercerosCop == null || liq.totalCop == null || liq.tercerosCop < 0) { fuera.push({ id, motivo: 'Sin utilidad para Lincoin: no hay comisión que facturar.' }); continue }
+      incluidas.push({ id, tipo: liq.tipo, total: r2(liq.totalCop), terceros: r2(liq.tercerosCop), utilidad: r2(liq.utilidadCop!), usd: liq.usd ?? null })
+    }
+  }
+  if (!incluidas.length) {
+    if (fila && !porVerificar) await db.from('facturas_lincoin').update({ estado: 'omitida', error: 'No quedó ninguna operación por facturar ese día.', updated_at: ahora() }).eq('id', fila.id)
+    return { ok: true, estado: 'nada', motivo: 'No hay operaciones por facturar ese día.', fuera }
+  }
+  const totalOp = r2(incluidas.reduce((a, o) => a + Number(o.total), 0))
+  const terceros = r2(incluidas.reduce((a, o) => a + Number(o.terceros), 0))
+  const utilidad = r2(incluidas.reduce((a, o) => a + Number(o.utilidad), 0))
+  const usd = incluidas.reduce((a, o) => a + (Number(o.usd) || 0), 0)
+  const txsIds = incluidas.map(o => String(o.id))
+  const detalle = { dia, txs: txsIds, ops: incluidas, fuera }
+
+  if (!fila) {
+    // Nueva: la primera del día o una complementaria. Si otra vuelta la creó
+    // al mismo tiempo, se usa esa (la clave es única).
+    const clave = claveDiaria(userId, dia, filas.length + 1)
+    const ins = await db.from('facturas_lincoin').upsert({
+      transaction_id: clave, user_id: userId, tipo: 'diaria', operacion_at: desde, moneda: 'COP',
+      total: totalOp, terceros, utilidad, utilidad_fuente: 'registrada', estado: 'pendiente', detalle,
+    }, { onConflict: 'transaction_id', ignoreDuplicates: true })
+    if (ins.error) return { ok: false, error: faltaTablaLincoin(ins.error.message) ? MIGRACION_LINCOIN : `No se pudo registrar la factura diaria: ${ins.error.message}` }
+    const { data: f2 } = await db.from('facturas_lincoin').select('*').eq('transaction_id', clave).maybeSingle()
+    fila = f2
+    if (!fila) return { ok: false, error: 'No se pudo leer la factura diaria.' }
+    if (fila.estado !== 'pendiente') return { ok: true, estado: fila.estado }
+  } else if (!porVerificar) {
+    // Abierta (pendiente, error, revisión, omitida): se pone al día con lo
+    // de ahora. Una omitida que ahora sí tiene operaciones vuelve a pendiente.
+    const estadoAbierta = fila.estado === 'omitida' ? 'pendiente' : fila.estado
+    await db.from('facturas_lincoin').update({ total: totalOp, terceros, utilidad, detalle, estado: estadoAbierta, updated_at: ahora() }).eq('id', fila.id)
+    fila = { ...fila, total: totalOp, terceros, utilidad, detalle, estado: estadoAbierta }
+  }
+  // La automática solo trabaja las pendientes: un error lo mira una persona.
+  if (!opts.manual && fila.estado !== 'pendiente') return { ok: true, estado: fila.estado }
+
+  const marcar = async (patch: Record<string, unknown>, cuenta = true) => {
+    const p0 = porVerificar && !['emitida', 'incierta', 'emitiendo'].includes(String(patch.estado ?? '')) ? { ...patch, estado: 'incierta' } : patch
+    await db.from('facturas_lincoin').update({ ...p0, ...(cuenta ? { intentos: Number(fila.intentos ?? 0) + 1 } : {}), updated_at: ahora() }).eq('id', fila.id)
+  }
+  const nOps = incluidas.length
+  const parte = leerClaveDiaria(String(fila.transaction_id))?.n ?? 1
+  const r = await enviarFilaLincoin({
+    cfg, fila, userId, porVerificar, manual: !!opts.manual, adminId: opts.adminId ?? null,
+    totalOp, terceros, utilidad, fuente: 'registrada',
+    ctx: { tipo: `${nOps} operaci${nOps === 1 ? 'ón' : 'ones'} del día`, fecha: dia, usd: usd > 0 ? `${usd.toLocaleString('es-CO', { maximumFractionDigits: 2 })} USD` : '', ref: `${nOps} operaci${nOps === 1 ? 'ón' : 'ones'}` },
+    // Así se la reconoce en Siigo si el envío queda sin respuesta.
+    marcaOp: `Factura diaria del ${dia}${parte > 1 ? ` (complementaria ${parte})` : ''} · ${nOps} operaci${nOps === 1 ? 'ón' : 'ones'}`,
+    desdeVerificar: String(fila.updated_at ?? fila.created_at ?? desde),
+    detalle,
+    marcar,
+  })
+  // Las operaciones que quedaron dentro y tenían una fila propia (pendiente,
+  // con error…): ya no llevan factura aparte.
+  if (r?.ok && r.estado === 'emitida') {
+    try {
+      await db.from('facturas_lincoin').update({ estado: 'omitida', error: `Facturada en la diaria del ${dia}${r.numero ? ` (${r.numero})` : ''}.`, updated_at: ahora() })
+        .in('transaction_id', txsIds).in('estado', ['pendiente', 'error', 'revision'])
+    } catch { /* solo informativo */ }
+  }
+  return { ...r, dia, operaciones: nOps, fuera }
 }
 
 // Las operaciones que quedaron sin factura: completadas desde "desde", sin
@@ -2920,11 +3123,18 @@ async function ponerseAlDiaLincoin(opts: { tope?: number; hastaMs?: number; dias
     .gte('created_at', new Date(limite).toISOString()).lt('created_at', new Date(Date.now() - 60_000).toISOString())
     .order('created_at', { ascending: false }).limit(1000)
   const ops: string[] = Array.isArray(cfg.operaciones) ? cfg.operaciones : Object.keys(OPERACIONES_LINCOIN)
-  const candidatas = ((txs ?? []) as any[]).filter(t => { const l = liquidacionDe(t); return l && ops.includes(l.tipo) })
-  if (!candidatas.length) return out
+  const todasCand = ((txs ?? []) as any[]).filter(t => { const l = liquidacionDe(t); return l && ops.includes(l.tipo) })
+  if (!todasCand.length) return out
+  // Las de clientes de Colombia no llevan factura por movimiento: van en la
+  // diaria (más abajo). Por movimiento quedan las del exterior.
+  const modelos = await modelosDe(db, todasCand.map(t => String(t.user_id)))
+  const esColombia = (t: any) => (modelos.get(String(t.user_id))?.modelo ?? 'colombia') === 'colombia'
+  const candidatas = todasCand.filter(t => !esColombia(t))
+  // El estado de la factura propia de cada operación (también las de
+  // Colombia: una que ya tiene la suya no entra en la diaria).
   const estado = new Map<string, any>()
-  for (let i = 0; i < candidatas.length; i += 200) {
-    const { data: filas } = await db.from('facturas_lincoin').select('transaction_id, estado, updated_at').in('transaction_id', candidatas.slice(i, i + 200).map(t => String(t.id)))
+  for (let i = 0; i < todasCand.length; i += 200) {
+    const { data: filas } = await db.from('facturas_lincoin').select('transaction_id, estado, updated_at').in('transaction_id', todasCand.slice(i, i + 200).map(t => String(t.id)))
     for (const f of (filas ?? []) as any[]) estado.set(String(f.transaction_id), f)
   }
   const reposo = Date.now() - 5 * 60_000
@@ -2943,6 +3153,46 @@ async function ponerseAlDiaLincoin(opts: { tope?: number; hastaMs?: number; dias
       else if (r?.revision) out.revisadas++
       else if (r && !r.ok && !r.reintento) out.errores.push(String(r.error ?? 'error'))
     } catch (e) { out.errores.push(String((e as Error)?.message ?? e)) }
+  }
+
+  // ── Facturas DIARIAS (clientes de Colombia), día vencido ──
+  // Un día de un cliente necesita su factura si tiene alguna operación con
+  // utilidad registrada que todavía no está en una diaria enviada ni tiene
+  // factura propia. Los días con una diaria en error o en revisión esperan a
+  // una persona (como las de por movimiento).
+  const hoy = hoyColombia()
+  const delDia = todasCand.filter(t => esColombia(t) && diaBogota(String(t.created_at)) < hoy)
+  if (delDia.length) {
+    const desdeDia = diaBogota(new Date(limite).toISOString())
+    const { data: diarias } = await db.from('facturas_lincoin').select('transaction_id, estado, updated_at, txs:detalle->txs')
+      .eq('tipo', 'diaria').gte('operacion_at', rangoDiaBogota(desdeDia).desde).limit(5000)
+    const cubiertas = new Set<string>()
+    const esperan = new Set<string>()
+    for (const f of (diarias ?? []) as any[]) {
+      const k = leerClaveDiaria(String(f.transaction_id))
+      if (!k) continue
+      if (ESTADOS_ENVIADOS.includes(String(f.estado)) && Array.isArray(f.txs)) for (const x of f.txs) cubiertas.add(String(x))
+      if (['error', 'revision'].includes(String(f.estado)) || (f.estado === 'pendiente' && Date.parse(String(f.updated_at)) > reposo)) esperan.add(`${k.userId}|${k.dia}`)
+    }
+    const grupos = new Map<string, { userId: string; dia: string }>()
+    for (const t of delDia) {
+      const id = String(t.id)
+      if (cubiertas.has(id) || ESTADOS_ENVIADOS.includes(String(estado.get(id)?.estado ?? ''))) continue
+      const l = liquidacionDe(t)
+      if (!l?.facturable || l.fuente !== 'registrada' || !(Number(l.utilidadCop) > 0)) continue
+      const k = `${t.user_id}|${diaBogota(String(t.created_at))}`
+      if (!esperan.has(k) && !grupos.has(k)) grupos.set(k, { userId: String(t.user_id), dia: diaBogota(String(t.created_at)) })
+    }
+    // Del día más viejo al más nuevo.
+    for (const g of [...grupos.values()].sort((a, b) => a.dia.localeCompare(b.dia))) {
+      if (hechas >= tope || Date.now() > fin) { out.restan++; continue }
+      hechas++
+      try {
+        const r = await emitirDiaria(g.userId, g.dia)
+        if (r?.ok && r.estado === 'emitida') out.emitidas++
+        else if (r && !r.ok && !r.reintento) out.errores.push(String(r.error ?? 'error'))
+      } catch (e) { out.errores.push(String((e as Error)?.message ?? e)) }
+    }
   }
   return out
 }
@@ -3025,6 +3275,9 @@ async function accionLincoin(accion: string, body: any): Promise<Response> {
   if (accion === 'lincoin_emitir') {
     const txId = String(body.transactionId ?? '')
     if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+    // Una factura diaria (reintentar o verificar desde el panel).
+    const kd = leerClaveDiaria(txId)
+    if (kd) return json(await emitirDiaria(kd.userId, kd.dia, { manual: true, adminId: body.adminId ?? null, clave: txId }))
     const u = body.utilidad != null && body.utilidad !== '' ? Number(body.utilidad) : null
     return json(await emitirLincoin(txId, { manual: true, utilidad: u, adminId: body.adminId ?? null }))
   }

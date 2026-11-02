@@ -49,6 +49,15 @@ const ESTADO_FACTURA: Record<string, string> = {
   incierta: 'Por verificar en Siigo', error: 'Error', omitida: 'No aplica',
 };
 const FUENTE: Record<string, string> = { registrada: 'Registrada', estimada: 'Estimada (mesa OTC)', sin_dato: 'Sin dato', manual: 'Confirmada a mano' };
+// Cómo se le factura a cada cliente. Colombia: una factura por día (día
+// vencido) con todo lo que movió. Exterior (Perú, Brasil…): una por
+// movimiento, ya emitida por Lincoin. Es lo que la contadora necesita ver
+// separado.
+const NOMBRE_MODELO: Record<string, string> = { colombia: 'Colombia · factura diaria', exterior: 'Exterior · por movimiento' };
+const modeloDe = (k: any): 'colombia' | 'exterior' => (k?.modelo === 'exterior' ? 'exterior' : 'colombia');
+// Una operación de un cliente de Colombia que entra en la factura diaria:
+// facturable, vigente, con utilidad registrada y mayor que cero.
+const vaEnDiaria = (d: any) => !!d?.liq && d.liq.facturable && !d.liq.anulado && d.liq.fuente === 'registrada' && n0(d.liq.utilidadCop) > 0;
 const esCop = (moneda: unknown) => /^COP/i.test(String(moneda ?? ''));
 const estadoMov = (s: unknown): 'ok' | 'mal' | 'curso' => {
   const t = String(s ?? '');
@@ -137,7 +146,7 @@ const ESTILOS_OPS: Estilo[] = ['fechaHora', 'texto', 'texto', 'texto', 'usd', 'u
 // Columnas que se suman en el total (sin los anulados).
 const SUMA_OPS = new Set([4, 5, 7, 9, 11, 12]);
 
-function filaOperacion(d: any, fechaDeId: (id: string) => string): { valores: any[]; anotaciones: string[] } {
+function filaOperacion(d: any, fechaDeId: (id: string) => string, modelo?: 'colombia' | 'exterior'): { valores: any[]; anotaciones: string[] } {
   const l = d.liq;
   const notas: string[] = [];
   if (d.nota) notas.push(`Nota: ${d.nota}`);
@@ -166,10 +175,15 @@ function filaOperacion(d: any, fechaDeId: (id: string) => string): { valores: an
   const f = d.factura;
   if (anulado && f?.estado === 'emitida') notas.push('Tenía factura emitida: anúlala en Siigo o haz la nota crédito.');
   if (f?.estado === 'error' && f?.error) notas.push(`Factura con error: ${f.error}`);
-  if (!f && l?.facturable && !anulado && (u ?? 0) > 0) notas.push('Por facturar.');
+  if (f?.diaria) notas.push(`Facturada en la factura diaria del ${nombreDia(f.diaria)}${f.numero ? ` (${f.numero})` : ''}.`);
+  else if (!f && modelo === 'colombia' && vaEnDiaria(d)) notas.push('Va en la factura diaria del día (la emite el sistema al día siguiente).');
+  else if (!f && l?.facturable && !anulado && (u ?? 0) > 0) notas.push(modelo === 'colombia' ? 'Por facturar aparte: confirmar la utilidad (no entra en la diaria).' : 'Por facturar.');
   if (!l?.facturable && !anulado && l?.nota && !l?.reversadoCop) notas.push(l.nota);
   const estado = anulado ? 'Anulado' : l?.reversadoCop ? 'Corregido' : 'Vigente';
-  const factura = f?.estado ? (ESTADO_FACTURA[f.estado] ?? f.estado) : l?.facturable ? 'Sin factura' : 'No aplica';
+  const factura = f?.diaria ? `Diaria ${nombreDia(f.diaria)} · ${ESTADO_FACTURA[f.estado] ?? f.estado}`
+    : f?.estado ? (ESTADO_FACTURA[f.estado] ?? f.estado)
+    : modelo === 'colombia' && vaEnDiaria(d) ? 'En la diaria (por emitir)'
+    : l?.facturable ? 'Sin factura' : 'No aplica';
   return {
     valores: [aFecha(d.created_at), `${d.type === 'convert' ? 'Conversión' : 'Cargue'}${d.ref ? ` · ${d.ref}` : ''}`, d.riel ?? '', estado,
       num(v('usd')), num(anulado ? null : l?.usdLlego), num(l?.tasaLincoin), num(v('totalCop')), num(l?.tasaCliente), num(v('tercerosCop')), null,
@@ -267,6 +281,7 @@ function hojaCliente(dc: DatosCliente, periodoTxt: string, alertas: string[]): H
     ['Nombre', k.nombre ?? '', 'kpiTexto'],
     ['Documento', k.documento ?? '', 'kpiTexto'],
     ['Correo', k.email ?? '', 'kpiTexto'],
+    ['Facturación Lincoin', `${NOMBRE_MODELO[modeloDe(k)]}${k.pais ? ` · país del registro: ${k.pais}` : ''}${k.modeloManual ? ' (ajustado a mano)' : ''}`, 'kpiTexto'],
     ['Última operación contable', aFecha(k.ultima), 'kpiFecha'],
   ]);
   L.seccion('Resumen contable', 2);
@@ -346,12 +361,12 @@ function hojaCliente(dc: DatosCliente, periodoTxt: string, alertas: string[]): H
   L.seccion('Operaciones contables (cargues, conversiones y ajustes)', 12);
   const ordenadas = [...dc.detalle].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
   const filasOps = ordenadas.map(d => {
-    const { valores, anotaciones } = filaOperacion(d, fechaDeId);
+    const { valores, anotaciones } = filaOperacion(d, fechaDeId, modeloDe(k));
     valores[16] = anotaciones.join(' · ');
     return valores.map((v, i) => c(v, ESTILOS_OPS[i]));
   });
   if (filasOps.length) {
-    const vigentes = ordenadas.map(d => filaOperacion(d, fechaDeId).valores).filter(v => v[3] !== 'Anulado');
+    const vigentes = ordenadas.map(d => filaOperacion(d, fechaDeId, modeloDe(k)).valores).filter(v => v[3] !== 'Anulado');
     const totalCol = (i: number) => vigentes.reduce((s, v) => s + (typeof v[i] === 'number' ? v[i] : 0), 0);
     const cols = new Map<number, ColTotal>();
     for (const i of SUMA_OPS) {
@@ -360,7 +375,7 @@ function hojaCliente(dc: DatosCliente, periodoTxt: string, alertas: string[]): H
         v: totalCol(i), s: i === 4 || i === 5 ? 'totalUsd' : 'totalCop',
       });
     }
-    cols.set(10, suma('totalCop', ordenadas.map(d => filaOperacion(d, fechaDeId).valores[10]).reduce((s: number, v: any) => s + (typeof v === 'number' ? v : 0), 0)));
+    cols.set(10, suma('totalCop', ordenadas.map(d => filaOperacion(d, fechaDeId, modeloDe(k)).valores[10]).reduce((s: number, v: any) => s + (typeof v === 'number' ? v : 0), 0)));
     const t = tabla(L, COLS_OPS, filasOps, { etiqueta: 'Total (sin anulados)', columnas: cols });
     altoPorAnotaciones(L.altos, L.filas, t.desde, t.hasta, 16);
     // Las tasas del total no son una suma: van como valor.
@@ -543,30 +558,48 @@ export async function armarReporteContabilidad(o: OpcionesReporte): Promise<{ ho
   const filaG = inicioBloque + 1;
   R.hasta(Math.max(R.fila, filaG + 2 * ALTO_G + 1) + 1);
 
-  // Por cliente.
+  // Facturación por modelo: lo que la contadora tiene que separar.
+  const deModelo = (m: string) => datos.filter(d => modeloDe(d.c) === m);
+  const sumaDe = (ds: DatosCliente[], campo: string) => ds.reduce((s, d) => s + n0(d.c[campo]), 0);
+  const col = deModelo('colombia'), ext = deModelo('exterior');
+  R.seccion('Facturación por modelo', 2);
+  R.indicadores([
+    ['Colombia · clientes (factura diaria)', col.length, 'kpiEntero'],
+    ['Colombia · facturas diarias emitidas', sumaDe(col, 'facturasDiarias'), 'kpiEntero'],
+    ['Colombia · facturado (COP)', sumaDe(col, 'facturadoCop'), 'kpiCop'],
+    ['Colombia · operaciones por facturar', sumaDe(col, 'porFacturar'), 'kpiEntero'],
+    ['Exterior · clientes (por movimiento)', ext.length, 'kpiEntero'],
+    ['Exterior · facturas emitidas', sumaDe(ext, 'facturadas'), 'kpiEntero'],
+    ['Exterior · facturado (COP)', sumaDe(ext, 'facturadoCop'), 'kpiCop'],
+    ['Exterior · operaciones por facturar', sumaDe(ext, 'porFacturar'), 'kpiEntero'],
+  ]);
+  R.parrafo('Exterior (empresas de otros países, que no facturan en Colombia): Lincoin les factura cada movimiento; el detalle está en la hoja «Exterior por movimiento», ya facturado. Colombia: una factura por cliente y por día, emitida el día siguiente con todo lo que movió ese día (terceros + comisión de Lincoin con IVA); el detalle está en la hoja «Facturas diarias (Colombia)».', 'nota', 12, 150);
+
+  // Por cliente: primero Colombia, después exterior; dentro, por volumen.
   R.seccion('Por cliente', 12);
-  const filasCli = datos.map(d => {
+  const datosCli = [...datos].sort((a, b) => (modeloDe(a.c) === modeloDe(b.c) ? 0 : modeloDe(a.c) === 'colombia' ? -1 : 1));
+  const filasCli = datosCli.map(d => {
     const k = d.c;
     const u = n0(k.utilidadCargues) + n0(k.utilidadConversiones);
-    return [c(k.nombre, 'texto'), c(k.documento ?? '', 'texto'), c(k.email ?? '', 'texto'), c(n0(k.cargues), 'entero'), c(n0(k.anulados), 'entero'),
+    return [c(k.nombre, 'texto'), c(k.documento ?? '', 'texto'), c(k.email ?? '', 'texto'), c(NOMBRE_MODELO[modeloDe(k)], 'texto'), c(n0(k.cargues), 'entero'), c(n0(k.anulados), 'entero'),
       c(n0(k.usdCargado), 'usd'), c(n0(k.cargadoTotalCop), 'cop'), c(n0(k.cargadoCop), 'cop'), c(n0(k.utilidadCargues), 'copUtil'),
       c(n0(k.conversiones), 'entero'), c(n0(k.convertidoCop), 'cop'), c(n0(k.utilidadConversiones), 'copUtil'), c(u, 'copUtil'),
       c(util ? u / util : null, 'pct'), c(n0(k.enPerdida), 'entero'), c(n0(k.ajustes), 'entero'), c(n0(k.facturadas), 'entero'),
       c(n0(k.facturadoCop), 'cop'), c(n0(k.porFacturar), 'entero'), c(d.movs.length, 'entero'), c(aFecha(k.ultima), 'fechaHora')];
   });
   const sumaCampo = (campo: string) => datos.reduce((s, d) => s + n0(d.c[campo]), 0);
-  const tCli = tabla(R, ['Cliente', 'Documento', 'Correo', 'Cargues', 'Anulados', 'USDT entró', 'Recibido COP', 'Acreditado COP', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Utilidad neta', '% de la utilidad', 'En pérdida', 'Ajustes sin vincular', 'Facturas emitidas', 'Facturado COP', 'Por facturar', 'Movimientos', 'Última operación'],
+  const tCli = tabla(R, ['Cliente', 'Documento', 'Correo', 'Facturación', 'Cargues', 'Anulados', 'USDT entró', 'Recibido COP', 'Acreditado COP', 'Utilidad cargues', 'Conversiones', 'Convertido COP', 'Utilidad conversiones', 'Utilidad neta', '% de la utilidad', 'En pérdida', 'Ajustes sin vincular', 'Facturas emitidas', 'Facturado COP', 'Por facturar', 'Movimientos', 'Última operación'],
     filasCli, { etiqueta: 'Total', columnas: new Map([
-      [3, suma('totalEntero', sumaCampo('cargues'))], [4, suma('totalEntero', sumaCampo('anulados'))], [5, suma('totalUsd', sumaCampo('usdCargado'))],
-      [6, suma('totalCop', sumaCampo('cargadoTotalCop'))], [7, suma('totalCop', sumaCampo('cargadoCop'))], [8, suma('totalCop', sumaCampo('utilidadCargues'))],
-      [9, suma('totalEntero', sumaCampo('conversiones'))], [10, suma('totalCop', sumaCampo('convertidoCop'))], [11, suma('totalCop', sumaCampo('utilidadConversiones'))],
-      [12, suma('totalCop', util)], [13, suma('totalPct', util ? 1 : null)], [14, suma('totalEntero', sumaCampo('enPerdida'))], [15, suma('totalEntero', sumaCampo('ajustes'))],
-      [16, suma('totalEntero', sumaCampo('facturadas'))], [17, suma('totalCop', sumaCampo('facturadoCop'))], [18, suma('totalEntero', sumaCampo('porFacturar'))],
-      [19, suma('totalEntero', movsTodos.length)],
+      [4, suma('totalEntero', sumaCampo('cargues'))], [5, suma('totalEntero', sumaCampo('anulados'))], [6, suma('totalUsd', sumaCampo('usdCargado'))],
+      [7, suma('totalCop', sumaCampo('cargadoTotalCop'))], [8, suma('totalCop', sumaCampo('cargadoCop'))], [9, suma('totalCop', sumaCampo('utilidadCargues'))],
+      [10, suma('totalEntero', sumaCampo('conversiones'))], [11, suma('totalCop', sumaCampo('convertidoCop'))], [12, suma('totalCop', sumaCampo('utilidadConversiones'))],
+      [13, suma('totalCop', util)], [14, suma('totalPct', util ? 1 : null)], [15, suma('totalEntero', sumaCampo('enPerdida'))], [16, suma('totalEntero', sumaCampo('ajustes'))],
+      [17, suma('totalEntero', sumaCampo('facturadas'))], [18, suma('totalCop', sumaCampo('facturadoCop'))], [19, suma('totalEntero', sumaCampo('porFacturar'))],
+      [20, suma('totalEntero', movsTodos.length)],
     ]) });
   if (datos.length >= 2) {
-    R.graficos.push({ tipo: 'barras', titulo: 'Utilidad neta por cliente (COP)', serie: 'Utilidad neta', colCategorias: 0, colValores: 12, desdeFila: tCli.desde, hastaFila: tCli.hasta, formato: FMT_COP, color: VERDE, col: 3, fila: filaG, ancho: 7, alto: ALTO_G });
-    R.graficos.push({ tipo: 'barras', titulo: 'Acreditado por cliente (COP)', serie: 'Acreditado', colCategorias: 0, colValores: 7, desdeFila: tCli.desde, hastaFila: tCli.hasta, formato: FMT_COP, color: '15181A', col: 3, fila: filaG + ALTO_G + 1, ancho: 7, alto: ALTO_G });
+    R.graficos.push({ tipo: 'barras', titulo: 'Utilidad neta por cliente (COP)', serie: 'Utilidad neta', colCategorias: 0, colValores: 13, desdeFila: tCli.desde, hastaFila: tCli.hasta, formato: FMT_COP, color: VERDE, col: 3, fila: filaG, ancho: 7, alto: ALTO_G });
+    R.graficos.push({ tipo: 'barras', titulo: 'Acreditado por cliente (COP)', serie: 'Acreditado', colCategorias: 0, colValores: 8, desdeFila: tCli.desde, hastaFila: tCli.hasta, formato: FMT_COP, color: '15181A', col: 3, fila: filaG + ALTO_G + 1, ancho: 7, alto: ALTO_G });
   }
 
   // Por riel (cargues).
@@ -612,6 +645,8 @@ export async function armarReporteContabilidad(o: OpcionesReporte): Promise<{ ho
     ['Corregido', 'Cargue revertido en parte por un débito vinculado: suma lo que quedó.'],
     ['Ajuste sin vincular', 'Débito que no se ha asociado a un cargue. No suma en los totales del cliente hasta vincularlo.'],
     ['Utilidad estimada', 'Calculada con la tasa de la mesa OTC porque la operación no guardó la suya.'],
+    ['Facturación Colombia', 'Empresas de Colombia: una factura por cliente y por día, emitida el día siguiente con todo lo que movió (terceros + comisión con IVA). Hoja «Facturas diarias (Colombia)».'],
+    ['Facturación exterior', 'Empresas de otros países: una factura por cada movimiento, ya emitida por Lincoin. Hoja «Exterior por movimiento».'],
     ['Movimientos de la cuenta', 'Envíos, pagos, retiros, cargues y conversiones de la cuenta en el período. Lo rechazado o fallido no movió plata.'],
     ['Fechas', 'En la hora del computador que descargó el archivo. Los meses y días de los totales son los de Colombia.'],
   ]) {
@@ -624,19 +659,91 @@ export async function armarReporteContabilidad(o: OpcionesReporte): Promise<{ ho
   for (const d of datos) {
     const fechaDeId = (id: string) => { const x = d.detalle.find(y => String(y.id) === id); return x ? fechaCorta(x.created_at) : ''; };
     for (const op of [...d.detalle].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))) {
-      const { valores, anotaciones } = filaOperacion(op, fechaDeId);
+      const { valores, anotaciones } = filaOperacion(op, fechaDeId, modeloDe(d.c));
       valores[16] = anotaciones.join(' · ');
-      filasTodas.push([c(d.c.nombre, 'texto'), ...valores.map((v, i) => c(v, ESTILOS_OPS[i]))]);
+      filasTodas.push([c(d.c.nombre, 'texto'), c(NOMBRE_MODELO[modeloDe(d.c)], 'texto'), ...valores.map((v, i) => c(v, ESTILOS_OPS[i]))]);
     }
   }
   const hojaOps: Hoja = {
     nombre: 'Operaciones', color: '6B716C', cabecera: null, fijar: 1, imprimirAncho: true,
-    filas: [['Cliente', ...COLS_OPS].map(h => c(h, 'th')), ...filasTodas],
-    filtro: filasTodas.length ? `A1:${refCelda(COLS_OPS.length, filasTodas.length)}` : null,
+    filas: [['Cliente', 'Facturación', ...COLS_OPS].map(h => c(h, 'th')), ...filasTodas],
+    filtro: filasTodas.length ? `A1:${refCelda(COLS_OPS.length + 1, filasTodas.length)}` : null,
     altos: { 0: 30 },
-    anchos: [28, 18, 22, 14, 18, 12, 12, 12, 16, 12, 16, 14, 14, 16, 18, 18, 14, 54, 38],
+    anchos: [28, 24, 18, 22, 14, 18, 12, 12, 12, 16, 12, 16, 14, 14, 16, 18, 26, 14, 54, 38],
   };
-  altoPorAnotaciones(hojaOps.altos!, hojaOps.filas, 1, filasTodas.length, 17);
+  altoPorAnotaciones(hojaOps.altos!, hojaOps.filas, 1, filasTodas.length, 18);
+
+  // ── Facturas diarias (Colombia) ──
+  // Una fila por cliente y por día: lo que va (o fue) en la factura diaria.
+  // Lo que no entra (utilidad estimada o sin dato, sin utilidad) se cuenta
+  // aparte: se confirma y se factura suelto desde Contabilidad.
+  const D = new Lienzo();
+  D.encabezado('Facturas diarias · clientes de Colombia', periodoTxt);
+  D.parrafo('Una factura por cliente y por día, emitida el día siguiente (día vencido) con todo lo que el cliente movió ese día: ingresos recibidos para terceros + comisión de Lincoin (IVA incluido). La emite sola el sistema en Siigo.', 'nota', 10, 150);
+  const filasDia: CeldaX[][] = [];
+  for (const d of col) {
+    // orden: la factura del día (1) antes que sus complementarias (2, 3…), y
+    // lo que todavía no sale (hoy) al final del día — así la contadora lee
+    // cada día de arriba abajo en el orden en que se emitió.
+    const grupos = new Map<string, { dia: string; orden: number; n: number; terceros: number; comision: number; total: number; estado: string; numero: string; complementaria: string }>();
+    const fueraPorDia = new Map<string, number>();
+    for (const op of d.detalle) {
+      if (op.type === 'adjustment' || !op.liq || op.liq.anulado || !op.liq.facturable) continue;
+      const dia = op.factura?.diaria ?? diaDe(String(op.created_at));
+      const enDiaria = !!op.factura?.diaria || (!op.factura && vaEnDiaria(op));
+      if (!enDiaria) {
+        // Con factura propia (las por movimiento de antes del cambio de
+        // modelo) ya está facturada; sin factura es que no entró a la diaria.
+        if (!op.factura) fueraPorDia.set(dia, (fueraPorDia.get(dia) ?? 0) + 1);
+        continue;
+      }
+      const clave = op.factura?.diaria ? String(op.factura.clave ?? dia) : `pend:${dia}`;
+      const nComp = op.factura?.diaria ? Number(String(op.factura.clave ?? '').split(':')[3] ?? 1) || 1 : 0;
+      const g = grupos.get(clave) ?? { dia, orden: op.factura?.diaria ? nComp : 999, n: 0, terceros: 0, comision: 0, total: 0, estado: op.factura?.diaria ? (ESTADO_FACTURA[op.factura.estado] ?? op.factura.estado) : 'Por emitir (sale al día siguiente)', numero: op.factura?.diaria ? txt(op.factura.numero) : '', complementaria: nComp > 1 ? `complementaria ${nComp}` : '' };
+      g.n++; g.terceros += n0(op.liq.tercerosCop); g.comision += n0(op.liq.utilidadCop); g.total += n0(op.liq.totalCop);
+      grupos.set(clave, g);
+    }
+    const notaFuera = (k: number) => `${k} operación${k === 1 ? '' : 'es'} del día fuera de la diaria (utilidad sin confirmar o sin comisión)`;
+    const dias = Array.from(new Set([...[...grupos.values()].map(g => g.dia), ...fueraPorDia.keys()])).sort();
+    for (const dia of dias) {
+      const delDia = [...grupos.values()].filter(g => g.dia === dia).sort((a, b) => a.orden - b.orden);
+      const k = fueraPorDia.get(dia) ?? 0;
+      if (!delDia.length) {
+        filasDia.push([c(d.c.nombre, 'texto'), c(d.c.documento ?? '', 'texto'), c(nombreDia(dia), 'texto'), c(0, 'entero'), c(0, 'cop'), c(0, 'cop'), c(0, 'cop'),
+          c('Sin factura diaria', 'texto'), c('', 'texto'), c(notaFuera(k), 'textoAjustado')]);
+        continue;
+      }
+      delDia.forEach((g, i) => {
+        filasDia.push([c(d.c.nombre, 'texto'), c(d.c.documento ?? '', 'texto'), c(nombreDia(g.dia), 'texto'), c(g.n, 'entero'), c(g.terceros, 'cop'), c(g.comision, 'cop'), c(g.total, 'cop'),
+          c(g.estado, 'texto'), c(g.numero, 'texto'),
+          c([g.complementaria, i === 0 && k ? notaFuera(k) : ''].filter(Boolean).join(' · '), 'textoAjustado')]);
+      });
+    }
+  }
+  if (filasDia.length) {
+    tabla(D, ['Cliente', 'NIT / documento', 'Día', 'Operaciones', 'Terceros COP', 'Comisión Lincoin COP (IVA incl.)', 'Total COP', 'Factura', 'Nº factura', 'Notas'], filasDia,
+      { etiqueta: 'Total', columnas: new Map([[3, suma('totalEntero', filasDia.reduce((s, f) => s + n0((f[3] as any).v), 0))], [4, suma('totalCop', filasDia.reduce((s, f) => s + n0((f[4] as any).v), 0))], [5, suma('totalCop', filasDia.reduce((s, f) => s + n0((f[5] as any).v), 0))], [6, suma('totalCop', filasDia.reduce((s, f) => s + n0((f[6] as any).v), 0))]]) });
+  } else D.parrafo('Ningún cliente de Colombia con operaciones por facturar en el período.', 'nota', 6);
+
+  // ── Exterior: una factura por movimiento ──
+  const X = new Lienzo();
+  X.encabezado('Exterior · facturado por movimiento', periodoTxt);
+  X.parrafo('Empresas de otros países (Perú, Brasil…), que no facturan en Colombia: Lincoin les factura cada movimiento. Esta hoja es lo ya facturado (o por facturar) operación por operación.', 'nota', 10, 150);
+  const filasExt: CeldaX[][] = [];
+  for (const d of ext) {
+    for (const op of [...d.detalle].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))) {
+      if (op.type === 'adjustment' || !op.liq || op.liq.anulado || !op.liq.facturable) continue;
+      const f = op.factura;
+      filasExt.push([c(d.c.nombre, 'texto'), c(d.c.pais ?? '', 'texto'), c(d.c.documento ?? '', 'texto'), c(aFecha(op.created_at), 'fechaHora'),
+        c(`${op.type === 'convert' ? 'Conversión' : 'Cargue'}${op.ref ? ` · ${op.ref}` : ''}`, 'texto'),
+        c(num(op.liq.tercerosCop), 'cop'), c(num(op.liq.utilidadCop), 'copUtil'), c(num(op.liq.totalCop), 'cop'),
+        c(f?.estado ? (ESTADO_FACTURA[f.estado] ?? f.estado) : 'Sin factura', 'texto'), c(txt(f?.numero), 'texto'), c(String(op.id), 'texto')]);
+    }
+  }
+  if (filasExt.length) {
+    tabla(X, ['Cliente', 'País', 'Documento', 'Fecha', 'Operación', 'Terceros COP', 'Comisión Lincoin COP', 'Total COP', 'Factura', 'Nº factura', 'Id'], filasExt,
+      { etiqueta: 'Total', columnas: new Map([[5, suma('totalCop', filasExt.reduce((s, f) => s + n0((f[5] as any).v), 0))], [6, suma('totalCop', filasExt.reduce((s, f) => s + n0((f[6] as any).v), 0))], [7, suma('totalCop', filasExt.reduce((s, f) => s + n0((f[7] as any).v), 0))]]) });
+  } else X.parrafo('Ningún cliente del exterior con operaciones en el período.', 'nota', 6);
 
   // ── Movimientos (todos) ──
   const filasMovs = movsTodos.map(({ t, d }) => [c(d.c.nombre, 'texto'), ...filaMov(t).map((v, i) => c(v, ESTILOS_MOVS[i]))]);
@@ -652,6 +759,8 @@ export async function armarReporteContabilidad(o: OpcionesReporte): Promise<{ ho
     { nombre: 'Resumen', filas: R.filas, combinar: R.combinar, altos: R.altos, graficos: R.graficos, cabecera: null, fijar: 3, color: '15181A', imprimirAncho: true,
       anchos: [32, 20, 28, 16, 16, 16, 17, 17, 16, 16, 17, 16, 16, 13, 12, 13, 13, 17, 12, 13, 18] },
     { nombre: 'Anotaciones', filas: A.filas, combinar: A.combinar, altos: A.altos, cabecera: null, fijar: 3, color: 'B45309', imprimirAncho: true, anchos: [30, 28, 90, 16, 12] },
+    { nombre: 'Facturas diarias (Colombia)', filas: D.filas, combinar: D.combinar, altos: D.altos, cabecera: null, fijar: 3, color: '22A35C', imprimirAncho: true, anchos: [30, 18, 16, 13, 18, 22, 18, 22, 16, 50] },
+    { nombre: 'Exterior por movimiento', filas: X.filas, combinar: X.combinar, altos: X.altos, cabecera: null, fijar: 3, color: '2775CA', imprimirAncho: true, anchos: [30, 14, 18, 18, 20, 18, 18, 18, 18, 16, 38] },
     hojaOps,
     hojaMovs,
     ...datos.map((d, i) => hojaCliente(d, periodoTxt, alertas[i].map(x => `${x.tipo}: ${x.detalle}`))),

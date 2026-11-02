@@ -5,6 +5,7 @@ import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_
 import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda, cuentaCoinsendaDe, secretoLlave, CUENTAS_COINSENDA, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
+import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '../_shared/modelo-factura.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
@@ -1741,6 +1742,9 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   contabilidad_cliente: ['plata.ver', 'fn.contabilidad'],
   contabilidad_vincular_ajuste: ['plata.mover', 'fn.contabilidad'],
   contabilidad_corregir_venta: ['plata.mover', 'fn.contabilidad'],
+  // Cómo se le factura a un cliente (Colombia diaria / exterior por movimiento).
+  cliente_modelo_factura: ['plata.ver', 'clientes.editar', 'fn.contabilidad', 'fn.clientes'],
+  cliente_modelo_factura_set: ['plata.mover', 'clientes.editar', 'fn.contabilidad', 'fn.clientes'],
   contabilidad_autovincular: ['plata.mover', 'fn.contabilidad'],
   // Cupos por beneficiario: los decide Cumplimiento.
   cupos_admin_get: 'cumplimiento',
@@ -3556,6 +3560,8 @@ Deno.serve(async (req: Request) => {
         'cupo_resolver', 'cupos_config_set', 'cupo_quitar',
         // Contabilidad: vincular un débito cambia la utilidad y la factura
         'contabilidad_vincular_ajuste', 'contabilidad_autovincular', 'contabilidad_corregir_venta',
+        // Cambia si a un cliente se le factura por día o por movimiento
+        'cliente_modelo_factura_set',
       ])
       // Reconstruir movimientos escribe en la base; solo consultar, no.
       const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
@@ -4595,12 +4601,38 @@ Deno.serve(async (req: Request) => {
         const facturas = new Map<string, any>()
         let conFacturas = true
         for (let off = 0; off < TOPE; off += 1000) {
-          let q = db.from('facturas_lincoin').select('transaction_id, estado, numero, total, utilidad, error, emitida_at')
+          let q = db.from('facturas_lincoin').select('transaction_id, tipo, estado, numero, total, utilidad, error, emitida_at, txs:detalle->txs')
           if (ids) q = q.in('user_id', ids)
           const { data, error } = await q.order('id', { ascending: true }).range(off, off + 999)
           if (error) { conFacturas = false; break }
           for (const f of (data ?? []) as any[]) facturas.set(String(f.transaction_id), f)
           if (!data || data.length < 1000) break
+        }
+
+        // Las FACTURAS DIARIAS (clientes de Colombia) cubren varias
+        // operaciones: cada operación apunta a la diaria que la incluye. Si
+        // hay una enviada y otra abierta, manda la enviada. La diaria se
+        // cuenta UNA vez como factura (en su primera operación del período),
+        // y lo facturado de cada operación es su propio total.
+        const ENVIADAS = ['emitida', 'emitiendo', 'incierta']
+        const enDiaria = new Map<string, any>()
+        const idsOps = new Set(filasOps.map((t: any) => String(t.id)))
+        const representante = new Map<string, string>()   // primera operación del período → clave de la diaria
+        for (const [clave, f] of facturas.entries()) {
+          const k = leerClaveDiaria(clave)
+          if (!k || !Array.isArray(f.txs)) continue
+          const fd = { ...f, diaria: k.dia, clave }
+          for (const x of f.txs.map(String)) {
+            const ya = enDiaria.get(x)
+            if (!ya || (!ENVIADAS.includes(String(ya.estado)) && ENVIADAS.includes(String(f.estado)))) enDiaria.set(x, fd)
+          }
+          const primera = f.txs.map(String).find((x: string) => idsOps.has(x))
+          if (primera) representante.set(primera, clave)
+        }
+        const facturaDe = (txId: string) => {
+          const propia = facturas.get(txId)
+          const dia = enDiaria.get(txId)
+          return propia && propia.estado !== 'omitida' ? propia : dia ?? propia ?? null
         }
 
         // Bogotá (UTC−5) para el mes: una operación de las 9 p. m. del 31 es
@@ -4619,6 +4651,8 @@ Deno.serve(async (req: Request) => {
           // utilidad de muchas, y sin esto parecía que "no sumaba".
           gananciaCop: 0, perdidaCop: 0, enPerdida: 0,
           facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0, facturasDeAnulados: 0,
+          // De las facturas, cuántas son diarias (clientes de Colombia).
+          facturasDiarias: 0,
           ultima: '' as string,
         })
         type Suma = ReturnType<typeof nuevo>
@@ -4665,7 +4699,9 @@ Deno.serve(async (req: Request) => {
           // Un 'load' que no es un cargue del admin es un depósito del propio
           // cliente: no es un cargue de Lincoin y no se cuenta acá.
           if (!liq) continue
-          const f = facturas.get(String(t.id)) ?? null
+          const f = facturaDe(String(t.id))
+          // Esta operación es la que cuenta la factura diaria (una vez).
+          const cuentaDiaria = !!f?.diaria && representante.get(String(t.id)) === f.clave
           const u = liq.utilidadCop ?? 0
           sumar(s => {
             if (liq.tipo === 'cargue') {
@@ -4680,7 +4716,11 @@ Deno.serve(async (req: Request) => {
             if (u >= 0) s.gananciaCop += u; else { s.perdidaCop += u; s.enPerdida++ }
             if (liq.fuente === 'estimada') s.utilidadEstimada += u
             if (liq.fuente === 'sin_dato' && liq.facturable) s.sinUtilidad++
-            if (f?.estado === 'emitida') { s.facturadas++; s.facturadoCop += Number(f.total) || 0 }
+            if (f?.diaria) {
+              if (f.estado === 'emitida') { if (cuentaDiaria) { s.facturadas++; s.facturasDiarias++ } s.facturadoCop += liq.totalCop ?? 0 }
+              else if (f.estado === 'error') { if (cuentaDiaria) s.facturasConError++ }
+              else if (liq.facturable && u > 0) s.porFacturar++
+            } else if (f?.estado === 'emitida') { s.facturadas++; s.facturadoCop += Number(f.total) || 0 }
             else if (f?.estado === 'error') s.facturasConError++
             else if (liq.facturable && u > 0) s.porFacturar++
           }, t)
@@ -4688,7 +4728,7 @@ Deno.serve(async (req: Request) => {
             id: t.id, type: t.type, amount: t.amount, currency: t.currency, riel: rielDe(t), created_at: t.created_at,
             ref: t.otcRef ?? null, nota: t.note ?? null, liq,
             reverso: t.reverso && typeof t.reverso === 'object' ? { ajustes: Array.isArray(t.reverso.ajustes) ? t.reverso.ajustes : [], montoCop: t.reverso.montoCop ?? null } : null,
-            factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null } : null,
+            factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null, ...(f.diaria ? { diaria: f.diaria, clave: f.clave } : {}) } : null,
             // La venta tal como quedó guardada (sin el prorrateo de un ajuste):
             // es lo que se edita con "Corregir venta".
             venta: t.type === 'load' && t.source === 'admin_cargue' && t.acct && typeof t.acct === 'object' && Number(t.acct.usdtGross) > 0
@@ -4726,23 +4766,40 @@ Deno.serve(async (req: Request) => {
           const { data } = await db.from('users').select('id, email, full_name, company_name, role, tax_id, doc_number').in('id', idsCli.slice(i, i + 200))
           for (const u of (data ?? []) as any[]) fichas.set(String(u.id), u)
         }
+        // Cómo se le factura a cada uno: Colombia (diaria) o exterior (por
+        // movimiento). Es lo que separa el Excel para la contadora.
+        const modelosCli = await modelosDe(db, idsCli)
         const clientes = idsCli.map(id => {
           const u = fichas.get(id) ?? {}
+          const m = modelosCli.get(id)
           return {
             userId: id, nombre: u.company_name || u.full_name || u.email || id, email: u.email ?? null, rol: u.role ?? null,
             documento: u.tax_id || u.doc_number || null, ...redondear(porCliente.get(id)!),
+            modelo: (m?.modelo ?? 'colombia') as ModeloFactura, pais: m?.pais ?? null, modeloManual: !!m?.manual,
           }
         }).sort((a, b) => (b.cargadoTotalCop + b.convertidoCop) - (a.cargadoTotalCop + a.convertidoCop))
+        const porModelo: Record<string, any> = {}
+        for (const mo of ['colombia', 'exterior'] as const) {
+          const cs = clientes.filter(c => c.modelo === mo)
+          const sumaC = (k: string) => r2(cs.reduce((a, c: any) => a + (Number(c[k]) || 0), 0))
+          porModelo[mo] = { nombre: NOMBRE_MODELO[mo], clientes: cs.length, facturadas: sumaC('facturadas'), facturasDiarias: sumaC('facturasDiarias'), facturadoCop: sumaC('facturadoCop'), porFacturar: sumaC('porFacturar'), facturasConError: sumaC('facturasConError'),
+            utilidad: r2(sumaC('utilidadCargues') + sumaC('utilidadConversiones')), recibido: r2(sumaC('cargadoTotalCop') + sumaC('convertidoCop')) }
+        }
         const meses = Array.from(porMes.entries()).sort((a, b) => b[0].localeCompare(a[0])).map(([mes, s]) => ({ mes, ...redondear(s) }))
         // Los estados de factura del MISMO período y alcance que el resto del
         // tablero: antes contaba todas las facturas de la historia junto a
         // "por facturar" del mes, y los dos números no se podían comparar.
         const estados: Record<string, number> = {}
-        for (const [txId, f] of facturas.entries()) if (idsDelPeriodo.has(txId)) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
+        for (const [txId, f] of facturas.entries()) if (idsDelPeriodo.has(txId) && !(f.estado === 'omitida' && enDiaria.has(txId))) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
+        // Cada factura diaria una vez (por su primera operación del período).
+        for (const [txId, clave] of representante.entries()) {
+          const f = facturas.get(clave)
+          if (f && idsDelPeriodo.has(txId)) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
+        }
         return json({
           ok: true, generado_at: new Date().toISOString(), desde, hasta,
           truncado: ops.truncado, conFacturas,
-          totales: { ...redondear(total), clientes: clientes.length },
+          totales: { ...redondear(total), clientes: clientes.length, porModelo },
           meses, clientes, facturas: estados,
           ...(delCliente ? { cliente: clientes.find(c => c.userId === String(body.userId)) ?? clientes[0] ?? null, ids, detalle: detalle.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } : {}),
         })
@@ -4765,6 +4822,31 @@ Deno.serve(async (req: Request) => {
         if ('error' in r) return json({ ok: false, error: r.error }, r.status)
         await auditAdmin(req, body.cargueId ? 'admin.ajuste_vinculado' : 'admin.ajuste_desvinculado', { ajusteId, cargueId: body.cargueId ?? null, anulado: r.anulado ?? null })
         return json(r)
+      }
+
+      // ── Modelo de facturación de un cliente ────────────────────────────
+      // Colombia → una factura por día (día vencido) con todo lo que movió;
+      // exterior → una por movimiento. Por defecto lo decide el país del
+      // registro; acá se ajusta a mano (tabla lincoin_modelo_cliente, zz28).
+      // 'auto' borra el ajuste y vuelve a mandar el país.
+      if (body.action === 'cliente_modelo_factura' || body.action === 'cliente_modelo_factura_set') {
+        const uidM = String(body.userId ?? '')
+        if (!UUID_RE.test(uidM)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
+        if (body.action === 'cliente_modelo_factura_set') {
+          const nuevo = String(body.modelo ?? '')
+          if (!['colombia', 'exterior', 'auto'].includes(nuevo)) return json({ ok: false, error: 'Modelo inválido.' }, 400)
+          const antes = (await modelosDe(db, [uidM])).get(uidM)
+          const r = nuevo === 'auto'
+            ? await db.from('lincoin_modelo_cliente').delete().eq('user_id', uidM)
+            : await db.from('lincoin_modelo_cliente').upsert({ user_id: uidM, modelo: nuevo, por: auth.email ?? auth.userId ?? null, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+          if (r.error) {
+            const sinTabla = /lincoin_modelo_cliente|schema cache|does not exist/i.test(String(r.error.message))
+            return json({ ok: false, error: sinTabla ? 'Falta correr la migración 2026_zz28_modelo_factura_cliente.sql en Supabase.' : r.error.message }, sinTabla ? 409 : 500)
+          }
+          await auditAdmin(req, 'admin.cliente_modelo_factura', { userId: uidM, antes: antes?.modelo ?? null, antesManual: antes?.manual ?? null, ahora: nuevo })
+        }
+        const m = (await modelosDe(db, [uidM])).get(uidM)!
+        return json({ ok: true, modelo: m.modelo, pais: m.pais, manual: m.manual, nombre: NOMBRE_MODELO[m.modelo] })
       }
 
       // ── Corregir la VENTA de un cargue (tasa de venta, USDT que llegaron) ──
