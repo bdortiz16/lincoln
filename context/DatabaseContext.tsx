@@ -4,6 +4,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
 import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 import { llamarFuncion } from '../lib/edge';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 // --- TYPES ---
 
@@ -2613,6 +2614,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (c === 'no_pendiente') return 'Ese movimiento ya no está pendiente: alguien más lo resolvió o cambió de estado.';
     if (c === 'forbidden') return 'Tu cuenta no tiene permiso para esta acción.';
     if (c === 'tx_not_found') return 'No se encontró el movimiento.';
+    // Los pone la base (2026_zz25): Tesorería exige una sesión con 2FA, y no
+    // devuelve ni completa lo que el servidor nunca descontó.
+    if (c === 'sin_2fa') return 'Activa tu 2FA en Seguridad: sin segundo factor no se opera Tesorería.';
+    if (c === 'sesion_sin_2fa') return 'Esta sesión no verificó el código 2FA (o ya venció). Cierra sesión y vuelve a entrar con tu código.';
+    if (c === 'sin_debito') return 'Esta solicitud no tiene un débito verificado por el servidor: no se puede completar. Recházala.';
+    if (c === 'no_es_retiro') return 'Ese movimiento no es un retiro.';
+    if (c === 'no_es_cargue') return 'Ese movimiento no es un cargue.';
     return c || 'No se pudo completar.';
   };
   // null = la función no existe en la base: se usa el camino viejo.
@@ -2990,33 +2998,39 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const action = isSelf ? 'delete_self' : 'delete_user';
     const body = isSelf ? { action } : { action, userId: id };
 
-    // Fetch directo para poder mandar el JWT del admin en el header.
-    let edgeFnOk = false;
-    try {
-      const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-      const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-      const authHeader2 = `Bearer ${getStoredToken() ?? SKEY}`;
-      const result = await safe(
-        fetch(`${SURL}/functions/v1/admin-data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': authHeader2 },
-          body: JSON.stringify(body),
-        }).then(async r => {
-          const d = await r.json().catch(() => ({}));
-          return r.ok ? { data: d, error: null } : { data: null, error: d };
-        }), 6000,
-      ) as { data: unknown; error: unknown } | undefined;
-      edgeFnOk = !!result && !result.error;
-    } catch { /* never */ }
+    // Fetch directo para poder mandar el JWT del admin en el header. Borrar a
+    // OTRO exige el código 2FA en el servidor: se pide y se repite la llamada.
+    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+    const authHeader2 = `Bearer ${getStoredToken() ?? SKEY}`;
+    const llamar = (otp?: string) => safe(
+      fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': authHeader2 },
+        body: JSON.stringify(otp ? { ...body, otp } : body),
+      }).then(async r => {
+        const d = await r.json().catch(() => ({}));
+        return { respondio: true, ok: r.ok, ...d };
+      }), 6000,
+    ) as Promise<any>;
+    const result: any = await conCodigo2fa(llamar).catch(() => undefined);
 
-    if (!edgeFnOk) {
-      // Edge function unavailable — delete directly from public tables.
-      // Clearing user_metadata.role ensures next Google OAuth uses the role
-      // chosen on the Register page, not the old stale value.
-      await safe(supabase.from('transactions').delete().eq('user_id', id));
-      await safe(supabase.from('users').delete().eq('id', id));
-      if (isSelf) await safe(supabase.auth.updateUser({ data: { role: null, full_name: null } }));
+    if (result?.respondio) {
+      // El servidor contestó: su respuesta es la decisión. Antes, si decía que
+      // NO (sin permiso, sin 2FA), el navegador borraba igual las filas
+      // directo en la base: una puerta trasera que se saltaba el permiso, el
+      // 2FA y la auditoría.
+      return result.ok && !result.error ? {} : { error: String(result.error ?? 'No se pudo eliminar la cuenta.') };
     }
+    // Sin respuesta del servidor. Borrar la cuenta de OTRO sin el servidor no
+    // se hace nunca: se dice y se reintenta. La propia (delete_self) conserva
+    // el respaldo directo de antes.
+    if (!isSelf) return { error: 'No hubo respuesta del servidor. No se eliminó nada; intenta de nuevo.' };
+    // Clearing user_metadata.role ensures next Google OAuth uses the role
+    // chosen on the Register page, not the old stale value.
+    await safe(supabase.from('transactions').delete().eq('user_id', id));
+    await safe(supabase.from('users').delete().eq('id', id));
+    await safe(supabase.auth.updateUser({ data: { role: null, full_name: null } }));
     return {};
   };
 

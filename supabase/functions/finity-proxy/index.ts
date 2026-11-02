@@ -36,6 +36,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { requireMfaSession } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -615,6 +616,12 @@ Deno.serve(async (req) => {
       const g = await equipoPermite(db, caller.userId, PERMISO_FINITY[action], { pais: 'CO' })
       if (!g.ok) caller.internal = false
     }
+    // Y la sesión del admin tiene que haber pasado el 2FA: `internal` abre
+    // retiros y envíos Bre-B directo desde la bolsa de Finity, y con solo la
+    // contraseña (sin el código) se podían ordenar.
+    if (caller.ok && caller.internal && !caller.servicio && caller.userId) {
+      if (await requireMfaSession(db, req, caller.userId)) caller.internal = false
+    }
     if (!caller.ok && !READ_ACTIONS.has(action)) {
       // 'proxy v3' en el mensaje: si el panel muestra 'unauthorized' pelado,
       // la función desplegada es una versión vieja.
@@ -626,6 +633,16 @@ Deno.serve(async (req) => {
     // tesorería compartida. Nunca un cliente (ni con anon-key + user_id).
     const INTERNAL_ONLY = new Set(['movements', 'convert', 'convert_confirm', 'balance', 'breb_crear', 'breb_confirmar', 'motivo_rechazo', 'discover', 'snapshot_finity'])
     if (INTERNAL_ONLY.has(action) && !caller.internal) {
+      return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+    }
+    // Las que SACAN plata de la bolsa de Finity (retiros, envíos Bre-B,
+    // conversiones) las piden solo otras funciones con la llave de servicio
+    // (mouv-proxy y gasfree, después de debitar al cliente y con sus
+    // candados). Con un JWT de admin se podía mandar Bre-B de la bolsa de
+    // Lincoin a cualquier llave sin débito en el libro ni código por
+    // operación. Ningún panel las usa directo.
+    const SOLO_SERVICIO = new Set(['create_withdrawal', 'breb_crear', 'breb_confirmar', 'convert', 'convert_confirm'])
+    if (SOLO_SERVICIO.has(action) && !caller.servicio) {
       return json(403, { error: 'forbidden', message: 'Operación restringida.' })
     }
     // IDENTIDAD PROBADA (JWT real, no un user_id en el body): gestionar cuentas

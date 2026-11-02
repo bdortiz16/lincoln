@@ -4,6 +4,7 @@ import {
   Landmark, Zap, Database, ArrowLeftRight, Users, Lock, KeyRound, X, Clock, TrendingUp,
 } from 'lucide-react';
 import { useDatabase } from '../context/DatabaseContext';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 // ─────────────────────────────────────────────────────────────
 // AdminMonitor — Dashboard (Overview) del admin de Lincoin.
@@ -181,7 +182,12 @@ export const AdminMonitor: React.FC = () => {
   const secAction = async (payload: any) => {
     setSecBusy(true);
     try {
-      await fetch(`${SURL}/functions/v1/admin-data`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` }, body: JSON.stringify(payload) });
+      // Desbloquear una IP pide el código 2FA en el servidor: se pide acá y se
+      // repite la llamada (lib/codigo2fa.ts).
+      await conCodigo2fa(async (otp) => {
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` }, body: JSON.stringify(otp ? { ...payload, otp } : payload) });
+        return r.json().catch(() => null);
+      });
       await loadSec();
     } catch { /* */ }
     setSecBusy(false);

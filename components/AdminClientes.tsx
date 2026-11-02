@@ -579,7 +579,7 @@ export const AdminClientes: React.FC<{
                         setConfirmar({
                           titulo: 'Eliminar la cuenta', nombre: sel.name || sel.email,
                           cuerpo: 'Se borra la cuenta y su acceso. Los movimientos ya registrados se conservan para la auditoría. Esto no se puede deshacer.',
-                          accion: async () => { await deleteUser?.(sel.id); setSelId(null); await refreshData?.(); showToast?.('Cuenta eliminada.'); },
+                          accion: async () => { const r = await deleteUser?.(sel.id); if (r?.error) { showToast?.(r.error); return; } setSelId(null); await refreshData?.(); showToast?.('Cuenta eliminada.'); },
                         });
                       }}
                         style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', fontSize: 12.5, color: C.red, background: 'transparent', border: 'none', borderTop: `1px solid ${C.b1}`, cursor: 'pointer', fontFamily: FONT }}>

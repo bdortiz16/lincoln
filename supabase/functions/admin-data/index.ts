@@ -22,7 +22,10 @@ async function webauthn(): Promise<any> {
 
 const SUPABASE_URL  = Deno.env.get('SUPABASE_URL')              ?? ''
 const SERVICE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const ADMIN_EMAIL   = Deno.env.get('ADMIN_EMAIL')               ?? 'admin@lincoin.com'
+// Sin valor por defecto. Antes caía en 'admin@lincoin.com' (OTRO dominio):
+// si el secreto faltaba, esa dirección ajena quedaba como dueño por correo
+// (accesoDe) y le llegaban los avisos de Cumplimiento con datos de clientes.
+const ADMIN_EMAIL   = (Deno.env.get('ADMIN_EMAIL') ?? '').trim()
 
 // Service-role client: bypasses RLS on all queries
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
@@ -655,7 +658,7 @@ async function requireAdminOtp(adminUserId: string | undefined, code: unknown): 
   const otp = String(code ?? '').replace(/\D/g, '')
   const { data: u } = await db.from('users').select('raw_data').eq('id', adminUserId).single()
   const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
-  if (!raw.mfaEnabled) return 'Activa tu 2FA en Seguridad para poder hacer cargues. Sin segundo factor no se autoriza mover saldo.'
+  if (!raw.mfaEnabled) return 'Activa tu 2FA en Seguridad: sin segundo factor no se autoriza esta operación.'
   if (otp.length !== 6) return 'Falta tu código de 6 dígitos.'
   let secret = ''
   try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
@@ -1200,6 +1203,11 @@ async function sha256Hex(v: string): Promise<string> {
 
 // Bloquea y avisa. 'foto' es opcional: base64 sin cabecera (JPEG).
 async function lockAdminAndAlert(req: Request, userId: string, email: string, motivo: string, foto?: string | null) {
+  // La foto la manda el navegador de quien intenta entrar: solo se adjunta
+  // si de verdad es un JPEG (en base64 empieza por "/9j/") y de tamaño
+  // razonable. Si no, se descarta en vez de mandar cualquier archivo desde el
+  // correo de Lincoin.
+  if (foto && !(foto.length < 1_500_000 && /^\/9j\/[A-Za-z0-9+/=]+$/.test(foto))) foto = null
   const yaBloqueada = await adminLock(userId)
   if (yaBloqueada) return
   const token = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, '')
@@ -1230,8 +1238,12 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
 
   if (!RESEND_KEY) return
   const url = `${SUPABASE_URL}/functions/v1/admin-data?action=unlock&u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`
+  // Todo valor va escapado: el motivo, el navegador (user-agent, lo escribe
+  // quien intenta entrar) y la ubicación vienen de afuera. Sin escapar, quien
+  // tuviera la contraseña fallaba a propósito con un user-agent con HTML y
+  // al titular le llegaba, desde el correo real de Lincoin, un botón falso.
   const fila = (k: string, v: string) =>
-    `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${k}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${v}</td></tr>`
+    `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${escHtml(k)}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${escHtml(v)}</td></tr>`
   const html = `
     <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
       <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
@@ -1328,7 +1340,7 @@ async function avisarIngreso(req: Request, userId: string, forzar = false): Prom
 
     if (!RESEND_KEY) return { ok: false, motivo: 'falta la llave de envío de correo en la Bóveda', destino: correo }
     const fila = (k: string, v: string) =>
-      `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${k}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${v}</td></tr>`
+      `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${escHtml(k)}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${escHtml(v)}</td></tr>`
     const nombre = String((u as any)?.name ?? '').split(' ')[0] || '';
     const html = `
       <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
@@ -1337,7 +1349,7 @@ async function avisarIngreso(req: Request, userId: string, forzar = false): Prom
           Se abrió tu cuenta${esAdmin ? ' de administración' : ''}
         </p>
         <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0 0 16px">
-          ${nombre ? `Hola ${nombre}. ` : ''}Alguien acaba de entrar a tu cuenta de Lincoin.
+          ${nombre ? `Hola ${escHtml(nombre)}. ` : ''}Alguien acaba de entrar a tu cuenta de Lincoin.
           Si fuiste tú, no tienes que hacer nada.
         </p>
         <table style="width:100%;background:#121413;border-radius:10px;border-collapse:collapse;margin-bottom:18px">
@@ -1389,6 +1401,11 @@ async function avisarIngreso(req: Request, userId: string, forzar = false): Prom
 // contraseña (DatabaseContext corta esa sesión antes del panel), y después
 // entra con correo, contraseña y 2FA como cualquiera del equipo.
 const ORIGEN_APP = (Deno.env.get('APP_ORIGIN') ?? 'https://lincoin.me').replace(/\/$/, '')
+
+// Claves de app_config.settings que escribe SOLO el servidor, cada una con su
+// acción: rieles de Coinsenda (coinsenda_cuenta_set) y saldos de las cuentas
+// de tesorería (tesoreria_movimiento). save_config las conserva de la base.
+const CLAVES_CONFIG_DEL_SERVIDOR = ['cuenta3', 'cuenta4', 'treasuryAccounts']
 const NOMBRE_FUNCION: Record<string, string> = {
   dashboard: 'Dashboard', clientes: 'Clientes', billetera: 'Billetera (cargues)',
   tesoreria: 'Tesorería', lincoin: 'Lincoin (utilidades)', otc: 'Cierres OTC',
@@ -2093,6 +2110,12 @@ Deno.serve(async (req: Request) => {
           // candados del panel y el permiso de mover plata.
           const g = await adminSobreOtro(req, ['plata.mover'], 'insert_transaction')
           if ('res' in g) return g.res
+          // Y en su país: corre antes del filtro central (COP_DE_COLOMBIA), y
+          // sin esto un miembro sin Colombia asignada registraba movimientos
+          // de clientes de Colombia que entran a Contabilidad y facturación.
+          if (!visibleEnPais(paisDeMovimiento(txRow), g.admin.acceso)) {
+            return json({ error: 'Ese movimiento es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+          }
         } else if (!(await verifyAdmin(req)).ok) {
           // El CLIENTE solo registra sus SOLICITUDES (depósito con
           // comprobante, retiro, conversión vieja), y quedan en Pendiente:
@@ -2223,7 +2246,9 @@ Deno.serve(async (req: Request) => {
                   const nv = Number(v), cv = Number(base[k] ?? 0)
                   // Solo se acepta si NO aumenta (baja o igual). Subidas → se
                   // conserva el valor real de la base.
-                  if (isFinite(nv) && nv <= cv + 1e-9) base[k] = nv
+                  // Nunca negativo: un saldo bajo cero resta en "comprometido
+                  // con clientes" y hace ver más disponible en las bolsas.
+                  if (isFinite(nv) && nv >= 0 && nv <= cv + 1e-9) base[k] = nv
                 }
               }
               return base
@@ -2335,7 +2360,12 @@ Deno.serve(async (req: Request) => {
         // y acuñaba dinero. Ahora el tope es `expected` con un epsilon ABSOLUTO
         // mínimo (por redondeo de floats), así una conversión nunca deja más de
         // lo enviado a la tasa. El piso 0.60 permite comisiones de hasta ~40%.
-        const absEps = Math.max(1, expected * 1e-6)
+        // El margen era max(1, …): UNA UNIDAD ENTERA de más por conversión, sin
+        // importar el monto. En el camino 1:1 (USDT ↔ USD) eso era recibir 1
+        // dólar más de lo enviado, y en ida y vuelta se repetía cuantas veces
+        // se quisiera. Ahora: en 1:1 nunca más de lo enviado; con tasa, un
+        // margen relativo (redondeo) con piso de un centavo.
+        const absEps = bS === bT ? 1e-9 : Math.max(0.01, expected * 1e-6)
         if (!(amtT >= expected * 0.60 && amtT <= expected + absEps)) {
           return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
         }
@@ -3441,6 +3471,64 @@ Deno.serve(async (req: Request) => {
       if (SENSITIVE_ADMIN_ACTIONS.has(String(body.action)) || sensiblePorParametro) {
         const mfaErr = await requireMfaSession(req, auth.userId)
         if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+      }
+
+      // CÓDIGO 2FA EN CADA OPERACIÓN. El 2FA de la sesión (arriba) dice que
+      // quien entró pasó el segundo factor; no que quien está frente a la
+      // pantalla AHORA sea esa persona. Para lo que cambia a dónde va la plata
+      // o quién entra al panel, eso no alcanza: una sesión abierta en un
+      // computador ajeno, o robada, bastaba para quitar la llave de la empresa
+      // e inscribir otra, darse acceso a sí mismo o abrir la lista de IPs.
+      // Estas exigen el código de la app en cada operación (requireAdminOtp:
+      // un código sirve una sola vez). Si falta o está mal, se responde
+      // pideCodigo y el panel lo pide y reintenta (lib/codigo2fa.ts).
+      //
+      // No están acá las que ya piden su código adentro (cargues, inscribir
+      // llave, enviar utilidad, generar llave de Coinsenda): validarlo dos
+      // veces gastaría el código en la primera y fallaría la segunda.
+      const ACCIONES_CON_CODIGO = new Set([
+        // A dónde sale la utilidad de Lincoin
+        'caja_llave_quitar',
+        // Quién entra al panel y con qué permisos
+        'equipo_guardar', 'equipo_desactivar', 'equipo_invitar', 'equipo_reenviar',
+        // Desde dónde se puede entrar
+        'access_policy_set', 'unblock_ip',
+        // Con qué cuenta firma Lincoin ante Coinsenda y qué rieles están abiertos
+        'coinsenda_config_guardar', 'coinsenda_cuenta_set', 'coinsenda_cuenta3_set',
+        // Credenciales de facturación
+        'fact_lincoin_set',
+        // La caja: abrirla, corregir la apertura, ocultar o anular movimientos
+        // (con eso se maquillan las cifras de utilidad)
+        'caja_abrir', 'caja_apertura_set', 'mov_ocultar', 'caja_movimiento_anular',
+        // Borrar cuentas
+        'delete_user', 'force_delete_by_email',
+      ])
+      // save_config guarda el objeto entero y se llama también solo (tasas,
+      // paleta): el código se pide únicamente si cambia una clave sensible.
+      // (cuenta3, cuenta4 y treasuryAccounts no están: save_config ya no los
+      // escribe, ver CLAVES_CONFIG_DEL_SERVIDOR.)
+      const CLAVES_CONFIG_SENSIBLES = [
+        'countryStatus', 'maintenanceMode', 'allowNewRegistrations',
+        'globalFee', 'minWithdrawal', 'volumeLimit', 'referralCommission', 'coupons',
+        'otcUsdtAddress', 'otcUsdcAddress', 'collectionWalletTron',
+        'otcUsdtRate', 'otcUsdcRate', 'otcFiatPairs', 'recaptchaSiteKey', 'kycProvider', 'adminTeam',
+      ]
+      let pideCodigoConfig = false
+      if (body.action === 'save_config' && body.settings && typeof body.settings === 'object') {
+        try {
+          const { data: actual } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          const antes = ((actual as any)?.settings ?? {}) as Record<string, unknown>
+          const despues = body.settings as Record<string, unknown>
+          pideCodigoConfig = CLAVES_CONFIG_SENSIBLES.some(k => JSON.stringify(antes[k] ?? null) !== JSON.stringify(despues[k] ?? null))
+        } catch { pideCodigoConfig = true }   // sin poder comparar, se pide
+      }
+      if (ACCIONES_CON_CODIGO.has(String(body.action)) || pideCodigoConfig) {
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) {
+          await auditAdmin(req, 'auth.codigo_2fa_requerido', { accion: String(body.action), motivo: otpErr, userId: auth.userId })
+          // Sin 2FA activo no tiene sentido pedir un código: se dice qué hacer.
+          return json({ ok: false, error: otpErr, needs2fa: true, pideCodigo: !otpErr.startsWith('Activa') }, 403)
+        }
       }
 
       // TESORERÍA: además del 2FA de la sesión, exige la verificación
@@ -4919,7 +5007,21 @@ Deno.serve(async (req: Request) => {
 
       if (body.action === 'save_config') {
         const { settings } = body
-        if (!settings) return json({ error: 'Missing settings' }, 400)
+        if (!settings || typeof settings !== 'object') return json({ error: 'Missing settings' }, 400)
+        // Lo que administra el servidor con su propia acción (y su auditoría)
+        // no se toma de la pantalla: se conserva lo de la base. save_config
+        // guarda el objeto ENTERO que tiene el navegador, y con una copia
+        // vieja (cualquier guardado automático, como las tasas) pisaba el saldo
+        // de las cuentas de tesorería que tesoreria_movimiento acababa de
+        // mover, o volvía a abrir un riel de Coinsenda que se había cerrado.
+        try {
+          const { data: actual } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          const enBase = ((actual as any)?.settings ?? {}) as Record<string, unknown>
+          for (const k of CLAVES_CONFIG_DEL_SERVIDOR) {
+            if (k in enBase) (settings as Record<string, unknown>)[k] = enBase[k]
+            else delete (settings as Record<string, unknown>)[k]
+          }
+        } catch { return json({ error: 'No se pudo leer la configuración actual. No se guardó nada.' }, 500) }
         const { error } = await db.from('app_config').upsert({ id: 1, settings })
         if (error) return json({ error: error.message }, 500)
         return json({ ok: true })
@@ -5161,7 +5263,15 @@ Deno.serve(async (req: Request) => {
         if (!isFinite(monto) || monto <= 0) return json({ ok: false, error: 'Monto inválido' }, 400)
         if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fecha > hoyBogota()) return json({ ok: false, error: 'Fecha inválida' }, 400)
         if (descripcion.length < 3) return json({ ok: false, error: 'Escribe una descripción.' }, 400)
-        const soporte = typeof body.soporte === 'string' && body.soporte.startsWith('data:') ? body.soporte : null
+        // Solo imagen o PDF en base64. Antes bastaba con que empezara por
+        // "data:", y el panel lo abría escribiéndolo dentro de una página:
+        // un "comprobante" con HTML (data:,x"><img onerror=…>) corría como
+        // script en lincoin.me cuando el dueño lo abría y se llevaba su sesión.
+        const soporteCrudo = typeof body.soporte === 'string' ? body.soporte : ''
+        if (soporteCrudo && !/^data:(image\/(png|jpeg|webp)|application\/pdf);base64,[A-Za-z0-9+/=]+$/.test(soporteCrudo)) {
+          return json({ ok: false, error: 'El comprobante tiene que ser una imagen (PNG, JPG o WEBP) o un PDF.' }, 400)
+        }
+        const soporte = soporteCrudo || null
         if (soporte && soporte.length > 4_000_000) return json({ ok: false, error: 'El comprobante pesa demasiado (máx. ~3 MB).' }, 400)
         const por = await autorDe(auth)
         const { data: ins, error } = await db.from('caja_movimientos').insert({
@@ -6185,7 +6295,14 @@ Deno.serve(async (req: Request) => {
 
       // Comprobante de UNA transacción, bajo demanda (ver slimRawData)
       if (body.action === 'get_tx_proof' && body.txId != null) {
-        const { data: tx } = await db.from('transactions').select('raw_data').eq('id', body.txId).single()
+        const { data: tx } = await db.from('transactions').select('raw_data, currency').eq('id', body.txId).single()
+        // El comprobante trae datos bancarios del beneficiario: solo para
+        // quien tiene asignado el país de ese movimiento (la lista ya llega
+        // filtrada; esto cierra el pedido directo por id).
+        const accesoTx = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        if (tx && !visibleEnPais(paisDeMovimiento(tx as Record<string, unknown>), accesoTx)) {
+          return json({ error: 'Ese movimiento es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+        }
         return json({ raw_data: tx?.raw_data ?? {} })
       }
 

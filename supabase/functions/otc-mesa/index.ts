@@ -29,6 +29,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -82,7 +83,9 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
   const jwt = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '')
   if (!jwt) return { ok: false }
 
-  if (SERVICE_KEY && jwt === SERVICE_KEY) {
+  // Tiempo constante: con === el tiempo de respuesta delata cuántos
+  // caracteres de la llave de servicio van bien.
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) {
     return { ok: true, userId: String(payload.user_id ?? '') || undefined, admin: true, viaJwt: true, nombre: 'Sistema' }
   }
 
@@ -92,8 +95,11 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
     // Ser admin no alcanza: la mesa OTC mueve plata, y del equipo solo la
     // opera quien tiene 'plata.mover' (Operaciones y el dueño). Tesorería no.
     // El colaborador, con la casilla de Cierres OTC ('fn.otc').
+    // Y la sesión tiene que haber pasado el 2FA: completar un cierre acredita
+    // saldo, y con solo la contraseña del admin se podía.
     const admin = String((prof as any)?.role ?? '') === 'admin'
       && (await equipoPermite(db, data.user.id, ['plata.mover', 'fn.otc'], { email: (prof as any)?.email ?? data.user.email ?? null })).ok
+      && !(await requireMfaSession(db, req, data.user.id))
     return {
       ok: true, userId: data.user.id, admin, viaJwt: true,
       nombre: (prof as any)?.full_name ?? (prof as any)?.email ?? 'Mesa Lincoin',

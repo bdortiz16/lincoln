@@ -51,6 +51,7 @@ import { domicilioEmpresa } from '../_shared/rues.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { liquidacionDe, type Liquidacion } from '../_shared/liquidacion-lincoin.ts'
 import { mergeRaw } from '../_shared/raw-data.ts'
+import { igualSeguro } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -83,7 +84,8 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; servic
   if (await traeSecretoDeLaBase(req, db)) return { userId: null, servicio: true }
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, servicio: false }
-  if (SERVICE_KEY && jwt === SERVICE_KEY) return { userId: null, servicio: true }
+  // Tiempo constante (con === la respuesta delata la llave por partes).
+  if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) return { userId: null, servicio: true }
   try {
     const { data: { user } } = await db.auth.getUser(jwt)
     return { userId: user?.id ?? null, servicio: false }

@@ -108,6 +108,8 @@ import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig, Coupon } from '../context/SystemConfigContext'; 
 import { useDatabase, AdminUser, Transaction, User, TreasuryAccount } from '../context/DatabaseContext';
 import { useBusquedaClientes, conLocales } from './useBusquedaClientes';
+import { PromptCodigo2fa } from './PromptCodigo2fa';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 const SURL_ADMIN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY_ADMIN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -598,12 +600,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) jwt = d.access_token; }
       } catch { /* sin sesión supabase */ }
       const authHeader = jwt ? `Bearer ${jwt}` : `Bearer ${SKEY}`;
-      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
-        body: JSON.stringify({ action: 'force_delete_by_email', email }),
+      // Borrar exige el código 2FA en el servidor: se pide y se repite.
+      const d: any = await conCodigo2fa(async (otp) => {
+        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
+          body: JSON.stringify({ action: 'force_delete_by_email', email, ...(otp ? { otp } : {}) }),
+        });
+        return r.json();
       });
-      const d = await r.json();
       if (d?.error) setOrphanMsg(`❌ ${d.error}`);
       else if (d?.note) setOrphanMsg(`ℹ️ ${d.note}`);
       else setOrphanMsg(`✅ Correo liberado — ya se puede registrar de nuevo.`);
@@ -3762,7 +3767,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const verSoporte = async (id: string) => {
           const r = await pedirAdmin({ action: 'caja_movimiento_soporte', id }).catch(() => null);
           if (!r?.soporte) { showToast('No se pudo abrir el comprobante.'); return; }
-          const w = window.open(); if (w) w.document.write(`<iframe src="${r.soporte}" style="border:0;width:100%;height:100%"></iframe>`);
+          // Nunca se escribe dentro de una página (era un XSS: un comprobante
+          // con HTML corría en lincoin.me). Solo imagen o PDF, como archivo
+          // aparte con su propio tipo, que el navegador muestra sin ejecutar.
+          const m = /^data:(image\/(png|jpeg|webp)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(r.soporte));
+          if (!m) { showToast('Ese comprobante no es una imagen ni un PDF: no se abre.'); return; }
+          try {
+            const bytes = Uint8Array.from(atob(m[3]), c => c.charCodeAt(0));
+            const url = URL.createObjectURL(new Blob([bytes], { type: m[1] }));
+            window.open(url, '_blank', 'noopener');
+            setTimeout(() => URL.revokeObjectURL(url), 60_000);
+          } catch { showToast('No se pudo abrir el comprobante.'); }
       };
       const nuevo = () => setLinForm({ tipo: 'egreso', proveedor: 'Finity', monto: '', fecha: hoyBog(), descripcion: '', soporte: null, soporteNombre: null, llaveId: (linLlaves ?? [])[0]?.id ?? '', otp: '', opId: crypto.randomUUID() });
       // Lo que de verdad se puede enviar de una bolsa: lo menor entre lo que
@@ -4109,7 +4124,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                   <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflowWrap: 'anywhere' }}>{[l.llave, tipoLlave(l), l.banco, l.documento ? `Doc. ${l.documento}` : ''].filter(Boolean).join(' · ')}</span>
                                   {esComercio(l) && <span style={{ display: 'block', fontSize: 11, color: '#FBBF24', marginTop: 2 }}>Mouv no envía a llaves de comercio: desde Mouv usa otra llave de la empresa (celular, correo, @alias o NIT). Desde Finity sí sale.</span>}
                               </span>
-                              {esDueno && <button disabled={cajaOcupada} onClick={() => cajaAccion({ action: 'caja_llave_quitar', id: l.id }, 'Llave quitada.')}
+                              {/* Quitar una llave cambia a dónde puede salir la utilidad:
+                                  se confirma y el servidor pide el código 2FA. */}
+                              {esDueno && <button disabled={cajaOcupada} onClick={() => { if (window.confirm(`¿Quitar la llave ${l.alias || l.titular}? La utilidad ya no podrá enviarse a ella.`)) cajaAccion({ action: 'caja_llave_quitar', id: l.id }, 'Llave quitada.'); }}
                                   style={{ fontSize: 11.5, fontWeight: 700, color: '#878E88', background: 'transparent', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 7, padding: '5px 10px', cursor: 'pointer', flexShrink: 0 }}>Quitar</button>}
                           </div>
                       ))}
@@ -4246,7 +4263,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       <input value={linForm.descripcion} onChange={e => setLinForm(f => f && ({ ...f, descripcion: e.target.value }))} placeholder="Ej.: pago directo a proveedor desde Finity" style={CAMPO} />
                       <label className="inline-flex items-center" style={{ marginTop: 10, gap: 6, border: '1px dashed rgba(255,255,255,0.14)', borderRadius: 10, padding: '8px 12px', color: '#878E88', fontSize: 12, cursor: 'pointer' }}>
                           <Paperclip size={13} /> {linForm.soporteNombre ? `Adjunto: ${linForm.soporteNombre}` : 'Adjuntar comprobante (opcional)'}
-                          <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }} onChange={async e => {
+                          <input type="file" accept="image/png,image/jpeg,image/webp,application/pdf" style={{ display: 'none' }} onChange={async e => {
                               const file = e.target.files?.[0]; if (!file) return;
                               if (file.size > 3 * 1024 * 1024) { showToast('El comprobante pesa demasiado (máx. 3 MB).'); return; }
                               const url = await fileToBase64(file);
@@ -5470,6 +5487,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
             estuviera justo en esa pestaña — o sea, casi nunca. Se devolvía
             dinero y en pantalla no pasaba nada. */}
         {resConciliar && <PanelConciliacion datos={resConciliar} onCerrar={() => setResConciliar(null)} />}
+        {/* La ventana del código 2FA que el servidor exige en las operaciones
+            sensibles (lib/codigo2fa.ts). Una sola, para todo el panel. */}
+        <PromptCodigo2fa />
         {/* Correos que no están llegando. Va suelto y fijo arriba a la derecha
             porque el aviso tiene que verse desde CUALQUIER pestaña: quien no
             recibe el código no puede escribirnos para contarlo. */}

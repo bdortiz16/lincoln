@@ -3,6 +3,7 @@ import { geoMercator, geoPath, geoGraticule10 } from 'd3-geo';
 import { select } from 'd3-selection';
 import { zoom as d3zoom, zoomIdentity } from 'd3-zoom';
 import { feature } from 'topojson-client';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 // ─────────────────────────────────────────────────────────────
 // AdminCommandCenter — mapa en vivo de las conexiones.
@@ -38,7 +39,9 @@ const tokenOf = () => {
   } catch { /* */ }
   return null;
 };
-const call = async (body: any) => {
+// Con el código 2FA si el servidor lo exige para esta operación (lib/codigo2fa.ts).
+const call = (body: any) => conCodigo2fa((otp) => llamarUnaVez(otp ? { ...body, otp } : body));
+const llamarUnaVez = async (body: any) => {
   try {
     const r = await fetch(`${SURL}/functions/v1/admin-data`, {
       method: 'POST',

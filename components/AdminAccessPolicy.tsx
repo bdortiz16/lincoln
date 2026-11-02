@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Globe, Plus, X, ShieldCheck } from 'lucide-react';
 import { AdminStepUp } from './AdminStepUp';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 // ─────────────────────────────────────────────────────────────
 // AdminAccessPolicy — lista blanca de acceso al panel.
@@ -33,7 +34,9 @@ const tokenOf = () => {
   } catch { /* */ }
   return null;
 };
-const call = async (body: any) => {
+// Con el código 2FA si el servidor lo exige para esta operación (lib/codigo2fa.ts).
+const call = (body: any) => conCodigo2fa((otp) => llamarUnaVez(otp ? { ...body, otp } : body));
+const llamarUnaVez = async (body: any) => {
   const r = await fetch(`${SURL}/functions/v1/admin-data`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` },

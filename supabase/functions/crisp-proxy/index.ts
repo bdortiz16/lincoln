@@ -27,6 +27,7 @@
 // ════════════════════════════════════════════════════════
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
+import { requireMfaSession } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY      = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -83,6 +84,10 @@ Deno.serve(async (req) => {
     const roles = [caller?.role, (caller as any)?.admin_role].filter(Boolean)
     const allowed = roles.some(r => ['admin', 'super_admin', 'compliance', 'support'].includes(String(r)))
     if (!allowed) return json({ error: 'Forbidden' }, 403)
+    // Los chats de soporte traen datos de clientes: la sesión tiene que haber
+    // pasado el 2FA, como en el resto del panel.
+    const mfa = await requireMfaSession(sb, req, user.id)
+    if (mfa) return json({ error: mfa, needs2fa: true }, 403)
 
     if (!CRISP_IDENTIFIER || !CRISP_KEY) {
       return json({

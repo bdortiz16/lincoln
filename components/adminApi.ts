@@ -1,10 +1,19 @@
+import { conCodigo2fa } from '../lib/codigo2fa';
+
 // Llamada a admin-data con la sesión real del admin.
 //
 // Vive en su propio archivo porque la usan varias secciones del panel y
 // repetir el armado del encabezado en cada una es cómo terminan algunas
 // mandando la llave pública en vez de la sesión — y fallando con un error que
 // no explica nada.
-export async function pedirAdmin(body: any): Promise<any> {
+//
+// Si el servidor exige el código 2FA para ESTA operación (pideCodigo), se le
+// pide a la persona y se repite la misma llamada con él (lib/codigo2fa.ts).
+export function pedirAdmin(body: any): Promise<any> {
+  return conCodigo2fa((otp) => pedirAdminUnaVez(otp ? { ...body, otp } : body));
+}
+
+async function pedirAdminUnaVez(body: any): Promise<any> {
   const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
   const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
   let jwt: string | null = null;

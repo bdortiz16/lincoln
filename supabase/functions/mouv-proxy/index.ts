@@ -26,6 +26,7 @@ import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { requireMfaSession } from '../_shared/admin-auth.ts'
 import { cuentaCoinsendaDe, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro } from '../_shared/coinsenda.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
@@ -118,7 +119,7 @@ async function firmaFila(userId: string, type: string, amount: number, currency:
 async function filaFirmada(tx: any, type: string): Promise<boolean> {
   const f = String(tx?.raw_data?.firmaServidor ?? '')
   if (!f) return false
-  return f === await firmaFila(String(tx.user_id), type, Number(tx.amount ?? 0), String(tx.currency ?? ''))
+  return igualSeguro(f, await firmaFila(String(tx.user_id), type, Number(tx.amount ?? 0), String(tx.currency ?? '')))
 }
 async function aRevisionSinFirma(tx: any, origen: string) {
   try {
@@ -2122,7 +2123,22 @@ serve(async (req: Request) => {
       return json(200, { ok: true, credited: true, ref })
     }
     if (failed) {
-      await db.from('transactions').update({ status: 'Rechazado', raw_data: { ...(tx.raw_data ?? {}), payinStatus: status, failedAt: new Date().toISOString() } }).eq('id', tx.id).neq('status', 'Completado')
+      // Igual que el "aprobado": el aviso no está firmado y cualquiera lo
+      // puede mandar. Antes un POST con {reference, status:'FAILED'} pasaba a
+      // Rechazado cualquier recarga Pendiente con esa referencia —incluidos
+      // los cobros por link de Finity—, y el pago real que llegara después ya
+      // no se acreditaba. Ahora: solo los recaudos PSE de Mouv, y solo si Mouv
+      // confirma el fallo. Si no se puede verificar, no se toca.
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      if (rd.source !== 'mouv_payin_pse') return json(200, { ok: true, ignored: 'no_es_pse', ref })
+      const pref = String(rd.providerRef ?? ref)
+      let confirmado = false
+      for (const p of [`/collections/${pref}`, `/payin/${pref}`, `/pse/${pref}`, `/collections/status/${pref}`]) {
+        const chk = await mouvFetch(p, { method: 'GET' })
+        if (chk.ok) { const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').toUpperCase(); if (/REJECT|DECLIN|FAILED|CANCEL|EXPIRED|ERROR/.test(cs)) { confirmado = true; break } }
+      }
+      if (!confirmado) return json(200, { ok: true, unverified: true, ref, note: 'no se pudo verificar el fallo con Mouv — sin cambios' })
+      await db.from('transactions').update({ status: 'Rechazado', raw_data: { ...rd, payinStatus: status, failedAt: new Date().toISOString(), verified: true } }).eq('id', tx.id).eq('status', 'Pendiente')
       return json(200, { ok: true, rejected: true, ref })
     }
     return json(200, { ok: true, pending: true, ref, status })
@@ -2225,6 +2241,17 @@ serve(async (req: Request) => {
   if (caller.admin && !caller.servicio && caller.userId) {
     const g = await equipoPermite(db, caller.userId, PERMISO_MOUV[action], { pais: 'CO' })
     if (!g.ok) caller.admin = false
+  }
+  // Y la sesión tiene que haber pasado el 2FA, como en admin-data. Acá no se
+  // pedía: con la contraseña de un admin, sin el código, se ordenaban envíos
+  // desde la cuenta de un cliente, devoluciones forzadas o reembolsos. Lo de
+  // admin se le niega con el motivo; lo demás sigue como usuario común.
+  if (caller.admin && !caller.servicio && caller.userId) {
+    const mfa = await requireMfaSession(db, req, caller.userId)
+    if (mfa) {
+      if (PERMISO_MOUV[action]) return json(403, { error: 'forbidden', message: mfa, needs2fa: true })
+      caller.admin = false
+    }
   }
 
   // ── Caja de Lincoin: la utilidad sale de las bolsas por Bre-B ─────────
@@ -3950,6 +3977,18 @@ serve(async (req: Request) => {
         await logAudit(userId, 'mouv.mfa_sin_secreto', { action })
         return json(403, { error: 'mfa_required', message: 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.' })
       }
+      // Freno por intentos: con 10 códigos errados en 15 minutos se corta.
+      // Sin esto el código de 6 dígitos se podía probar sin límite desde una
+      // sesión robada (cada intento es solo un 403). Se cuenta en la misma
+      // auditoría que ya se escribía en cada fallo.
+      try {
+        const desde = new Date(Date.now() - 15 * 60_000).toISOString()
+        const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+          .eq('user_id', userId).eq('action', 'mouv.mfa_codigo_invalido').gte('created_at', desde)
+        if ((count ?? 0) >= 10) {
+          return json(429, { error: 'mfa_bloqueado', message: 'Demasiados códigos incorrectos. Espera 15 minutos antes de volver a intentar el envío.' })
+        }
+      } catch { /* si no se puede contar, sigue la verificación normal */ }
       if (!(await verifyTOTPServer(mfaSecret, otp))) {
         await logAudit(userId, 'mouv.mfa_codigo_invalido', { action })
         return json(403, { error: 'mfa_required', message: 'El código de dos pasos no es válido o ya venció. Escribe el código nuevo de tu app y vuelve a intentar.' })

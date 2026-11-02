@@ -1,6 +1,7 @@
 import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback, useRef } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 import { BankDetail, TreasuryAccount, AdminUser } from './DatabaseContext';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 export interface Coupon {
     code: string;
@@ -325,15 +326,21 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
 
     if (ADMIN_DATA_URL) {
       try {
-        const res = await fetch(ADMIN_DATA_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ action: 'save_config', settings: newFull }),
+        // Si el cambio toca una clave sensible (rieles, tarifas, direcciones,
+        // países…), el servidor pide el código 2FA: se pide y se repite.
+        const d: any = await conCodigo2fa(async (otp) => {
+          const res = await fetch(ADMIN_DATA_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ action: 'save_config', settings: newFull, ...(otp ? { otp } : {}) }),
+          });
+          const cuerpo = await res.json().catch(() => null);
+          return { ...(cuerpo ?? {}), httpOk: res.ok };
         });
-        if (res.ok) { guardarLocal(newFull); return; }
-        const d = await res.json().catch(() => null);
+        if (d?.httpOk) { guardarLocal(newFull); return; }
         // Los dos motivos reales: la sesión no pasó el 2FA, o el rol no alcanza.
-        if (d?.needs2fa) motivo = 'Volvé a verificarte con el código de la app: guardar la configuración lo exige.';
+        if ((d?.pideCodigo || d?.cancelado) && d?.error) motivo = String(d.error);
+        else if (d?.needs2fa) motivo = 'Volvé a verificarte con el código de la app: guardar la configuración lo exige.';
         else if (d?.permisoDenegado) motivo = 'Tu rol no permite cambiar la configuración.';
         else if (d?.error) motivo = String(d.error);
       } catch (e: any) {

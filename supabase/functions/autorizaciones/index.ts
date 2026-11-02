@@ -45,6 +45,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { requireMfaSession } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -295,6 +296,12 @@ Deno.serve(async (req) => {
       if (!(await equipoPermite(db, yo.id, 'cumplimiento', { email: yo.email })).ok) {
         return json({ ok: false, error: 'Tu rol no permite esta operación.' }, 403)
       }
+      // La sesión tiene que haber pasado el 2FA, como en admin-data. Sin
+      // esto, con solo la contraseña de alguien de Cumplimiento se aprobaba
+      // un operador (y con eso se le habilitaba dispersar), se le fijaba el
+      // tope o se leía su expediente KYC.
+      const mfa = await requireMfaSession(db, req, yo.id)
+      if (mfa) return json({ ok: false, error: mfa, needs2fa: true }, 403)
 
       if (accion === 'admin_listar') {
         const emp = await empresaPorId(String(body.empresaId ?? ''))

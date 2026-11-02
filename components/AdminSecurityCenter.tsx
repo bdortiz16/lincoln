@@ -4,6 +4,7 @@ import {
   Fingerprint, Activity, Wrench, Plus,
 } from 'lucide-react';
 import { soportaPasskey, crearPasskey, firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
+import { conCodigo2fa } from '../lib/codigo2fa';
 
 // ─────────────────────────────────────────────────────────────
 // AdminSecurityCenter — la página de Seguridad como tablero.
@@ -41,7 +42,9 @@ const tokenOf = () => {
   } catch { /* */ }
   return null;
 };
-const call = async (body: any) => {
+// Con el código 2FA si el servidor lo exige para esta operación (lib/codigo2fa.ts).
+const call = (body: any) => conCodigo2fa((otp) => llamarUnaVez(otp ? { ...body, otp } : body));
+const llamarUnaVez = async (body: any) => {
   try {
     const r = await fetch(`${SURL}/functions/v1/admin-data`, {
       method: 'POST',
