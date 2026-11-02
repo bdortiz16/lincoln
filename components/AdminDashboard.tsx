@@ -2261,7 +2261,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 
       return (
         <div className="animate-in fade-in duration-300" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* ── Encabezado: título, aviso temporal plegado y las dos bolsas ── */}
+          {/* ── Encabezado: título, aviso temporal plegado, las bolsas y las utilidades ── */}
           <div className="flex items-start justify-between flex-wrap" style={{ gap: 14 }}>
             <div>
               {/* Cambio rápido de billetera: solo los países del miembro. */}
@@ -2305,11 +2305,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 </p>
               </details>}
             </div>
-            {billeteraPais === 'CO' && <div className="flex flex-wrap" style={{ gap: 10 }}>
+            {/* Rejilla y no fila suelta: con cuatro bolsas, la tarjeta de
+                utilidades (su detalle es una línea larga) no cabía y caía
+                sola a otra fila. Columnas iguales que ocupan todo el ancho:
+                en pantalla de portátil caben las cinco en una fila, y si
+                no, bajan alineadas. El width 100% es para que, como hija de
+                un flex, la rejilla no se encoja a una sola columna. */}
+            {billeteraPais === 'CO' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, width: '100%' }}>
               {bolsas.map(b => {
                 const activa = carguesRail === b.rail;
                 return (
-                  <div key={b.rail} style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 210 }}>
+                  <div key={b.rail} style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
                     <div className="flex items-center justify-between" style={{ gap: 10 }}>
                       <span className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>
                         <b.icon size={13} style={{ color: '#4ADE80' }} /> {b.label} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· Bre-B y ACH</span>
@@ -2327,7 +2333,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         <p style={{ margin: '3px 0 0', fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: b.free < 0 ? '#F87171' : '#4ADE80' }}>
                           {Math.round(b.free).toLocaleString('es-CO')} <span style={{ fontSize: 11, color: '#878E88', fontWeight: 600 }}>{b.free < 0 ? 'faltante (sobre-cargado)' : 'disponible'}</span>
                         </p>
-                        <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>Bolsa {Math.round(b.pool).toLocaleString('es-CO')} − comprometido {Math.round(b.oblig).toLocaleString('es-CO')}</p>
+                        {/* nowrap por tramo: en columna angosta el renglón parte
+                            entre "Bolsa …" y "− comprometido …", no a mitad de cifra. */}
+                        <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>
+                          <span style={{ whiteSpace: 'nowrap' }}>Bolsa {Math.round(b.pool).toLocaleString('es-CO')}</span>{' '}
+                          <span style={{ whiteSpace: 'nowrap' }}>− comprometido {Math.round(b.oblig).toLocaleString('es-CO')}</span>
+                        </p>
                         {b.detalle && <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{b.detalle}</p>}
                       </>
                     )}
@@ -2341,13 +2352,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 const abiertas = ps.filter(p => p.lincoinEsperado != null);
                 const total = abiertas.reduce((a, p) => a + Number(p.lincoinEsperado), 0);
                 return (
-                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 200 }}>
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
                     <span style={{ fontSize: 12.5, fontWeight: 800, color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· utilidades</span></span>
                     {!caja ? <p style={{ margin: '4px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
                       : abiertas.length === 0 ? <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88', maxWidth: 210, lineHeight: 1.4 }}>La caja se abre hoy a las 23:59 (o desde Tesorería).</p>
                       : <>
                           <p style={{ margin: '3px 0 0', fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2' }}>{Math.round(total).toLocaleString('es-CO')}</p>
-                          <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{ps.map(p => `${p.proveedor} ${p.lincoinEsperado == null ? '—' : Math.round(p.lincoinEsperado).toLocaleString('es-CO')}`).join(' · ')}</p>
+                          <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>
+                            {ps.map((p, i) => (
+                              <span key={p.proveedor}>{i > 0 && ' · '}<span style={{ whiteSpace: 'nowrap' }}>{p.proveedor} {p.lincoinEsperado == null ? '—' : Math.round(p.lincoinEsperado).toLocaleString('es-CO')}</span></span>
+                            ))}
+                          </p>
                         </>}
                   </div>
                 );
