@@ -32,6 +32,13 @@ const isEmpresasAdminRoute =
   !isPersonasAdminRoute &&
   (window.location.pathname === '/admin-empresas' || window.location.pathname === '/admin');
 
+// /colaboradores: el mismo panel aislado, con la entrada del equipo interno
+// (correo que asignó el dueño + 2FA obligatorio). Las secciones las decide el
+// servidor según las funciones de cada colaborador.
+const isColaboradoresRoute =
+  typeof window !== 'undefined' &&
+  /^\/colaboradores\/?$/.test(window.location.pathname);
+
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { error: Error | null }
@@ -78,7 +85,7 @@ root.render(
       {isPersonasAdminRoute ? (
         // 🔒 Admin Personas: independiente, sin providers de Empresas
         <PersonasAdminApp />
-      ) : isEmpresasAdminRoute ? (
+      ) : isEmpresasAdminRoute || isColaboradoresRoute ? (
         // 🏢🔒 Admin Empresas: login propio + AdminDashboard, sin pasar
         // por la landing ni el routing por roles de App.tsx
         <AdminEmpresasApp />

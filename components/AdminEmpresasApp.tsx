@@ -12,6 +12,11 @@ import { Logo } from './Logo';
 import { TurnstileWidget, captchaEnabled } from './TurnstileWidget';
 import { Lock, LogOut, ShieldCheck, Fingerprint } from 'lucide-react';
 import { SelectorPais, paisElegido, olvidarPais, type PaisDisponible } from './SelectorPais';
+import { ActivarDosPasosColaborador } from './ActivarDosPasosColaborador';
+
+// /colaboradores entra por aquí mismo: el mismo panel, con la puerta del
+// equipo interno. Cambian los textos, no las reglas (las pone el servidor).
+const esColaboradores = typeof window !== 'undefined' && /^\/colaboradores\/?$/.test(window.location.pathname);
 
 // ─────────────────────────────────────────────
 // PuertaDePais — entre las verificaciones y el panel.
@@ -24,7 +29,8 @@ import { SelectorPais, paisElegido, olvidarPais, type PaisDisponible } from './S
 // abre nada — simplemente no llegarían datos de ese país.
 // ─────────────────────────────────────────────
 const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) => {
-    const [acceso, setAcceso] = useState<{ rol: string; paises: PaisDisponible[] } | null>(null);
+    const { currentUser } = useDatabase();
+    const [acceso, setAcceso] = useState<{ rol: string; paises: PaisDisponible[]; funciones: string[] | null } | null>(null);
     const [elegido, setElegido] = useState<string | null>(paisElegido());
     const [error, setError] = useState<string | null>(null);
 
@@ -40,7 +46,7 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
                 body: JSON.stringify({ action: 'mi_acceso' }),
             });
             const d = await r.json();
-            if (d?.ok) setAcceso({ rol: String(d.rol ?? 'lectura'), paises: Array.isArray(d.paises) ? d.paises : [] });
+            if (d?.ok) setAcceso({ rol: String(d.rol ?? 'lectura'), paises: Array.isArray(d.paises) ? d.paises : [], funciones: Array.isArray(d.funciones) ? d.funciones.map(String) : null });
             else setError(d?.error ?? 'No se pudieron cargar tus permisos.');
         } catch {
             setError('No se pudieron cargar tus permisos.');
@@ -79,6 +85,13 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
         );
     }
 
+    // Colaborador sin 2FA: primero lo activa. El servidor tampoco le
+    // contesta nada más (falta2faColaborador); esta es la parte visible.
+    const mfaOn = !!((currentUser as any)?.mfaEnabled || (currentUser as any)?.raw_data?.mfaEnabled);
+    if (acceso?.rol === 'colaborador' && !mfaOn) {
+        return <ActivarDosPasosColaborador onSalir={async () => { olvidarPais(); await onSalir(); }} />;
+    }
+
     if (!elegido) {
         return (
             <SelectorPais
@@ -91,7 +104,7 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
         );
     }
 
-    return <AdminDashboard rol={acceso?.rol} paises={acceso?.paises.map(p => p.code)} onLogout={async () => { olvidarPais(); await onSalir(); }} />;
+    return <AdminDashboard rol={acceso?.rol} paises={acceso?.paises.map(p => p.code)} funciones={acceso?.funciones ?? undefined} onLogout={async () => { olvidarPais(); await onSalir(); }} />;
 };
 
 // ─────────────────────────────────────────────
@@ -150,7 +163,7 @@ const AdminEmpresasInner: React.FC = () => {
             if (!user) {
                 setError(getLoginError() ?? 'Credenciales incorrectas.');
             } else if (user.role !== 'admin') {
-                setError('Esta cuenta no tiene permisos de administrador.');
+                setError((esColaboradores ? 'Esta cuenta no tiene acceso de colaborador.' : 'Esta cuenta no tiene permisos de administrador.'));
                 await logoutUser();
             }
             // Si es admin, currentUser se setea y el render cambia solo.
@@ -193,7 +206,7 @@ const AdminEmpresasInner: React.FC = () => {
         try {
             const user = await loginConPasskey();
             if (!user) setMfaError(getMfaError() ?? 'La llave no se pudo verificar.');
-            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+            else if (user.role !== 'admin') { setMfaError((esColaboradores ? 'Esta cuenta no tiene acceso de colaborador.' : 'Esta cuenta no tiene permisos de administrador.')); await logoutUser(); }
         } catch { setMfaError('No se pudo verificar la llave.'); }
         setVerifying(false);
     };
@@ -208,7 +221,7 @@ const AdminEmpresasInner: React.FC = () => {
             // código correcto avanza al tercer paso sin abrir la sesión. El
             // contexto deja escrito un mensaje solo cuando de verdad falló.
             if (!user) { const err = getMfaError(); if (err) setMfaError(err); else setMfaCode(''); }
-            else if (user.role !== 'admin') { setMfaError('Esta cuenta no tiene permisos de administrador.'); await logoutUser(); }
+            else if (user.role !== 'admin') { setMfaError((esColaboradores ? 'Esta cuenta no tiene acceso de colaborador.' : 'Esta cuenta no tiene permisos de administrador.')); await logoutUser(); }
             // Si es admin, currentUser se setea y el render cambia solo.
         } catch { setMfaError('No se pudo verificar. Intenta de nuevo.'); }
         setVerifying(false);
@@ -237,14 +250,14 @@ const AdminEmpresasInner: React.FC = () => {
         <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#0C0E0D' }}>
             <div className="w-full max-w-sm">
                 <div className="flex justify-center mb-6">
-                    <Logo variant="white" business />
+                    <Logo variant="white" business={!esColaboradores} />
                 </div>
                 <div className="bg-white rounded-2xl shadow-2xl p-6">
                     <div className="flex items-center gap-2 mb-1">
                         <ShieldCheck size={18} className="text-[#16A34A]" />
-                        <h1 className="font-bold text-lg text-[#0C0E0D]">Admin Empresas</h1>
+                        <h1 className="font-bold text-lg text-[#0C0E0D]">{esColaboradores ? 'Colaboradores' : 'Admin Empresas'}</h1>
                     </div>
-                    <p className="text-xs text-slate-500 mb-5">Acceso exclusivo para administradores.</p>
+                    <p className="text-xs text-slate-500 mb-5">{esColaboradores ? 'Entra con el correo que te asignaron.' : 'Acceso exclusivo para administradores.'}</p>
 
                     {accountLocked ? (
                         <div className="space-y-3">
@@ -269,13 +282,15 @@ const AdminEmpresasInner: React.FC = () => {
                             setPwdBusy(true); setPwdMsg(null);
                             const err = await setNewPassword(pwd1);
                             setPwdBusy(false);
-                            setPwdMsg(err ? `No se pudo cambiar: ${err}` : '✅ Contraseña cambiada. Ahora inicia sesión normalmente.');
+                            setPwdMsg(err ? `No se pudo guardar: ${err}` : esColaboradores ? '✅ Contraseña creada. Ahora entra con tu correo y tu contraseña.' : '✅ Contraseña cambiada. Ahora inicia sesión normalmente.');
                             if (!err) { setPwd1(''); setPwd2(''); }
                         }} className="space-y-3">
                             <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
                                 <ShieldCheck size={16} className="text-[#16A34A]" />
                                 <p className="text-xs text-slate-600">
-                                    Abriste el enlace de recuperación. Define tu contraseña nueva — este enlace <b>no</b> da acceso al panel.
+                                    {esColaboradores
+                                        ? <>Crea tu contraseña (mínimo 10 caracteres). Después entra con tu correo y esta contraseña.</>
+                                        : <>Abriste el enlace de recuperación. Define tu contraseña nueva — este enlace <b>no</b> da acceso al panel.</>}
                                 </p>
                             </div>
                             <input type="password" value={pwd1} onChange={e => setPwd1(e.target.value)} placeholder="Contraseña nueva" autoComplete="new-password"
@@ -368,6 +383,12 @@ const AdminEmpresasInner: React.FC = () => {
                         </div>
                     )}
 
+                    {/* Al guardar la contraseña la pantalla pasa sola al login
+                        (se cierra la sesión del enlace): el aviso se muestra
+                        acá, si no se perdía con el formulario anterior. */}
+                    {pwdMsg?.startsWith('✅') && (
+                        <p className="mb-3 text-xs rounded-xl p-2.5 border text-green-700 bg-green-50 border-green-200">{pwdMsg}</p>
+                    )}
                     <form onSubmit={handleLogin} className="space-y-3">
                         <div>
                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Correo</label>
@@ -409,7 +430,7 @@ const AdminEmpresasInner: React.FC = () => {
                     </>)}
                 </div>
                 <p className="text-center text-[10px] text-white/30 mt-4">
-                    Lincoin · Panel de administración de empresas
+                    {esColaboradores ? 'Lincoin · Panel de colaboradores' : 'Lincoin · Panel de administración de empresas'}
                 </p>
             </div>
         </div>

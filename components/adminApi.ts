@@ -89,6 +89,25 @@ export const ROLES: { id: string; nombre: string; que: string }[] = [
   { id: 'cumplimiento', nombre: 'Cumplimiento', que: 'KYC, riesgo, monitoreo y auditoría. Ve la plata, no la mueve.' },
   { id: 'lectura',      nombre: 'Solo lectura', que: 'Mira y no escribe nada, en ningún lado.' },
   { id: 'tesoreria',    nombre: 'Tesorería y clientes', que: 'Solo Tesorería (aprobar cargues y retiros, traslados a ACH, Billeteras COP) y Clientes. Nada de OTC, tasas, cumplimiento ni configuración.' },
+  { id: 'colaborador',  nombre: 'Colaborador', que: 'Solo las secciones que marques. Entra por lincoin.me/colaboradores con 2FA obligatorio.' },
+];
+
+// Las casillas del colaborador: una por sección del panel. Tienen que ser
+// las mismas de FUNCIONES_VALIDAS en supabase/functions/_shared/equipo.ts
+// (el servidor ignora cualquier otra). Seguridad y Configuración no están:
+// siguen siendo del dueño.
+export const FUNCIONES: { id: string; nombre: string; que: string }[] = [
+  { id: 'dashboard',    nombre: 'Dashboard',    que: 'La vista general: cifras y movimientos del día.' },
+  { id: 'clientes',     nombre: 'Clientes',     que: 'Ver y editar clientes.' },
+  { id: 'billetera',    nombre: 'Billetera',    que: 'Registrar cargues y descuentos en los saldos de los clientes.' },
+  { id: 'tesoreria',    nombre: 'Tesorería',    que: 'Aprobar cargues y retiros, traslados y la caja.' },
+  { id: 'lincoin',      nombre: 'Lincoin',      que: 'Utilidades y movimientos de Lincoin.' },
+  { id: 'otc',          nombre: 'Cierres OTC',  que: 'La mesa OTC: cierres con los clientes.' },
+  { id: 'coinsenda',    nombre: 'Coinsenda',    que: 'Tablero y envíos de las cuentas 3 y 4. La conexión la sigue manejando el dueño.' },
+  { id: 'fallos',       nombre: 'Fallos',       que: 'Envíos con problema y su conciliación.' },
+  { id: 'reportes',     nombre: 'Reportes',     que: 'Reportes y descargas.' },
+  { id: 'contabilidad', nombre: 'Contabilidad', que: 'Tablero contable y facturación.' },
+  { id: 'cumplimiento', nombre: 'Cumplimiento', que: 'KYC, operadores, cupos y riesgo.' },
 ];
 
 export const PAISES: { code: string; nombre: string }[] = [

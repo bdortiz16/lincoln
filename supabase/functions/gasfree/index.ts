@@ -308,7 +308,7 @@ const PERMISO_GASFREE: Record<string, string | string[]> = {
   reset_user_index: 'plata.mover', recaudadora_pin: 'plata.mover',
   recaudadora_rotate: 'plata.mover', recaudadora_consolidate: 'plata.mover',
   // Resolver una conversión trabada acredita COP: es de Tesorería (Billeteras).
-  admin_settle_convert: ['plata.mover', 'tesoreria'],
+  admin_settle_convert: ['plata.mover', 'tesoreria', 'fn.billetera'],
 }
 // Estas, además, exigen que la sesión haya pasado el segundo factor.
 const GASFREE_MUEVE = new Set(['send', 'sweep_user', 'sweep_all', 'sweep_address', 'sweep_index',

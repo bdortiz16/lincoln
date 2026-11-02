@@ -11,7 +11,7 @@
 //  dos copias que se desincronicen.
 // ══════════════════════════════════════════════════════════════════
 
-export type Rol = 'dueno' | 'operaciones' | 'cumplimiento' | 'lectura' | 'tesoreria'
+export type Rol = 'dueno' | 'operaciones' | 'cumplimiento' | 'lectura' | 'tesoreria' | 'colaborador'
 
 export interface Acceso {
   rol: Rol
@@ -20,9 +20,12 @@ export interface Acceso {
   // Miembro dado de baja: no opera NADA, ni consulta. Antes quedaba en
   // 'lectura' y seguía viendo clientes y saldos.
   desactivado?: boolean
+  // Solo para 'colaborador': las secciones del panel que puede usar. Los
+  // demás roles no la miran (su alcance sale del rol).
+  funciones?: string[]
 }
 
-export const ROLES_VALIDOS: Rol[] = ['dueno', 'operaciones', 'cumplimiento', 'lectura', 'tesoreria']
+export const ROLES_VALIDOS: Rol[] = ['dueno', 'operaciones', 'cumplimiento', 'lectura', 'tesoreria', 'colaborador']
 
 // Los permisos son gruesos a propósito: pocos roles que alguien puede
 // explicar en una frase valen más que veinte casillas que nadie revisa.
@@ -37,6 +40,64 @@ export const PERMISOS_POR_ROL: Record<Rol, Set<string>> = {
   cumplimiento: new Set(['clientes.ver', 'plata.ver', 'cumplimiento']),
   lectura:      new Set(['clientes.ver', 'plata.ver']),
   tesoreria:    new Set(['clientes.ver', 'clientes.editar', 'tesoreria']),
+  // El colaborador arranca solo con ver clientes (sin eso el panel ni carga:
+  // la lista de clientes la usan casi todas las secciones). Lo demás lo
+  // suman sus funciones, ver permisosDe.
+  colaborador:  new Set(['clientes.ver']),
+}
+
+// ── COLABORADORES: FUNCIONES POR SECCIÓN ──────────────────────────────
+//
+// Los roles de arriba son gruesos a propósito. El colaborador es la
+// excepción pedida: el dueño marca casillas por sección del panel. Cada
+// casilla da un permiso PROPIO de esa sección ('fn.<seccion>'), no uno de
+// los gruesos: 'plata.mover' o 'tesoreria' abren acciones de varias
+// pestañas a la vez, y marcar "Billetera" no puede regalar Cierres OTC.
+// Cada acción del servidor declara qué 'fn.*' la abre (PERMISO_DE_ACCION en
+// admin-data y los equipoPermite de las demás funciones).
+//
+// Seguridad y Configuración no son casillas: siguen siendo del dueño.
+export const FUNCIONES_VALIDAS = [
+  'dashboard', 'clientes', 'billetera', 'tesoreria', 'lincoin', 'otc',
+  'coinsenda', 'fallos', 'reportes', 'contabilidad', 'cumplimiento',
+] as const
+export type Funcion = typeof FUNCIONES_VALIDAS[number]
+
+export const PERMISOS_POR_FUNCION: Record<Funcion, string[]> = {
+  dashboard:    ['fn.dashboard'],
+  // Editar clientes es justo esta sección (perfil, datos, incidencias de
+  // correo); el permiso grueso ya era solo de clientes.
+  clientes:     ['fn.clientes', 'clientes.editar'],
+  billetera:    ['fn.billetera'],
+  tesoreria:    ['fn.tesoreria'],
+  lincoin:      ['fn.lincoin'],
+  otc:          ['fn.otc'],
+  coinsenda:    ['fn.coinsenda'],
+  fallos:       ['fn.fallos'],
+  reportes:     ['fn.reportes'],
+  contabilidad: ['fn.contabilidad'],
+  // 'cumplimiento' ya era exactamente lo de esta sección (KYC, cupos,
+  // límites, auditoría, monitoreo).
+  cumplimiento: ['fn.cumplimiento', 'cumplimiento'],
+}
+
+// Lo que llega del navegador se limpia: solo funciones conocidas, sin
+// repetir. Una casilla que este código no conoce no da nada.
+export function normalizarFunciones(v: unknown): Funcion[] {
+  const lista = Array.isArray(v) ? v.map(x => String(x).trim().toLowerCase()) : []
+  return FUNCIONES_VALIDAS.filter(f => lista.includes(f))
+}
+
+// Los permisos efectivos de una cuenta: los de su rol y, si es
+// colaborador, los de cada función marcada. TODAS las puertas usan esto
+// (no PERMISOS_POR_ROL directo), si no el colaborador quedaría con solo
+// "ver clientes" en unas funciones y con sus casillas en otras.
+export function permisosDe(acceso: Acceso): Set<string> {
+  const base = PERMISOS_POR_ROL[acceso.rol] ?? new Set<string>()
+  if (acceso.rol !== 'colaborador') return base
+  const s = new Set(base)
+  for (const f of normalizarFunciones(acceso.funciones)) for (const p of PERMISOS_POR_FUNCION[f]) s.add(p)
+  return s
 }
 
 // Una acción puede pedir uno de varios permisos (p. ej. ver un comprobante lo
@@ -80,8 +141,12 @@ export function visibleEnPais(paisDelDato: string | null, acceso: Acceso): boole
 export async function accesoDe(db: any, userId: string, email: string, adminEmail?: string | null): Promise<Acceso> {
   const TODO: Acceso = { rol: 'dueno', paises: [], todosLosPaises: true }
 
+  // select('*') y no la lista de columnas: si la migración de colaboradores
+  // (2026_zz24) todavía no corrió, pedir 'funciones' por nombre daría
+  // "column does not exist", y ese error se confunde con "tabla ausente"
+  // (abajo) y convertiría a TODO admin en dueño.
   const { data: m, error } = await db.from('admin_miembros')
-    .select('rol, paises, activo').eq('id', userId).maybeSingle()
+    .select('*').eq('id', userId).maybeSingle()
 
   // La tabla todavía no existe (migración sin correr). Antes de esta función
   // TODO admin veía todo; una migración que no se corrió no puede quitarle el
@@ -100,6 +165,7 @@ export async function accesoDe(db: any, userId: string, email: string, adminEmai
       rol,
       paises: Array.isArray((m as any).paises) ? (m as any).paises.map(String) : [],
       todosLosPaises: rol === 'dueno',
+      ...(rol === 'colaborador' ? { funciones: normalizarFunciones((m as any).funciones) } : {}),
     }
   }
 
@@ -147,7 +213,16 @@ export async function equipoPermite(
   }
   const acceso = await accesoDe(db, userId, email, Deno.env.get('ADMIN_EMAIL') ?? null)
   if (acceso.desactivado) return { ok: false, acceso }
-  if (!permite(PERMISOS_POR_ROL[acceso.rol] ?? new Set<string>(), necesita)) return { ok: false, acceso }
+  if (!permite(permisosDe(acceso), necesita)) return { ok: false, acceso }
+  // El colaborador sin 2FA activo no opera en ninguna puerta (en admin-data
+  // tampoco: falta2faColaborador). La sesión con 2FA la sigue exigiendo cada
+  // función con requireMfaSession, como para todo el equipo.
+  if (acceso.rol === 'colaborador') {
+    try {
+      const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+      if (!(data as any)?.raw_data?.mfaEnabled) return { ok: false, acceso }
+    } catch { return { ok: false, acceso } }
+  }
   if (opciones.pais !== undefined && !visibleEnPais(opciones.pais, acceso)) return { ok: false, acceso }
   return { ok: true, acceso }
 }

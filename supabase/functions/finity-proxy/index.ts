@@ -440,7 +440,8 @@ async function esMiReferencia(caller: { userId?: string; internal?: boolean }, i
 // (convertir, crear retiros, sondear el proveedor) queda para el dueño y para
 // las llamadas internas del servidor.
 const PERMISO_FINITY: Record<string, string | string[]> = {
-  treasury_balances: ['plata.ver', 'tesoreria'],
+  // 'fn.*': las casillas del colaborador que leen la bolsa (_shared/equipo.ts).
+  treasury_balances: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
 }
 
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean; servicio?: boolean }> {

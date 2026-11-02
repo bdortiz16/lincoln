@@ -58,7 +58,11 @@ const estadoConexion = (c: { configurada: boolean; ultimaPrueba: { ok: boolean }
 // dónde conectar la segunda cuenta.
 type Vista = 'tablero' | Cuenta;
 
-export const AdminCoinsenda: React.FC = () => {
+// soloTablero: para quien no es dueño (colaboradores y roles fijos). La
+// conexión de cada cuenta (llave, correo, interruptores) es solo del dueño:
+// el servidor la niega, así que ni se ofrece — antes abrir "Cuenta 3" le
+// mostraba a esa persona una pantalla llena de "permiso denegado".
+export const AdminCoinsenda: React.FC<{ soloTablero?: boolean }> = ({ soloTablero = false }) => {
   const [vista, setVista] = useState<Vista>('tablero');
   const [d, setD] = useState<Tablero | null>(null);
   const [cargando, setCargando] = useState(true);
@@ -86,7 +90,7 @@ export const AdminCoinsenda: React.FC = () => {
         </p>
       </div>
 
-      <div role="tablist" aria-label="Coinsenda" className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 8 }}>
+      {!soloTablero && <div role="tablist" aria-label="Coinsenda" className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 8 }}>
         {(['tablero', 3, 4] as Vista[]).map(v => {
           const activa = vista === v;
           const c = v === 'tablero' ? null : datosDe(v);
@@ -105,11 +109,11 @@ export const AdminCoinsenda: React.FC = () => {
             </button>
           );
         })}
-      </div>
+      </div>}
 
-      {vista === 'tablero' ? (
+      {vista === 'tablero' || soloTablero ? (
         <>
-          {sinConectar.map(n => (
+          {!soloTablero && sinConectar.map(n => (
             <div key={n} className="flex items-center justify-between flex-wrap" style={{ gap: 10, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 12, padding: '11px 14px' }}>
               <span style={{ fontSize: 13, lineHeight: 1.45 }}>
                 <b>La Cuenta {n} todavía no está conectada.</b> <span style={{ color: C.sub }}>Genera su llave, regístrala en esa cuenta de Coinsenda, guarda el correo y prueba la conexión.</span>
@@ -117,7 +121,7 @@ export const AdminCoinsenda: React.FC = () => {
               <button style={{ ...btnPri, background: C.green }} onClick={() => irA(n)}>Conectar Cuenta {n} →</button>
             </div>
           ))}
-          <TableroVista d={d} cargando={cargando} error={error} cargar={cargar} irA={n => irA(n)} />
+          <TableroVista d={d} cargando={cargando} error={error} cargar={cargar} irA={soloTablero ? undefined : n => irA(n)} />
         </>
       ) : (
         // key: cada cuenta arranca limpia (sin el formulario abierto de la otra).
@@ -146,7 +150,7 @@ const ESTADO: Record<Reciente['estado'], { t: string; c: string; bg: string }> =
   devuelto: { t: 'Devuelto', c: C.red, bg: 'rgba(248,113,113,0.10)' },
 };
 
-const TableroVista: React.FC<{ d: Tablero | null; cargando: boolean; error: string | null; cargar: () => void; irA: (n: Cuenta) => void }> = ({ d, cargando, error, cargar, irA }) => {
+const TableroVista: React.FC<{ d: Tablero | null; cargando: boolean; error: string | null; cargar: () => void; irA?: (n: Cuenta) => void }> = ({ d, cargando, error, cargar, irA }) => {
   const [filtro, setFiltro] = useState<0 | Cuenta>(0);
 
   const recientes = (d?.recientes ?? []).filter(r => !filtro || r.cuenta === filtro);
@@ -232,9 +236,9 @@ const TableroVista: React.FC<{ d: Tablero | null; cargando: boolean; error: stri
                     return <span key={k}>{k === 'breb' ? 'Bre-B' : 'ACH'} este mes: {r.n} envío{r.n === 1 ? '' : 's'} · utilidad <b style={{ color: r.utilidad < 0 ? C.red : C.text }}>{pesos(r.utilidad)}</b></span>;
                   })}
                 </div>
-                {conectadaDe(c)
+                {irA && (conectadaDe(c)
                   ? <button style={{ ...btnSec, marginTop: 12, padding: '6px 12px', fontSize: 11.5 }} onClick={() => irA(c.cuenta)}>Ver configuración de la Cuenta {c.cuenta} →</button>
-                  : <button style={{ ...btnPri, marginTop: 12, background: C.green }} onClick={() => irA(c.cuenta)}>Conectar Cuenta {c.cuenta} →</button>}
+                  : <button style={{ ...btnPri, marginTop: 12, background: C.green }} onClick={() => irA(c.cuenta)}>Conectar Cuenta {c.cuenta} →</button>)}
               </div>
             );
           })}

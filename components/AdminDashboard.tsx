@@ -119,10 +119,25 @@ interface AdminDashboardProps {
   rol?: string;
   // Países del miembro (mi_acceso): qué billeteras se le ofrecen.
   paises?: string[];
+  // Solo para el rol 'colaborador': las secciones que el dueño le marcó
+  // (mi_acceso). El menú muestra solo esas; el servidor niega el resto.
+  funciones?: string[];
 }
 
 // El rol Tesorería ve solo Clientes y Tesorería (con sus Billeteras COP).
 const TABS_TESORERIA = ['clients', 'treasury', 'cargues', 'lincoin'];
+
+// Colaboradores: qué casilla abre cada pestaña. Las de Seguridad y
+// Configuración no tienen casilla: siguen siendo del dueño.
+const FUNCION_DE_TAB: Record<string, string> = {
+  overview: 'dashboard', clients: 'clientes', cargues: 'billetera', treasury: 'tesoreria',
+  lincoin: 'lincoin', otcCierres: 'otc', coinsenda: 'coinsenda', fallos: 'fallos',
+  reports: 'reportes', otcConfig: 'contabilidad',
+  compliance: 'cumplimiento', operadores: 'cumplimiento', cupos: 'cumplimiento',
+  risk: 'cumplimiento', sarblock: 'cumplimiento', tusdatos: 'cumplimiento',
+};
+// Orden en que se busca la primera pestaña del colaborador al entrar.
+const ORDEN_TABS_COLABORADOR = ['overview', 'cargues', 'clients', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos', 'reports', 'otcConfig', 'compliance'];
 
 interface SystemAlert {
     id: string;
@@ -536,11 +551,18 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
     );
 };
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, paises }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, paises, funciones }) => {
   const soloTesoreria = rol === 'tesoreria';
+  // Colaborador: ve solo las pestañas de sus funciones. Para cualquier otro
+  // rol, puedeVerTab no cambia nada (lo suyo lo decide el rol, como antes).
+  const esColaborador = rol === 'colaborador';
+  const funcionesSet = new Set(funciones ?? []);
+  const puedeVerTab = (tab: string) => !esColaborador || (!!FUNCION_DE_TAB[tab] && funcionesSet.has(FUNCION_DE_TAB[tab]));
+  const puedeFuncion = (f: string) => !esColaborador || funcionesSet.has(f);
+  const primeraTabColaborador = ORDEN_TABS_COLABORADOR.find(t => puedeVerTab(t)) ?? 'overview';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda'>(soloTesoreria ? 'cargues' : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda'>(soloTesoreria ? 'cargues' : esColaborador ? primeraTabColaborador as any : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -911,6 +933,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // tiene que enterarse el mismo momento, lo demás es ruido.
   const autoConcAt = useRef(0);
   useEffect(() => {
+    // El colaborador sin Fallos ni Tesorería no concilia: el servidor se lo
+    // negaría cada 3 minutos y solo llenaría la auditoría de rechazos.
+    if (esColaborador && !(puedeFuncion('fallos') || puedeFuncion('tesoreria'))) return;
     let vivo = true;
     const correr = async () => {
       if (document.hidden) return;
@@ -1572,8 +1597,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // mirando esa pantalla.
   const otcPrev = useRef<number | null>(null);
   useEffect(() => {
-    // La mesa OTC no es del rol Tesorería: el servidor se la niega.
-    if (soloTesoreria) return;
+    // La mesa OTC no es del rol Tesorería: el servidor se la niega. Tampoco
+    // del colaborador sin la casilla de Cierres OTC.
+    if (soloTesoreria || !puedeFuncion('otc')) return;
     let vivo = true;
     const leer = async () => {
       try {
@@ -1625,7 +1651,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   useEffect(() => {
     // Cupos es de Cumplimiento: preguntar cada minuto solo llenaría la
     // auditoría de "permiso denegado".
-    if (soloTesoreria) return;
+    if (soloTesoreria || !puedeFuncion('cumplimiento')) return;
     let vivo = true;
     const leer = async () => {
       try {
@@ -1644,7 +1670,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [operadoresVer, setOperadoresVer] = useState(0);
   const enOperadores = activeTab === 'operadores';
   useEffect(() => {
-    if (soloTesoreria) return;
+    if (soloTesoreria || !puedeFuncion('cumplimiento')) return;
     let vivo = true;
     const leer = async () => {
       try {
@@ -5427,7 +5453,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // negaría los datos; esto evita que vea una pantalla vacía o con errores.
   useEffect(() => {
     if (soloTesoreria && !TABS_TESORERIA.includes(activeTab)) setActiveTab('cargues');
-  }, [soloTesoreria, activeTab]);
+    // El colaborador que salta (un aviso, un botón) a una pestaña sin casilla
+    // vuelve a su primera sección: el servidor igual le negaría los datos.
+    if (esColaborador && !puedeVerTab(activeTab)) setActiveTab(primeraTabColaborador as any);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soloTesoreria, esColaborador, activeTab]);
   // El Dashboard/Monitoreo usan el tema oscuro Lincoin (AdminMonitor trae su
   // propio header); el resto de secciones mantienen su lienzo claro actual.
   const isDark = activeTab === 'overview' || activeTab === 'monitoreo' || activeTab === 'comando' || activeTab === 'security';
@@ -5484,7 +5514,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
             <div className="flex-1 overflow-y-auto py-5 px-3 space-y-1">
                 {/* Dashboard — fijo arriba, resaltado en verde. El rol Tesorería
                     no lo tiene: entra directo a la Billetera. */}
-                {!soloTesoreria && <button
+                {!soloTesoreria && puedeVerTab('overview') && <button
                     onClick={() => navTo('overview')}
                     className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl font-semibold text-sm transition-colors hover:bg-white/5"
                     style={activeTab === 'overview'
@@ -5498,15 +5528,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                     // Tesorería es un acordeón: Billetera primero (los cargues,
                     // lo que más se usa) y después el tablero de Tesorería.
                     const pendTes = pendingDeposits.length + pendingWithdrawals.length;
-                    const grupoTesoreria = (
+                    const itemsTesoreria = [
+                        { key: 'cargues', icon: Wallet, label: 'Billetera', active: activeTab === 'cargues', onClick: () => navTo('cargues') },
+                        { key: 'treasury', icon: BarChart3, label: 'Tesorería', active: activeTab === 'treasury', badge: pendTes > 0 ? pendTes : undefined, onClick: () => navTo('treasury') },
+                        { key: 'lincoin', icon: Landmark, label: 'Lincoin', active: activeTab === 'lincoin', onClick: () => navTo('lincoin') },
+                    ].filter(i => puedeVerTab(i.key));
+                    const grupoTesoreria = itemsTesoreria.length === 0 ? null : (
                         <AdminSidebarGrupo icon={Landmark} label="Tesorería"
                             active={activeTab === 'treasury' || activeTab === 'cargues' || activeTab === 'lincoin'}
-                            badge={pendTes > 0 ? pendTes : undefined}
-                            items={[
-                                { key: 'cargues', icon: Wallet, label: 'Billetera', active: activeTab === 'cargues', onClick: () => navTo('cargues') },
-                                { key: 'treasury', icon: BarChart3, label: 'Tesorería', active: activeTab === 'treasury', badge: pendTes > 0 ? pendTes : undefined, onClick: () => navTo('treasury') },
-                                { key: 'lincoin', icon: Landmark, label: 'Lincoin', active: activeTab === 'lincoin', onClick: () => navTo('lincoin') },
-                            ]} />
+                            badge={puedeVerTab('treasury') && pendTes > 0 ? pendTes : undefined}
+                            items={itemsTesoreria} />
                     );
                     const groups: { key: string; title: string; items: React.ReactNode }[] = [
                         { key: 'operacion', title: 'Operación', items: <>
@@ -5529,9 +5560,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
+                    // Colaborador: solo sus casillas. Seguridad y Configuración
+                    // no se le ofrecen nunca (son del dueño).
+                    const it = (tab: string, nodo: React.ReactNode) => puedeVerTab(tab) ? nodo : null;
+                    const gruposColaborador = [
+                        { key: 'operacion', title: 'Operación', items: <>
+                            {it('clients', <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />)}
+                            {grupoTesoreria}
+                            {it('otcCierres', <AdminSidebarItem icon={MessageSquare} label="Cierres OTC" active={activeTab === 'otcCierres'} badge={otcPend > 0 ? otcPend : undefined} onClick={() => navTo('otcCierres')} />)}
+                            {it('coinsenda', <AdminSidebarItem icon={Zap} label="Coinsenda" active={activeTab === 'coinsenda'} onClick={() => navTo('coinsenda')} />)}
+                            {it('fallos', <AdminSidebarItem icon={AlertTriangle} label="Fallos" active={activeTab === 'fallos'} badge={failuresCount > 0 ? failuresCount : undefined} onClick={() => navTo('fallos')} />)}
+                        </>, hay: ['clients', 'cargues', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos'].some(puedeVerTab) },
+                        { key: 'finanzas', title: 'Finanzas', items: <>
+                            {it('reports', <AdminSidebarItem icon={FileText} label="Reportes" active={activeTab === 'reports'} onClick={() => navTo('reports')} />)}
+                            {it('otcConfig', <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />)}
+                        </>, hay: ['reports', 'otcConfig'].some(puedeVerTab) },
+                        { key: 'cumplimiento', title: 'Control', items: <>
+                            {it('compliance', <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo(operadoresPend > 0 ? 'operadores' : cuposPend > 0 ? 'cupos' : 'compliance')} />)}
+                        </>, hay: puedeVerTab('compliance') },
+                    ].filter(g => g.hay);
                     // Rol Tesorería: solo Clientes y Tesorería. Lo demás ni
                     // se ofrece (el servidor igual se lo negaría).
-                    const visibles = soloTesoreria
+                    const visibles = esColaborador ? gruposColaborador : soloTesoreria
                         ? [{ key: 'operacion', title: 'Operación', items: <>
                             <AdminSidebarItem icon={Users} label="Clientes" active={activeTab === 'clients'} badge={pendingClientsCount > 0 ? pendingClientsCount : undefined} onClick={() => navTo('clients')} />
                             {grupoTesoreria}
@@ -5706,7 +5756,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   <AdminGasFreeSection />
                 </>)}
                 {activeTab === 'otcConfig' && <AdminContabilidad />}
-                {activeTab === 'coinsenda' && <AdminCoinsenda />}
+                {activeTab === 'coinsenda' && <AdminCoinsenda soloTablero={!esDueno} />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}

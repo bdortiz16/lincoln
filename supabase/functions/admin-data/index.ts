@@ -8,7 +8,7 @@ import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
-import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permite, visibleEnPais, ROLES_VALIDOS, type Rol, type Acceso } from '../_shared/equipo.ts'
+import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permisosDe, permite, visibleEnPais, ROLES_VALIDOS, normalizarFunciones, FUNCIONES_VALIDAS, type Rol, type Acceso } from '../_shared/equipo.ts'
 
 // La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
 // un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
@@ -603,6 +603,20 @@ async function appStagePassed(req: Request, userId: string): Promise<boolean> {
     const hit = list.find((x: any) => x?.sid === sid && ['app', 'full'].includes(String(x?.stage)))
     return !!hit && (Date.now() - new Date(hit.at).getTime() < 15 * 60_000)
   } catch { return false }
+}
+
+// El colaborador no opera sin 2FA. A los demás roles el 2FA se les exige
+// en lo sensible, y "cuenta sin 2FA activo → pasa" (ver requireMfaSession).
+// El colaborador nace de una invitación y su 2FA es obligatorio desde el
+// primer día, para TODO: sin esto, con solo la contraseña vería clientes y
+// saldos. Solo se le deja saber quién es (mi_acceso) para que el panel le
+// muestre la pantalla de activar el 2FA.
+async function falta2faColaborador(req: Request, userId: string): Promise<string | null> {
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    if (!(u as any)?.raw_data?.mfaEnabled) return 'Activa la verificación en dos pasos para usar el panel.'
+  } catch { return 'No pudimos comprobar tu verificación en dos pasos. Intenta de nuevo.' }
+  return await requireMfaSession(req, userId)
 }
 
 // Devuelve un mensaje de error si la sesión que llama NO pasó por el 2FA.
@@ -1367,6 +1381,82 @@ async function avisarIngreso(req: Request, userId: string, forzar = false): Prom
   }
 }
 
+// ── Invitación de colaboradores ──────────────────────────────────────────
+// El dueño da acceso escribiendo un correo y marcando funciones. Si la
+// persona no tiene cuenta, se le crea una SIN contraseña y se le manda un
+// enlace para crearla en lincoin.me/colaboradores. El enlace es el de
+// recuperación de Supabase: abre una sesión que SOLO sirve para fijar la
+// contraseña (DatabaseContext corta esa sesión antes del panel), y después
+// entra con correo, contraseña y 2FA como cualquiera del equipo.
+const ORIGEN_APP = (Deno.env.get('APP_ORIGIN') ?? 'https://lincoin.me').replace(/\/$/, '')
+const NOMBRE_FUNCION: Record<string, string> = {
+  dashboard: 'Dashboard', clientes: 'Clientes', billetera: 'Billetera (cargues)',
+  tesoreria: 'Tesorería', lincoin: 'Lincoin (utilidades)', otc: 'Cierres OTC',
+  coinsenda: 'Coinsenda', fallos: 'Fallos', reportes: 'Reportes',
+  contabilidad: 'Contabilidad', cumplimiento: 'Cumplimiento',
+}
+
+async function enviarInvitacionColaborador(
+  req: Request, email: string, nombre: string | null, funciones: string[], conEnlace: boolean,
+): Promise<{ ok: boolean; motivo: string }> {
+  if (!RESEND_KEY) return { ok: false, motivo: 'falta la llave de envío de correo (RESEND_API_KEY)' }
+  let enlace = `${ORIGEN_APP}/colaboradores`
+  if (conEnlace) {
+    // Enlace de un solo uso para CREAR la contraseña. Vence según la
+    // configuración de Auth (por defecto, 1 hora): por eso el panel tiene
+    // "Reenviar invitación".
+    const { data, error } = await db.auth.admin.generateLink({
+      type: 'recovery', email, options: { redirectTo: `${ORIGEN_APP}/colaboradores` },
+    })
+    const link = (data as any)?.properties?.action_link
+    if (error || !link) return { ok: false, motivo: `no se pudo generar el enlace: ${error?.message ?? 'sin enlace'}` }
+    enlace = String(link)
+  }
+  const lista = funciones.map(f => `<li style="margin:2px 0">${escHtml(NOMBRE_FUNCION[f] ?? f)}</li>`).join('')
+  const saludo = nombre ? `Hola, ${escHtml(nombre)}:` : 'Hola:'
+  const html = `<div style="font-family:Archivo,Arial,sans-serif;background:#070808;padding:28px 16px">
+    <div style="max-width:480px;margin:0 auto;background:#0C0E0D;border:1px solid rgba(255,255,255,0.10);border-radius:16px;padding:26px">
+      <p style="margin:0 0 18px;font-size:22px;font-weight:800;letter-spacing:-0.6px;color:#F4F4F2">Lincoin<span style="color:#4ADE80">.</span></p>
+      <p style="margin:0 0 10px;font-size:15px;color:#F4F4F2">${saludo}</p>
+      <p style="margin:0 0 14px;font-size:14px;line-height:1.55;color:#C9CDC9">Te dieron acceso al panel de colaboradores de Lincoin. Podrás usar:</p>
+      <ul style="margin:0 0 18px;padding-left:18px;font-size:14px;color:#F4F4F2">${lista}</ul>
+      <a href="${escHtml(enlace)}" style="display:inline-block;background:#4ADE80;color:#0A0B0A;text-decoration:none;font-weight:800;font-size:14px;padding:12px 20px;border-radius:10px">${conEnlace ? 'Crear mi contraseña' : 'Entrar al panel'}</a>
+      <p style="margin:18px 0 0;font-size:12.5px;line-height:1.55;color:#878E88">${conEnlace
+        ? 'Por seguridad, el enlace vence pronto y sirve una sola vez. Si se venció, pide que te reenvíen la invitación.'
+        : 'Entra con tu correo y tu contraseña de siempre.'} Al entrar por primera vez vas a activar la verificación en dos pasos con una app como Google Authenticator.</p>
+      <p style="margin:14px 0 0;font-size:12px;color:rgba(244,244,242,0.45)">Si no esperabas este correo, ignóralo.</p>
+    </div></div>`
+  try {
+    const envio = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [email], subject: 'Tu acceso al panel de colaboradores de Lincoin', html }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!envio.ok) {
+      const detalle = (await envio.text().catch(() => '')).slice(0, 300)
+      await auditAdmin(req, 'equipo.invitacion_fallida', { email, status: envio.status, detalle })
+      return { ok: false, motivo: `el proveedor de correo rechazó el envío (${envio.status})` }
+    }
+    return { ok: true, motivo: 'enviado' }
+  } catch (e) {
+    return { ok: false, motivo: `no se pudo enviar: ${(e as Error)?.message ?? 'error'}` }
+  }
+}
+
+// Una cuenta de Auth por correo (cuando createUser dice que ya existe y no
+// hay fila en users: una invitación anterior que quedó a medias).
+async function authPorCorreo(email: string): Promise<string | null> {
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await db.auth.admin.listUsers({ page, perPage: 200 })
+    if (error) return null
+    const u = (data?.users ?? []).find((x: any) => String(x.email ?? '').toLowerCase() === email)
+    if (u) return String(u.id)
+    if ((data?.users ?? []).length < 200) return null
+  }
+  return null
+}
+
 // ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
 // La IP de quien llama. Primero la que pone Cloudflare (cf-connecting-ip):
 // el cliente no la puede escribir, porque Cloudflare la reemplaza. El primer
@@ -1571,6 +1661,11 @@ async function autorDe(auth: { userId?: string; email?: string; acceso?: Acceso 
 // anotarla acá, lo que pasa es que no funciona para el equipo — no que quede
 // abierta. Entre romperse y filtrarse, que se rompa.
 const PERMISO_DE_ACCION: Record<string, string | string[]> = {
+  // ── Colaboradores ──
+  // Cada acción que usa una sección del panel acepta también el permiso de
+  // esa casilla ('fn.<seccion>', ver PERMISOS_POR_FUNCION en _shared/
+  // equipo.ts). Los roles fijos no cambian: lo de 'fn.*' solo lo tiene el
+  // colaborador que tiene marcada la sección.
   // Saber quién soy: lo tienen los cuatro roles. Sin esto, un miembro no
   // podría ni enterarse de qué países le tocan, y el panel quedaría en blanco
   // sin decir por qué.
@@ -1585,63 +1680,63 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Consultar
   admin_logins: 'plata.ver',
   command_map: 'plata.ver',
-  get_tx_proof: ['plata.ver', 'tesoreria'],
+  get_tx_proof: ['plata.ver', 'tesoreria', 'fn.tesoreria'],
   conciliar_movimientos: 'plata.mover',
-  otc_ajuste_get: 'plata.ver',
-  limites_envio_get: 'plata.ver',
+  otc_ajuste_get: ['plata.ver', 'fn.contabilidad'],
+  limites_envio_get: ['plata.ver', 'fn.cumplimiento'],
   movimientos_cliente: 'clientes.ver',
   // Clientes por páginas: el panel ya no baja la base entera.
   usuarios_buscar: 'clientes.ver',
   usuarios_por_id: 'clientes.ver',
   // Contabilidad: el tablero y la facturación de Lincoin. Configurar Siigo
   // (credenciales) queda para el dueño: fact_lincoin_set no figura acá.
-  contabilidad_resumen: 'plata.ver',
-  contabilidad_cliente: 'plata.ver',
-  contabilidad_vincular_ajuste: 'plata.mover',
-  contabilidad_autovincular: 'plata.mover',
+  contabilidad_resumen: ['plata.ver', 'fn.contabilidad'],
+  contabilidad_cliente: ['plata.ver', 'fn.contabilidad'],
+  contabilidad_vincular_ajuste: ['plata.mover', 'fn.contabilidad'],
+  contabilidad_autovincular: ['plata.mover', 'fn.contabilidad'],
   // Cupos por beneficiario: los decide Cumplimiento.
   cupos_admin_get: 'cumplimiento',
   cupos_pendientes: 'cumplimiento',
   cupos_config_set: 'cumplimiento',
   cupo_resolver: 'cumplimiento',
   cupo_quitar: 'cumplimiento',
-  fact_lincoin_get: 'plata.ver',
-  fact_lincoin_lista: 'plata.ver',
-  fact_lincoin_probar: 'plata.mover',
-  fact_lincoin_emitir: 'plata.mover',
-  fact_lincoin_al_dia: 'plata.mover',
+  fact_lincoin_get: ['plata.ver', 'fn.contabilidad'],
+  fact_lincoin_lista: ['plata.ver', 'fn.contabilidad'],
+  fact_lincoin_probar: ['plata.mover', 'fn.contabilidad'],
+  fact_lincoin_emitir: ['plata.mover', 'fn.contabilidad'],
+  fact_lincoin_al_dia: ['plata.mover', 'fn.contabilidad'],
   email_incidencias: 'clientes.ver',
   email_incidencia_resuelta: 'clientes.editar',
 
   // Mover plata — Tesorería: cargue manual en las billeteras COP y los
   // traslados Saldo Lincoin → ACH. El cargue cripto (USDT) queda en
   // 'plata.mover': no es parte de lo que se le delega a Tesorería.
-  admin_credit_balance: 'tesoreria',
+  admin_credit_balance: ['tesoreria', 'fn.billetera'],
   admin_credit_crypto: 'plata.mover',
-  approve_rail_move: 'tesoreria',
+  approve_rail_move: ['tesoreria', 'fn.tesoreria'],
   // "Registrar movimiento" en una cuenta de tesorería (no la config entera).
-  tesoreria_movimiento: 'tesoreria',
+  tesoreria_movimiento: ['tesoreria', 'fn.tesoreria'],
   // El tablero de Tesorería (solo lectura, cifras de toda la base).
-  tesoreria_resumen: ['plata.ver', 'tesoreria'],
+  tesoreria_resumen: ['plata.ver', 'tesoreria', 'fn.tesoreria'],
   // La caja de Lincoin: verla. Abrirla, corregir la apertura y ocultar un
   // movimiento son del dueño (no figuran acá).
-  caja_estado: ['plata.ver', 'tesoreria'],
+  caja_estado: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
-  lincoin_resumen: ['plata.ver', 'tesoreria'],
+  lincoin_resumen: ['plata.ver', 'tesoreria', 'fn.lincoin'],
   // Enviar la utilidad a la empresa por Bre-B: dueño y Tesorería, con su
   // código 2FA en cada envío. Inscribir o quitar las llaves de Lincoin es
   // solo del dueño (no figuran acá).
-  caja_llaves_get: ['plata.ver', 'tesoreria'],
-  coinsenda_bolsa: ['plata.ver', 'tesoreria'],
-  coinsenda_dashboard: ['plata.ver', 'tesoreria'],
-  caja_enviar_empresa: 'tesoreria',
-  caja_envio_estado: 'tesoreria',
-  tesoreria_detalle: ['plata.ver', 'tesoreria'],
-  caja_movimiento_soporte: ['plata.ver', 'tesoreria'],
-  caja_movimiento_crear: 'tesoreria',
-  reject_rail_move: 'tesoreria',
-  otc_ajuste_set: 'plata.mover',
+  caja_llaves_get: ['plata.ver', 'tesoreria', 'fn.lincoin'],
+  coinsenda_bolsa: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin', 'fn.coinsenda'],
+  coinsenda_dashboard: ['plata.ver', 'tesoreria', 'fn.coinsenda'],
+  caja_enviar_empresa: ['tesoreria', 'fn.lincoin'],
+  caja_envio_estado: ['tesoreria', 'fn.lincoin'],
+  tesoreria_detalle: ['plata.ver', 'tesoreria', 'fn.tesoreria'],
+  caja_movimiento_soporte: ['plata.ver', 'tesoreria', 'fn.lincoin'],
+  caja_movimiento_crear: ['tesoreria', 'fn.lincoin'],
+  reject_rail_move: ['tesoreria', 'fn.tesoreria'],
+  otc_ajuste_set: ['plata.mover', 'fn.contabilidad'],
   // Los topes de envío son un control de cumplimiento: los ajusta Compliance
   // (el dueño también, como todo).
   limites_envio_set: 'cumplimiento',
@@ -1651,11 +1746,11 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   set_kyc_status: 'cumplimiento',
 
   // Cumplimiento y auditoría
-  list_audit: 'cumplimiento',
+  list_audit: ['cumplimiento', 'fn.dashboard'],
   security_audit: 'cumplimiento',
   security_series: 'cumplimiento',
-  security_stats: 'cumplimiento',
-  log_incident: 'cumplimiento',
+  security_stats: ['cumplimiento', 'fn.dashboard'],
+  log_incident: ['cumplimiento', 'fn.dashboard'],
 
   // Solo el dueño (no figuran con permiso propio: caen en la negación por
   // defecto). delete_user, force_delete_by_email, save_config, block_ip,
@@ -1747,14 +1842,14 @@ async function adminSobreOtro(req: Request, permisos: string[], accion: string):
   if (!v.ok || !v.userId) return { ok: false, res: json({ error: 'No autorizado' }, 401) }
   const acceso = v.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
   if (acceso.desactivado) return { ok: false, res: json({ error: 'Tu acceso al panel fue desactivado.', permisoDenegado: true }, 403) }
-  const tiene = PERMISOS_POR_ROL[acceso.rol] ?? new Set<string>()
+  const tiene = permisosDe(acceso)
   if (!(tiene.has('*') || permisos.some(p => tiene.has(p)))) {
     await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: v.userId })
     return { ok: false, res: json({ error: 'Tu rol no permite esta operación.', permisoDenegado: true }, 403) }
   }
   { const den = await accessDenied(req); if (den) return { ok: false, res: json({ error: den, accessDenied: true }, 403) } }
   if (await adminLock(v.userId)) return { ok: false, res: json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423) }
-  const mfaErr = await requireMfaSession(req, v.userId)
+  const mfaErr = acceso.rol === 'colaborador' ? await falta2faColaborador(req, v.userId) : await requireMfaSession(req, v.userId)
   if (mfaErr) return { ok: false, res: json({ error: mfaErr, needs2fa: true }, 403) }
   return { ok: true, admin: { userId: v.userId, acceso } }
 }
@@ -2070,7 +2165,7 @@ Deno.serve(async (req: Request) => {
         if (!esPropia) {
           const g = await adminSobreOtro(req, ['clientes.editar', 'cumplimiento'], 'save_user')
           if ('res' in g) return g.res
-          const permisos = PERMISOS_POR_ROL[g.admin.acceso.rol] ?? new Set<string>()
+          const permisos = permisosDe(g.admin.acceso)
           const puede = (p: string) => permisos.has('*') || permisos.has(p)
           // La fila de otro ADMIN solo la toca el dueño: un miembro de
           // Operaciones podía cambiarle el correo (a donde llegan sus códigos)
@@ -3287,7 +3382,7 @@ Deno.serve(async (req: Request) => {
       {
         const acceso = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
         const accion = String(body.action ?? '')
-        const permisos = PERMISOS_POR_ROL[acceso.rol] ?? new Set<string>()
+        const permisos = permisosDe(acceso)
         const necesita = PERMISO_DE_ACCION[accion]
         const puede = permite(permisos, necesita)
         if (!puede) {
@@ -3296,6 +3391,10 @@ Deno.serve(async (req: Request) => {
             error: 'Tu rol no permite esta operación.',
             permisoDenegado: true, rol: acceso.rol,
           }, 403)
+        }
+        if (acceso.rol === 'colaborador' && accion !== 'mi_acceso' && accion !== 'log_login') {
+          const falta = await falta2faColaborador(req, String(auth.userId ?? ''))
+          if (falta) return json({ error: falta, needs2fa: true, activar2fa: falta.startsWith('Activa') }, 403)
         }
         // Los cargues COP y los traslados a ACH son plata de Colombia: quien
         // no tiene Colombia asignado no los opera, aunque su rol sí lo permita.
@@ -3331,7 +3430,7 @@ Deno.serve(async (req: Request) => {
         // Facturan ante la DIAN o cambian las credenciales de Siigo
         'fact_lincoin_set', 'fact_lincoin_emitir',
         // Quién entra al panel y con qué rol
-        'equipo_guardar', 'equipo_desactivar',
+        'equipo_guardar', 'equipo_desactivar', 'equipo_invitar', 'equipo_reenviar',
         // Cumplimiento: cupos por beneficiario
         'cupo_resolver', 'cupos_config_set', 'cupo_quitar',
         // Contabilidad: vincular un débito cambia la utilidad y la factura
@@ -3422,7 +3521,9 @@ Deno.serve(async (req: Request) => {
 
         return json({
           ok: true, rol: a.rol, todosLosPaises: a.todosLosPaises,
-          permisos: [...(PERMISOS_POR_ROL[a.rol] ?? [])],
+          permisos: [...permisosDe(a)],
+          // Las secciones del colaborador: el panel dibuja solo esas.
+          funciones: a.rol === 'colaborador' ? (a.funciones ?? []) : null,
           paises,
         })
       }
@@ -3443,6 +3544,12 @@ Deno.serve(async (req: Request) => {
           return json({ ok: false, error: 'rol_invalido' }, 400)
         }
         const paises = Array.isArray(body.paises) ? body.paises.map((p: unknown) => String(p).toUpperCase()) : []
+        // El colaborador sin ninguna casilla entraría a un panel vacío: se
+        // pide al menos una, igual que al invitar.
+        const funciones = normalizarFunciones(body.funciones)
+        if (rol === 'colaborador' && !funciones.length) {
+          return json({ ok: false, error: 'sin_funciones', message: 'Marca al menos una función.' }, 400)
+        }
 
         // El permiso se le da a una CUENTA QUE YA EXISTE. Esto no crea
         // accesos: la persona tiene que tener su cuenta en Lincoin con rol
@@ -3501,12 +3608,106 @@ Deno.serve(async (req: Request) => {
           activo: body.activo === false ? false : true,
           actualizado_at: new Date().toISOString(),
           creado_por: auth.userId,
+          // Solo se escribe para el colaborador: así guardar un rol fijo sigue
+          // funcionando aunque la migración de colaboradores no haya corrido.
+          ...(rol === 'colaborador' ? { funciones } : {}),
         }
         const { error } = await db.from('admin_miembros').upsert(fila, { onConflict: 'id' })
-        if (error) return json({ ok: false, error: error.message }, 500)
+        if (error) return json({ ok: false, error: /funciones|invitado_at/.test(error.message) ? 'Falta correr la migración 2026_zz24_colaboradores.sql en Supabase.' : error.message }, 500)
 
-        await auditAdmin(req, 'equipo.guardado', { email, rol, paises: fila.paises, activo: fila.activo })
+        await auditAdmin(req, 'equipo.guardado', { email, rol, paises: fila.paises, activo: fila.activo, ...(rol === 'colaborador' ? { funciones } : {}) })
         return json({ ok: true })
+      }
+
+      // ── Invitar a un colaborador (solo el dueño, con 2FA) ─────────────
+      // A diferencia de equipo_guardar, ESTO SÍ CREA LA CUENTA cuando no
+      // existe: lo pidió el dueño ("el colaborador entra con el correo que yo
+      // le asigne"). Lo que lo hace seguro: solo el dueño la pide (equipo_*
+      // no figura en PERMISO_DE_ACCION), exige el 2FA de su sesión, la cuenta
+      // nace SIN contraseña (la crea la persona desde su correo) y el panel le
+      // exige activar su propio 2FA antes de mostrarle nada.
+      if (body.action === 'equipo_invitar') {
+        const email = String(body.email ?? '').toLowerCase().trim()
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'falta_email', message: 'Escribe un correo válido.' }, 400)
+        const funciones = normalizarFunciones(body.funciones)
+        if (!funciones.length) return json({ ok: false, error: 'sin_funciones', message: 'Marca al menos una función.' }, 400)
+        const paises = (Array.isArray(body.paises) ? body.paises : ['CO']).map((p: unknown) => String(p).toUpperCase()).filter((p: string) => ['CO', 'US', 'MX', 'BR'].includes(p))
+        if (!paises.length) return json({ ok: false, error: 'sin_paises', message: 'Elige al menos un país.' }, 400)
+        const nombre = String(body.nombre ?? '').trim().slice(0, 120) || null
+
+        const { data: cuenta } = await db.from('users')
+          .select('id, role, name, full_name, balances, crypto_balances').ilike('email', email).maybeSingle()
+        let id: string
+        let cuentaNueva = false
+        if (cuenta) {
+          if ((cuenta as any).role !== 'admin') {
+            const hayPlata = [...Object.values(((cuenta as any).balances ?? {}) as Record<string, unknown>), ...Object.values(((cuenta as any).crypto_balances ?? {}) as Record<string, unknown>)]
+              .some(v => Math.abs(Number(v) || 0) > 0)
+            if (hayPlata) return json({ ok: false, error: 'cuenta_con_saldo', message: 'Ese correo es de un cliente con saldo. Usa otro correo para el colaborador.' }, 400)
+            if (body.hacerAdmin !== true) {
+              return json({ ok: false, error: 'sin_rol_admin', message: 'Ese correo ya es de una cuenta de cliente (sin saldo). Para usarla como colaborador hay que convertirla.' }, 400)
+            }
+            const { error: eRol } = await db.from('users').update({ role: 'admin' }).eq('id', (cuenta as any).id)
+            if (eRol) return json({ ok: false, error: eRol.message }, 500)
+            await auditAdmin(req, 'equipo.cuenta_hecha_admin', { email, rolAnterior: (cuenta as any).role ?? null })
+          }
+          id = String((cuenta as any).id)
+        } else {
+          // Cuenta nueva, sin contraseña. email_confirm: el correo lo eligió el
+          // dueño y la persona lo prueba al abrir el enlace.
+          const { data: creado, error: eCrear } = await db.auth.admin.createUser({ email, email_confirm: true })
+          let nuevoId = (creado as any)?.user?.id ? String((creado as any).user.id) : null
+          if (!nuevoId && eCrear && /already|registered|exists/i.test(eCrear.message ?? '')) nuevoId = await authPorCorreo(email)
+          if (!nuevoId) return json({ ok: false, error: 'no_se_creo', message: `No se pudo crear la cuenta: ${eCrear?.message ?? 'sin respuesta'}` }, 500)
+          const { error: eFila } = await db.from('users').insert({
+            id: nuevoId, email, full_name: nombre ?? email.split('@')[0], name: nombre ?? null,
+            role: 'admin', balances: {}, crypto_balances: {}, kyc_status: 'approved',
+            created_at: new Date().toISOString(), raw_data: { colaborador: true },
+          })
+          if (eFila && !/duplicate|unique/i.test(eFila.message)) return json({ ok: false, error: 'no_se_creo', message: `No se pudo crear el perfil: ${eFila.message}` }, 500)
+          id = nuevoId
+          cuentaNueva = true
+          await auditAdmin(req, 'equipo.colaborador_cuenta_creada', { email, id })
+        }
+
+        // La fila del dueño antes de la primera de otro (ver equipo_guardar).
+        if (auth.userId && String(auth.userId) !== id) {
+          const { data: yo } = await db.from('admin_miembros').select('id').eq('id', auth.userId).maybeSingle()
+          if (!yo) {
+            const { error: eYo } = await db.from('admin_miembros').insert({
+              id: auth.userId, email: String(auth.email ?? '').toLowerCase(), rol: 'dueno', paises: [],
+              activo: true, creado_por: auth.userId,
+            })
+            if (eYo) return json({ ok: false, error: eYo.message }, 500)
+            await auditAdmin(req, 'equipo.dueno_registrado', { email: auth.email })
+          }
+        }
+
+        const ahora = new Date().toISOString()
+        const { error: eMiembro } = await db.from('admin_miembros').upsert({
+          id, email, nombre, rol: 'colaborador', funciones, paises, activo: true,
+          actualizado_at: ahora, creado_por: auth.userId, invitado_at: ahora,
+        }, { onConflict: 'id' })
+        if (eMiembro) return json({ ok: false, error: /funciones|invitado_at|rol_check/.test(eMiembro.message) ? 'Falta correr la migración 2026_zz24_colaboradores.sql en Supabase.' : eMiembro.message }, 500)
+
+        // Cuenta nueva: enlace para crear la contraseña. Cuenta que ya existía
+        // (ya tiene contraseña): solo el aviso con el enlace al panel.
+        const correo = await enviarInvitacionColaborador(req, email, nombre, funciones, cuentaNueva)
+        await auditAdmin(req, 'equipo.colaborador_invitado', { email, funciones, paises, cuentaNueva, correo: correo.ok ? 'enviado' : correo.motivo })
+        return json({ ok: true, cuentaNueva, correo })
+      }
+
+      // Reenviar la invitación (el enlace vence). Solo el dueño, con 2FA.
+      if (body.action === 'equipo_reenviar') {
+        const id = String(body.id ?? '')
+        const { data: m } = await db.from('admin_miembros').select('*').eq('id', id).maybeSingle()
+        if (!m) return json({ ok: false, error: 'no_existe', message: 'Ese colaborador no existe.' }, 404)
+        if (!(m as any).activo) return json({ ok: false, error: 'inactivo', message: 'Ese acceso está desactivado. Vuelve a invitarlo.' }, 400)
+        const funciones = normalizarFunciones((m as any).funciones)
+        const correo = await enviarInvitacionColaborador(req, String((m as any).email), (m as any).nombre ?? null, funciones, true)
+        if (correo.ok) { try { await db.from('admin_miembros').update({ invitado_at: new Date().toISOString() }).eq('id', id) } catch { /* informativo */ } }
+        await auditAdmin(req, 'equipo.invitacion_reenviada', { id, email: (m as any).email, correo: correo.ok ? 'enviado' : correo.motivo })
+        return json({ ok: correo.ok, correo, ...(correo.ok ? {} : { message: correo.motivo }) })
       }
 
       if (body.action === 'equipo_desactivar') {
@@ -6033,8 +6234,12 @@ Deno.serve(async (req: Request) => {
     // La descarga general exige poder ver clientes (los cuatro roles lo
     // tienen; un miembro dado de baja ya quedó afuera arriba).
     {
-      const permisosG = PERMISOS_POR_ROL[(auth.acceso?.rol ?? 'lectura') as Rol] ?? new Set<string>()
+      const permisosG = permisosDe(auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false })
       if (!(permisosG.has('*') || permisosG.has('clientes.ver'))) return json({ error: 'Tu rol no permite esta operación.', permisoDenegado: true }, 403)
+      if (auth.acceso?.rol === 'colaborador') {
+        const falta = await falta2faColaborador(req, String(auth.userId ?? ''))
+        if (falta) return json({ error: falta, needs2fa: true, activar2fa: falta.startsWith('Activa') }, 403)
+      }
     }
 
     // GET (or POST without body) — fetch all users and recent transactions

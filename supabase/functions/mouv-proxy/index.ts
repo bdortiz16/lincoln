@@ -1938,15 +1938,19 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
 // Qué permiso del equipo pide cada acción de admin. Lo que no figura queda
 // para el dueño. Tesorería ve las bolsas (Billeteras) y concilia desde
 // Clientes; lo de Fallos (devolver, confirmar, vincular) es de Operaciones.
+// 'fn.*' = la casilla del colaborador que usa esa acción (ver
+// PERMISOS_POR_FUNCION en _shared/equipo.ts). Los roles fijos no cambian.
 const PERMISO_MOUV: Record<string, string | string[]> = {
-  treasury_balances: ['plata.ver', 'tesoreria'],
-  sondear_dispersion: ['plata.ver', 'tesoreria'],
-  reconcile_breb: ['plata.mover', 'tesoreria'],
-  reconcile_ach: ['plata.mover', 'tesoreria'],
-  confirmar_dispersion: 'plata.mover',
-  force_return: 'plata.mover',
-  marcar_reembolso_externo: 'plata.mover',
-  vincular_referencia: 'plata.mover',
+  // El saldo de la bolsa lo leen Billetera, Tesorería y Lincoin.
+  treasury_balances: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  sondear_dispersion: ['plata.ver', 'tesoreria', 'fn.clientes', 'fn.fallos'],
+  // Conciliar puede reembolsar: Fallos y Tesorería.
+  reconcile_breb: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.tesoreria'],
+  reconcile_ach: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.tesoreria'],
+  confirmar_dispersion: ['plata.mover', 'fn.fallos'],
+  force_return: ['plata.mover', 'fn.fallos'],
+  marcar_reembolso_externo: ['plata.mover', 'fn.fallos'],
+  vincular_referencia: ['plata.mover', 'fn.fallos'],
   verify_and_credit: 'plata.mover',
 }
 
