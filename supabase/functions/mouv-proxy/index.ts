@@ -3357,6 +3357,13 @@ serve(async (req: Request) => {
           out.push({ dep: depId, result: (fila as any).status === 'Devuelto' ? 'revivio_revisar' : 'ya_acreditado' })
           continue
         }
+        // Dos conciliaciones a la vez (el cron cada 5 minutos y un clic en el
+        // panel) miraban las dos "no hay fila con este depósito" y las dos lo
+        // acreditaban: el mismo pago, dos veces en el saldo. El candado por
+        // depósito deja pasar a una sola; la otra lo verá ya acreditado en la
+        // siguiente vuelta.
+        const cDep = await reclamarCandado(db, `breb_dep:${depId}`, 600, ext, 'breb_conciliar')
+        if (cDep === 'ocupado' || cDep === 'error') { out.push({ dep: depId, result: 'en_curso_otra_vuelta' }); continue }
         const { data: creada, error: insErr } = await db.from('transactions').insert({
           user_id: ext, type: 'load', amount: neto, currency: 'COP_BREB', status: 'Completado',
           raw_data: {
@@ -3710,7 +3717,18 @@ serve(async (req: Request) => {
 
     // CAS: se reclama el reembolso ANTES de tocar el saldo. Si otra ejecución
     // ya lo reclamó, `claimed` viene vacío y no se acredita de nuevo.
-    const { data: claimed } = await db.from('transactions').update({
+    //
+    // Vale con `refunded` vacío o en FALSE. False es justo lo que deja un
+    // reintegro automático que falló (marcasReintegro: reembolsoPendiente,
+    // revisionManual), y este botón es la revisión manual. Con solo "vacío",
+    // esas filas respondían "ya reclamado" y el cliente se quedaba sin su
+    // plata hasta que alguien tocara la base a mano.
+    //
+    // Son DOS reclamos condicionales seguidos (vacío, y si no, false) y no un
+    // solo `or`: PostgREST falla al combinar `or` sobre JSON con el select de
+    // un update ("column raw_data does not exist"). Cada uno es atómico y el
+    // primero que gana deja `refunded: true`, así que el otro ya no coincide.
+    const reclamoFR = {
       status: 'Rechazado',
       raw_data: {
         ...rd,
@@ -3720,8 +3738,15 @@ serve(async (req: Request) => {
         returnedBy: caller.userId,
         returnReason: motivo,
         manualReturn: true,
+        reembolsoPendiente: false,
       },
-    }).eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+    }
+    let { data: claimed } = await db.from('transactions').update(reclamoFR)
+      .eq('id', tx.id).filter('raw_data->>refunded', 'is', null).select('id')
+    if (!claimed?.length && rd.refunded === false) {
+      ({ data: claimed } = await db.from('transactions').update(reclamoFR)
+        .eq('id', tx.id).filter('raw_data->>refunded', 'eq', 'false').select('id'))
+    }
     if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
 
     const acreditadoFR = await creditBalanceAtomic(tx.user_id, railCol, refund)

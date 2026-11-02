@@ -96,6 +96,7 @@ import { CuentaBrasilTarjeta } from './CuentaBrasilTarjeta';
 import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig } from '../context/SystemConfigContext'; 
 import { useDatabase } from '../context/DatabaseContext';
+import { celdaCsv } from '../lib/csv';
 
 interface PersonalDashboardProps {
   onLogout: () => void;
@@ -2576,7 +2577,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           </span>
       );
       const exportCsv = () => {
-          const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+          // celdaCsv: un concepto o destino que empieza por "=" no se ejecuta
+          // al abrir el CSV (los montos negativos quedan como números).
+          const esc = (v: any) => celdaCsv(v);
           const lines = [['Fecha', 'Concepto', 'Destino', 'Riel', 'Referencia', 'Monto', 'Moneda', 'Estado'].join(';')];
           rows.forEach(t => {
               const i = rowInfo(t);

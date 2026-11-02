@@ -39,6 +39,13 @@ const isColaboradoresRoute =
   typeof window !== 'undefined' &&
   /^\/colaboradores\/?$/.test(window.location.pathname);
 
+// /desbloquear: la página del enlace del correo de bloqueo. Va sola, sin
+// providers ni sesión: quien está bloqueado justamente no puede entrar.
+const DesbloquearCuenta = lazyNamed(() => import('./components/DesbloquearCuenta'), 'DesbloquearCuenta');
+const isDesbloquearRoute =
+  typeof window !== 'undefined' &&
+  /^\/desbloquear\/?$/.test(window.location.pathname);
+
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { error: Error | null }
@@ -82,7 +89,9 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary>
       <Suspense fallback={<div style={{ minHeight: '100vh', background: '#070808' }} />}>
-      {isPersonasAdminRoute ? (
+      {isDesbloquearRoute ? (
+        <DesbloquearCuenta />
+      ) : isPersonasAdminRoute ? (
         // 🔒 Admin Personas: independiente, sin providers de Empresas
         <PersonasAdminApp />
       ) : isEmpresasAdminRoute || isColaboradoresRoute ? (

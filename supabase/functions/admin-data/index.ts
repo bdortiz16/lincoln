@@ -1263,7 +1263,11 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
   }
 
   if (!RESEND_KEY) return
-  const url = `${SUPABASE_URL}/functions/v1/admin-data?action=unlock&u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`
+  // El enlace abre una página de Lincoin con un BOTÓN: solo el botón
+  // desbloquea. Antes desbloqueaba con solo abrir el enlace, y los filtros
+  // de correo (Outlook, Gmail, antivirus) abren los enlaces solos para
+  // revisarlos: la cuenta se desbloqueaba sin que nadie lo decidiera.
+  const url = `${ORIGEN_APP}/desbloquear?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`
   // Todo valor va escapado: el motivo, el navegador (user-agent, lo escribe
   // quien intenta entrar) y la ubicación vienen de afuera. Sin escapar, quien
   // tuviera la contraseña fallaba a propósito con un user-agent con HTML y
@@ -1915,43 +1919,14 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true, version: 'admin-data v4 (slim + ping)' })
     }
 
-    // Desbloqueo desde el correo. No lleva sesión a propósito: el titular
-    // está bloqueado justamente porque no puede entrar. La credencial es el
-    // token de un solo uso que se le envió, comparado por hash.
+    // Enlaces de desbloqueo ya enviados (apuntaban acá): abrirlos ya NO
+    // desbloquea. Se redirige a la página con el botón, que es la que
+    // desbloquea con un POST (ver 'unlock_cuenta'). Un GET que cambia algo lo
+    // dispara cualquier filtro de correo que revise los enlaces.
     if (pingUrl.searchParams.get('action') === 'unlock') {
       const uid = pingUrl.searchParams.get('u') ?? ''
       const tok = pingUrl.searchParams.get('t') ?? ''
-      const pag = (titulo: string, texto: string, ok: boolean) => new Response(
-        `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${titulo}</title></head>
-         <body style="margin:0;background:#0C0E0D;font-family:Archivo,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">
-           <div style="text-align:center;padding:28px;max-width:380px">
-             <p style="font-size:22px;font-weight:800;color:#F4F4F2;margin:0 0 18px">Lincoin<span style="color:#4ADE80">.</span></p>
-             <p style="font-size:17px;font-weight:800;color:${ok ? '#4ADE80' : '#F87171'};margin:0 0 8px">${titulo}</p>
-             <p style="font-size:13px;color:#878E88;line-height:1.6;margin:0">${texto}</p>
-           </div></body></html>`,
-        { status: ok ? 200 : 400, headers: { 'Content-Type': 'text/html; charset=utf-8', ...CORS } })
-      if (!uid || !tok) return pag('Enlace incompleto', 'Vuelve a abrir el enlace del correo.', false)
-      const lock = await adminLock(uid)
-      if (!lock) return pag('La cuenta ya está activa', 'No hay ningún bloqueo pendiente. Puedes iniciar sesión.', true)
-      if (lock.tokenHash !== await sha256Hex(tok)) {
-        await auditAdmin(req, 'security.unlock_token_invalido', { userId: uid })
-        return pag('Enlace inválido o ya usado', 'Cada enlace sirve una sola vez. Si necesitas otro, intenta iniciar sesión para generar uno nuevo.', false)
-      }
-      await clearAdminLock(uid)
-      // La IP que se bloqueó junto con la cuenta también se libera: quien abre
-      // este enlace probó que es el titular (el correo). Antes la cuenta
-      // quedaba activa pero la IP seguía bloqueada, y nadie de esa red —ni el
-      // titular— podía entrar hasta que alguien la quitara desde Monitoreo.
-      let ipLiberada: string | null = null
-      if (lock.ip) {
-        try {
-          const list = await blockedIps()
-          const resto = list.filter(b => !(b.ip === lock.ip && (b.soloPanel || String(b.reason ?? '').startsWith('bloqueo de la cuenta de admin'))))
-          if (resto.length !== list.length) { await saveBlockedIps(resto); ipLiberada = String(lock.ip) }
-        } catch { /* la cuenta ya quedó desbloqueada; la IP se puede quitar desde Monitoreo */ }
-      }
-      await auditAdmin(req, 'security.admin_unlocked', { userId: uid, ipLiberada })
-      return pag('Cuenta desbloqueada', 'Ya puedes iniciar sesión. Si no fuiste tú quien pidió esto, cambia la contraseña de inmediato.', true)
+      return new Response(null, { status: 302, headers: { Location: `${ORIGEN_APP}/desbloquear?u=${encodeURIComponent(uid)}&t=${encodeURIComponent(tok)}`, ...CORS } })
     }
 
     // ⚠️ El body se parsea ANTES del gate de admin — 'delete_self' e
@@ -1971,6 +1946,39 @@ Deno.serve(async (req: Request) => {
       if (selfServiceBody.action === 'caja_foto') {
         if (!(await traeSecretoDeLaBase(req, db))) return json({ error: 'No autorizado' }, 401)
         return json(await cajaFoto())
+      }
+
+      // ── Desbloqueo desde el correo ────────────────────────────────────
+      // No lleva sesión a propósito: el titular está bloqueado justamente
+      // porque no puede entrar. La credencial es el token de un solo uso que
+      // se le envió, comparado por hash. Llega por POST desde la página
+      // lincoin.me/desbloquear, al tocar el botón.
+      if (selfServiceBody.action === 'unlock_cuenta') {
+        const uid = String(selfServiceBody.u ?? '').slice(0, 64)
+        const tok = String(selfServiceBody.t ?? '').slice(0, 200)
+        if (!uid || !tok) return json({ ok: false, titulo: 'Enlace incompleto', texto: 'Vuelve a abrir el enlace del correo.' })
+        const lock = await adminLock(uid)
+        if (!lock) return json({ ok: true, titulo: 'La cuenta ya está activa', texto: 'No hay ningún bloqueo pendiente. Puedes iniciar sesión.' })
+        if (lock.tokenHash !== await sha256Hex(tok)) {
+          await auditAdmin(req, 'security.unlock_token_invalido', { userId: uid })
+          return json({ ok: false, titulo: 'Enlace inválido o ya usado', texto: 'Cada enlace sirve una sola vez. Si necesitas otro, intenta iniciar sesión para generar uno nuevo.' })
+        }
+        await clearAdminLock(uid)
+        // La IP que se bloqueó junto con la cuenta también se libera: quien
+        // usa este enlace probó que es el titular (el correo). Antes la cuenta
+        // quedaba activa pero la IP seguía bloqueada, y nadie de esa red —ni
+        // el titular— podía entrar hasta que alguien la quitara desde
+        // Monitoreo.
+        let ipLiberada: string | null = null
+        if (lock.ip) {
+          try {
+            const list = await blockedIps()
+            const resto = list.filter(b => !(b.ip === lock.ip && (b.soloPanel || String(b.reason ?? '').startsWith('bloqueo de la cuenta de admin'))))
+            if (resto.length !== list.length) { await saveBlockedIps(resto); ipLiberada = String(lock.ip) }
+          } catch { /* la cuenta ya quedó desbloqueada; la IP se puede quitar desde Monitoreo */ }
+        }
+        await auditAdmin(req, 'security.admin_unlocked', { userId: uid, ipLiberada })
+        return json({ ok: true, titulo: 'Cuenta desbloqueada', texto: 'Ya puedes iniciar sesión. Si no fuiste tú quien pidió esto, cambia la contraseña de inmediato.' })
       }
 
       // ── Intento de ingreso FALLIDO ────────────────────────────────────

@@ -12,6 +12,7 @@ import { ContabilidadDashboard } from './ContabilidadDashboard';
 import { ComplianceDashboard } from './ComplianceDashboard';
 import { CupoBeneficiario } from './CupoBeneficiario';
 import { KycBeneficiarioModal, agruparHallazgos } from './KycBeneficiarioModal';
+import { celdaCsv } from '../lib/csv';
 
 declare const __BUILD_TS__: string;
 
@@ -1584,7 +1585,8 @@ export const ContactsSection: React.FC<{
     // servidor. El BOM del principio es para que Excel abra las tildes bien.
     const descargarCsv = (c: MouvContact) => {
         const filas = movimientosDe(c);
-        const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        // celdaCsv: un nombre que empieza por "=" no se ejecuta al abrir el CSV.
+        const esc = (v: any) => celdaCsv(v);
         const lineas = [
             ['Fecha', 'Beneficiario', 'Cuenta o llave', 'Tipo', 'Monto', 'Moneda', 'Estado', 'Referencia'].map(esc).join(','),
             ...filas.map(t => [

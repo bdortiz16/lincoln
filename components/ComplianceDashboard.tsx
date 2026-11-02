@@ -25,6 +25,7 @@
 // ══════════════════════════════════════════════════════════════════
 import React, { useMemo, useState } from 'react';
 import type { MouvContact, ContactStatus } from './ContactsSection';
+import { celdaCsv } from '../lib/csv';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const C = {
@@ -212,7 +213,8 @@ export const ComplianceDashboard: React.FC<Props> = ({
   const mostradas = visibles.slice(0, limite);
 
   const exportar = () => {
-    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    // celdaCsv: un nombre que empieza por "=" no se ejecuta al abrir el CSV.
+    const esc = (v: any) => celdaCsv(v);
     const lineas = [['Beneficiario', 'Tipo doc', 'Documento', 'Banco o riel', 'Cuenta o llave', 'Situación', 'Categoría', 'Operable', 'Motivos', 'Cuenta destino', 'Última consulta'].map(esc).join(',')];
     for (const f of visibles) {
       const m = rowMeta(f.c);

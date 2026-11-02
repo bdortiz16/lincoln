@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ShieldAlert, RefreshCw, FileText, ChevronDown, Search, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { sinFormula } from '../lib/csv';
 
 // ─────────────────────────────────────────────────────────────
 // AdminCompliance — la bandeja de cumplimiento.
@@ -169,8 +170,9 @@ export const AdminCompliance: React.FC = () => {
       'nombre_coincide', 'documento_vigente', 'operable', 'motivo_bloqueo',
       'id_reporte_tusdatos', 'fecha_consulta', 'enviado_a_kumplo',
     ];
+    // sinFormula: un nombre que empieza por "=" no se ejecuta al abrir el CSV.
     const esc = (v: unknown) => {
-      const s = String(v ?? '');
+      const s = sinFormula(v);
       return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const filas = casos.map(c => [
