@@ -630,7 +630,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // actualizaba tras un cargue (había que recargar la página). El objeto vivo
   // se deriva de allUsers más abajo.
   const [carguesClientId, setCarguesClientId] = useState<string | null>(null);
-  const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH' | 'COP_C3' | 'COP_C4'>('COP');
+  // Sin destino por defecto. Antes arrancaba en "Saldo Lincoin" y, con el
+  // apuro, se acreditaba ahí lo que iba para Finity (pasó: hubo que
+  // descontar y volver a cargar). Ahora hay que elegirlo cada vez: se
+  // vacía al cambiar de cliente y después de cada cargue aplicado.
+  const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH' | 'COP_C3' | 'COP_C4' | null>(null);
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
   const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
@@ -1021,7 +1025,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   }, [activeTab]);
 
   // En pantalla va el proveedor: el saldo COP_BREB es la cuenta en Mouv y COP_ACH la de Finity.
-  const railLabelOf = (r: string) => (r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Mouv' : 'Finity');
+  // Todos los rieles con su nombre. Antes todo lo que no era COP ni Bre-B
+  // salía como "Finity": un cargue a Coinsenda se confirmaba como
+  // "Acreditar en Finity", justo el tipo de confusión que lleva a cargar
+  // en el saldo equivocado.
+  const railLabelOf = (r: string | null) => (
+    r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Mouv' : r === 'COP_ACH' ? 'Finity'
+    : r === 'COP_C3' ? 'Coinsenda' : r === 'COP_C4' ? 'Coinsenda 2' : '—');
 
   // Paso 1: validar y abrir la ventana de confirmación propia.
   // Cuenta de la operación. Se calcula igual que en el servidor solo para
@@ -1046,6 +1056,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 
   const requestCargue = () => {
     if (!carguesClient) return;
+    if (!carguesRail) { setCarguesMsg({ ok: false, text: 'Elige el destino: en qué saldo queda el cargue (Saldo Lincoin, Mouv, Finity, Coinsenda o Coinsenda 2).' }); return; }
     if (usandoAcct && !acctCalc.listo) { setCarguesMsg({ ok: false, text: 'Completa los cuatro datos de la operación (USDT enviados, USDT recibidos y las dos tasas).' }); return; }
     const raw = usandoAcct ? acctCalc.copToClient : parseFloat((carguesAmount || '').replace(/[^\d.]/g, ''));
     if (!isFinite(raw) || raw <= 0) { setCarguesMsg({ ok: false, text: 'Ingresa un monto válido.' }); return; }
@@ -1067,7 +1078,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     try { return await submitCargueUnaVez(); } finally { submitCargueEnCursoRef.current = false; }
   };
   const submitCargueUnaVez = async () => {
-    if (!carguesClient || !carguesConfirm) return;
+    if (!carguesClient || !carguesConfirm || !carguesRail) return;
     const raw = carguesConfirm.raw;
     const delta = carguesDir === 'credit' ? raw : -raw;
     const railLabel = railLabelOf(carguesRail);
@@ -1114,6 +1125,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         if (d.reverso && !d.reverso.ok) setCarguesMsg({ ok: false, text: `⚠️ El descuento se aplicó, pero no se pudo vincular al cargue: ${d.reverso.error}. Vincúlalo desde Contabilidad → Clientes.` });
         else if (d.reverso?.aviso) showToast(d.reverso.aviso, 9000);
         setCarguesAmount(''); setCarguesNote(''); setCargueOtp(''); setCarguesReversaDe('');
+        setCarguesRail(null); // el siguiente cargue vuelve a pedir el destino
         setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
@@ -1709,7 +1721,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           allUsers.forEach(u => { const { totalUSD } = getUserVolume(u.id); if (totalUSD > limit) usersOverLimit++; });
           if (usersOverLimit > 0) newAlerts.push({ id: 'volume-risk', type: 'warning', title: 'Límite de Volumen Excedido', description: `${usersOverLimit} clientes superaron el límite de $${limit.toLocaleString()}. Revisar Cumplimiento.`, action: 'clients' });
 
-          setActiveAlerts(newAlerts);
+          // Solo si cambiaron. Las dependencias de este efecto (allUsers,
+          // pendingDeposits…) son listas que se crean de nuevo en cada render,
+          // así que el efecto corre en cada render; guardar SIEMPRE un arreglo
+          // nuevo provocaba otro render, y así sin parar: el panel se redibujaba
+          // en bucle (React avisaba "Maximum update depth exceeded"). Con las
+          // mismas alertas se devuelve el estado anterior y React no redibuja.
+          setActiveAlerts(prev => JSON.stringify(prev) === JSON.stringify(newAlerts) ? prev : newAlerts);
       };
       generateAlerts();
       const interval = setInterval(generateAlerts, 30000);
@@ -2317,8 +2335,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 return (
                   <div key={b.rail} style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
                     <div className="flex items-center justify-between" style={{ gap: 10 }}>
-                      <span className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>
-                        <b.icon size={13} style={{ color: '#4ADE80' }} /> {b.label} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· Bre-B y ACH</span>
+                      {/* El nombre no se parte ("Coinsenda / 2"): si no cabe,
+                          baja entero el "· Bre-B y ACH". */}
+                      <span className="flex items-center flex-wrap" style={{ columnGap: 6, fontSize: 12.5, fontWeight: 700, color: '#F4F4F2', minWidth: 0 }}>
+                        <b.icon size={13} style={{ color: '#4ADE80' }} /> <span style={{ whiteSpace: 'nowrap' }}>{b.label}</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap' }}>· Bre-B y ACH</span>
                       </span>
                       <button onClick={b.reload} disabled={b.loading} title={`Actualizar ${b.label}`} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer', padding: 2 }}>
                         <RefreshCw size={12} className={b.loading ? 'animate-spin' : ''} />
@@ -2426,7 +2446,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         ))}
                       </p>
                     </div>
-                    <button onClick={() => { setCarguesClientId(null); setCarguesMsg(null); }} title="Cambiar cliente" style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
+                    <button onClick={() => { setCarguesClientId(null); setCarguesMsg(null); setCarguesRail(null); }} title="Cambiar cliente" style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
                   </div>
                 ) : (
                   <>
@@ -2457,7 +2477,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 
               {/* 2 · Destino: dónde queda el saldo del cliente */}
               <div>
-                <label style={ROTULO}>Destino</label>
+                <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginBottom: 7 }}>
+                  <label style={{ ...ROTULO, marginBottom: 0, ...(carguesClient && !carguesRail ? { color: '#FBBF24' } : {}) }}>Destino</label>
+                  {/* Sin destino por defecto: se avisa en ámbar mientras falte. */}
+                  {!carguesRail && (
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: carguesClient ? '#FBBF24' : '#878E88' }}>
+                      Elige en qué saldo queda el cargue
+                    </span>
+                  )}
+                </div>
                 {/* En el celular van uno debajo del otro: en tres columnas no cabían. */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 2xl:grid-cols-5" style={{ gap: 8 }}>
                   {(['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4'] as const).map(code => {
@@ -2639,6 +2667,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               <div className="flex items-center justify-between flex-wrap" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 16, gap: 14 }}>
                 <div style={{ fontSize: 12.5, color: '#878E88', lineHeight: 1.6 }}>
                   {!carguesClient ? 'Elige un cliente para empezar.'
+                    : !carguesRail ? <span style={{ color: '#FBBF24', fontWeight: 600 }}>Elige el destino: en qué saldo de <b>{carguesClient.name}</b> queda el cargue.</span>
                     : montoVista <= 0 ? <>{usandoAcct ? 'Completa los datos de la operación' : 'Escribe el monto'} para <b style={{ color: '#F4F4F2' }}>{carguesClient.name}</b>.</>
                     : <>
                         <span style={{ color: '#F4F4F2' }}>{carguesDir === 'credit' ? 'Se acreditan' : 'Se descuentan'} <b>{Math.round(carguesDir === 'credit' ? netoVista : montoVista).toLocaleString('es-CO')} COP</b> a {carguesClient.name} en <b>{railMeta[carguesRail].label}</b></span><br />
@@ -2651,11 +2680,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 </div>
                 <button
                   onClick={requestCargue}
-                  disabled={!carguesClient || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
+                  disabled={!carguesClient || !carguesRail || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
                   style={{ border: 'none', borderRadius: 12, padding: '12px 22px', fontSize: 14, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
-                    ...((!carguesClient || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)) ? { background: 'rgba(255,255,255,0.08)', color: 'rgba(244,244,242,0.45)', cursor: 'not-allowed' } : { background: '#4ADE80', color: '#0C0E0D' }) }}
+                    ...((!carguesClient || !carguesRail || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)) ? { background: 'rgba(255,255,255,0.08)', color: 'rgba(244,244,242,0.45)', cursor: 'not-allowed' } : { background: '#4ADE80', color: '#0C0E0D' }) }}
                 >
-                  {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}</>}
+                  {/* El destino va en el botón: es lo último que se lee antes de tocar. */}
+                  {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}{carguesRail ? ` en ${railLabelOf(carguesRail)}` : ''}</>}
                 </button>
               </div>
             </div>
@@ -2907,7 +2937,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               tope de alto y los botones quedaban abajo, fuera de la vista. Ahora
               tiene tope (el alto visible), el contenido se desplaza adentro y
               los botones quedan siempre a la vista, abajo. */}
-          {carguesConfirm && carguesClient && (
+          {carguesConfirm && carguesClient && carguesRail && (
             <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !carguesBusy && setCarguesConfirm(null)}>
               <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 420, maxHeight: 'calc(100dvh - 24px)', display: 'flex', flexDirection: 'column', background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif", boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
                 <div style={{ padding: '14px 16px 0', display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
@@ -2942,6 +2972,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   const n = (x: number) => x.toLocaleString('es-CO');
                   return (
                 <div style={{ padding: '12px 14px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12 }}>
+                  {/* El destino, grande y primero: es el dato que se equivocaba
+                      (Saldo Lincoin en vez de Finity) y aquí todavía se corrige. */}
+                  <div className="flex items-center justify-between" style={{ gap: 10, paddingBottom: 8, marginBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    <span style={{ fontSize: 12, color: '#878E88' }}>Destino</span>
+                    <span style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.3px', whiteSpace: 'nowrap' }}>{railLabelOf(carguesRail)}</span>
+                  </div>
                   <div className="flex items-center justify-between" style={{ gap: 10, marginBottom: 6 }}>
                     <span style={{ fontSize: 12, color: '#878E88' }}>Monto{isBrebCredit ? ' del cargue' : ''}</span>
                     <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: carguesDir === 'credit' ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap' }}>
@@ -3006,7 +3042,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 })()}
                 {cargueExceeds && (
                   <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.38)', borderRadius: 12 }}>
-                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en {carguesRail === 'COP_BREB' ? 'Mouv' : 'Finity'}</p>
+                    <p style={{ fontSize: 12, color: '#F87171', fontWeight: 800, margin: 0 }}>⚠ Excede lo disponible en {railLabelOf(carguesRail)}</p>
                     <p style={{ fontSize: 11.5, color: 'rgba(248,113,113,0.9)', lineHeight: 1.45, margin: '4px 0 0' }}>
                       Libre para cargar: <b>{Math.round(freeForRail).toLocaleString('es-CO')} COP</b>. Con este cargue quedarías corto en <b>{cargueShortfall.toLocaleString('es-CO')} COP</b> frente a lo que ya les debes a los clientes — estarías acreditando saldo que la bolsa no respalda.
                     </p>
