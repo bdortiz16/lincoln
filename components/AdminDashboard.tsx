@@ -5464,7 +5464,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   };
 
   const closeSidebar = () => setIsSidebarOpen(false);
-  const navTo = (tab: string) => { setActiveTab(tab as any); closeSidebar(); };
+  // Cada clic en Contabilidad del menú la abre de cero (en el Resumen), también
+  // si ya estaba abierta en otra pestaña (Clientes, Facturación, Mesa OTC).
+  const [entradaConta, setEntradaConta] = useState(0);
+  const navTo = (tab: string) => { if (tab === 'otcConfig') setEntradaConta(n => n + 1); setActiveTab(tab as any); closeSidebar(); };
   // Cualquier salto a otra pestaña (un aviso, un botón "volver", la billetera
   // USDT) vuelve a la Billetera si el rol no la tiene. El servidor igual le
   // negaría los datos; esto evita que vea una pantalla vacía o con errores.
@@ -5775,7 +5778,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </button>
                   <AdminGasFreeSection />
                 </>)}
-                {activeTab === 'otcConfig' && <AdminContabilidad />}
+                {activeTab === 'otcConfig' && <AdminContabilidad key={entradaConta} />}
                 {activeTab === 'coinsenda' && <AdminCoinsenda soloTablero={!esDueno} />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
                 {activeTab === 'fallos' && renderFallos()}

@@ -117,10 +117,6 @@ const ESTADO_FACTURA: Record<string, { txt: string; cls: string }> = {
 };
 const FUENTE: Record<string, string> = { registrada: 'registrada', estimada: 'estimada', sin_dato: 'sin dato', manual: 'confirmada a mano' };
 
-const leerPestana = (): Pestana => {
-  try { const v = localStorage.getItem('lincoin_conta_tab'); if (v === 'resumen' || v === 'clientes' || v === 'facturacion' || v === 'mesa') return v; } catch { /* */ }
-  return 'resumen';
-};
 
 const Kpi: React.FC<{ titulo: string; valor: string; detalle?: string; acento?: boolean }> = ({ titulo, valor, detalle, acento }) => (
   <div className="bg-white rounded-xl border border-slate-200 p-4">
@@ -863,7 +859,10 @@ async function pedirFacturas(estado: string) {
 
 // ── Contenedor ──────────────────────────────────────────────
 export const AdminContabilidad: React.FC = () => {
-  const [pestana, setPestana] = useState<Pestana>(leerPestana);
+  // Entrar a Contabilidad abre SIEMPRE el Resumen. Antes se recordaba la
+  // última pestaña (localStorage) y, si la última fue Mesa OTC, el clic en
+  // Contabilidad del menú abría la Mesa OTC en vez del resumen del mes.
+  const [pestana, setPestana] = useState<Pestana>('resumen');
   const [periodo, setPeriodoEstado] = useState<Periodo>(leerPeriodo);
   const sel = useMemo(() => seleccionDe(periodo), [periodo]);
   const setPeriodo = (p: Periodo) => { setPeriodoEstado(p); try { localStorage.setItem('lincoin_conta_periodo', JSON.stringify(p)); } catch { /* */ } };
@@ -881,7 +880,7 @@ export const AdminContabilidad: React.FC = () => {
   const [cargando, setCargando] = useState(false);
   const [aviso, setAviso] = useState<{ m: string; ok: boolean } | null>(null);
 
-  const cambiar = (p: Pestana) => { setPestana(p); try { localStorage.setItem('lincoin_conta_tab', p); } catch { /* */ } };
+  const cambiar = (p: Pestana) => setPestana(p);
   // Al entrar, los débitos que revierten EXACTO un cargue (el operador se
   // equivocó y descontó lo mismo) se vinculan solos. Una vez por visita; si
   // el rol no puede, se sigue sin decir nada.
