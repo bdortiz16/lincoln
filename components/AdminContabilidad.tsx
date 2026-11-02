@@ -360,6 +360,114 @@ const tasa = (n: unknown) => {
   return Number.isFinite(v) && v > 0 ? v.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—';
 };
 
+// Número escrito a la colombiana: punto de miles, coma decimal ("3.389,07").
+// Se muestra debajo de cada campo cómo se entendió, para que un "3389.07"
+// leído como 338.907 se vea antes de guardar (el servidor además lo rechaza).
+const leerNumero = (s: string): number => {
+  const t = String(s ?? '').trim().replace(/\s/g, '').replace(/\$/g, '');
+  if (!t) return NaN;
+  return Number(t.replace(/\./g, '').replace(',', '.'));
+};
+const escribirNumero = (n: number | null | undefined) => n != null && Number.isFinite(n) ? n.toLocaleString('es-CO', { maximumFractionDigits: 6 }) : '';
+
+// ── Corregir la venta de un cargue ──────────────────────────
+// Lo que se escribió mal al hacer el cargue (la tasa de venta: 32 en vez de
+// 3.200; o los USDT que llegaron: 328 en vez de 3.248) dejaba la utilidad en
+// millones negativos sin forma de arreglarla. Esto corrige solo el lado de
+// Lincoin: lo acreditado al cliente no cambia. Pide el código 2FA (cambia la
+// utilidad, que es lo que Lincoin retira de las bolsas y factura).
+const CorregirVenta: React.FC<{ fila: any; onHecho: (m: string, ok: boolean) => void }> = ({ fila, onHecho }) => {
+  const v = fila.venta as { usdtGross: number; usdtNet: number | null; sellRate: number | null; creditedCop: number; correcciones: number };
+  const [abierto, setAbierto] = useState(false);
+  const [llego, setLlego] = useState('');
+  const [tasaTxt, setTasaTxt] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abrir = () => { setLlego(escribirNumero(v.usdtNet ?? v.usdtGross)); setTasaTxt(escribirNumero(v.sellRate)); setMotivo(''); setError(null); setAbierto(true); };
+  const nLlego = leerNumero(llego);
+  const nTasa = leerNumero(tasaTxt);
+  const recibido = Number.isFinite(nLlego) && Number.isFinite(nTasa) ? Math.round(nLlego * nTasa) : NaN;
+  const utilidad = Number.isFinite(recibido) ? recibido - v.creditedCop : NaN;
+  const problema = !(nLlego > 0) ? 'Escribe cuántos USDT llegaron al proveedor.'
+    : nLlego > v.usdtGross + 0.000001 ? `No pueden llegar más de los ${usd(v.usdtGross)} USDT que envió el cliente.`
+    : !(nTasa >= 1000 && nTasa <= 20000) ? 'La tasa de venta va en pesos por USDT, entre 1.000 y 20.000.'
+    : null;
+  const sospechosa = (v.sellRate != null && v.sellRate < 1000) || Number(fila.liq?.utilidadCop) < 0;
+  const guardar = async () => {
+    if (problema || enviando) return;
+    setEnviando(true); setError(null);
+    const r = await pedirAdmin({ action: 'contabilidad_corregir_venta', txId: fila.id, sellRate: nTasa, usdtNet: nLlego, motivo: motivo.trim() || undefined });
+    setEnviando(false);
+    if (r?.ok) {
+      setAbierto(false);
+      onHecho(`Venta corregida: la utilidad del cargue pasó de ${cop(r.antes?.utilityCop)} a ${cop(r.despues?.utilityCop)}.`, true);
+    } else if (!r?.cancelado) {
+      setError(r?.permisoDenegado ? 'Tu rol no permite corregir la contabilidad.' : (r?.error ?? 'No se pudo corregir.'));
+    }
+  };
+  return (
+    <>
+      <button onClick={abrir}
+        className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border whitespace-nowrap ${sospechosa ? 'border-amber-400 text-amber-700 hover:bg-amber-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+        Corregir venta
+      </button>
+      {abierto && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !enviando && setAbierto(false)}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Corregir la venta del cargue"
+            style={{ width: '100%', maxWidth: 440, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, padding: 20, fontFamily: "'Archivo', system-ui, sans-serif", color: '#F4F4F2', textAlign: 'left', boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <p style={{ margin: 0, fontSize: 16, fontWeight: 800, letterSpacing: '-0.3px' }}>Corregir la venta del cargue</p>
+              <button onClick={() => !enviando && setAbierto(false)} style={{ color: '#878E88', background: 'none', border: 'none', cursor: 'pointer' }} aria-label="Cerrar"><X size={16} /></button>
+            </div>
+            <p style={{ margin: '6px 0 14px', fontSize: 12.5, color: '#878E88', lineHeight: 1.5 }}>
+              Cargue del {fecha(fila.created_at)}: el cliente envió <b style={{ color: '#F4F4F2' }}>{usd(v.usdtGross)} USDT</b> y se le acreditaron <b style={{ color: '#F4F4F2' }}>{cop(v.creditedCop)}</b>: eso no cambia. Se corrige solo la venta de Lincoin.
+            </p>
+
+            <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', textTransform: 'uppercase' }}>USDT que llegaron al proveedor</label>
+            <input value={llego} onChange={e => setLlego(e.target.value)} inputMode="decimal"
+              style={{ width: '100%', marginTop: 6, height: 40, borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#F4F4F2', padding: '0 12px', fontSize: 14, fontWeight: 600, outline: 'none' }} />
+            <p style={{ margin: '4px 0 12px', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>
+              {Number.isFinite(nLlego) ? `Se entiende: ${usd(nLlego)} USDT` : 'Escribe un número (punto de miles, coma decimal).'}{v.usdtNet != null ? ` · guardado: ${usd(v.usdtNet)}` : ''}
+            </p>
+
+            <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', textTransform: 'uppercase' }}>Tasa de venta (COP por USDT)</label>
+            <input value={tasaTxt} onChange={e => setTasaTxt(e.target.value)} inputMode="decimal" autoFocus
+              style={{ width: '100%', marginTop: 6, height: 40, borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#F4F4F2', padding: '0 12px', fontSize: 14, fontWeight: 600, outline: 'none' }} />
+            <p style={{ margin: '4px 0 12px', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>
+              {Number.isFinite(nTasa) ? `Se entiende: ${tasa(nTasa)}` : 'Escribe un número (punto de miles, coma decimal).'}{v.sellRate != null ? ` · guardada: ${tasa(v.sellRate)}` : ''}
+            </p>
+
+            <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', textTransform: 'uppercase' }}>Motivo (opcional)</label>
+            <input value={motivo} onChange={e => setMotivo(e.target.value)} maxLength={300} placeholder="Ej.: se digitó 32 en vez de 3.201"
+              style={{ width: '100%', marginTop: 6, height: 38, borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#F4F4F2', padding: '0 12px', fontSize: 13, outline: 'none' }} />
+
+            <div style={{ marginTop: 14, borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: '#0C0E0D', padding: '10px 12px', fontSize: 12.5 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0' }}><span style={{ color: '#878E88' }}>Recibido por la venta</span><b>{Number.isFinite(recibido) ? cop(recibido) : '—'}</b></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0' }}><span style={{ color: '#878E88' }}>Acreditado al cliente</span><b>{cop(v.creditedCop)}</b></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '6px 0 2px', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 4 }}>
+                <span style={{ color: '#878E88' }}>Utilidad Lincoin</span>
+                <b style={{ color: !Number.isFinite(utilidad) ? '#878E88' : utilidad < 0 ? '#F87171' : '#4ADE80' }}>{Number.isFinite(utilidad) ? cop(utilidad) : '—'}</b>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>Antes: {cop(fila.liq?.utilidadCop)}{fila.liq?.reversadoCop ? ' · el cargue tiene un ajuste vinculado: la utilidad final se prorratea' : ''}{v.correcciones ? ` · ya se corrigió ${v.correcciones} vez${v.correcciones === 1 ? '' : 'es'}` : ''}</p>
+            </div>
+
+            {(error || problema) && <p style={{ margin: '10px 0 0', fontSize: 12, color: '#F87171' }}>{error ?? problema}</p>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setAbierto(false)} disabled={enviando}
+                style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+              <button onClick={guardar} disabled={!!problema || enviando}
+                style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: problema || enviando ? 'not-allowed' : 'pointer', background: problema || enviando ? 'rgba(255,255,255,0.08)' : '#4ADE80', color: problema || enviando ? 'rgba(244,244,242,0.45)' : '#0C0E0D' }}>
+                {enviando ? 'Guardando…' : 'Guardar corrección'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
 // Vincular un débito (ajuste) al cargue que corrige. Las sugerencias las arma
 // el servidor: mismo saldo, anterior al débito, y primero el que cuadra exacto.
 const VincularAjuste: React.FC<{ fila: any; motivo?: string; fechaDe: (id: string) => string | null; onHecho: (m: string, ok: boolean) => void }> = ({ fila, motivo, fechaDe, onHecho }) => {
@@ -602,7 +710,10 @@ const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => v
                     ) : null}
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    {l?.facturable && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={l} onHecho={aviso} />}
+                    <div className="flex flex-col items-end gap-1.5">
+                      {l?.facturable && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={l} onHecho={aviso} />}
+                      {d.venta && !anulado && d.factura?.estado !== 'emitida' && d.factura?.estado !== 'emitiendo' && <CorregirVenta fila={d} onHecho={aviso} />}
+                    </div>
                   </td>
                 </tr>
               );

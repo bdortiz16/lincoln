@@ -1740,6 +1740,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   contabilidad_resumen: ['plata.ver', 'fn.contabilidad'],
   contabilidad_cliente: ['plata.ver', 'fn.contabilidad'],
   contabilidad_vincular_ajuste: ['plata.mover', 'fn.contabilidad'],
+  contabilidad_corregir_venta: ['plata.mover', 'fn.contabilidad'],
   contabilidad_autovincular: ['plata.mover', 'fn.contabilidad'],
   // Cupos por beneficiario: los decide Cumplimiento.
   cupos_admin_get: 'cumplimiento',
@@ -3554,7 +3555,7 @@ Deno.serve(async (req: Request) => {
         // Cumplimiento: cupos por beneficiario
         'cupo_resolver', 'cupos_config_set', 'cupo_quitar',
         // Contabilidad: vincular un débito cambia la utilidad y la factura
-        'contabilidad_vincular_ajuste', 'contabilidad_autovincular',
+        'contabilidad_vincular_ajuste', 'contabilidad_autovincular', 'contabilidad_corregir_venta',
       ])
       // Reconstruir movimientos escribe en la base; solo consultar, no.
       const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
@@ -3592,6 +3593,9 @@ Deno.serve(async (req: Request) => {
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar', 'caja_movimiento_anular',
         // Borrar cuentas
         'delete_user', 'force_delete_by_email',
+        // Corregir la venta de un cargue cambia la utilidad de Lincoin, que
+        // es lo que después se puede retirar de las bolsas y lo que se factura
+        'contabilidad_corregir_venta',
       ])
       // save_config guarda el objeto entero y se llama también solo (tasas,
       // paleta): el código se pide únicamente si cambia una clave sensible.
@@ -4685,6 +4689,11 @@ Deno.serve(async (req: Request) => {
             ref: t.otcRef ?? null, nota: t.note ?? null, liq,
             reverso: t.reverso && typeof t.reverso === 'object' ? { ajustes: Array.isArray(t.reverso.ajustes) ? t.reverso.ajustes : [], montoCop: t.reverso.montoCop ?? null } : null,
             factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null } : null,
+            // La venta tal como quedó guardada (sin el prorrateo de un ajuste):
+            // es lo que se edita con "Corregir venta".
+            venta: t.type === 'load' && t.source === 'admin_cargue' && t.acct && typeof t.acct === 'object' && Number(t.acct.usdtGross) > 0
+              ? { usdtGross: Number(t.acct.usdtGross), usdtNet: Number(t.acct.usdtNet) || null, sellRate: Number(t.acct.sellRate) || null, creditedCop: Number(t.acct.creditedCop ?? t.amount) || 0, correcciones: Array.isArray(t.acct.correccionesVenta) ? t.acct.correccionesVenta.length : 0 }
+              : null,
           })
         }
         // A qué cargue puede corresponder cada débito suelto: del mismo saldo,
@@ -4756,6 +4765,73 @@ Deno.serve(async (req: Request) => {
         if ('error' in r) return json({ ok: false, error: r.error }, r.status)
         await auditAdmin(req, body.cargueId ? 'admin.ajuste_vinculado' : 'admin.ajuste_desvinculado', { ajusteId, cargueId: body.cargueId ?? null, anulado: r.anulado ?? null })
         return json(r)
+      }
+
+      // ── Corregir la VENTA de un cargue (tasa de venta, USDT que llegaron) ──
+      // Un cargue guarda en raw_data.acct la venta de los USDT del cliente:
+      // cuántos llegaron al proveedor (usdtNet) y a qué tasa se vendieron
+      // (sellRate). La utilidad es esa venta menos lo acreditado. Si al hacer
+      // el cargue se escribió mal la tasa (32 en vez de 3.200) o los USDT que
+      // llegaron (328 en vez de 3.248), la utilidad quedaba en millones
+      // negativos y no había cómo arreglarlo: solo anular con un ajuste, que
+      // le quita la plata al cliente — y lo acreditado estaba bien.
+      //
+      // Esto corrige SOLO el lado de Lincoin: lo acreditado al cliente y su
+      // tasa no cambian (el cliente recibió lo que recibió). Queda la historia
+      // de cada corrección en acct.correccionesVenta.
+      if (body.action === 'contabilidad_corregir_venta') {
+        const txId = String(body.txId ?? '')
+        if (!UUID_RE.test(txId)) return json({ ok: false, error: 'Falta el cargue.' }, 400)
+        const { data: txC } = await db.from('transactions')
+          .select('id, user_id, type, status, currency, amount, raw_data, sr:raw_data->acct->>sellRate, un:raw_data->acct->>usdtNet')
+          .eq('id', txId).maybeSingle()
+        const t = txC as any
+        if (!t || t.type !== 'load' || t.status !== 'Completado') return json({ ok: false, error: 'No se encontró ese cargue.' }, 404)
+        const accCV: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        if (!visibleEnPais(paisDeMovimiento(t), accCV)) return json({ ok: false, error: 'Ese cargue es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+        const rdV = (t.raw_data ?? {}) as Record<string, any>
+        const acct = rdV.acct && typeof rdV.acct === 'object' ? rdV.acct : null
+        if (String(rdV.source ?? '') !== 'admin_cargue' || !acct || !(Number(acct.usdtGross) > 0)) {
+          return json({ ok: false, error: 'Este cargue no guardó la venta de USDT: no hay tasa que corregir.' }, 400)
+        }
+        const sellRate = Number(body.sellRate)
+        const usdtGross = Number(acct.usdtGross)
+        const usdtNet = body.usdtNet != null && body.usdtNet !== '' ? Number(body.usdtNet) : Number(acct.usdtNet)
+        // Rango de un peso colombiano por dólar: lo que esté fuera es casi
+        // seguro otro error de digitación (el que se está corrigiendo).
+        if (!Number.isFinite(sellRate) || sellRate < 1000 || sellRate > 20000) return json({ ok: false, error: 'La tasa de venta va en pesos por USDT, entre 1.000 y 20.000.' }, 400)
+        if (!Number.isFinite(usdtNet) || !(usdtNet > 0)) return json({ ok: false, error: 'Escribe cuántos USDT llegaron al proveedor.' }, 400)
+        if (usdtNet > usdtGross + 0.000001) return json({ ok: false, error: `Al proveedor no pueden llegar más USDT de los que envió el cliente (${usdtGross}).` }, 400)
+        // Con la factura ya emitida no se cambia la utilidad por debajo: la
+        // DIAN tiene otra cifra. Primero se anula en Siigo.
+        try {
+          const { data: f } = await db.from('facturas_lincoin').select('estado, numero').eq('transaction_id', txId).maybeSingle()
+          if ((f as any)?.estado === 'emitida' || (f as any)?.estado === 'emitiendo') {
+            return json({ ok: false, error: `Este cargue ya tiene la factura ${(f as any).numero ?? ''} de Lincoin. Anúlala en Siigo antes de corregir la venta.` }, 409)
+          }
+        } catch { /* sin tabla de facturas */ }
+        const credited = Number(acct.creditedCop ?? t.amount) || 0
+        const feeUsdt = Number((usdtGross - usdtNet).toFixed(6))
+        const revenueCop = Math.round(usdtNet * sellRate)
+        const utilityCop = Math.round(revenueCop - credited)
+        const antes = { sellRate: Number(acct.sellRate) || null, usdtNet: Number(acct.usdtNet) || null, revenueCop: Number(acct.revenueCop) || null, utilityCop: Number(acct.utilityCop) }
+        const despues = { sellRate, usdtNet, revenueCop, utilityCop }
+        const motivoCV = String(body.motivo ?? '').trim().slice(0, 300) || null
+        const previas: any[] = Array.isArray(acct.correccionesVenta) ? acct.correccionesVenta : []
+        const acctNuevo = {
+          ...acct, usdtNet, feeUsdt, sellRate, revenueCop, feeCostCop: Math.round(feeUsdt * sellRate), utilityCop,
+          correccionesVenta: [...previas.slice(-9), { at: new Date().toISOString(), por: await autorDe(auth), antes, despues, motivo: motivoCV }],
+        }
+        // Escritura condicionada a que la venta siga como se leyó: dos
+        // correcciones a la vez no se pisan sin que nadie se entere.
+        let q = db.from('transactions').update({ raw_data: { ...rdV, acct: acctNuevo } }).eq('id', txId)
+        q = t.sr != null ? q.filter('raw_data->acct->>sellRate', 'eq', String(t.sr)) : q.filter('raw_data->acct->>sellRate', 'is', null)
+        q = t.un != null ? q.filter('raw_data->acct->>usdtNet', 'eq', String(t.un)) : q.filter('raw_data->acct->>usdtNet', 'is', null)
+        const { data: hecho, error: eCV } = await q.select('id')
+        if (eCV) return errorGenerico('contabilidad_corregir_venta', eCV)
+        if (!hecho?.length) return json({ ok: false, error: 'Otro cambio se hizo al mismo tiempo sobre este cargue. Recarga e intenta de nuevo.' }, 409)
+        await auditAdmin(req, 'admin.cargue_venta_corregida', { txId, userId: t.user_id, antes, despues, motivo: motivoCV })
+        return json({ ok: true, antes, despues })
       }
 
       // ── Facturación de LINCOIN en Siigo ─────────────────────────────────
