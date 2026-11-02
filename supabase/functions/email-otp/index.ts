@@ -131,7 +131,7 @@ const footerHtml = (why: string) => `
     <p style="font-family:Arial,sans-serif;font-size:11.5px;color:#5C625E;font-weight:600;margin:0 0 10px">
       <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Centro de ayuda</a> · <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Seguridad</a> · <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Preferencias de correo</a>
     </p>
-    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">${why} Lincoin no es un banco. Los dólares y euros digitales no están cubiertos por fondos de garantía de depósitos. USDC y EURC los emite Circle con respaldo 1:1, y la custodia opera sobre infraestructura de Fireblocks. © 2026 Lincoin.</p>
+    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">${why} Lincoin es una pasarela de pagos para empresas en Colombia; no es un banco. © 2026 Lincoin.</p>
   </td></tr></table>`
 
 Deno.serve(async (req) => {

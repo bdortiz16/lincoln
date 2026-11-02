@@ -58,6 +58,10 @@ begin
   select * into v_tx from public.transactions where id = p_tx_id for update;
   if not found then return jsonb_build_object('error', 'tx_not_found'); end if;
   if not public.admin_equipo_permite_tesoreria(v_tx.currency) then return jsonb_build_object('error', 'forbidden'); end if;
+  -- Pasados los controles, esta función escribe saldo y estado con su propia
+  -- autoridad: los guardianes de users/transactions no la tratan como "la
+  -- app" (2026_zz26 deja de considerar admin en la base a quien no es dueño).
+  perform set_config('lincoin.rpc_confiable', 'on', true);
   if v_tx.status <> 'Pendiente' then return jsonb_build_object('error', 'no_pendiente', 'status', v_tx.status); end if;
   if v_tx.type is distinct from 'load' then return jsonb_build_object('error', 'no_es_cargue'); end if;
   perform public._credit_user_balance(v_tx.user_id, v_tx.currency, v_tx.amount::numeric);
@@ -81,6 +85,10 @@ begin
   select * into v_tx from public.transactions where id = p_tx_id for update;
   if not found then return jsonb_build_object('error', 'tx_not_found'); end if;
   if not public.admin_equipo_permite_tesoreria(v_tx.currency) then return jsonb_build_object('error', 'forbidden'); end if;
+  -- Pasados los controles, esta función escribe saldo y estado con su propia
+  -- autoridad: los guardianes de users/transactions no la tratan como "la
+  -- app" (2026_zz26 deja de considerar admin en la base a quien no es dueño).
+  perform set_config('lincoin.rpc_confiable', 'on', true);
   if v_tx.status <> 'Pendiente' then return jsonb_build_object('error', 'no_pendiente', 'status', v_tx.status); end if;
   if v_tx.type is distinct from 'load' then return jsonb_build_object('error', 'no_es_cargue'); end if;
   update public.transactions
@@ -103,6 +111,10 @@ begin
   select * into v_tx from public.transactions where id = p_tx_id for update;
   if not found then return jsonb_build_object('error', 'tx_not_found'); end if;
   if not public.admin_equipo_permite_tesoreria(v_tx.currency) then return jsonb_build_object('error', 'forbidden'); end if;
+  -- Pasados los controles, esta función escribe saldo y estado con su propia
+  -- autoridad: los guardianes de users/transactions no la tratan como "la
+  -- app" (2026_zz26 deja de considerar admin en la base a quien no es dueño).
+  perform set_config('lincoin.rpc_confiable', 'on', true);
   if v_tx.status <> 'Pendiente' then return jsonb_build_object('error', 'no_pendiente', 'status', v_tx.status); end if;
   if v_tx.type is distinct from 'send' then return jsonb_build_object('error', 'no_es_retiro'); end if;
   if coalesce(v_tx.raw_data ->> 'insertadoPorCliente', '') = 'true' and coalesce(v_tx.raw_data ->> 'debitado', '') <> 'true' then
@@ -128,6 +140,10 @@ begin
   select * into v_tx from public.transactions where id = p_tx_id for update;
   if not found then return jsonb_build_object('error', 'tx_not_found'); end if;
   if not public.admin_equipo_permite_tesoreria(v_tx.currency) then return jsonb_build_object('error', 'forbidden'); end if;
+  -- Pasados los controles, esta función escribe saldo y estado con su propia
+  -- autoridad: los guardianes de users/transactions no la tratan como "la
+  -- app" (2026_zz26 deja de considerar admin en la base a quien no es dueño).
+  perform set_config('lincoin.rpc_confiable', 'on', true);
   if v_tx.status <> 'Pendiente' then return jsonb_build_object('error', 'no_pendiente', 'status', v_tx.status); end if;
   if v_tx.type is distinct from 'send' then return jsonb_build_object('error', 'no_es_retiro'); end if;
   v_devuelve := coalesce(v_tx.raw_data ->> 'debitado', '') = 'true'

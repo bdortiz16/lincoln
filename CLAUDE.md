@@ -124,6 +124,12 @@ Estado global del cliente en `context/DatabaseContext.tsx` (`currentUser`, trans
 - El frontend las llama con `llamarFuncion()` de `lib/edge.ts`, que manda el **token de sesión** del usuario (no solo la anon key). No copies otro fetch a mano: sin el token el servidor no sabe quién llama.
 - Todas corren con `verify_jwt = false` y **cada función hace su propia autenticación**. Las acciones de admin deben exigir el 2FA de la sesión con `requireMfaSession` de `_shared/admin-auth.ts`, igual que `admin-data`.
 - Código común en `_shared/`: `candado.ts` (candado atómico contra envíos duplicados vía tabla `envio_candados`), `webhook-auth.ts`, `field-crypto.ts`, `cupos.ts`, etc.
+- **Seguridad, reglas que no se aflojan:**
+  - Toda función que acepte a un admin exige el 2FA de la sesión (`requireMfaSession`); el colaborador, además, 2FA activo.
+  - Lo que cambia a dónde va la plata o quién entra al panel va en `ACCIONES_CON_CODIGO` de `admin-data`: código de la app en **cada** operación. El panel lo pide solo vía `lib/codigo2fa.ts` (`pedirAdmin` ya lo usa); un `fetch` suelto a `admin-data` debe envolverse con `conCodigo2fa`.
+  - En la base, "admin" (`is_any_admin`) es solo el dueño activo con sesión 2FA (`2026_zz26`). El equipo opera por `admin-data` con la llave de servicio, donde están los permisos; no agregues escrituras directas del panel a tablas ajenas.
+  - Nunca escribas en una página HTML (`document.write`, `innerHTML`) datos guardados por usuarios; los archivos se abren como `Blob` con su tipo.
+  - Un fallo del servidor no se "arregla" escribiendo directo en la base desde el navegador: si el servidor dijo que no, es que no.
 - **Despliegue**: `.github/workflows/deploy-edge-functions.yml` corre en push a `main` y `claude/busy-fermi-h8to5p`, y despliega **solo las funciones listadas en `FUNCTIONS`**. Una función nueva que no se agregue ahí no se despliega (el panel recibe 404). A mano: `npx supabase functions deploy <nombre> --project-ref wqleypebmfiaygrurnrc --no-verify-jwt`.
 - **Webhooks de socios** entran por `lincoin.me/webhooks/<socio>`, nunca por la URL cruda de Supabase. Cada uno es una entrada explícita en `cloudflare/worker.js` (`WEBHOOKS`) y en `vercel.json` (antes del catch-all). Nunca un comodín. Detalle en `WEBHOOKS.md`.
 - Jobs programados vía GitHub Actions contra la service_role: `conciliar-breb.yml` (cada 5 min, `mouv-proxy` `reconcile_breb`) y `facturas-al-dia.yml`. No imprimen el cuerpo de las respuestas en el log (trae datos de clientes).
