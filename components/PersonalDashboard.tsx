@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { BrebRecaudo } from './BrebRecaudo';
 import { ReenvioDianModal } from './ReenvioDianModal';
 import { DocumentosContables } from './DocumentosContables';
+import { CambiarCorreo } from './CambiarCorreo';
 import {
   Landmark,
   CheckCircle2,
@@ -592,6 +593,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const enviarRef = useRef<EnviarHandle>(null);
   const convertingRef = useRef(false);
   const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
+  // Cambiar el correo de acceso (Ajustes → Perfil): dos pasos, 2FA + código al correo nuevo.
+  const [cambiandoCorreo, setCambiandoCorreo] = useState(false);
   const [editName, setEditName] = useState('');
   const [editNickname, setEditNickname] = useState('');
   const [editAvatar, setEditAvatar] = useState<string | null>(null);
@@ -3608,6 +3611,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           </div>
                           <button onClick={() => setActiveView('profile')} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Editar</button>
                       </div>
+                      <div className="flex items-center justify-between" style={{ gap: 12, marginTop: 14, paddingTop: 14, borderTop: rowBorder }}>
+                          <div style={{ minWidth: 0 }}>
+                              <p style={{ fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' }}>Correo de acceso</p>
+                              <p style={{ fontSize: 12, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Con él entras y te llegan los códigos</p>
+                          </div>
+                          <button onClick={() => setCambiandoCorreo(true)} style={secBtn} className="hover:bg-white/[0.09] transition-colors">Cambiar</button>
+                      </div>
+                      {cambiandoCorreo && (
+                          <CambiarCorreo
+                              correoActual={String(currentUser?.email ?? '')}
+                              onCerrar={() => setCambiandoCorreo(false)}
+                              onListo={(c) => { setCambiandoCorreo(false); refreshData?.(); showToast(`Listo: desde ahora entras con ${c}.`, 7000); }}
+                          />
+                      )}
                   </div>
 
                   {/* SEGURIDAD */}

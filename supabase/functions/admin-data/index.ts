@@ -1906,6 +1906,59 @@ async function adminSobreOtro(req: Request, permisos: string[], accion: string):
   return { ok: true, admin: { userId: v.userId, acceso } }
 }
 
+// ── Cambio del correo de ACCESO (común a admin y cliente) ───────────────
+// El correo es con lo que se entra y adonde llegan los códigos, los avisos de
+// ingreso y la recuperación de contraseña. Se cambia en los DOS lados —cuenta
+// de acceso (Auth) y perfil (users)— o en ninguno: si quedaban distintos, la
+// persona entraba con uno y recibía los códigos en otro.
+const CORREO_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+// null = el correo está libre; si no, por qué no.
+async function correoOcupado(nuevo: string, uid: string): Promise<string | null> {
+  const { data: otraFila } = await db.from('users').select('id, full_name').eq('email', nuevo).neq('id', uid).limit(1).maybeSingle()
+  if (otraFila) return `Ese correo ya es de otra cuenta${(otraFila as any).full_name ? ` (${(otraFila as any).full_name})` : ''}.`
+  for (let page = 1; page <= 20; page++) {
+    const { data: lst, error } = await db.auth.admin.listUsers({ page, perPage: 200 })
+    if (error) return `No se pudo revisar si el correo está libre: ${error.message}`
+    if ((lst?.users ?? []).some((u: any) => String(u.email ?? '').toLowerCase() === nuevo && u.id !== uid)) {
+      return 'Ese correo todavía tiene una cuenta de acceso suelta (sin perfil). Hay que liberarlo antes.'
+    }
+    if (!lst?.users || lst.users.length < 200) break
+  }
+  return null
+}
+async function cambiarCorreoAcceso(uid: string, anterior: string, nuevo: string): Promise<string | null> {
+  const { error: eAuth } = await db.auth.admin.updateUserById(uid, { email: nuevo, email_confirm: true })
+  if (eAuth) return /not.?found/i.test(eAuth.message) ? 'Esta cuenta no tiene cuenta de acceso para cambiarle el correo.' : `No se pudo cambiar el correo de acceso: ${eAuth.message}`
+  const { error: ePerfil } = await db.from('users').update({ email: nuevo }).eq('id', uid)
+  if (ePerfil) {
+    try { await db.auth.admin.updateUserById(uid, { email: anterior, email_confirm: true }) } catch { /* */ }
+    return `No se pudo guardar el correo en el perfil: ${ePerfil.message}. No se cambió nada.`
+  }
+  return null
+}
+async function enviarCorreoLincoin(para: string, asunto: string, titulo: string, cuerpoHtml: string) {
+  if (!RESEND_KEY || !para) return
+  const html = `
+    <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+      <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+      <p style="color:#F4F4F2;font-weight:800;font-size:16px;margin:18px 0 6px">${escHtml(titulo)}</p>
+      <div style="color:#878E88;font-size:13px;line-height:1.6;margin:0">${cuerpoHtml}</div>
+    </div>`
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [para], subject: asunto, html }),
+    })
+  } catch { /* un aviso que no sale nunca deshace el cambio */ }
+}
+// Aviso al correo ANTERIOR: si el cambio no lo pidió el titular, es por
+// donde se entera.
+async function avisarCambioCorreo(anterior: string, nuevo: string, nombre: string) {
+  await enviarCorreoLincoin(anterior, 'Cambió el correo de acceso de tu cuenta Lincoin', 'Cambió el correo de acceso de tu cuenta',
+    `Desde ahora la cuenta ${escHtml(nombre)} entra con <b style="color:#F4F4F2">${escHtml(nuevo)}</b>. Este correo ya no sirve para iniciar sesión. Si no lo pediste, respóndenos de inmediato.`)
+}
+
 // Error para quien NO es del equipo: el detalle (mensajes de la base, nombres
 // de tablas) queda en el log del servidor, no en la pantalla del cliente.
 function errorGenerico(contexto: string, detalle: unknown, status = 500): Response {
@@ -2805,6 +2858,85 @@ Deno.serve(async (req: Request) => {
           return json({ ok: true, balances: (adj as any)?.balances ?? null })
         }
         return json({ ok: false, error: 'Operación inválida.' }, 400)
+      }
+
+      // ── El CLIENTE cambia su propio correo de acceso ────────────────────
+      // Desde Ajustes. Dos pasos, porque el correo es la llave de la cuenta:
+      //   1) correo_cambio_iniciar: el código de su app (2FA, en ESTA
+      //      operación) y el correo nuevo. Se manda un código a ese correo.
+      //   2) correo_cambio_confirmar: el código que llegó. Solo ahí se cambia.
+      // Así quien tenga solo la contraseña no se queda con la cuenta, y nadie
+      // pone un correo que no es suyo (o mal escrito: perdería el acceso). Al
+      // correo anterior le llega el aviso. Las cuentas del panel no pasan por
+      // aquí. El código pendiente vive en private_config (sin acceso desde el
+      // navegador), con vencimiento, intentos y envíos limitados.
+      if (selfServiceBody.action === 'correo_cambio_iniciar' || selfServiceBody.action === 'correo_cambio_confirmar') {
+        const yo = await usuarioDelToken(req)
+        if (!yo) return json({ ok: false, error: 'Vuelve a iniciar sesión.' }, 401)
+        const uidY = yo.id
+        if (await esAdminUid(uidY)) return json({ ok: false, error: 'Las cuentas del panel no cambian su correo desde aquí.' }, 403)
+        const { data: filaY } = await db.from('users')
+          .select('email, full_name, is_blocked, bl:raw_data->blacklisted, ib:raw_data->isBlocked').eq('id', uidY).maybeSingle()
+        if (!filaY) return json({ ok: false, error: 'No se encontró tu cuenta.' }, 404)
+        if ((filaY as any).is_blocked === true || (filaY as any).bl === true || (filaY as any).ib === true) {
+          return json({ ok: false, error: 'Tu cuenta está bloqueada. Escríbenos a soporte.' }, 403)
+        }
+        const anteriorY = String((filaY as any).email ?? '').trim().toLowerCase()
+        const claveY = `correo_cambio_${uidY}`
+        const leerPend = async (): Promise<any | null> => {
+          const { data } = await db.from('private_config').select('value').eq('key', claveY).maybeSingle()
+          try { return (data as any)?.value ? JSON.parse((data as any).value) : null } catch { return null }
+        }
+        const guardarPend = (v: unknown) => db.from('private_config').upsert({ key: claveY, value: JSON.stringify(v) }, { onConflict: 'key' })
+        const borrarPend = () => db.from('private_config').delete().eq('key', claveY)
+
+        if (selfServiceBody.action === 'correo_cambio_iniciar') {
+          const nuevo = String(selfServiceBody.email ?? '').trim().toLowerCase()
+          if (nuevo.length > 120 || !CORREO_RE.test(nuevo)) return json({ ok: false, error: 'Escribe un correo válido.' }, 400)
+          if (nuevo === anteriorY) return json({ ok: false, error: 'Ese ya es tu correo.' }, 400)
+          const prev = await leerPend()
+          const ventanaViva = prev && Date.now() - Number(prev.desde ?? 0) < 3600_000
+          if (ventanaViva && Number(prev.envios ?? 0) >= 5) {
+            return json({ ok: false, error: 'Pediste demasiados códigos. Espera una hora e intenta de nuevo.' }, 429)
+          }
+          // El 2FA de la app, para ESTA operación (un código sirve una vez).
+          const otpErr = await requireAdminOtp(uidY, selfServiceBody.otp)
+          if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+          const ocupado = await correoOcupado(nuevo, uidY)
+          if (ocupado) return json({ ok: false, error: `${ocupado} Usa otro.` }, 409)
+          const codigo = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0')
+          const { error: eG } = await guardarPend({
+            email: nuevo, hash: await sha256Hex(`${uidY}:${codigo}`), exp: Date.now() + 15 * 60_000, intentos: 0,
+            envios: ventanaViva ? Number(prev.envios ?? 0) + 1 : 1, desde: ventanaViva ? Number(prev.desde) : Date.now(),
+          })
+          if (eG) return json({ ok: false, error: 'No se pudo iniciar el cambio. Intenta de nuevo.' }, 500)
+          await enviarCorreoLincoin(nuevo, `Tu código para cambiar el correo en Lincoin: ${codigo}`, 'Confirma tu correo nuevo',
+            `Escribe este código en Lincoin para que <b style="color:#F4F4F2">${escHtml(nuevo)}</b> quede como el correo de acceso de tu cuenta:
+             <p style="font-size:28px;font-weight:800;letter-spacing:6px;color:#F4F4F2;margin:14px 0">${codigo}</p>
+             Vence en 15 minutos. Si no fuiste tú, ignora este correo: no se cambia nada.`)
+          await auditAdmin(req, 'cliente.correo_cambio_iniciado', { userId: uidY, nuevo })
+          return json({ ok: true, enviadoA: nuevo })
+        }
+
+        // correo_cambio_confirmar
+        const pend = await leerPend()
+        if (!pend?.email || !pend?.hash) return json({ ok: false, error: 'No hay un cambio de correo en curso. Empieza de nuevo.' }, 400)
+        if (Date.now() > Number(pend.exp ?? 0)) { await borrarPend(); return json({ ok: false, error: 'El código venció. Empieza de nuevo.' }, 400) }
+        if (Number(pend.intentos ?? 0) >= 5) { await borrarPend(); return json({ ok: false, error: 'Demasiados intentos. Empieza de nuevo.' }, 429) }
+        const codigoY = String(selfServiceBody.codigo ?? '').replace(/\D/g, '')
+        if (codigoY.length !== 6 || await sha256Hex(`${uidY}:${codigoY}`) !== pend.hash) {
+          await guardarPend({ ...pend, intentos: Number(pend.intentos ?? 0) + 1 })
+          return json({ ok: false, error: 'Ese código no es el que te enviamos.' }, 400)
+        }
+        const nuevoY = String(pend.email)
+        const ocupadoY = await correoOcupado(nuevoY, uidY)
+        if (ocupadoY) { await borrarPend(); return json({ ok: false, error: `${ocupadoY} Empieza de nuevo con otro.` }, 409) }
+        const falloY = await cambiarCorreoAcceso(uidY, anteriorY, nuevoY)
+        if (falloY) return json({ ok: false, error: falloY }, 500)
+        await borrarPend()
+        await auditAdmin(req, 'cliente.correo_cambiado', { userId: uidY, anterior: anteriorY, nuevo: nuevoY })
+        await avisarCambioCorreo(anteriorY, nuevoY, String((filaY as any).full_name ?? ''))
+        return json({ ok: true, email: nuevoY })
       }
 
       if (selfServiceBody.action === 'mfa_set' && selfServiceBody.userId) {
@@ -5419,60 +5551,18 @@ Deno.serve(async (req: Request) => {
         const uidC = String(body.userId ?? '')
         const nuevo = String(body.email ?? '').trim().toLowerCase()
         if (!UUID_RE.test(uidC)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
-        if (nuevo.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(nuevo)) return json({ ok: false, error: 'Escribe un correo válido.' }, 400)
+        if (nuevo.length > 120 || !CORREO_RE.test(nuevo)) return json({ ok: false, error: 'Escribe un correo válido.' }, 400)
         const { data: filaC } = await db.from('users').select('id, email, role, full_name').eq('id', uidC).maybeSingle()
         if (!filaC) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
         if ((filaC as any).role === 'admin') return json({ ok: false, error: 'Las cuentas del panel no se cambian desde aquí.' }, 400)
         const anterior = String((filaC as any).email ?? '').trim().toLowerCase()
         if (anterior === nuevo) return json({ ok: true, email: nuevo, sinCambio: true })
-
-        const { data: otraFila } = await db.from('users').select('id, full_name, email').eq('email', nuevo).neq('id', uidC).limit(1).maybeSingle()
-        if (otraFila) {
-          return json({ ok: false, otraCuenta: (otraFila as any).id, error: `Ese correo ya es de otra cuenta${(otraFila as any).full_name ? ` (${(otraFila as any).full_name})` : ''}. Elimina esa cuenta primero y vuelve a intentar.` }, 409)
-        }
-        let otraAuth: any = null
-        for (let page = 1; page <= 20 && !otraAuth; page++) {
-          const { data: lst, error: eLst } = await db.auth.admin.listUsers({ page, perPage: 200 })
-          if (eLst) return json({ ok: false, error: `No se pudo revisar si el correo está libre: ${eLst.message}` }, 500)
-          otraAuth = (lst?.users ?? []).find((u: any) => String(u.email ?? '').toLowerCase() === nuevo && u.id !== uidC) ?? null
-          if (!lst?.users || lst.users.length < 200) break
-        }
-        if (otraAuth) {
-          return json({ ok: false, error: 'Ese correo todavía tiene una cuenta de acceso suelta (sin perfil). Libéralo con «Liberar correo» en Clientes y vuelve a intentar.' }, 409)
-        }
-
-        const { error: eAuth } = await db.auth.admin.updateUserById(uidC, { email: nuevo, email_confirm: true })
-        if (eAuth) {
-          return json({ ok: false, error: /not.?found/i.test(eAuth.message) ? 'Esta cuenta no tiene cuenta de acceso para cambiarle el correo.' : `No se pudo cambiar el correo de acceso: ${eAuth.message}` }, 500)
-        }
-        const { error: ePerfil } = await db.from('users').update({ email: nuevo }).eq('id', uidC)
-        if (ePerfil) {
-          // Que no queden los dos lados distintos: se devuelve el de acceso.
-          try { await db.auth.admin.updateUserById(uidC, { email: anterior, email_confirm: true }) } catch { /* */ }
-          return json({ ok: false, error: `No se pudo guardar el correo en el perfil: ${ePerfil.message}. No se cambió nada.` }, 500)
-        }
+        const ocupado = await correoOcupado(nuevo, uidC)
+        if (ocupado) return json({ ok: false, error: `${ocupado} Elimina esa cuenta (o libera el correo con «Liberar correo») y vuelve a intentar.` }, 409)
+        const fallo = await cambiarCorreoAcceso(uidC, anterior, nuevo)
+        if (fallo) return json({ ok: false, error: fallo }, 500)
         await auditAdmin(req, 'admin.cliente_cambiar_correo', { userId: uidC, anterior, nuevo })
-
-        // Aviso al correo ANTERIOR: si el cambio no fue pedido por el titular,
-        // es por donde se entera.
-        if (RESEND_KEY && anterior) {
-          const html = `
-            <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
-              <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
-              <p style="color:#F4F4F2;font-weight:800;font-size:16px;margin:18px 0 6px">Cambiamos el correo de acceso de tu cuenta</p>
-              <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0">
-                Desde ahora la cuenta ${escHtml(String((filaC as any).full_name ?? ''))} entra con <b style="color:#F4F4F2">${escHtml(nuevo)}</b>.
-                Este correo ya no sirve para iniciar sesión. Si no lo pediste, respóndenos de inmediato.
-              </p>
-            </div>`
-          try {
-            await fetch('https://api.resend.com/emails', {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [anterior], subject: 'Cambiamos el correo de acceso de tu cuenta Lincoin', html }),
-            })
-          } catch { /* el aviso nunca deshace el cambio */ }
-        }
+        await avisarCambioCorreo(anterior, nuevo, String((filaC as any).full_name ?? ''))
         return json({ ok: true, email: nuevo, anterior })
       }
 
