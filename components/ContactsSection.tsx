@@ -427,9 +427,22 @@ export const ContactsSection: React.FC<{
     // Abre el detalle de un movimiento (el modal con el comprobante), que vive
     // en el dashboard principal. Contabilidad lo necesita para "Ver".
     onVerMovimiento?: (tx: any) => void;
-}> = ({ onBack, onSendTo, vista = 'beneficiarios', onVerMovimiento }) => {
+    // Empresas (no operadores): pueden pagar por ACH · Cuentas 3 y 4.
+    conCuentasAchExtra?: boolean;
+}> = ({ onBack, onSendTo, vista = 'beneficiarios', onVerMovimiento, conCuentasAchExtra = false }) => {
     const { currentUser, updateUserRawData, actualizarListaRaw, transactions, refreshData } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
+    // ACH · Cuenta 3 y 4 no esperan la validación de la cuenta destino que
+    // hace ACH · Cuenta 1 (a veces tarda horas): el servidor solo la exige ahí.
+    // Si alguna está activa, a un beneficiario EN VALIDACIÓN ya se le puede
+    // enviar por ellas — con el mismo AML de siempre. Una cuenta RECHAZADA no:
+    // el banco dijo que los datos no corresponden.
+    const cuentasAchSinValidacion = conCuentasAchExtra
+        ? [3, 4].filter(n => (sysConfig as any)?.[`cuenta${n}`]?.ach === true)
+        : [];
+    const enviableSinValidar = (c: Partial<MouvContact> | null | undefined, st: string) =>
+        !!c && st === 'en_proceso' && c.accountKind !== 'wallet' && c.destKind !== 'breb' && cuentasAchSinValidacion.length > 0;
+    const txtCuentasSinValidar = cuentasAchSinValidacion.map(n => `ACH · Cuenta ${n}`).join(' o ');
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
     // Países habilitados desde Admin → Configuración → Países. Por defecto
@@ -2275,7 +2288,7 @@ export const ContactsSection: React.FC<{
                         ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
                         : st === 'rechazada'
                             ? <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? undefined}>RECHAZADO</span>
-                            : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
+                            : <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
                     const avatar = (
                         <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                             <span style={{ color: '#878E88', fontWeight: 800, fontSize: 13 }}>{initialsOf(c.name)}</span>
@@ -2288,11 +2301,12 @@ export const ContactsSection: React.FC<{
                     // cumplimiento ya bloqueó: el servidor rechaza el envío de
                     // todos modos, y ofrecerlo solo lleva a un error al final.
                     const frenado = amlFrena(c);
-                    const puedeEnviar = !!onSendTo && st === 'aprobada' && !frenado;
+                    const sinValidar = enviableSinValidar(c, st);
+                    const puedeEnviar = !!onSendTo && (st === 'aprobada' || sinValidar) && !frenado;
                     const actions = (
                         <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
                             <button onClick={() => onSendTo?.(c)} disabled={!puedeEnviar}
-                                title={frenado ? (amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.') : undefined}
+                                title={frenado ? (amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.') : sinValidar ? `Sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}.` : undefined}
                                 style={{ fontSize: 12.5, fontWeight: 600, color: puedeEnviar ? '#F4F4F2' : '#878E88', cursor: puedeEnviar ? 'pointer' : 'not-allowed' }}
                                 className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                             <button onClick={e => abrirMenu(c.id, e)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
@@ -2582,9 +2596,11 @@ export const ContactsSection: React.FC<{
                                                 ? (amlEsperando(c)
                                                     ? 'Los envíos esperan el resultado de la consulta. Suele tardar cerca de un minuto.'
                                                     : 'No se puede transferir a esta persona. El envío se rechaza en el servidor, no solo en pantalla.')
-                                                : st !== 'aprobada'
-                                                    ? 'La cuenta destino todavía no está validada por el banco. Hasta entonces no se puede enviar.'
-                                                    : 'Se puede operar con esta persona. El veredicto se repite solo si cambian las listas.'}
+                                                : enviableSinValidar(c, st)
+                                                    ? `La cuenta destino sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}, que no esperan esa validación.`
+                                                    : st !== 'aprobada'
+                                                        ? 'La cuenta destino todavía no está validada por el banco. Hasta entonces no se puede enviar.'
+                                                        : 'Se puede operar con esta persona. El veredicto se repite solo si cambian las listas.'}
                                         </p>
                                         {amlEsEvidencia(c) && (
                                             <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
@@ -2595,7 +2611,7 @@ export const ContactsSection: React.FC<{
                                         {/* La cuenta destino. */}
                                         <Rotulo t="CUENTA DESTINO" />
                                         <Fila l="Riel" v={m.railLine} />
-                                        <Fila l="Estado" v={st === 'aprobada' ? 'Verificada por el banco' : st === 'rechazada' ? <span style={{ color: '#F87171' }}>Rechazada</span> : 'En validación'} />
+                                        <Fila l="Estado" v={st === 'aprobada' ? 'Verificada por el banco' : st === 'rechazada' ? <span style={{ color: '#F87171' }}>Rechazada</span> : <span style={{ color: '#FBBF24' }}>En validación</span>} />
                                         {c.providerStatus && <Fila l="Según el proveedor" v={<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{String(c.providerStatus)}</span>} />}
                                         {st === 'rechazada' && c.lastError && <Fila l="Motivo" v={String(c.lastError).slice(0, 200)} />}
                                         {c.accountKind === 'wallet' && (
@@ -2631,7 +2647,7 @@ export const ContactsSection: React.FC<{
                 const fmtDate = (d?: string) => d ? new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
                 const statusPill = st === 'aprobada'
                     ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
-                    : <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
+                    : <span style={{ border: `1px solid ${st === 'rechazada' ? 'rgba(255,255,255,0.14)' : 'rgba(251,191,36,0.32)'}`, color: st === 'rechazada' ? '#878E88' : '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.7px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADO' : 'EN VALIDACIÓN'}</span>;
                 const rows: { l: string; v: React.ReactNode; mono?: boolean; copy?: boolean }[] = isWallet ? [
                     { l: 'Riel', v: `${detail.walletCoin ?? 'USDT'} · ${detail.walletNetwork === 'BEP-20' ? 'BNB Chain (BEP-20)' : 'TRON (TRC-20)'}` },
                     { l: 'Dirección', v: detail.accountNumber, mono: true, copy: true },
@@ -3028,8 +3044,8 @@ export const ContactsSection: React.FC<{
                                 <Copy size={14} /> {isBreb ? 'Copiar llave' : isWallet ? 'Copiar dirección' : 'Copiar cuenta'}
                             </button>
                             <button
-                                onClick={() => { if (onSendTo && st === 'aprobada' && !amlFrena(detail)) { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
-                                disabled={!onSendTo || st !== 'aprobada' || amlFrena(detail)}
+                                onClick={() => { if (onSendTo && (st === 'aprobada' || enviableSinValidar(detail, st)) && !amlFrena(detail)) { const c = detail; setDetail(null); setDetailMenu(false); onSendTo(c); } }}
+                                disabled={!onSendTo || (st !== 'aprobada' && !enviableSinValidar(detail, st)) || amlFrena(detail)}
                                 className={amlFrena(detail) ? 'flex items-center justify-center gap-2' : 'lincoin-btn-white flex items-center justify-center gap-2 transition-colors'}
                                 style={amlFrena(detail)
                                     // Un botón blanco a media opacidad se sigue
@@ -3040,7 +3056,7 @@ export const ContactsSection: React.FC<{
                                     ? (amlEsperando(detail)
                                         ? { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.14)', color: '#878E88' }
                                         : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13, fontWeight: 700, cursor: 'not-allowed', background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.28)', color: '#F87171' })
-                                    : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || st !== 'aprobada') ? 0.45 : 1, cursor: (!onSendTo || st !== 'aprobada') ? 'not-allowed' : 'pointer' }}>
+                                    : { flex: 1.4, height: 44, borderRadius: 10, fontSize: 13.5, fontWeight: 700, border: 'none', opacity: (!onSendTo || (st !== 'aprobada' && !enviableSinValidar(detail, st))) ? 0.45 : 1, cursor: (!onSendTo || (st !== 'aprobada' && !enviableSinValidar(detail, st))) ? 'not-allowed' : 'pointer' }}>
                                 {amlFrena(detail)
                                     ? <>{amlEsperando(detail) ? 'Esperando antecedentes…' : 'Bloqueado'}</>
                                     : <><Send size={14} /> Enviar dinero</>}
