@@ -2230,7 +2230,7 @@ Deno.serve(async (req: Request) => {
         // in_review, así que esos SÍ pasan. Balances no se tocan: el flujo
         // legacy de retiro del cliente aún los persiste por esta vía.
         const userRow = { ...selfServiceBody.user }
-        const { data: filaActual } = await db.from('users').select('id, role, email').eq('id', objetivo).maybeSingle()
+        const { data: filaActual } = await db.from('users').select('id, role, email, company_country').eq('id', objetivo).maybeSingle()
         // ADMIN EDITANDO A OTRO: esta acción corre antes del control de roles y
         // con service role, así que cualquier cuenta admin —también "Solo
         // lectura"— podía escribir el saldo de un cliente sin permiso, sin 2FA
@@ -2287,6 +2287,15 @@ Deno.serve(async (req: Request) => {
           // como la contraseña. En el alta se toma el de la cuenta de acceso.
           if (filaActual) delete (userRow as any).email
           else (userRow as any).email = yo.email || (userRow as any).email
+          // El PAÍS DE LA EMPRESA tampoco, una vez puesto: decide cómo se le
+          // factura (Colombia → factura diaria; exterior → por movimiento) y
+          // eso lo define el admin en Editar cliente. El cliente lo escribe
+          // UNA vez, al registrarse o en el onboarding; después ya no.
+          {
+            const paisDb = String((filaActual as any)?.company_country ?? '').trim()
+            if (paisDb && (userRow as any).company_country !== undefined
+              && String((userRow as any).company_country ?? '').trim() !== paisDb) delete (userRow as any).company_country
+          }
           if (userRow.kyc_status != null && !['pending', 'in_review', 'not_started', 'incomplete', 'rejected'].includes(String(userRow.kyc_status))) delete (userRow as any).kyc_status
           for (const k of ['is_blocked', 'is_admin', 'admin_role', 'limits', 'status', 'kyc_verified_at', 'assigned_currency', 'didit_session_id']) delete (userRow as any)[k]
 
@@ -2338,6 +2347,9 @@ Deno.serve(async (req: Request) => {
           const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets', 'tusdatos', 'kumplo', 'blacklisted', 'isBlocked', 'complianceHold', 'limits', 'otcConfig', 'passwordHash', 'trustedDevices', '__role']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
+          // La copia del país en raw_data, igual que la columna: el titular no
+          // la cambia una vez puesta (ver company_country arriba).
+          if (esPropia && String(dbRaw.companyCountry ?? '').trim()) merged.companyCountry = dbRaw.companyCountry
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen
           // su propio escritor DIRIGIDO (updateUserRawData manda solo esa clave).
           // Un guardado de PERFIL COMPLETO no debe reescribirlas desde una copia
