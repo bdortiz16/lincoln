@@ -2257,6 +2257,14 @@ Deno.serve(async (req: Request) => {
           // cliente (no a otro admin, ver arriba).
           if (userRow.role != null && (!puede('clientes.editar') || !['personal', 'business'].includes(String(userRow.role)))) delete (userRow as any).role
           for (const k of ['is_admin', 'admin_role']) delete (userRow as any)[k]
+          // El CORREO de otro no se cambia por aquí: solo cambiaba el perfil y
+          // no la cuenta de acceso (el cliente entraba con un correo y recibía
+          // los códigos en otro), y sin código 2FA. Va por
+          // cliente_cambiar_correo. Un guardado con el correo de siempre pasa.
+          if (filaActual && (userRow as any).email !== undefined
+            && String((userRow as any).email ?? '').trim().toLowerCase() !== String((filaActual as any).email ?? '').trim().toLowerCase()) {
+            delete (userRow as any).email
+          }
         } else {
           // LA PROPIA CUENTA — también la de un admin. Antes un admin que se
           // editaba a sí mismo no pasaba por ningún saneamiento: con service
@@ -3610,8 +3618,9 @@ Deno.serve(async (req: Request) => {
         // La caja: abrirla, corregir la apertura, ocultar o anular movimientos
         // (con eso se maquillan las cifras de utilidad)
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar', 'caja_movimiento_anular',
-        // Borrar cuentas
-        'delete_user', 'force_delete_by_email',
+        // Borrar cuentas, y cambiar con qué correo entra un cliente (es
+        // cambiar quién controla la cuenta)
+        'delete_user', 'force_delete_by_email', 'cliente_cambiar_correo',
         // Corregir la venta de un cargue cambia la utilidad de Lincoin, que
         // es lo que después se puede retirar de las bolsas y lo que se factura
         'contabilidad_corregir_venta',
@@ -5325,7 +5334,18 @@ Deno.serve(async (req: Request) => {
 
         // 0. Read gasfreeHdIndex + email/rol BEFORE deleting (para el counter y
         //    para el registro DURABLE de auditoría de quién borró a quién).
-        const { data: deletedUser } = await db.from('users').select('raw_data, email, role').eq('id', uid).single()
+        const { data: deletedUser } = await db.from('users').select('raw_data, email, role, balances, crypto_balances').eq('id', uid).single()
+        // Una cuenta con SALDO no se borra: con ella se irían sus movimientos
+        // y la plata del cliente quedaría sin dueño en los libros. Primero se
+        // le devuelve o se mueve el saldo.
+        {
+          const conSaldo = [(deletedUser as any)?.balances, (deletedUser as any)?.crypto_balances]
+            .flatMap(b => b && typeof b === 'object' ? Object.entries(b as Record<string, unknown>) : [])
+            .filter(([, v]) => Math.abs(Number(v) || 0) >= 0.01)
+          if (conSaldo.length) {
+            return json({ success: false, error: `Esta cuenta todavía tiene saldo (${conSaldo.map(([k, v]) => `${k} ${Number(v).toLocaleString('es-CO')}`).join(', ')}). Devuélvelo o muévelo antes de eliminarla.` }, 409)
+          }
+        }
         const deletedIndex: number | undefined = deletedUser?.raw_data?.gasfreeHdIndex
         await auditAdmin(req, 'admin.delete_user', {
           deletedUserId: uid,
@@ -5369,6 +5389,79 @@ Deno.serve(async (req: Request) => {
         }
 
         return json({ success: true })
+      }
+
+      // ── Cambiar el correo de ACCESO de un cliente ──────────────────────
+      // El correo es con lo que el cliente entra y adonde llegan sus códigos,
+      // los avisos de ingreso y la recuperación de contraseña: cambiarlo es
+      // cambiar QUIÉN controla la cuenta. Por eso: solo el dueño (no figura en
+      // PERMISO), código de la app en cada cambio (ACCIONES_CON_CODIGO), nunca
+      // sobre una cuenta del panel, y aviso al correo ANTERIOR. Se cambia en
+      // los dos lados —la cuenta de acceso (Auth) y el perfil (users)—: si
+      // solo cambiaba uno, el cliente quedaba entrando con un correo y
+      // recibiendo los códigos en otro.
+      //
+      // Si el correo nuevo ya es de otra cuenta, no se pisa: primero se
+      // elimina esa (o se libera con «Liberar correo» si quedó solo el acceso).
+      if (body.action === 'cliente_cambiar_correo') {
+        const uidC = String(body.userId ?? '')
+        const nuevo = String(body.email ?? '').trim().toLowerCase()
+        if (!UUID_RE.test(uidC)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
+        if (nuevo.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(nuevo)) return json({ ok: false, error: 'Escribe un correo válido.' }, 400)
+        const { data: filaC } = await db.from('users').select('id, email, role, full_name').eq('id', uidC).maybeSingle()
+        if (!filaC) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+        if ((filaC as any).role === 'admin') return json({ ok: false, error: 'Las cuentas del panel no se cambian desde aquí.' }, 400)
+        const anterior = String((filaC as any).email ?? '').trim().toLowerCase()
+        if (anterior === nuevo) return json({ ok: true, email: nuevo, sinCambio: true })
+
+        const { data: otraFila } = await db.from('users').select('id, full_name, email').eq('email', nuevo).neq('id', uidC).limit(1).maybeSingle()
+        if (otraFila) {
+          return json({ ok: false, otraCuenta: (otraFila as any).id, error: `Ese correo ya es de otra cuenta${(otraFila as any).full_name ? ` (${(otraFila as any).full_name})` : ''}. Elimina esa cuenta primero y vuelve a intentar.` }, 409)
+        }
+        let otraAuth: any = null
+        for (let page = 1; page <= 20 && !otraAuth; page++) {
+          const { data: lst, error: eLst } = await db.auth.admin.listUsers({ page, perPage: 200 })
+          if (eLst) return json({ ok: false, error: `No se pudo revisar si el correo está libre: ${eLst.message}` }, 500)
+          otraAuth = (lst?.users ?? []).find((u: any) => String(u.email ?? '').toLowerCase() === nuevo && u.id !== uidC) ?? null
+          if (!lst?.users || lst.users.length < 200) break
+        }
+        if (otraAuth) {
+          return json({ ok: false, error: 'Ese correo todavía tiene una cuenta de acceso suelta (sin perfil). Libéralo con «Liberar correo» en Clientes y vuelve a intentar.' }, 409)
+        }
+
+        const { error: eAuth } = await db.auth.admin.updateUserById(uidC, { email: nuevo, email_confirm: true })
+        if (eAuth) {
+          return json({ ok: false, error: /not.?found/i.test(eAuth.message) ? 'Esta cuenta no tiene cuenta de acceso para cambiarle el correo.' : `No se pudo cambiar el correo de acceso: ${eAuth.message}` }, 500)
+        }
+        const { error: ePerfil } = await db.from('users').update({ email: nuevo }).eq('id', uidC)
+        if (ePerfil) {
+          // Que no queden los dos lados distintos: se devuelve el de acceso.
+          try { await db.auth.admin.updateUserById(uidC, { email: anterior, email_confirm: true }) } catch { /* */ }
+          return json({ ok: false, error: `No se pudo guardar el correo en el perfil: ${ePerfil.message}. No se cambió nada.` }, 500)
+        }
+        await auditAdmin(req, 'admin.cliente_cambiar_correo', { userId: uidC, anterior, nuevo })
+
+        // Aviso al correo ANTERIOR: si el cambio no fue pedido por el titular,
+        // es por donde se entera.
+        if (RESEND_KEY && anterior) {
+          const html = `
+            <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+              <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+              <p style="color:#F4F4F2;font-weight:800;font-size:16px;margin:18px 0 6px">Cambiamos el correo de acceso de tu cuenta</p>
+              <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0">
+                Desde ahora la cuenta ${escHtml(String((filaC as any).full_name ?? ''))} entra con <b style="color:#F4F4F2">${escHtml(nuevo)}</b>.
+                Este correo ya no sirve para iniciar sesión. Si no lo pediste, respóndenos de inmediato.
+              </p>
+            </div>`
+          try {
+            await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [anterior], subject: 'Cambiamos el correo de acceso de tu cuenta Lincoin', html }),
+            })
+          } catch { /* el aviso nunca deshace el cambio */ }
+        }
+        return json({ ok: true, email: nuevo, anterior })
       }
 
       // Libera un correo "huérfano": borra el usuario de Supabase Auth que

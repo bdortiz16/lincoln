@@ -249,6 +249,10 @@ export const AdminClientes: React.FC<{
   // (Colombia → factura diaria; exterior → por movimiento).
   const [edOrigen, setEdOrigen] = useState<'colombia' | 'exterior'>('colombia');
   const [edPais, setEdPais] = useState('');
+  // Correo de ACCESO: con lo que el cliente entra y adonde le llegan los
+  // códigos. Se cambia por su propia acción del servidor (solo el dueño, con
+  // código 2FA), nunca con el resto del perfil.
+  const [edCorreo, setEdCorreo] = useState('');
   const [edGuardando, setEdGuardando] = useState(false);
   const [modeloCli, setModeloCli] = useState<ModeloCli | null>(null);
   const [modeloErr, setModeloErr] = useState<string | null>(null);
@@ -615,6 +619,7 @@ export const AdminClientes: React.FC<{
                 <div style={{ display: 'flex', gap: 8, position: 'relative', flexWrap: 'wrap' }}>
                   <button onClick={() => {
                     setEdNombre(sel.name ?? ''); setEdRol(sel.role === 'business' ? 'business' : 'personal');
+                    setEdCorreo(String(sel.email ?? ''));
                     const p = modeloCli?.pais ?? sel.companyCountry ?? null;
                     const ext = modeloCli ? modeloCli.modelo === 'exterior' : !esColombia(p);
                     setEdOrigen(ext ? 'exterior' : 'colombia');
@@ -666,7 +671,9 @@ export const AdminClientes: React.FC<{
                         setMenu(false); setEscrito('');
                         setConfirmar({
                           titulo: 'Eliminar la cuenta', nombre: sel.name || sel.email,
-                          cuerpo: 'Se borra la cuenta y su acceso. Los movimientos ya registrados se conservan para la auditoría. Esto no se puede deshacer.',
+                          // Dice la verdad: delete_user borra también los movimientos
+                          // de la cuenta. Una cuenta con saldo no se deja borrar.
+                          cuerpo: 'Se borran la cuenta, su acceso y sus movimientos. Si tiene saldo no se puede eliminar: primero hay que devolverlo o moverlo. Esto no se puede deshacer.',
                           accion: async () => { const r = await deleteUser?.(sel.id); if (r?.error) { showToast?.(r.error); return; } setSelId(null); await refreshData?.(); showToast?.('Cuenta eliminada.'); },
                         });
                       }}
@@ -798,12 +805,22 @@ export const AdminClientes: React.FC<{
         <div className="fixed inset-0 z-[60] p-4" style={{ background: 'rgba(4,5,4,0.78)', display: 'grid', placeItems: 'center' }}
           onClick={() => setEditando(false)}>
           <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
-            style={{ maxWidth: 420, width: '100%', background: C.card, border: `1px solid ${C.b2}`, borderRadius: 18, padding: '22px 24px', fontFamily: FONT }}>
+            style={{ maxWidth: 420, width: '100%', maxHeight: '92vh', overflowY: 'auto', background: C.card, border: `1px solid ${C.b2}`, borderRadius: 18, padding: '22px 24px', fontFamily: FONT }}>
             <p style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.3px', margin: 0 }}>Editar cliente</p>
             <div style={{ marginTop: 16 }}>
               <Etiqueta>NOMBRE O RAZÓN SOCIAL</Etiqueta>
               <input value={edNombre} onChange={e => setEdNombre(e.target.value)}
                 style={{ width: '100%', height: 42, marginTop: 6, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 13px', color: C.text, fontSize: 13.5, outline: 'none', fontFamily: FONT }} />
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <Etiqueta>CORREO DE ACCESO</Etiqueta>
+              <input value={edCorreo} onChange={e => setEdCorreo(e.target.value)} type="email" autoComplete="off" spellCheck={false}
+                style={{ width: '100%', height: 42, marginTop: 6, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 13px', color: C.text, fontSize: 13.5, outline: 'none', fontFamily: FONT }} />
+              <p style={{ fontSize: 11, color: edCorreo.trim().toLowerCase() !== String(sel.email ?? '').trim().toLowerCase() ? C.amber : C.dim, margin: '7px 0 0', lineHeight: 1.5 }}>
+                {edCorreo.trim().toLowerCase() !== String(sel.email ?? '').trim().toLowerCase()
+                  ? 'El cliente entrará con este correo y ahí le llegarán los códigos; el anterior deja de servir y recibe un aviso. Pide tu código 2FA.'
+                  : 'Con este correo entra el cliente. Si ya es de otra cuenta, elimina esa primero.'}
+              </p>
             </div>
             <div style={{ marginTop: 14 }}>
               <Etiqueta>TIPO DE CUENTA</Etiqueta>
@@ -873,17 +890,28 @@ export const AdminClientes: React.FC<{
                     modeloCli.manual
                     || (edOrigen === 'colombia' ? !(paisAntes && esColombia(paisAntes)) : paisNuevo.toLowerCase() !== String(paisAntes ?? '').trim().toLowerCase())
                   );
+                  const correoNuevo = edCorreo.trim().toLowerCase();
+                  const cambioCorreo = !!correoNuevo && correoNuevo !== String(sel.email ?? '').trim().toLowerCase();
+                  if (cambioCorreo && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(correoNuevo)) { showToast?.('Escribe un correo válido.', 6000, 'error'); return; }
                   setEdGuardando(true);
                   try {
+                    if (cambioCorreo) {
+                      const rc: any = await pedirAdmin({ action: 'cliente_cambiar_correo', userId: sel.id, email: correoNuevo });
+                      if (!rc?.ok) { showToast?.(rc?.permisoDenegado ? 'Solo el dueño puede cambiar el correo de acceso de un cliente.' : (rc?.error ?? 'No se pudo cambiar el correo.'), 8000, 'error'); return; }
+                    }
                     if (cambioPais) {
                       const r: any = await pedirAdmin({ action: 'cliente_modelo_factura_set', userId: sel.id, modelo: 'auto', pais: paisNuevo });
                       if (!r?.ok) { showToast?.(r?.permisoDenegado ? 'Tu rol no permite cambiar el país de la empresa.' : (r?.error ?? 'No se pudo guardar el país.'), 7000, 'error'); return; }
                       setModeloCli({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
                     }
-                    await updateUserProfile?.(sel.id, { name: edNombre.trim(), role: edRol, ...(cambioPais ? { companyCountry: paisNuevo } : {}) });
+                    await updateUserProfile?.(sel.id, { name: edNombre.trim(), role: edRol, ...(cambioPais ? { companyCountry: paisNuevo } : {}), ...(cambioCorreo ? { email: correoNuevo } : {}) });
                     setEditando(false);
                     await refreshData?.();
-                    showToast?.(cambioPais ? `Cliente actualizado · ${edOrigen === 'exterior' ? `exterior (${paisNuevo}): factura por movimiento` : 'Colombia: factura diaria'}.` : 'Cliente actualizado.');
+                    showToast?.([
+                      'Cliente actualizado',
+                      cambioCorreo ? `ahora entra con ${correoNuevo}` : '',
+                      cambioPais ? (edOrigen === 'exterior' ? `exterior (${paisNuevo}): factura por movimiento` : 'Colombia: factura diaria') : '',
+                    ].filter(Boolean).join(' · ') + '.');
                   } finally { setEdGuardando(false); }
                 }}
                 style={{ ...btnPri, flex: 1, height: 44, justifyContent: 'center', opacity: edNombre.trim() && !edGuardando ? 1 : 0.5 }}>
