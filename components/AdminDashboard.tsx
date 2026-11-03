@@ -662,6 +662,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // descontar y volver a cargar). Ahora hay que elegirlo cada vez: se
   // vacía al cambiar de cliente y después de cada cargue aplicado.
   const [carguesRail, setCarguesRail] = useState<'COP' | 'COP_BREB' | 'COP_ACH' | 'COP_C3' | 'COP_C4' | null>(null);
+  // El cargue va en pasos: 1 cliente → 2 cuenta → 3 USDT y tasas (o monto).
+  // Antes era un solo formulario y, después de un cargue, el cliente quedaba
+  // elegido: el siguiente se le cargó a la empresa anterior (3 nov). Ahora
+  // cada cargue arranca en el paso 1 y el cliente se elige de nuevo.
+  const [carguesPaso, setCarguesPaso] = useState<1 | 2 | 3>(1);
   const [carguesAmount, setCarguesAmount] = useState('');
   const [carguesNote, setCarguesNote] = useState('');
   const [carguesDir, setCarguesDir] = useState<'credit' | 'debit'>('credit');
@@ -1051,6 +1056,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !finityPool) loadFinityPool();
     if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !coinsendaPool) loadCoinsendaPool();
     if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
+    // Al salir de la Billetera el cargue a medio hacer se descarta: al volver
+    // arranca otra vez en el paso 1, sin un cliente elegido de antes.
+    if (activeTab !== 'cargues') {
+      setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1);
+      setCarguesAmount(''); setCarguesNote(''); setCarguesReversaDe(''); setCarguesMsg(null);
+      setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -1146,16 +1158,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       if (!d) d = { success: false, error: `El servidor no respondió bien (HTTP ${r.status}). Revisa el saldo del cliente antes de repetir.` };
       if (d?.success) {
         cargueIdRef.current = null;
+        // El nombre del cliente va en el mensaje: después del cargue el
+        // formulario vuelve al paso 1 y ya no lo muestra.
+        const quien = carguesClient.name ?? carguesClient.email;
         setCarguesMsg({ ok: true, text: d.recordOnly
-          ? `✅ Movimiento registrado en el historial. El saldo NO cambió (${formatMoney(d.newBalance ?? 0, '')} COP).`
+          ? `✅ ${quien}: movimiento registrado en el historial. El saldo NO cambió (${formatMoney(d.newBalance ?? 0, '')} COP).`
           : d.feeCop > 0
-          ? `✅ ${railLabel} actualizado. Cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
-          : `✅ ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
+          ? `✅ ${quien} · ${railLabel}: cargue ${formatMoney(d.grossCop ?? raw, '')} − comisión ${formatMoney(d.feeCop, '')} (${d.feePct}%) = ${formatMoney(d.netCop ?? 0, '')} acreditados. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP`
+          : `✅ ${quien} · ${railLabel} actualizado. Nuevo saldo: ${formatMoney(d.newBalance ?? 0, '')} COP` });
         if (d.reverso?.auto) showToast('El descuento se vinculó solo al cargue que revierte.', 6000);
         if (d.reverso && !d.reverso.ok) setCarguesMsg({ ok: false, text: `⚠️ El descuento se aplicó, pero no se pudo vincular al cargue: ${d.reverso.error}. Vincúlalo desde Contabilidad → Clientes.` });
         else if (d.reverso?.aviso) showToast(d.reverso.aviso, 9000);
         setCarguesAmount(''); setCarguesNote(''); setCargueOtp(''); setCarguesReversaDe('');
-        setCarguesRail(null); // el siguiente cargue vuelve a pedir el destino
+        // El siguiente cargue vuelve a pedir TODO: cliente, cuenta y operación.
+        // Antes solo se vaciaba la cuenta y el cliente quedaba elegido.
+        setCarguesRail(null); setCarguesClientId(null); setCarguesPaso(1);
         setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
@@ -2274,10 +2291,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const montoVista = usandoAcct ? (acctCalc.listo ? acctCalc.copToClient : 0) : (Number(carguesAmount) || 0);
       const netoVista = montoVista - ((carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly) ? Math.round(montoVista * 0.10 / 100) : 0);
       const excedeVista = carguesDir === 'credit' && !carguesRecordOnly && conBolsa && !!poolReady && montoVista > 0 && netoVista > freeForRail + 0.5;
+      // Paso actual. Sin cliente siempre es el 1; el 3 necesita la cuenta.
+      const pasoCargue: 1 | 2 | 3 = !carguesClient ? 1 : (carguesPaso === 3 && carguesRail ? 3 : 2);
       const elegirCliente = (u: User) => {
         setCarguesClientId(u.id); setCarguesMsg(null); setCarguesSearch('');
+        // Cliente nuevo, cuenta por elegir: no se arrastra la del anterior.
+        setCarguesRail(null); setCarguesPaso(2);
+      };
+      const elegirCuenta = (code: 'COP' | 'COP_BREB' | 'COP_ACH' | 'COP_C3' | 'COP_C4') => {
+        setCarguesRail(code); setCarguesPaso(3);
         // El cursor sigue al primer dato que falta: la operación o el monto.
         setTimeout(() => (document.getElementById(usandoAcct ? 'cargue-usdt-enviado' : 'cargue-monto') as HTMLInputElement | null)?.focus(), 0);
+      };
+      // Volver a un paso anterior. Volver al 1 suelta el cliente (y la cuenta,
+      // que es de ese cliente); lo escrito de la operación se conserva.
+      const irAPaso = (n: 1 | 2 | 3) => {
+        if (n === 1) { setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1); setCarguesMsg(null); return; }
+        setCarguesPaso(n);
       };
       // Últimos cargues manuales del cliente elegido, para la columna derecha.
       const fechaCargue = (t: any): number => {
@@ -2300,6 +2330,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       };
       const CAMPO: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 14, outline: 'none' };
       const ROTULO: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: '#878E88', marginBottom: 7 };
+      const BOTON_CAMBIAR: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' };
       const bolsas = [
         { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
           detalle: mouvPool && !mouvPool.loading && !mouvPool.error ? `Bre-B ${mouvPool.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'} · ACH ${mouvPool.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}` : null },
@@ -2454,92 +2485,138 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 </div>
               </div>
 
-              {/* 1 · Cliente: un solo buscador; al elegir queda como ficha */}
-              <div>
-                <div className="flex items-center justify-between" style={{ gap: 10, marginBottom: 7 }}>
-                  <label style={{ ...ROTULO, marginBottom: 0 }}>Cliente</label>
-                  {!carguesClient && (
+              {/* ── Pasos: 1 Cliente · 2 Cuenta · 3 USDT y tasas ──
+                  Cada paso ocupa el cuadro solo y lo ya elegido queda arriba
+                  como resumen con "Cambiar". El cliente y la cuenta se eligen
+                  a propósito en cada cargue: después de aplicar uno se vuelve
+                  al paso 1 (antes el cliente quedaba elegido y el siguiente
+                  cargue se le hizo a la empresa anterior). */}
+              <div className="flex items-center flex-wrap" style={{ gap: 6 }}>
+                {([[1, 'Cliente'], [2, 'Cuenta'], [3, usandoAcct ? 'USDT y tasas' : 'Monto']] as const).map(([n, l], i) => {
+                  const hecho = pasoCargue > n, actual = pasoCargue === n;
+                  return (
+                    <React.Fragment key={n}>
+                      {i > 0 && <span style={{ width: 18, height: 1, background: hecho || actual ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)' }} />}
+                      <button type="button" onClick={() => { if (hecho) irAPaso(n); }} disabled={!hecho || carguesBusy}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 7, background: 'none', border: 'none', padding: 0, cursor: hecho ? 'pointer' : 'default', fontSize: 12.5, fontWeight: actual ? 800 : 700, color: actual ? '#F4F4F2' : hecho ? '#4ADE80' : 'rgba(244,244,242,0.45)' }}>
+                        <span style={{ width: 22, height: 22, borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 800,
+                          background: actual ? '#F4F4F2' : hecho ? 'rgba(74,222,128,0.14)' : 'transparent',
+                          color: actual ? '#0C0E0D' : hecho ? '#4ADE80' : 'rgba(244,244,242,0.45)',
+                          border: actual ? 'none' : `1px solid ${hecho ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}` }}>
+                          {hecho ? <Check size={12} /> : n}
+                        </span>
+                        {l}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+
+              {carguesMsg && (
+                <div role={carguesMsg.ok ? 'status' : 'alert'}
+                  style={{ fontSize: 12.5, lineHeight: 1.5, borderRadius: 12, padding: '10px 13px', color: '#F4F4F2',
+                    background: carguesMsg.ok ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)',
+                    border: `1px solid ${carguesMsg.ok ? 'rgba(74,222,128,0.30)' : 'rgba(248,113,113,0.30)'}` }}>
+                  {carguesMsg.text}
+                </div>
+              )}
+
+              {/* Lo ya elegido, siempre a la vista desde el paso 2: a quién y
+                  en qué cuenta. Es lo que se equivocaba. */}
+              {carguesClient && pasoCargue >= 2 && (
+                <div style={{ background: '#070808', border: '1px solid rgba(74,222,128,0.45)', borderRadius: 12, overflow: 'hidden' }}>
+                  <div className="flex items-center justify-between" style={{ gap: 10, padding: '11px 13px' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <p style={{ ...ROTULO, marginBottom: 2 }}>{carguesDir === 'credit' ? 'Le acreditas a' : 'Le descuentas a'}</p>
+                      <p style={{ margin: 0, fontWeight: 800, fontSize: 16, letterSpacing: '-0.3px', color: '#F4F4F2' }}>{carguesClient.name ?? 'Sin nombre'}</p>
+                      <p style={{ margin: '2px 0 0', fontSize: 11.5, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {carguesClient.email} · {carguesClient.role === 'business' ? 'Empresa' : carguesClient.role === 'personal' ? 'Operador' : carguesClient.role}
+                      </p>
+                    </div>
+                    <button type="button" onClick={() => irAPaso(1)} disabled={carguesBusy} style={BOTON_CAMBIAR}>Cambiar</button>
+                  </div>
+                  {pasoCargue === 3 && carguesRail && (
+                    <div className="flex items-center justify-between" style={{ gap: 10, padding: '10px 13px', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ ...ROTULO, marginBottom: 2 }}>En la cuenta</p>
+                        <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>
+                          {railMeta[carguesRail].label}{' '}
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: '#878E88' }}>· {railMeta[carguesRail].sub} · saldo del cliente {formatMoney(bal(carguesClient, carguesRail), '')}</span>
+                        </p>
+                      </div>
+                      <button type="button" onClick={() => irAPaso(2)} disabled={carguesBusy} style={BOTON_CAMBIAR}>Cambiar</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Paso 1 · Cliente: un solo buscador; al elegir pasa a la cuenta */}
+              {pasoCargue === 1 && (
+                <div>
+                  <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginBottom: 7 }}>
+                    <label style={{ ...ROTULO, marginBottom: 0 }}>¿A qué cliente?</label>
                     <div style={{ display: 'flex', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: 2 }}>
                       {([['business', 'Empresas'], ['personal', 'Operadores'], ['todos', 'Todos']] as const).map(([k, l]) => (
                         <button key={k} onClick={() => setCarguesTipo(k)}
                           style={{ border: 'none', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer', background: carguesTipo === k ? '#F4F4F2' : 'transparent', color: carguesTipo === k ? '#0C0E0D' : '#878E88' }}>{l}</button>
                       ))}
                     </div>
-                  )}
-                </div>
-                {carguesClient ? (
-                  <div className="flex items-center justify-between" style={{ ...CAMPO, gap: 10, borderColor: 'rgba(74,222,128,0.45)' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <p style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>{carguesClient.name} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11.5 }}>· {carguesClient.email}</span></p>
-                      <p style={{ margin: '3px 0 0', fontSize: 11.5, color: '#878E88' }}>
-                        {(['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4'] as const).map((code, i) => (
-                          <React.Fragment key={code}>{i ? ' · ' : ''}{railMeta[code].corto} <b style={{ color: '#F4F4F2' }}>{formatMoney(bal(carguesClient, code), '')}</b></React.Fragment>
-                        ))}
-                      </p>
-                    </div>
-                    <button onClick={() => { setCarguesClientId(null); setCarguesMsg(null); setCarguesRail(null); }} title="Cambiar cliente" style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><X size={16} /></button>
                   </div>
-                ) : (
-                  <>
-                    <div className="relative">
-                      <Search size={15} style={{ position: 'absolute', left: 13, top: 13, color: '#878E88' }} />
-                      <input autoFocus type="text" placeholder="Nombre o correo del cliente…" value={carguesSearch}
-                        onChange={(e) => setCarguesSearch(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter' && list[0]) elegirCliente(list[0]); }}
-                        style={{ ...CAMPO, paddingLeft: 36 }} />
-                    </div>
-                    <div style={{ marginTop: 6, background: '#121413', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, maxHeight: 280, overflowY: 'auto' }}>
-                      {list.length === 0 && <p style={{ margin: 0, padding: 14, fontSize: 12.5, color: '#878E88' }}>Sin clientes que coincidan.</p>}
-                      {list.map((u, i) => (
-                        <button key={u.id} onClick={() => elegirCliente(u)} className="hover:bg-white/5 transition-colors"
-                          style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 14px', border: 'none', borderTop: i ? '1px solid rgba(255,255,255,0.05)' : 'none', background: 'transparent', cursor: 'pointer', color: '#F4F4F2' }}>
-                          <span style={{ width: 30, height: 30, borderRadius: 999, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{(u.name ?? 'U').slice(0, 2).toUpperCase()}</span>
-                          <span style={{ minWidth: 0, flex: 1 }}>
-                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}>{u.name ?? 'Sin nombre'}</span>
-                            <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</span>
-                          </span>
-                          {i === 0 && carguesSearch.trim() && <span style={{ fontSize: 10, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, padding: '2px 6px' }}>Enter</span>}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* 2 · Destino: dónde queda el saldo del cliente */}
-              <div>
-                <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginBottom: 7 }}>
-                  <label style={{ ...ROTULO, marginBottom: 0, ...(carguesClient && !carguesRail ? { color: '#FBBF24' } : {}) }}>Destino</label>
-                  {/* Sin destino por defecto: se avisa en ámbar mientras falte. */}
-                  {!carguesRail && (
-                    <span style={{ fontSize: 11.5, fontWeight: 600, color: carguesClient ? '#FBBF24' : '#878E88' }}>
-                      Elige en qué saldo queda el cargue
-                    </span>
-                  )}
-                </div>
-                {/* En el celular van uno debajo del otro: en tres columnas no cabían. */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 2xl:grid-cols-5" style={{ gap: 8 }}>
-                  {(['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4'] as const).map(code => {
-                    const M = railMeta[code];
-                    const active = carguesRail === code;
-                    const libre = code === 'COP_BREB' ? freeBreb : code === 'COP_ACH' ? freeAch : code === 'COP_C3' ? (coinsendaPool?.cop != null ? freeC3 : null) : code === 'COP_C4' ? (coinsenda2Pool?.cop != null ? freeC4 : null) : null;
-                    return (
-                      <button key={code} onClick={() => setCarguesRail(code)}
-                        style={{ textAlign: 'left', cursor: 'pointer', borderRadius: 12, padding: '11px 12px', color: '#F4F4F2', background: active ? 'rgba(74,222,128,0.10)' : 'transparent', border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
-                        <span className="flex items-center justify-between">
-                          <M.icon size={16} style={{ color: active ? '#4ADE80' : '#878E88' }} />
-                          {active && <CheckCircle size={14} style={{ color: '#4ADE80' }} />}
+                  <div className="relative">
+                    <Search size={15} style={{ position: 'absolute', left: 13, top: 13, color: '#878E88' }} />
+                    <input autoFocus type="text" placeholder="Nombre o correo del cliente…" value={carguesSearch}
+                      onChange={(e) => setCarguesSearch(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && list[0]) elegirCliente(list[0]); }}
+                      style={{ ...CAMPO, paddingLeft: 36 }} />
+                  </div>
+                  <div style={{ marginTop: 6, background: '#121413', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, maxHeight: 280, overflowY: 'auto' }}>
+                    {list.length === 0 && <p style={{ margin: 0, padding: 14, fontSize: 12.5, color: '#878E88' }}>Sin clientes que coincidan.</p>}
+                    {list.map((u, i) => (
+                      <button key={u.id} onClick={() => elegirCliente(u)} className="hover:bg-white/5 transition-colors"
+                        style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 14px', border: 'none', borderTop: i ? '1px solid rgba(255,255,255,0.05)' : 'none', background: 'transparent', cursor: 'pointer', color: '#F4F4F2' }}>
+                        <span style={{ width: 30, height: 30, borderRadius: 999, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{(u.name ?? 'U').slice(0, 2).toUpperCase()}</span>
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                          <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}>{u.name ?? 'Sin nombre'}</span>
+                          <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</span>
                         </span>
-                        <span style={{ display: 'block', marginTop: 7, fontSize: 13.5, fontWeight: 800 }}>{M.label}</span>
-                        <span style={{ display: 'block', fontSize: 11, color: '#878E88' }}>{M.sub}</span>
-                        {libre != null && <span style={{ display: 'block', marginTop: 5, fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>disp. {Math.round(libre).toLocaleString('es-CO')}</span>}
-                        {carguesClient && <span style={{ display: 'block', marginTop: 4, fontSize: 10.5, color: '#878E88' }}>cliente: {formatMoney(bal(carguesClient, code), '')}</span>}
+                        {i === 0 && carguesSearch.trim() && <span style={{ fontSize: 10, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, padding: '2px 6px' }}>Enter</span>}
                       </button>
-                    );
-                  })}
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
+              {/* Paso 2 · Cuenta: en qué saldo del cliente queda el cargue.
+                  Sin cuenta por defecto: hay que tocar una. */}
+              {pasoCargue === 2 && carguesClient && (
+                <div>
+                  <label style={ROTULO}>¿En qué cuenta queda el {carguesDir === 'credit' ? 'cargue' : 'descuento'}?</label>
+                  {/* En el celular van uno debajo del otro: en tres columnas no cabían. */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 2xl:grid-cols-5" style={{ gap: 8 }}>
+                    {(['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4'] as const).map(code => {
+                      const M = railMeta[code];
+                      const active = carguesRail === code;
+                      const libre = code === 'COP_BREB' ? freeBreb : code === 'COP_ACH' ? freeAch : code === 'COP_C3' ? (coinsendaPool?.cop != null ? freeC3 : null) : code === 'COP_C4' ? (coinsenda2Pool?.cop != null ? freeC4 : null) : null;
+                      return (
+                        <button key={code} onClick={() => elegirCuenta(code)}
+                          style={{ textAlign: 'left', cursor: 'pointer', borderRadius: 12, padding: '11px 12px', color: '#F4F4F2', background: active ? 'rgba(74,222,128,0.10)' : 'transparent', border: active ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
+                          <span className="flex items-center justify-between">
+                            <M.icon size={16} style={{ color: active ? '#4ADE80' : '#878E88' }} />
+                            {active ? <CheckCircle size={14} style={{ color: '#4ADE80' }} /> : <ChevronRight size={14} style={{ color: 'rgba(244,244,242,0.35)' }} />}
+                          </span>
+                          <span style={{ display: 'block', marginTop: 7, fontSize: 13.5, fontWeight: 800 }}>{M.label}</span>
+                          <span style={{ display: 'block', fontSize: 11, color: '#878E88' }}>{M.sub}</span>
+                          {libre != null && <span style={{ display: 'block', marginTop: 5, fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>disp. {Math.round(libre).toLocaleString('es-CO')}</span>}
+                          <span style={{ display: 'block', marginTop: 4, fontSize: 10.5, color: '#878E88' }}>cliente: {formatMoney(bal(carguesClient, code), '')}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Paso 3 · La operación (USDT y tasas) o el monto, y revisar */}
+              {pasoCargue === 3 && carguesClient && carguesRail && (<>
               {/* 3 · Monto: desde la operación (por defecto) o a mano */}
               <div>
                 <label style={ROTULO}>Monto</label>
@@ -2686,12 +2763,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                     );
                   })()}
 
-                  {carguesMsg && (
-                    <div className={`text-xs font-medium rounded-lg p-3 mb-3 ${carguesMsg.ok ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-                      {carguesMsg.text}
-                    </div>
-                  )}
-
               {/* Resumen en vivo + botón. El 2FA NO se pide acá: se pide en la
                   ventana de confirmación, DESPUÉS de ver el desglose — un código
                   que se escribe antes de revisar la cifra autoriza a ciegas. */}
@@ -2709,16 +2780,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           : null}
                       </>}
                 </div>
-                <button
-                  onClick={requestCargue}
-                  disabled={!carguesClient || !carguesRail || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
-                  style={{ border: 'none', borderRadius: 12, padding: '12px 22px', fontSize: 14, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
-                    ...((!carguesClient || !carguesRail || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)) ? { background: 'rgba(255,255,255,0.08)', color: 'rgba(244,244,242,0.45)', cursor: 'not-allowed' } : { background: '#4ADE80', color: '#0C0E0D' }) }}
-                >
-                  {/* El destino va en el botón: es lo último que se lee antes de tocar. */}
-                  {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}{carguesRail ? ` en ${railLabelOf(carguesRail)}` : ''}</>}
-                </button>
+                <div className="flex items-center" style={{ gap: 8 }}>
+                  <button type="button" onClick={() => irAPaso(2)} disabled={carguesBusy} style={BOTON_CAMBIAR}>
+                    <ArrowLeft size={14} /> Atrás
+                  </button>
+                  <button
+                    onClick={requestCargue}
+                    disabled={!carguesClient || !carguesRail || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)}
+                    style={{ border: 'none', borderRadius: 12, padding: '12px 22px', fontSize: 14, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
+                      ...((!carguesClient || !carguesRail || carguesBusy || (usandoAcct ? !acctCalc.listo : !carguesAmount)) ? { background: 'rgba(255,255,255,0.08)', color: 'rgba(244,244,242,0.45)', cursor: 'not-allowed' } : { background: '#4ADE80', color: '#0C0E0D' }) }}
+                  >
+                    {/* El destino va en el botón: es lo último que se lee antes de tocar. */}
+                    {carguesBusy ? <><RefreshCw size={15} className="animate-spin" /> Aplicando…</> : <>Revisar y {carguesDir === 'credit' ? 'acreditar' : 'descontar'}{carguesRail ? ` en ${railLabelOf(carguesRail)}` : ''}</>}
+                  </button>
+                </div>
               </div>
+              </>)}
             </div>
 
             {/* ── Columna derecha: últimos cargues del cliente elegido ── */}
@@ -2786,6 +2863,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
               const monto = Math.round(Number(t.grossCop ?? t.amount) || 0);
               setCarguesRail((t.rail ?? t.currency ?? 'COP') as any);
+              setCarguesPaso(3); // cliente y cuenta ya los da el cargue que se revierte
               setCarguesDir(esCredito ? 'debit' : 'credit');
               setCarguesRecordOnly(false);
               setAcctOn(false);
@@ -3003,8 +3081,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   const n = (x: number) => x.toLocaleString('es-CO');
                   return (
                 <div style={{ padding: '12px 14px', background: '#0A0C0B', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12 }}>
-                  {/* El destino, grande y primero: es el dato que se equivocaba
-                      (Saldo Lincoin en vez de Finity) y aquí todavía se corrige. */}
+                  {/* El cliente y el destino, grandes y primero: son los datos
+                      que se equivocaban (otra empresa; Saldo Lincoin en vez de
+                      Finity) y aquí todavía se corrigen. */}
+                  <div className="flex items-start justify-between" style={{ gap: 10, paddingBottom: 8, marginBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    <span style={{ fontSize: 12, color: '#878E88', paddingTop: 2 }}>Cliente</span>
+                    <span style={{ minWidth: 0, textAlign: 'right' }}>
+                      <span style={{ display: 'block', fontSize: 16, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.3px', overflowWrap: 'anywhere' }}>{carguesClient.name ?? 'Sin nombre'}</span>
+                      <span style={{ display: 'block', fontSize: 11, color: '#878E88', overflowWrap: 'anywhere' }}>{carguesClient.email}</span>
+                    </span>
+                  </div>
                   <div className="flex items-center justify-between" style={{ gap: 10, paddingBottom: 8, marginBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                     <span style={{ fontSize: 12, color: '#878E88' }}>Destino</span>
                     <span style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.3px', whiteSpace: 'nowrap' }}>{railLabelOf(carguesRail)}</span>
