@@ -742,7 +742,6 @@ export const AdminClientes: React.FC<{
 
               {tab === 'movimientos' && <>
                 {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
-                {sonda && <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} onReembolsar={reembolsarSonda} reembolsando={reembolsando} />}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                   <span style={{ fontSize: 12, color: histSel.error && !histSel.completo ? C.red : C.sub, fontFamily: FONT }}>
                     {histSel.cargando ? 'Trayendo el historial completo…'
@@ -769,6 +768,18 @@ export const AdminClientes: React.FC<{
                 <Movimientos movs={movsDe(sel.id)} onSondear={sondear} sondeando={sondeando} />
               </>}
               {tab === 'envios' && <EnviosPagos sel={sel} movs={movsDe(sel.id)} cargando={histSel.cargando} completo={histSel.completo} truncado={histSel.truncado} onSondear={sondear} sondeando={sondeando} />}
+              {/* El resultado de "Consultar" va en una ventana encima: antes solo se
+                  dibujaba en la pestaña Movimientos, así que en Envíos y pagos el
+                  botón consultaba y no se veía nada (3 nov). Y con la lista larga
+                  quedaba arriba, fuera de la vista. */}
+              {sonda && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center" style={{ padding: 16, background: 'rgba(0,0,0,0.62)' }} onClick={() => !reembolsando && setSonda(null)}>
+                  <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Consulta al proveedor"
+                    style={{ width: 600, maxWidth: '100%', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto' }}>
+                    <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} onReembolsar={reembolsarSonda} reembolsando={reembolsando} />
+                  </div>
+                </div>
+              )}
               {tab === 'kyc' && <Kyc sel={sel} verifyUser={verifyUser} refreshData={refreshData} showToast={showToast} verificado={verificado} />}
               {tab === 'brasil' && <CuentaBrasilCliente sel={sel} showToast={showToast} />}
               {tab === 'limites' && <Limites sel={sel} movs={movsDe(sel.id)} updateUserRawData={updateUserRawData} refreshData={refreshData} showToast={showToast} />}

@@ -3128,7 +3128,9 @@ serve(async (req: Request) => {
     // Mouv. Antes esta consulta siempre iba a Mouv y para un envío de Finity
     // no encontraba nada: no había cómo ver qué decía Finity de un pago que
     // el cliente veía "Completado" y Finity había rechazado (3 nov).
-    if (String(tx.currency) === 'COP_ACH' && String(rd.proveedor ?? '') !== 'coinsenda') {
+    // Los movimientos de Finity se llaman mvm-…; feeProvider/proveedor lo
+    // dicen también en las filas que lo guardaron.
+    if ((String(tx.currency) === 'COP_ACH' && String(rd.proveedor ?? '') !== 'coinsenda') || rd.feeProvider === 'finity' || rd.proveedor === 'finity' || /^mvm-/i.test(ref)) {
       const stF = await finityCall('withdrawal_status', String(tx.user_id), { id: ref })
       const v = stF?.ok === true ? veredictoFinity(stF) : null
       const veredictoF = !v ? 'unknown' : v.veredicto === 'rechazado' ? 'returned' : v.veredicto === 'completado' ? 'completed' : 'pending'
