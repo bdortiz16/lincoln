@@ -1230,7 +1230,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       await logAudit(userId, 'coinsenda.prep_sin_fondos', { cuenta, rail, bruto, disponible: bill.disponible })
       await avisarAdminBreb2(`c${cuenta}_sin_fondos`, `Cuenta ${cuenta} (Coinsenda${cuenta === 4 ? ' 2' : ''}) sin fondos: hay que recargar la billetera COP`,
         `Un cliente intentó enviar ${amount.toLocaleString('es-CO')} COP por ${etiquetaRiel}. Con el costo de Coinsenda son ${bruto.toLocaleString('es-CO')} COP y la billetera COP de esa cuenta de Coinsenda (${cfgC.email ?? 'sin correo'}) tiene ${bill.disponible.toLocaleString('es-CO')} COP. Hay que recargarla. Mientras tanto los clientes pueden enviar por otra cuenta.`)
-      return { ok: false, mensaje: `${etiquetaRiel} no tiene fondos disponibles en este momento, así que no salió nada. Envíalo por otra cuenta o inténtalo más tarde.` }
+      return { ok: false, mensaje: `La Cuenta ${cuenta} no está disponible temporalmente. Puedes enviarlo desde otra cuenta o intentarlo más tarde.` }
     }
     let destino: string
     let titular: string | undefined
@@ -1644,10 +1644,12 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
     const rechazoPorDatos = [400, 404, 422].includes(Number(ultimo?.status ?? 0))
     const avisarSinFondos = (disponible: number | null) => avisarAdminBreb2('sin_fondos', 'Bre-B Cuenta 2 sin fondos: hay que recargar la billetera Bre-B',
       `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity respondió "${motivoCreacion(ultimo)}": la billetera Bre-B (Kamin) de la cuenta Finity no tiene saldo para ese envío. ${disponible == null ? '' : `El saldo en pesos de la cuenta Finity (el de ACH) es ${disponible.toLocaleString('es-CO')} COP, pero la billetera Bre-B es aparte. `}Hay que recargar la billetera Bre-B (pedírselo a Finity). Mientras tanto los clientes pueden enviar por Bre-B Cuenta 1 o ACH.`)
+    // Al cliente no se le dice "no tiene fondos": se preocupaba por SU saldo
+    // (3 nov). Se le dice que la cuenta no está disponible; el equipo recibe la causa real.
     if (sinFondosBreb2(ultimo)) {
       // Lo dice el proveedor: no hace falta adivinar con la prueba de 5.000.
       diagnostico = 'cupo'
-      mensaje = 'La Bre-B · Cuenta 2 no tiene fondos disponibles en este momento, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o intenta más tarde.'
+      mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
       await avisarSinFondos(await finityCopDisponible(userId).catch(() => null))
     } else if (rechazoPorDatos && monto > 5000 && intentos.length) {
       const base = intentos[0]
@@ -1659,7 +1661,7 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
         rastro.push({ saldoCuenta2: disponible })
         if (disponible != null && disponible < monto + 5000) {
           diagnostico = 'cupo'
-          mensaje = 'La Bre-B · Cuenta 2 no tiene cupo para este monto en este momento, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH.'
+          mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
           await avisarAdminBreb2('cupo', 'Bre-B Cuenta 2: la bolsa de Finity no cubre los envíos',
             `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity lo rechazó. Con el mínimo (5.000) la misma llave sí pasa, y el saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP. Hay que fondear la cuenta Finity: de esa misma bolsa salen también los envíos ACH.`)
         } else {
@@ -1671,7 +1673,7 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
       } else if (sinFondosBreb2(p)) {
         // Ni el mínimo pasa porque la billetera está vacía: no es la llave.
         diagnostico = 'cupo'
-        mensaje = 'La Bre-B · Cuenta 2 no tiene fondos disponibles en este momento, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o intenta más tarde.'
+        mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
         await avisarSinFondos(null)
       } else if (rechazoPorDatos) {
         diagnostico = 'llave'
