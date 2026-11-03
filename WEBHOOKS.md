@@ -38,3 +38,4 @@ traga los webhooks y el banco recibe el HTML de la app en vez de un 200.
 |---|---|---|
 | `/webhooks/gowd` | `gowd-webhook` | Gowd (Brasil, PIX) |
 | `/webhooks/resend` | `resend-webhook` | Resend (rebotes de correo) |
+| `/webhooks/finity` | `finity-webhook` | Finity (estado de los retiros: WITHDRAW_COP). Va con `?secret=` igual a `FINITY_WEBHOOK_SECRET` |

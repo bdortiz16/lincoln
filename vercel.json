@@ -4,6 +4,7 @@
   "rewrites": [
     { "source": "/webhooks/gowd", "destination": "https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/gowd-webhook" },
     { "source": "/webhooks/resend", "destination": "https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/resend-webhook" },
+    { "source": "/webhooks/finity", "destination": "https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/finity-webhook" },
     { "source": "/((?!assets/).*)", "destination": "/index.html" }
   ],
   "headers": [

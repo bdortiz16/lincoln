@@ -81,6 +81,23 @@ async function audit(event: string, metadata: Record<string, unknown>) {
   } catch (e) { console.warn('[finity-webhook] audit failed:', e) }
 }
 
+// Un aviso que llega y se RECHAZA (sin secreto configurado, o con otro) antes
+// no dejaba rastro: el 3 nov el portal de Finity mostraba los avisos enviados
+// y aquí no había nada, sin forma de saber si llegaban y se rechazaban o no
+// llegaban. Se anota el motivo y qué encabezados traía (solo los NOMBRES,
+// nunca valores ni el cuerpo), uno cada 10 minutos como mucho para que
+// alguien que mande basura no llene la tabla.
+let ultimoRechazo = 0
+async function auditRechazo(motivo: string, req: Request) {
+  if (Date.now() - ultimoRechazo < 10 * 60_000) return
+  ultimoRechazo = Date.now()
+  const url = new URL(req.url)
+  await audit('finity.webhook.rechazado', {
+    motivo, traeSecretEnUrl: url.searchParams.has('secret'),
+    encabezados: Array.from(req.headers.keys()).filter(k => !/^(authorization|cookie|apikey)$/i.test(k)).slice(0, 30),
+  })
+}
+
 // HMAC-SHA256 del cuerpo con el secret — la forma usual en que los
 // proveedores "firman" los webhooks. Se devuelve en hex y base64.
 async function hmacOf(body: string, secret: string): Promise<{ hex: string; b64: string }> {
@@ -103,6 +120,7 @@ Deno.serve(async (req) => {
   // procesa nada.
   if (!SECRET) {
     console.error('[finity-webhook] FINITY_WEBHOOK_SECRET no configurado — rechazando (fail-closed)')
+    await auditRechazo('sin_secreto_configurado', req)
     return json(503, { error: 'webhook_not_configured' })
   }
 
@@ -132,7 +150,7 @@ Deno.serve(async (req) => {
       return d === 0
     }
     const okAuth = candidates.some(v => igual(v, SECRET) || igual(v.toLowerCase(), hex) || igual(v, b64))
-    if (!okAuth) return json(401, { error: 'unauthorized' })
+    if (!okAuth) { await auditRechazo(candidates.length ? 'secreto_no_coincide' : 'sin_secreto_en_el_aviso', req); return json(401, { error: 'unauthorized' }) }
   }
 
   let payload: unknown = null

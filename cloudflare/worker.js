@@ -2,7 +2,10 @@
 // vercel.json) y deja todo lo demás a los archivos estáticos de ./dist.
 // El cuerpo va sin tocar: el proveedor firma sobre el cuerpo crudo.
 const SUPABASE = 'https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/';
-const WEBHOOKS = { '/webhooks/gowd': 'gowd-webhook', '/webhooks/resend': 'resend-webhook' };
+// Finity entró el 3 nov: su portal mostraba los avisos enviados (WITHDRAW_COP
+// FAILED) y a Lincoin no llegaba ninguno; sin esta línea, /webhooks/finity
+// respondía la página de inicio con un 200 y el aviso se perdía.
+const WEBHOOKS = { '/webhooks/gowd': 'gowd-webhook', '/webhooks/resend': 'resend-webhook', '/webhooks/finity': 'finity-webhook' };
 
 export default {
   async fetch(request, env) {
