@@ -2879,6 +2879,42 @@ Deno.serve(async (req: Request) => {
         return json({ ok: false, error: 'Operación inválida.' }, 400)
       }
 
+      // ── Tipo de cuenta de una cuenta RECIÉN creada (Google) ─────────────
+      // Con Google la cuenta nace en la base por un trigger que no sabe por qué
+      // portal se entró, y quedaba como Operador aunque se registrara por
+      // Empresas ("Esta cuenta es de Operadores" al primer ingreso, 3 nov). La
+      // app le pide al servidor el tipo del portal por el que entró, y solo se
+      // acepta para una cuenta recién nacida: menos de 30 minutos, sin
+      // movimientos y sin verificación. Una cuenta con historia no cambia de
+      // tipo por entrar por otra puerta (eso es del admin, Editar cliente).
+      if (selfServiceBody.action === 'rol_inicial') {
+        const yo = await usuarioDelToken(req)
+        if (!yo) return json({ ok: false, error: 'Vuelve a iniciar sesión.' }, 401)
+        const rolPedido = String(selfServiceBody.role ?? '')
+        if (!['personal', 'business'].includes(rolPedido)) return json({ ok: false, error: 'Tipo de cuenta inválido.' }, 400)
+        const { data: fR } = await db.from('users').select('role, created_at, kyc_status').eq('id', yo.id).maybeSingle()
+        if (!fR) return json({ ok: false, error: 'No se encontró la cuenta.' }, 404)
+        if ((fR as any).role === rolPedido) return json({ ok: true, role: rolPedido })
+        if (!['personal', 'business'].includes(String((fR as any).role ?? ''))) return json({ ok: false, error: 'Este tipo de cuenta no se cambia aquí.' }, 403)
+        // La edad sale de la cuenta de ACCESO: users.created_at no tiene valor
+        // por defecto y en las filas que crea el trigger queda vacío.
+        let nacio = Date.parse(String((fR as any).created_at ?? ''))
+        try {
+          const { data: au } = await db.auth.admin.getUserById(yo.id)
+          const t = Date.parse(String(au?.user?.created_at ?? ''))
+          if (Number.isFinite(t)) nacio = t
+        } catch { /* sin cuenta de acceso legible: se usa la del perfil */ }
+        const edad = Date.now() - nacio
+        if (!(edad >= 0 && edad <= 30 * 60_000)) return json({ ok: false, error: 'Solo una cuenta recién creada elige su tipo.' }, 403)
+        if (['verified', 'approved', 'in_review'].includes(String((fR as any).kyc_status ?? ''))) return json({ ok: false, error: 'Esta cuenta ya está en verificación.' }, 403)
+        const { count: movs } = await db.from('transactions').select('id', { count: 'exact', head: true }).eq('user_id', yo.id)
+        if ((movs ?? 0) > 0) return json({ ok: false, error: 'Esta cuenta ya tiene movimientos.' }, 403)
+        const { error: eR } = await db.from('users').update({ role: rolPedido }).eq('id', yo.id)
+        if (eR) return json({ ok: false, error: 'No se pudo fijar el tipo de cuenta.' }, 500)
+        await auditAdmin(req, 'cliente.rol_inicial', { userId: yo.id, antes: (fR as any).role, ahora: rolPedido })
+        return json({ ok: true, role: rolPedido })
+      }
+
       // ── El CLIENTE cambia su propio correo de acceso ────────────────────
       // Desde Ajustes. Dos pasos, porque el correo es la llave de la cuenta:
       //   1) correo_cambio_iniciar: el código de su app (2FA, en ESTA

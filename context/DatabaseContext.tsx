@@ -334,6 +334,37 @@ const CRYPTO_CURRENCIES = new Set(['USDT', 'USDC', 'ETH', 'BNB', 'TRX', 'USDT_BS
 
 const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined);
 
+// El tipo de cuenta de una cuenta recién creada con Google lo decide el portal
+// por el que se entró (la pista que deja loginWithGoogle, válida 15 min). Solo
+// para cuentas de menos de 30 minutos; el servidor (rol_inicial) lo vuelve a
+// comprobar. No borra la pista: App la usa después para revisar el portal.
+const pedirRolInicial = async (role: 'personal' | 'business', token: string): Promise<boolean> => {
+  if (!SUPABASE_URL_FOR_FN) return false;
+  const r = await fetch(`${SUPABASE_URL_FOR_FN}/functions/v1/admin-data`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_FOR_FN, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'rol_inicial', role }),
+  }).then(x => x.json()).catch(() => null);
+  return !!r?.ok;
+};
+const ajustarRolInicial = async (profile: any): Promise<any> => {
+  try {
+    if (!profile) return profile;
+    const pista = JSON.parse(localStorage.getItem('cuypay_oauth_role') || 'null');
+    if (!pista || Date.now() - Number(pista.at || 0) > 15 * 60_000) return profile;
+    const deseado = pista.role === 'business' ? 'business' : (pista.role === 'personal' || pista.role === 'contador') ? 'personal' : null;
+    if (!deseado || profile.role === deseado || !['personal', 'business'].includes(String(profile.role ?? ''))) return profile;
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token || session?.user?.id !== profile.id) return profile;
+    // La edad de la cuenta de ACCESO: users.created_at queda vacío en las
+    // filas que crea el trigger de la base.
+    const creado = Date.parse(String(session?.user?.created_at ?? profile.created_at ?? ''));
+    if (!creado || Date.now() - creado > 30 * 60_000) return profile;
+    return (await pedirRolInicial(deseado, token)) ? { ...profile, role: deseado } : profile;
+  } catch { return profile; }
+};
+
 export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { config, updateConfig } = useSystemConfig();
   const [users, setUsers] = useState<User[]>([]);
@@ -532,6 +563,11 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // (Antes este listener seteaba currentUser directo y saltaba el 2FA.)
             // La marca 'mfa_ok' vive en sessionStorage: sobrevive un refresco de la
             // pestaña pero NO una pestaña/navegador nuevo → ahí sí re-pide 2FA.
+            // Cuenta RECIÉN creada con Google: el trigger de la base la crea
+            // sin saber por qué portal se entró (quedaba como Operador aunque
+            // se registrara por Empresas). El portal de la pista de Google
+            // decide; el servidor solo lo acepta para una cuenta recién nacida.
+            profile = await ajustarRolInicial(profile);
             const mfaOn2 = !!(profile as any)?.raw_data?.mfaEnabled;
             let mfaOk = false; try { mfaOk = sessionStorage.getItem('mfa_ok') === '1'; } catch { /* */ }
             // La marca local no basta: la confirma el servidor contra la
@@ -2509,6 +2545,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         await supabase.from('users')
           .update({ role: intendedRole, full_name: data.name || 'Usuario' })
           .eq('id', id);
+      } catch {}
+      // El guardia de la base revierte en silencio el cambio de rol que hace
+      // el navegador: si la fila la creó el trigger (como Operador), el tipo
+      // de cuenta lo fija el servidor (rol_inicial, solo cuentas recién creadas).
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token && session.user?.id === id) await pedirRolInicial(intendedRole, session.access_token);
       } catch {}
     } else {
       localStorage.removeItem('cuypay_register_role');

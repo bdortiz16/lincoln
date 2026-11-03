@@ -26,9 +26,41 @@ interface LoginProps {
 // por dónde debe entrar. Devuelve el mensaje, o null si sí corresponde.
 export const errorDePortal = (portal: string, rolCuenta?: string): string | null => {
   if (!rolCuenta || rolCuenta === 'admin' || portal === 'contador' || rolCuenta === portal) return null;
-  if (rolCuenta === 'personal') return 'Esta cuenta es de Operadores. Este es el portal de Empresas: entra por Operadores en lincoin.me/ingresar_personas.';
+  if (rolCuenta === 'personal') return 'Esta cuenta es de Operadores. Este es el ingreso de Empresas: entra por el de Operadores.';
   if (rolCuenta === 'contador') return 'Esta cuenta es de contador o revisor fiscal. Entra por Empresas → Contabilidad o Revisor fiscal.';
-  return 'Esta cuenta es de Empresas. Este es el portal de Operadores: entra por Empresas → Usuario en lincoin.me/ingresar_empresas.';
+  return 'Esta cuenta es de Empresas. Este es el ingreso de Operadores: entra por el de Empresas.';
+};
+
+// El aviso de error del ingreso. Era una franja rosada con letras rojas sobre
+// la pantalla oscura: chocaba con todo lo demás y se leía como un error del
+// sistema. Ahora es una tarjeta oscura con borde rojo suave: la primera frase
+// como título, el resto debajo y, si el arreglo es ir a otro ingreso, el botón
+// que lleva allá (en vez de pedirle a la persona que copie una dirección).
+const AvisoIngreso: React.FC<{ texto: string }> = ({ texto }) => {
+  const corte = texto.search(/[.:](\s|$)/);
+  const titulo = corte > 0 ? texto.slice(0, corte + 1).replace(/:$/, '.') : texto;
+  const resto = corte > 0 ? texto.slice(corte + 1).trim() : '';
+  const accion = /Operadores\.\s*Este es el ingreso de Empresas/.test(texto) ? { href: '/ingresar_personas', label: 'Entrar por Operadores' }
+    : /Empresas\.\s*Este es el ingreso de Operadores/.test(texto) ? { href: '/ingresar_empresas', label: 'Entrar por Empresas' }
+    : null;
+  return (
+    <div role="alert" className="w-full max-w-md mb-6"
+      style={{ background: '#121413', border: '1px solid rgba(248,113,113,0.28)', borderRadius: 14, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'flex-start', textAlign: 'left' }}>
+      <span style={{ width: 30, height: 30, borderRadius: 9, background: 'rgba(248,113,113,0.1)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+        <AlertTriangle size={16} color="#F87171" />
+      </span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', margin: 0, lineHeight: 1.35 }}>{titulo}</p>
+        {resto && <p style={{ fontSize: 12.5, color: '#878E88', margin: '4px 0 0', lineHeight: 1.5 }}>{resto}</p>}
+        {accion && (
+          <a href={accion.href}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 10, padding: '7px 12px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', fontSize: 12.5, fontWeight: 700, textDecoration: 'none' }}>
+            {accion.label} →
+          </a>
+        )}
+      </div>
+    </div>
+  );
 };
 
 export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, onBack, userRole = 'business', revisor = false, errorInicial = null }) => {
@@ -262,9 +294,12 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
           </div>
 
           {avisoReloj}
+          {/* Mismo estilo que el aviso del ingreso: oscuro con borde rojo suave. */}
           {mfaError && (
-            <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm mb-4 text-center font-medium">
-              {mfaError}
+            <div role="alert" className="mb-4"
+              style={{ background: '#121413', border: '1px solid rgba(248,113,113,0.28)', borderRadius: 12, padding: '11px 14px', display: 'flex', gap: 10, alignItems: 'center', textAlign: 'left' }}>
+              <AlertTriangle size={15} color="#F87171" style={{ flexShrink: 0 }} />
+              <span style={{ fontSize: 13, color: '#F4F4F2', lineHeight: 1.45 }}>{mfaError}</span>
             </div>
           )}
 
@@ -347,11 +382,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
       )}
 
       {avisoReloj}
-      {errorMsg && (
-        <div className="bg-red-50 text-red-600 px-4 py-3 rounded-lg text-sm mb-6 w-full max-w-md font-medium text-center">
-          {errorMsg}
-        </div>
-      )}
+      {errorMsg && <AvisoIngreso texto={errorMsg} />}
 
       <div className="w-full max-w-md space-y-6">
         <div className="relative group">
