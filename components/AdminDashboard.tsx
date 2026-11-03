@@ -1584,6 +1584,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // proveedor.
   const sinConfirmarList = (getTransactionHistory() as any[])
     .filter(t => {
+      // Finity AVISÓ por webhook que la rechazó y la consulta no lo confirmó
+      // (3 nov: pagos rechazados que el cliente veía "Completado"). No se
+      // devuelve sola por un aviso: sale acá, aunque diga Completado, para
+      // que alguien la coteje con el portal de Finity y la reembolse.
+      if (String(t.type) === 'dispersion' && ['Procesando', 'Completado'].includes(String(t.status))
+        && (t.avisoFinityFallo ?? t.raw_data?.avisoFinityFallo) && !(t.refunded ?? t.raw_data?.refunded)) return true;
       if (String(t.type) !== 'dispersion' || String(t.status) !== 'Procesando') return false;
       const ts = new Date(t.createdAt ?? 0).getTime();
       return Number.isFinite(ts) && Date.now() - ts >= 15 * 60 * 1000;
@@ -5223,6 +5229,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       {railLabel(t.currency)}
                     </span>
                     <span style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>{fmtDate(fechaDe(t))}</span>
+                    {(t.avisoFinityFallo ?? t.raw_data?.avisoFinityFallo) && (
+                      <span style={{ fontSize: 10.5, fontWeight: 800, color: '#F87171', border: '1px solid rgba(248,113,113,0.4)', borderRadius: 999, padding: '2px 8px' }}>
+                        Finity avisó {String((t.avisoFinityFallo ?? t.raw_data?.avisoFinityFallo)?.estado ?? 'rechazo')} · en Lincoin: {String(t.status)}
+                      </span>
+                    )}
                   </div>
                   <p style={{ fontSize: 12.5, color: '#878E88', margin: '6px 0 0' }}>
                     {t.beneficiary ?? '—'}{t.account ? ` · ${t.account}` : ''}

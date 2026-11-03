@@ -38,21 +38,38 @@ const CORS = {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
-// Busca recursivamente (máx 3 niveles) el primer valor string/number de
-// alguna de las claves dadas.
-function dig(obj: unknown, keys: string[], depth = 0): string | null {
-  if (!obj || typeof obj !== 'object' || depth > 3) return null
-  const rec = obj as Record<string, unknown>
-  for (const k of keys) {
-    const v = rec[k]
-    if (typeof v === 'string' && v.trim()) return v.trim()
-    if (typeof v === 'number') return String(v)
+// Todos los valores de claves tipo id/referencia del aviso (cualquier nivel),
+// los más específicos primero (orden de retiro, movimiento) y el `id` suelto
+// al final. Solo texto corto y sin espacios: los ids de Finity (mvm-…, uuid).
+function idsDelAviso(obj: unknown): string[] {
+  const especificos: string[] = [], sueltos: string[] = []
+  const RE_ESPECIFICA = /^(withdrawal_?order_?id|withdrawalorderid|order_?id|orderid|movement_?id|movementid|transaction_?id|transactionid|withdrawal_?id|withdrawalid|reference|reference_?id|external_?id|externalid)$/i
+  const NO_ES = /^(user|customer|company|account|destination|external_account|wallet|owner|client|event|webhook|delivery)_?id$/i
+  const ver = (o: unknown, nivel: number) => {
+    if (!o || typeof o !== 'object' || nivel > 4) return
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if ((typeof v === 'string' || typeof v === 'number') && !NO_ES.test(k)) {
+        const t = String(v).trim()
+        if (!/^[\w.:-]{4,120}$/.test(t)) continue
+        if (RE_ESPECIFICA.test(k)) especificos.push(t)
+        else if (k.toLowerCase() === 'id') sueltos.push(t)
+      } else if (v && typeof v === 'object') ver(v, nivel + 1)
+    }
   }
-  for (const v of Object.values(rec)) {
-    const found = dig(v, keys, depth + 1)
-    if (found) return found
+  ver(obj, 0)
+  return Array.from(new Set([...especificos, ...sueltos])).slice(0, 12)
+}
+function estadosDelAviso(obj: unknown): string[] {
+  const out: string[] = []
+  const ver = (o: unknown, nivel: number) => {
+    if (!o || typeof o !== 'object' || nivel > 4) return
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if (typeof v === 'string' && /^(status|state|estado|kaminstatus|kamin_status|transaction_status|transfer_status)$/i.test(k) && v.trim()) out.push(v.trim().toUpperCase())
+      else if (v && typeof v === 'object') ver(v, nivel + 1)
+    }
   }
-  return null
+  ver(obj, 0)
+  return out.slice(0, 10)
 }
 
 async function audit(event: string, metadata: Record<string, unknown>) {
@@ -140,9 +157,24 @@ Deno.serve(async (req) => {
   } catch (e) { console.warn('[finity-webhook] kick_pending_converts failed:', e) }
 
   // ── Conciliación de órdenes de retiro (dispersión ACH) ──
-  const orderId = dig(payload, ['withdrawal_order_id', 'order_id', 'withdrawalOrderId', 'orderId', 'id'])
-  const status  = (dig(payload, ['status', 'state', 'event_type', 'event']) ?? '').toUpperCase()
-  if (!orderId || !status) return json(200, { ok: true, matched: false })
+  // TODOS los identificadores del aviso, no el primero. Incidente (3 nov):
+  // Finity avisó WITHDRAW_COP FAILED de pagos que el cliente seguía viendo
+  // "Completado". dig() devolvía el primer `id` que encontraba —el de arriba,
+  // que puede ser el del EVENTO— antes de bajar a `data`, donde viene el de
+  // la orden de retiro: el aviso no coincidía con ningún envío, se respondía
+  // 200 y no pasaba nada. Ahora se prueban todos (la orden, el movimiento, la
+  // referencia…) y mouv-proxy busca el envío por cualquiera de ellos.
+  const ids = idsDelAviso(payload)
+  const orderId = ids[0] ?? null
+  // El estado del aviso: el primero que diga algo (FAILED, COMPLETED…). No
+  // decide nada solo: sirve para marcar a revisión si Finity avisa un
+  // rechazo y la consulta no lo confirma.
+  const estados = estadosDelAviso(payload)
+  const status = (estados.find(e => /FAIL|REJECT|RECHAZ|CANCEL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR/.test(e)) ?? estados.find(e => /COMPLET|SUCCESS|PAID|SETTLE/.test(e)) ?? estados[0] ?? '').toUpperCase()
+  if (!ids.length) {
+    await audit('finity.webhook.sin_id', { status, estados })
+    return json(200, { ok: true, matched: false })
+  }
 
   // EL AVISO NO DECIDE NADA. Antes este webhook reembolsaba por su cuenta, sin
   // las protecciones de la conciliación: no miraba la firma del servidor, tomaba
@@ -159,7 +191,7 @@ Deno.serve(async (req) => {
     r = await fetch(`${SUPABASE_URL}/functions/v1/mouv-proxy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-      body: JSON.stringify({ action: 'vigilar_finity', ref: orderId }),
+      body: JSON.stringify({ action: 'vigilar_finity', ref: orderId, refs: ids, estadoAviso: status }),
       signal: AbortSignal.timeout(60000),
     })
   } catch (e) {
@@ -168,7 +200,7 @@ Deno.serve(async (req) => {
     return json(502, { ok: false, orderId, error: 'conciliacion_no_disponible' })
   }
   const out = await r.json().catch(() => null) as any
-  await audit('finity.webhook.conciliado', { orderId, status, httpStatus: r.status, results: out?.results ?? null })
+  await audit('finity.webhook.conciliado', { orderId, ids, status, httpStatus: r.status, revisadas: out?.revisadas ?? null, results: out?.results ?? null })
   if (!r.ok) return json(502, { ok: false, orderId, error: 'conciliacion_fallo' })
   return json(200, { ok: true, matched: Number(out?.revisadas ?? 0) > 0, orderId, results: out?.results ?? [] })
 })

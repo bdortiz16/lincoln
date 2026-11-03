@@ -1859,8 +1859,60 @@ const RE_FINITY_FALLO = /FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|D
 // APPROVED / APROBADO no van: es "aprobada para procesar", no "pagada" (así lo
 // trata también finity-proxy). Marcarla Completado antes de tiempo la sacaba
 // de la vigilancia de Procesando, y una devolución posterior no se veía.
-const RE_FINITY_OK = /COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS/
-async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<string, unknown>> {
+// (?<!IN): "INCOMPLETE" no es completado.
+const RE_FINITY_OK = /(?<!IN)COMPLET|SETTLE|LIQUID|PAGAD|\bPAID\b|SUCCESS|FINALIZ|DISPERSAD|EXITOS/
+
+// ── El estado de un envío por Finity, leyendo TODO lo que responde ─────
+// Incidente (3 nov): pagos que Finity rechazó salían "Completado" para el
+// cliente y la plata no volvía. La conciliación leía UN solo campo —el
+// `status` de arriba del movimiento— e ignoraba lo demás:
+//   · la orden de retiro (finity-proxy la devuelve aparte, en `extra`), que
+//     es donde Finity deja el rechazo del banco;
+//   · el estado de la RED. En Bre-B · Cuenta 2 la red de abajo es Kamin, y
+//     el movimiento puede decir "completado" (Finity ya lo debitó y lo mandó)
+//     mientras la transferencia en la red quedó rechazada. Con Mouv pasó lo
+//     mismo y por eso ahí `kaminStatus` manda (normalizeMouvState).
+// Ahora se recogen los campos de estado de todos los cuerpos que respondió
+// Finity (sin entrar a la cuenta destino ni al usuario, cuyo "status" es de
+// otra cosa, ni a listas de historial) y:
+//   · cualquier señal de rechazo → rechazado;
+//   · si hay estado de la red (kamin/banco/transferencia), completado solo
+//     si TODOS esos dicen pagado; si alguno sigue en curso, en proceso;
+//   · sin estado de red, el de arriba, como antes.
+const CLAVES_ESTADO_FINITY = new Set(['status', 'state', 'estado', 'kaminstatus', 'kamin_status', 'networkstatus', 'network_status', 'bankstatus', 'bank_status', 'transferstatus', 'transfer_status', 'brebstatus', 'breb_status', 'paymentstatus', 'payment_status', 'settlementstatus', 'settlement_status'])
+const RE_CLAVE_RED = /kamin|network|bank|transfer|breb|payment|settlement/i
+const RE_NO_ES_EL_ENVIO = /account|cuenta|beneficiar|recipient|destination|destino|user|customer|cliente|wallet|billetera|kyc|owner|titular|contact|sender|origin/i
+function senalesEstadoFinity(o: any, ruta = '', nivel = 0, out: { ruta: string; valor: string }[] = []) {
+  if (!o || typeof o !== 'object' || Array.isArray(o) || nivel > 3) return out
+  for (const [k, v] of Object.entries(o)) {
+    const r = ruta ? `${ruta}.${k}` : k
+    if (typeof v === 'string' && v.trim() && CLAVES_ESTADO_FINITY.has(k.toLowerCase())) out.push({ ruta: r, valor: v.trim().toUpperCase() })
+    else if (v && typeof v === 'object' && !Array.isArray(v) && !RE_NO_ES_EL_ENVIO.test(k)) senalesEstadoFinity(v, r, nivel + 1, out)
+  }
+  return out
+}
+function veredictoFinity(st: any): { veredicto: 'rechazado' | 'completado' | 'en_proceso'; estado: string; senales: string[] } {
+  const cuerpos = [st?.data, ...(Array.isArray(st?.extra) ? st.extra.map((e: any) => e?.data) : [])].filter(c => c && typeof c === 'object')
+  const senales = cuerpos.flatMap((c, i) => senalesEstadoFinity(c, i ? `extra${i}` : ''))
+  const texto = senales.map(s => `${s.ruta}=${s.valor}`).slice(0, 12)
+  const d = (st?.data ?? {}) as any
+  const principal = String(
+    d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ??
+    d?.order?.status ?? d?.order?.state ?? d?.attributes?.status ?? d?.attributes?.state ?? ''
+  ).toUpperCase()
+  const fallo = senales.find(s => RE_FINITY_FALLO.test(s.valor))
+  if (fallo) return { veredicto: 'rechazado', estado: fallo.valor, senales: texto }
+  const red = senales.filter(s => RE_CLAVE_RED.test(s.ruta.split('.').pop() ?? ''))
+  if (red.length) {
+    const enCurso = red.find(s => !RE_FINITY_OK.test(s.valor))
+    return enCurso ? { veredicto: 'en_proceso', estado: enCurso.valor, senales: texto } : { veredicto: 'completado', estado: red[0].valor, senales: texto }
+  }
+  return { veredicto: RE_FINITY_OK.test(principal) ? 'completado' : 'en_proceso', estado: principal, senales: texto }
+}
+// avisoFallo: Finity AVISÓ (webhook) que lo rechazó. Si la consulta no lo
+// confirma, no se devuelve la plata por un aviso, pero tampoco se marca
+// Completado lo que Finity dice que falló: queda como está, para revisión.
+async function conciliarFilaFinity(tx: any, origen: string, avisoFallo = false): Promise<Record<string, unknown>> {
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const ref = String(rd.providerRef ?? '')
   const dueno = String(tx.user_id ?? '')
@@ -1871,15 +1923,14 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
   // cuerpo de un ERROR de Finity, y un `status` dentro de ese error se leía
   // como si fuera el estado de la transferencia.
   if (!st || st.ok !== true) return { id: tx.id, result: 'consulta_fallida', httpStatus: st?.status ?? null }
-  const d = (st?.data ?? {}) as any
-  // Finity devuelve el estado en distintos niveles según el endpoint; se
-  // excava en todos (antes sólo leía d.status/d.state y, si venía anidado,
-  // quedaba vacío → la dispersión se atascaba en 'Procesando').
-  const s = String(
-    d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ??
-    d?.order?.status ?? d?.order?.state ?? d?.attributes?.status ?? d?.attributes?.state ?? ''
-  ).toUpperCase()
-  if (RE_FINITY_FALLO.test(s)) {
+  // Todo lo que respondió Finity (movimiento, orden de retiro y el estado de
+  // la red), no solo el `status` de arriba: ver veredictoFinity.
+  const v = veredictoFinity(st)
+  const s = v.estado
+  // La marca del aviso queda en la fila: el vigilante (cada 2 min) tampoco la
+  // pasa a Completado mientras nadie la revise.
+  if (rd.avisoFinityFallo) avisoFallo = true
+  if (v.veredicto === 'rechazado') {
     if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, origen); return { id: tx.id, result: 'revision_sin_firma' } }
     const permiso = await reembolsoPermitido(tx, ref, origen)
     if (!permiso.ok) return { id: tx.id, result: 'revision_ref_duplicada' }
@@ -1898,7 +1949,7 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
     const ahora = new Date().toISOString()
     const { data: claimed } = await db.from('transactions').update({
       status: 'Rechazado',
-      raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, providerError: motivoProveedor, ...(motivoProveedor ? {} : { motivoDiag: clavesDe(st).slice(0, 600) }), reconciledAt: ahora, ...(tx.status === 'Completado' ? { devolucionTardia: true } : {}) },
+      raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, estadosProveedor: v.senales, providerError: motivoProveedor, ...(motivoProveedor ? {} : { motivoDiag: clavesDe(st).slice(0, 600) }), reconciledAt: ahora, ...(tx.status === 'Completado' ? { devolucionTardia: true } : {}) },
     }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
     if (!claimed?.length) return { id: tx.id, result: 'refund_already_claimed' }
     const acreditado = await creditBalanceAtomic(dueno, railCol, refund)   // atómico (pentest #3)
@@ -1927,15 +1978,16 @@ async function conciliarFilaFinity(tx: any, origen: string): Promise<Record<stri
     }
     return { id: tx.id, result: 'refunded', refund, motivo: motivoFinal }
   }
-  if (RE_FINITY_OK.test(s)) {
+  if (v.veredicto === 'completado') {
     if (tx.status === 'Completado') return { id: tx.id, result: 'sigue_completado' }
+    if (avisoFallo) return { id: tx.id, result: 'aviso_contradice', providerStatus: s, estados: v.senales }
     await db.from('transactions').update({
       status: 'Completado',
-      raw_data: { ...rd, providerStatus: s, reconciledAt: new Date().toISOString() },
+      raw_data: { ...rd, providerStatus: s, estadosProveedor: v.senales, reconciledAt: new Date().toISOString() },
     }).eq('id', tx.id).eq('status', 'Procesando')
     return { id: tx.id, result: 'completed' }
   }
-  return { id: tx.id, result: 'still_processing', providerStatus: s || null }
+  return { id: tx.id, result: 'still_processing', providerStatus: s || null, estados: v.senales }
 }
 
 // Qué permiso del equipo pide cada acción de admin. Lo que no figura queda
@@ -2165,21 +2217,45 @@ serve(async (req: Request) => {
     // decide nada por su cuenta: avisa, y acá se le vuelve a preguntar a
     // Finity el estado, con las mismas protecciones de siempre (firma,
     // referencia única, reversa si el crédito falla).
-    const refObjetivo = String(payload?.ref ?? '').trim()
-    if (refObjetivo) {
+    // El aviso trae varios ids (evento, orden, movimiento…): se busca el envío
+    // por cualquiera de ellos. Antes se buscaba solo por el primero, que podía
+    // ser el del evento, y el aviso no coincidía con nada (3 nov).
+    const refsAviso = Array.from(new Set([payload?.ref, ...(Array.isArray(payload?.refs) ? payload.refs : [])]
+      .map(x => String(x ?? '').trim()).filter(x => /^[\w.:-]{4,120}$/.test(x)))).slice(0, 12)
+    if (refsAviso.length) {
+      const estadoAviso = String(payload?.estadoAviso ?? '').toUpperCase()
       const { data: filasRef } = await db.from('transactions')
         .select('id, user_id, amount, currency, status, raw_data, created_at')
         .eq('type', 'dispersion').eq('currency', 'COP_ACH').in('status', ['Procesando', 'Completado'])
         // Los de la Cuenta 3 (Coinsenda) también pagan con el saldo ACH, pero
         // no son de Finity: los concilia reconcile_cuenta3.
         .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
-        .filter('raw_data->>providerRef', 'eq', refObjetivo).limit(3)
+        .in('raw_data->>providerRef', refsAviso).limit(3)
       const resultados: Record<string, unknown>[] = []
       for (const tx of (filasRef ?? []) as any[]) {
-        try { resultados.push(await conciliarFilaFinity(tx, 'finity_webhook')) }
-        catch (e) { resultados.push({ id: tx.id, result: 'error', error: String((e as Error)?.message ?? e).slice(0, 160) }) }
+        let r: Record<string, unknown>
+        try { r = await conciliarFilaFinity(tx, 'finity_webhook', RE_FINITY_FALLO.test(estadoAviso)) }
+        catch (e) { r = { id: tx.id, result: 'error', error: String((e as Error)?.message ?? e).slice(0, 160) } }
+        // Finity AVISÓ un rechazo y la consulta no lo confirmó (o falló): no
+        // se devuelve la plata por un aviso, pero tampoco se queda callado.
+        // El envío queda para revisión (Admin → Fallos) y se avisa al equipo.
+        const yaDevuelto = ['refunded', 'refund_already_claimed', 'already_refunded'].includes(String(r.result))
+        if (RE_FINITY_FALLO.test(estadoAviso) && !yaDevuelto) {
+          const rdA = (tx.raw_data ?? {}) as Record<string, any>
+          if (!rdA.avisoFinityFallo) {
+            await db.from('transactions').update({ raw_data: { ...rdA, revisionManual: true, avisoFinityFallo: { estado: estadoAviso, at: new Date().toISOString(), consulta: r.result ?? null } } })
+              .eq('id', tx.id).in('status', ['Procesando', 'Completado']).filter('raw_data->>refunded', 'is', null)
+            await logAudit(String(tx.user_id), 'finity.aviso_rechazo_sin_confirmar', { txId: tx.id, estadoAviso, consulta: r.result ?? null, providerRef: rdA.providerRef ?? null, estadoLincoin: tx.status })
+            await avisarAdminSinConfirmar({ ...tx, raw_data: { ...rdA, revisionManual: true } })
+          }
+          r = { ...r, marcadoRevision: true }
+        }
+        resultados.push(r)
       }
-      return json(200, { ok: true, ref: refObjetivo, revisadas: resultados.length, results: resultados })
+      if (!resultados.length && RE_FINITY_FALLO.test(estadoAviso)) {
+        await logAudit(null, 'finity.aviso_rechazo_sin_envio', { refs: refsAviso, estadoAviso })
+      }
+      return json(200, { ok: true, refs: refsAviso, revisadas: resultados.length, results: resultados })
     }
     // Las más NUEVAS (rechazos que alguien está esperando) y las más VIEJAS
     // (las que llevan días atascadas). Solo las nuevas dejaba que 30 filas
@@ -2206,9 +2282,14 @@ serve(async (req: Request) => {
       const { data } = await db.from('transactions')
         .select('id, user_id, amount, currency, status, raw_data, created_at')
         .eq('type', 'dispersion').eq('status', 'Completado').eq('currency', 'COP_ACH')
+        // Sin la Cuenta 3/4: su providerRef es un retiro de Coinsenda.
+        .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
         .not('raw_data->>providerRef', 'is', null)
-        .gte('created_at', new Date(ahora - 5 * 86_400_000).toISOString())
-        .order('created_at', { ascending: false }).limit(60)
+        // 15 días: el rechazo del banco puede llegar varios días después, y
+        // con la lectura nueva (veredictoFinity) hay que volver a mirar los
+        // que quedaron "Completado" con la vieja (3 nov).
+        .gte('created_at', new Date(ahora - 15 * 86_400_000).toISOString())
+        .order('created_at', { ascending: false }).limit(120)
       // En orden aleatorio: con sesenta filas no alcanza el tiempo para todas,
       // y en el mismo orden siempre quedaban sin mirar las mismas.
       tardias = ((data ?? []) as any[]).sort(() => Math.random() - 0.5)
@@ -2360,10 +2441,9 @@ serve(async (req: Request) => {
     }
     const st = await finityCall('withdrawal_status', quien ?? '', { id: ref })
     if (!st || st.ok !== true) return json(200, { ok: true, estado: 'en_proceso', detalle: 'sin respuesta de Finity' })
-    const d = (st.data ?? {}) as any
-    const s = String(d?.status ?? d?.state ?? d?.data?.status ?? d?.data?.state ?? d?.order?.status ?? d?.attributes?.status ?? '').toUpperCase()
-    const estado = RE_FINITY_FALLO.test(s) ? 'devuelto' : RE_FINITY_OK.test(s) ? 'enviado' : 'en_proceso'
-    return json(200, { ok: true, estado, detalle: s || null })
+    const v = veredictoFinity(st)
+    const estado = v.veredicto === 'rechazado' ? 'devuelto' : v.veredicto === 'completado' ? 'enviado' : 'en_proceso'
+    return json(200, { ok: true, estado, detalle: v.estado || null })
   }
 
   // ── Consultar una llave Bre-B (directorio Mouv): devuelve el TITULAR
@@ -3044,6 +3124,30 @@ serve(async (req: Request) => {
       })
     }
 
+    // Envío por Finity (ACH o Bre-B · Cuenta 2): se le pregunta a Finity, no a
+    // Mouv. Antes esta consulta siempre iba a Mouv y para un envío de Finity
+    // no encontraba nada: no había cómo ver qué decía Finity de un pago que
+    // el cliente veía "Completado" y Finity había rechazado (3 nov).
+    if (String(tx.currency) === 'COP_ACH' && String(rd.proveedor ?? '') !== 'coinsenda') {
+      const stF = await finityCall('withdrawal_status', String(tx.user_id), { id: ref })
+      const v = stF?.ok === true ? veredictoFinity(stF) : null
+      const veredictoF = !v ? 'unknown' : v.veredicto === 'rechazado' ? 'returned' : v.veredicto === 'completado' ? 'completed' : 'pending'
+      return json(200, {
+        ok: true, txId: tx.id, proveedor: 'Finity',
+        estadoLincoin: tx.status, providerRef: ref, providerReference: rd.providerReference ?? null,
+        encontrado: !!v, estadoProveedor: v?.estado || null, veredicto: veredictoF,
+        rutaQueRespondio: stF?.path ?? null,
+        crudo: { estados: v?.senales ?? [], data: stF?.data ?? null, extra: stF?.extra ?? null },
+        conclusion: !v
+          ? `Finity no respondió la consulta (HTTP ${stF?.status ?? 0}).`
+          : v.veredicto === 'rechazado' && tx.status !== 'Rechazado'
+            ? `Finity dice ${v.estado} (rechazado) y Lincoin dice ${tx.status}: la conciliación lo devuelve al cliente en los próximos minutos.`
+            : v.veredicto === 'completado' && tx.status === 'Procesando'
+              ? `Finity dice ${v.estado} y Lincoin sigue en Procesando: la conciliación lo marca Completado en los próximos minutos.`
+              : `Finity dice ${v.estado || 'sin estado'}; Lincoin dice ${tx.status}.`,
+      })
+    }
+
     const st = await mouvTransferStatus(ref, tx.created_at)
     return json(200, {
       ok: true,
@@ -3085,6 +3189,15 @@ serve(async (req: Request) => {
     if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
     const rd = (tx.raw_data ?? {}) as Record<string, any>
     if (rd.refunded) return json(200, { ok: true, already: 'refunded' })
+    // Ya Completado pero con el aviso de rechazo de Finity: "Sí se pagó"
+    // descarta el aviso (alguien lo cotejó en el portal) y sale de Fallos.
+    if (tx.status === 'Completado' && rd.avisoFinityFallo) {
+      await db.from('transactions').update({
+        raw_data: { ...rd, avisoFinityFallo: undefined, revisionManual: undefined, avisoFinityDescartado: { ...rd.avisoFinityFallo, por: caller.userId, at: new Date().toISOString() } },
+      }).eq('id', tx.id).eq('status', 'Completado')
+      await logAudit(tx.user_id, 'mouv.confirmar_dispersion.aviso_descartado', { txId: tx.id, admin: caller.userId, providerRef: rd.providerRef ?? null, aviso: rd.avisoFinityFallo })
+      return json(200, { ok: true, confirmada: true, avisoDescartado: true })
+    }
     if (tx.status === 'Completado') return json(200, { ok: true, already: 'Completado' })
 
     await db.from('transactions').update({
@@ -3095,6 +3208,7 @@ serve(async (req: Request) => {
         confirmadaManualmente: true,
         confirmadaPor: caller.userId,
         revisionManual: undefined,
+        ...(rd.avisoFinityFallo ? { avisoFinityFallo: undefined, avisoFinityDescartado: { ...rd.avisoFinityFallo, por: caller.userId, at: new Date().toISOString() } } : {}),
       },
     }).eq('id', tx.id).neq('status', 'Rechazado')
     await logAudit(tx.user_id, 'mouv.confirmar_dispersion', {
