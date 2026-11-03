@@ -238,6 +238,22 @@ export const AdminClientes: React.FC<{
     setSondeando(null);
     if (!r?.ok) showToast?.(r?.message ?? 'No se pudo consultar al proveedor.', 7000);
   };
+  // Devolver un envío de Finity que Finity rechazó y Lincoin dejó Completado
+  // (3 nov). force_return: CAS anti doble reembolso y queda auditado.
+  const [reembolsando, setReembolsando] = useState(false);
+  const reembolsarSonda = async () => {
+    if (!sonda?.txId) return;
+    const motivo = window.prompt(
+      `Devolver al cliente el monto y la comisión de este envío, y marcarlo como rechazado.\n\n` +
+      `Hazlo SOLO si en el portal de Finity aparece rechazado (FAILED). Si se pagó, el cliente cobraría dos veces.\n\nMotivo (queda en la auditoría):`,
+      `Rechazado por Finity · ref ${sonda.providerRef ?? '—'}`);
+    if (!motivo) return;
+    setReembolsando(true);
+    const r = await pedirMouv({ action: 'force_return', txId: sonda.txId, reason: motivo }).catch((e: any) => ({ ok: false, message: String(e?.message ?? e) }));
+    setReembolsando(false);
+    if (r?.ok) { showToast?.(r.already ? 'Ya estaba devuelto.' : `Devueltos ${Number(r.refundCop ?? 0).toLocaleString('es-CO')} al cliente.`, 7000); setSonda(null); }
+    else showToast?.(r?.message ?? (r?.error ? `No se pudo: ${r.error}` : 'No se pudo devolver.'), 8000);
+  };
   const [menu, setMenu] = useState(false);
   const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; nombre: string; accion: () => void } | null>(null);
   const [escrito, setEscrito] = useState('');
@@ -726,7 +742,7 @@ export const AdminClientes: React.FC<{
 
               {tab === 'movimientos' && <>
                 {diagSync && <DiagnosticoSync d={diagSync} onCerrar={() => setDiagSync(null)} />}
-                {sonda && <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} />}
+                {sonda && <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} onReembolsar={reembolsarSonda} reembolsando={reembolsando} />}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                   <span style={{ fontSize: 12, color: histSel.error && !histSel.completo ? C.red : C.sub, fontFamily: FONT }}>
                     {histSel.cargando ? 'Trayendo el historial completo…'
@@ -1221,7 +1237,7 @@ const DiagnosticoSync: React.FC<{ d: any; onCerrar: () => void }> = ({ d, onCerr
 // Sin interpretar: el id que le preguntamos, lo que dijo, y la respuesta
 // cruda. La "conclusión" la arma el servidor en una línea, para que no haya
 // que leer JSON para entender si hay diferencia o no.
-const ResultadoSonda: React.FC<{ r: any; onCerrar: () => void }> = ({ r, onCerrar }) => {
+const ResultadoSonda: React.FC<{ r: any; onCerrar: () => void; onReembolsar?: () => void; reembolsando?: boolean }> = ({ r, onCerrar, onReembolsar, reembolsando }) => {
   const [crudo, setCrudo] = useState(false);
   const hayDiferencia = r?.veredicto === 'completed' && r?.estadoLincoin === 'Procesando';
   return (
@@ -1263,6 +1279,23 @@ const ResultadoSonda: React.FC<{ r: any; onCerrar: () => void }> = ({ r, onCerra
                 </pre>
               )}
             </>
+          )}
+          {/* Envío de Finity que sigue Completado o en curso: si en el portal de
+              Finity está rechazado, se devuelve desde aquí. Los que quedaron mal
+              antes del arreglo del 3 nov no tienen la marca del aviso y no
+              salen en Fallos; este es su camino. */}
+          {onReembolsar && r?.proveedor === 'Finity' && ['Completado', 'Procesando'].includes(String(r?.estadoLincoin ?? '')) && (
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.b1}` }}>
+              <p style={{ fontSize: 11.5, color: r?.veredicto === 'returned' ? C.amber : C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>
+                {r?.veredicto === 'returned'
+                  ? 'Finity lo muestra rechazado: la conciliación lo devuelve sola en minutos, o puedes devolverlo ya.'
+                  : 'Devuélvelo solo si en el portal de Finity este envío aparece rechazado (FAILED). Si se pagó y lo devuelves, el cliente cobra dos veces.'}
+              </p>
+              <button onClick={onReembolsar} disabled={reembolsando}
+                style={{ background: 'transparent', border: '1px solid rgba(248,113,113,0.4)', color: '#F87171', borderRadius: 9, padding: '8px 13px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', opacity: reembolsando ? 0.5 : 1 }}>
+                {reembolsando ? 'Devolviendo…' : 'Reembolsar al cliente'}
+              </button>
+            </div>
           )}
         </div>
         <button onClick={onCerrar} style={{ background: 'none', border: 'none', color: C.dim, fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
