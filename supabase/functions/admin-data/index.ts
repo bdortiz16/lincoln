@@ -2002,25 +2002,38 @@ Deno.serve(async (req: Request) => {
             .eq('action', 'auth.failed_login').contains('metadata', { ip }).gte('created_at', sinceH)
             .order('created_at', { ascending: false }).limit(100)
           const fails = (recent ?? []).length
-          // Tope de escritura: este endpoint es público, así que sin un límite
-          // se le podía inundar la auditoría a punta de peticiones. Pasado el
-          // tope la IP ya está bloqueada y no hace falta seguir anotando.
-          if (fails < 40) await auditAdmin(req, 'auth.failed_login', { email, reason })
           // El bloqueo automático de IP es SOLO para intentos contra la cuenta
           // del panel. En Colombia media ciudad sale por la misma IP del
           // operador: bloquearla porque un cliente escribió mal su código tres
           // veces dejaba afuera a todos los demás detrás de esa IP.
           let contraAdmin = false
           try {
-            const { data: ue } = await db.from('users').select('role').eq('email', email).maybeSingle()
+            const { data: ue } = await db.from('users').select('role').eq('email', email.trim().toLowerCase()).maybeSingle()
             contraAdmin = (ue as any)?.role === 'admin'
           } catch { /* si no se puede saber, no se bloquea */ }
-          if (contraAdmin && fails >= 3) {
+          // Tope de escritura: este endpoint es público, así que sin un límite
+          // se le podía inundar la auditoría a punta de peticiones. Pasado el
+          // tope la IP ya está bloqueada y no hace falta seguir anotando.
+          if (fails < 40) await auditAdmin(req, 'auth.failed_login', { email, reason, ...(contraAdmin ? { contraAdmin: true } : {}) })
+          // Y se cuentan SOLO los fallos contra cuentas del panel. Antes se
+          // contaban todos los de la IP: un cliente que se equivocó varias
+          // veces con SU contraseña desde la misma red que el admin dejaba el
+          // contador lleno, y el primer error del admin bloqueaba la conexión
+          // del panel (3 nov). Lo de cada cliente lo frena user-login por
+          // cuenta, sin tocar al panel.
+          let failsPanel = 0
+          if (contraAdmin) {
+            const { data: rp } = await db.from('audit_log').select('created_at')
+              .eq('action', 'auth.failed_login').contains('metadata', { ip, contraAdmin: true }).gte('created_at', sinceH)
+              .limit(100)
+            failsPanel = Math.max((rp ?? []).length, fails >= 40 ? 3 : 0)
+          }
+          if (contraAdmin && failsPanel >= 3) {
             const list = await blockedIps()
             if (!list.some(b => b.ip === ip)) {
-              list.unshift({ ip, at: new Date().toISOString(), reason: `${fails} intentos fallidos en 1 h`, attempts: fails, geo: await geoOf(ip), soloPanel: true })
+              list.unshift({ ip, at: new Date().toISOString(), reason: `${failsPanel} intentos fallidos contra el panel en 1 h`, attempts: failsPanel, geo: await geoOf(ip), soloPanel: true })
               await saveBlockedIps(list)
-              await auditAdmin(req, 'auth.ip_blocked', { ip, attempts: fails, email })
+              await auditAdmin(req, 'auth.ip_blocked', { ip, attempts: failsPanel, email })
             }
             blocked = true
           }

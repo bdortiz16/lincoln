@@ -162,6 +162,8 @@ interface DatabaseContextType {
   completeMFALogin: (code: string) => Promise<User | null>;
   emailStepPending: boolean;
   accountLocked: boolean;
+  /** Correo (enmascarado) de la cuenta a la que se le está pidiendo el código. */
+  mfaCuenta: string | null;
   passkeyPending: boolean;
   /** 2 pasos, o 3 si la cuenta tiene una llave registrada. */
   mfaPasos: number;
@@ -196,6 +198,39 @@ const SEED_ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL as string) || 'admin@
 const SEED_ADMIN_PASSWORD = '';
 const SUPABASE_URL_FOR_FN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SUPABASE_ANON_FOR_FN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+
+// ── ¿Esta pestaña es el PANEL o la app de clientes? ─────────────────────
+// Los dos viven en el MISMO dominio (lincoin.me y lincoin.me/admin-empresas)
+// y por eso comparten la sesión guardada del navegador. Incidente (3 nov): en
+// un computador con la sesión del admin guardada, la app de clientes abrió el
+// paso del código PARA LA CUENTA DEL ADMIN; un cliente escribió ahí sus
+// códigos, cada uno contó como fallo del admin y a los dos se bloqueó el
+// panel (la cuenta del cliente, intacta). La app de clientes nunca pide el
+// código de una cuenta del panel: esa vive en /admin-empresas.
+const EN_PANEL = typeof window !== 'undefined'
+  && /^\/(admin-empresas|admin|colaboradores)\/?$/.test(window.location.pathname);
+
+// A quién pertenece un token de sesión (el `sub` del JWT). Solo para no
+// mandar el código de una cuenta con la sesión de OTRA; el servidor igual lo
+// verifica con la firma.
+const subDelToken = (token: string | null): string | null => {
+  try {
+    const p = String(token ?? '').split('.')[1];
+    if (!p) return null;
+    const json = JSON.parse(atob(p.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(p.length / 4) * 4, '=')));
+    return json?.sub ? String(json.sub) : null;
+  } catch { return null; }
+};
+
+// "b•••z@lincoin.me": para que quien está en el paso del código vea DE QUÉ
+// cuenta es el código, sin mostrar el correo completo.
+const enmascararCorreo = (email: unknown): string | null => {
+  const e = String(email ?? '').trim();
+  const at = e.indexOf('@');
+  if (at < 1) return null;
+  const loc = e.slice(0, at);
+  return `${loc[0]}•••${loc.length > 2 ? loc[loc.length - 1] : ''}${e.slice(at)}`;
+};
 
 function lsGetUsers(): User[] {
   try { return JSON.parse(localStorage.getItem(LS_USERS) || '[]'); } catch { return []; }
@@ -502,8 +537,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             const habiaMarca2 = mfaOn2 && mfaOk;
             if (mfaOn2 && mfaOk) mfaOk = await serverSaysMfaVerified((profile as any).id);
             if (mfaOn2 && !mfaOk && event !== 'TOKEN_REFRESHED') {
-              beginMfaFlow(mapSupabaseUser(profile), 'custom');
-              if (habiaMarca2) avisarReapertura();
+              if (beginMfaFlow(mapSupabaseUser(profile), 'custom') && habiaMarca2) avisarReapertura();
               return;
             }
             setCurrentUser(mapSupabaseUser(profile));
@@ -535,8 +569,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
               const habiaMarcaE = mfaOnE && mfaOkE;
               if (mfaOnE && mfaOkE) mfaOkE = await serverSaysMfaVerified((existingByEmail as any).id);
               if (mfaOnE && !mfaOkE && event !== 'TOKEN_REFRESHED') {
-                beginMfaFlow(mapSupabaseUser(existingByEmail), 'custom');
-                if (habiaMarcaE) avisarReapertura();
+                if (beginMfaFlow(mapSupabaseUser(existingByEmail), 'custom') && habiaMarcaE) avisarReapertura();
                 return;
               }
               setCurrentUser(mapSupabaseUser(existingByEmail));
@@ -1562,6 +1595,26 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
     setLoginError(null);
     setAccountLocked(false);
+    // Un ingreso nuevo empieza de cero: ningún paso de código pendiente de un
+    // intento anterior (o de una sesión ajena) sigue vivo.
+    setMfaPending(false);
+    setEmailStepPending(false);
+    setPasskeyPending(false);
+    setPendingMFAProfile(null);
+    // Si en este navegador quedó guardada la sesión de OTRA cuenta (la del
+    // admin, la de otra empresa), se cierra aquí, solo en este navegador,
+    // antes de entrar. Sin esto, esa sesión vieja podía abrir el paso del
+    // código a su nombre y los códigos de quien está entrando contaban como
+    // fallos de esa otra cuenta (así se bloqueó el panel el 3 nov).
+    if (isSupabaseConfigured) {
+      try {
+        const { data: { session: previa } } = await supabase.auth.getSession();
+        const correoPrevio = String(previa?.user?.email ?? '').trim().toLowerCase();
+        if (correoPrevio && correoPrevio !== String(email ?? '').trim().toLowerCase()) {
+          await supabase.auth.signOut({ scope: 'local' });
+        }
+      } catch { /* si no se puede leer, el ingreso sigue y el guardia del código decide */ }
+    }
     // Opciones de auth con el token del CAPTCHA (si Turnstile está activo).
     const authOpts = captchaToken ? { captchaToken } : undefined;
 
@@ -1585,7 +1638,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
             // 2FA en el login del admin: si tiene el 2FA custom activo, NO se
             // entra directo — se pide el código de 6 dígitos antes de dar acceso.
             if ((u as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-              beginMfaFlow(u, 'custom');
+              beginMfaFlow(u, 'custom', 'login');
               return 'MFA_REQUIRED';
             }
             setCurrentUser(u);
@@ -1674,7 +1727,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                   if (authSynced) {
                     try { await supabase.auth.signInWithPassword({ email, password: pass! }); } catch { /* */ }
                   }
-                  beginMfaFlow(mapped, 'custom');
+                  beginMfaFlow(mapped, 'custom', 'login');
                   return 'MFA_REQUIRED';
                 }
                 setCurrentUser(mapped);
@@ -1791,7 +1844,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // 2FA custom (TOTP nuestro): si la cuenta lo tiene activo, se pide el código
     // en el login antes de dar acceso. Cubre admin y clientes por igual.
     if ((user as any)?.mfaEnabled || (profile as any)?.raw_data?.mfaEnabled) {
-      beginMfaFlow(user, 'custom');
+      beginMfaFlow(user, 'custom', 'login');
       return 'MFA_REQUIRED';
     }
 
@@ -1802,7 +1855,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         mfaTimeout,
       ]) as any;
       if (aalData?.nextLevel === 'aal2' && aalData?.currentLevel !== 'aal2') {
-        beginMfaFlow(user, 'native');
+        beginMfaFlow(user, 'native', 'login');
         return 'MFA_REQUIRED';
       }
     } catch { /* MFA not available, continue normally */ }
@@ -1881,7 +1934,19 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Existe porque el arranque estaba repetido en cinco sitios y en dos se
   // olvidó: la pantalla saltaba al código de la app sin haber mandado el del
   // correo, y el servidor —con razón— lo rechazaba.
-  const beginMfaFlow = (profile: any, mode: 'custom' | 'native') => {
+  // origen 'login': la persona acaba de escribir el correo y la contraseña de
+  // ESTA cuenta. 'sesion': la abrió una sesión que ya estaba guardada en el
+  // navegador (otra pestaña, una visita anterior) — nadie la pidió aquí.
+  const beginMfaFlow = (profile: any, mode: 'custom' | 'native', origen: 'login' | 'sesion' = 'sesion'): boolean => {
+    // Una cuenta del PANEL no hace su verificación en la app de clientes. Si
+    // la sesión guardada es de un admin, se ignora (la pantalla queda en el
+    // ingreso normal y el cliente entra con su cuenta, que reemplaza esa
+    // sesión). Si el admin escribió aquí su contraseña, se le manda al panel,
+    // que tiene su propio ingreso con el código del correo.
+    if (!EN_PANEL && profile?.role === 'admin') {
+      if (origen === 'login') { try { window.location.replace('/admin-empresas'); } catch { /* */ } }
+      return false;
+    }
     setPendingMFAProfile(profile);
     setPendingMFAMode(mode);
     setMfaPending(true);
@@ -1895,10 +1960,30 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       setEmailStepPending(true);      // PRIMER paso del admin
       startEmailStep(profile.id);
     }
+    return true;
+  };
+
+  // ¿La sesión guardada es de la cuenta a la que se le está pidiendo el
+  // código? Si otra pestaña cambió de cuenta en medio, el código NO se manda:
+  // contaría como fallo (y a los dos, bloqueo) de una cuenta ajena.
+  const sesionEsDe = (userId: string | undefined | null): boolean => {
+    if (!userId) return false;
+    const sub = subDelToken(getStoredToken());
+    return !sub || sub === String(userId);
+  };
+  const sesionCambio = (): null => {
+    setMfaError2('La sesión de este navegador cambió de cuenta. Vuelve a iniciar sesión con tu correo y tu contraseña.');
+    try { sessionStorage.removeItem('mfa_ok'); } catch { /* */ }
+    setMfaPending(false);
+    setEmailStepPending(false);
+    setPasskeyPending(false);
+    setPendingMFAProfile(null);
+    return null;
   };
 
   const completeEmailLogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    if (!sesionEsDe(pendingMFAProfile.id)) return sesionCambio();
     const fotoIntento: string | null = await tryCapturePhoto(pendingMFAProfile?.role === 'admin');
     try {
       const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
@@ -1933,6 +2018,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // navegadores no dejan abrir el lector de huella sin que alguien lo pida.
   const loginConPasskey = async (): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    if (!sesionEsDe(pendingMFAProfile.id)) return sesionCambio();
     setMfaError2(null);
     try {
       const SURL2 = SUPABASE_URL_FOR_FN, SKEY2 = SUPABASE_ANON_FOR_FN, token = getStoredToken();
@@ -2000,6 +2086,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const completeMFALogin = async (code: string): Promise<User | null> => {
     if (!pendingMFAProfile) return null;
+    if (pendingMFAMode === 'custom' && !sesionEsDe(pendingMFAProfile.id)) return sesionCambio();
     // Cada intento empieza sin motivo: la pantalla muestra getMfaError() y
     // no debe arrastrar el del intento anterior (p. ej. el del límite de
     // intentos ya vencido) a un fallo de red o del 2FA nativo.
@@ -3115,6 +3202,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       mfaPending, mfaErrorDetail, loginErrorDetail, completeMFALogin, cancelMFALogin, ultimoCierre,
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
+      mfaCuenta: enmascararCorreo(pendingMFAProfile?.email),
       passkeyPending, mfaPasos, loginConPasskey,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode, verificarCodigo2fa,
     }}>

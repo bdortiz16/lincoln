@@ -129,7 +129,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, mfaPasos } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, mfaPasos, mfaCuenta } = useDatabase();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -315,6 +315,15 @@ const AdminEmpresasInner: React.FC = () => {
                                     Verificación 1 de {mfaPasos}. Ingresa el código de 6 dígitos.
                                 </p>
                             </div>
+                            {/* De QUÉ cuenta es el código: una sesión guardada de otra
+                                persona en este computador se nota antes de escribir nada
+                                (dos códigos errados bloquean la cuenta del titular). */}
+                            {mfaCuenta && (
+                                <p className="text-xs text-slate-500">
+                                    Cuenta: <b className="text-slate-800">{mfaCuenta}</b> · ¿No es la tuya?{' '}
+                                    <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="underline font-semibold text-slate-800">Entrar con otra cuenta</button>
+                                </p>
+                            )}
                             <input
                                 value={emailCode}
                                 onChange={e => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}

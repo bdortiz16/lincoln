@@ -81,7 +81,7 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
   const [forgotSent, setForgotSent] = useState(false);
 
   const { config } = useSystemConfig();
-  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset, getMfaError, passkeyPending, loginConPasskey } = useDatabase();
+  const { loginUser, loginWithGoogle, logoutUser, mfaPending, completeMFALogin, cancelMFALogin, sendPasswordReset, getMfaError, passkeyPending, loginConPasskey, mfaCuenta } = useDatabase();
 
   // Sin llave por defecto: reCAPTCHA queda opcional (el flujo resuelve token ''
   // y continúa). Se activa cargando una site key válida vía admin → recaptchaSiteKey.
@@ -251,6 +251,14 @@ export const Login: React.FC<LoginProps> = ({ onRegisterClick, onLoginSuccess, o
                 ? 'El código de tu app es correcto. Tu cuenta tiene una llave de acceso registrada (huella, Face ID o llave USB): confírmala para entrar.'
                 : 'Abre tu app autenticadora (Google Authenticator, Authy, etc.) e ingresa el código de 6 dígitos.'}
             </p>
+            {/* De QUÉ cuenta es este código. Si en el navegador quedó la
+                sesión de otra persona, aquí se nota antes de escribir nada. */}
+            {mfaCuenta && (
+              <p className="text-slate-600 text-xs mt-3">
+                Cuenta: <b className="text-[#0C0E0D]">{mfaCuenta}</b> · ¿No es la tuya?{' '}
+                <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setMfaError(''); }} className="underline font-semibold text-[#0C0E0D]">Entrar con otra cuenta</button>
+              </p>
+            )}
           </div>
 
           {avisoReloj}
