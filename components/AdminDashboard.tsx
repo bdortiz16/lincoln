@@ -99,6 +99,7 @@ import { AdminCoinsenda } from './AdminCoinsenda';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
+import { ReporteFinanciero } from './ReporteFinanciero';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
@@ -204,25 +205,6 @@ const StatCard: React.FC<{ title: string; value: string | number; icon: React.El
 );
 
 // Simple CSS Bar Chart Component
-const SimpleBarChart: React.FC<{ data: { label: string; value: number; percentage: number }[] }> = ({ data }) => (
-  <div className="h-64 flex items-end justify-between gap-2 w-full mt-4">
-    {data.map((item, i) => (
-      <div key={i} className="flex flex-col items-center gap-2 flex-1 group h-full justify-end">
-        <div className="w-full bg-slate-50 rounded-t-lg relative h-full flex items-end overflow-hidden hover:bg-slate-100 transition-colors">
-           <div 
-             style={{ height: `${item.percentage}%` }} 
-             className="w-full bg-[#0C0E0D] opacity-90 group-hover:opacity-100 group-hover:bg-[#4ADE80] transition-all duration-500 rounded-t-sm relative"
-           >
-             <div className="opacity-0 group-hover:opacity-100 absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded pointer-events-none whitespace-nowrap shadow-lg transition-opacity z-10 font-bold">
-               ${item.value.toLocaleString()}
-             </div>
-           </div>
-        </div>
-        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{item.label}</span>
-      </div>
-    ))}
-  </div>
-);
 
 const AdminSidebarItem: React.FC<{ icon: React.ElementType; label: string; active?: boolean; badge?: number; onClick: () => void }> = ({ icon: Icon, label, active, badge, onClick }) => (
   <button onClick={onClick} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all duration-200 group ${active ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`}>
@@ -2036,33 +2018,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       reader.readAsText(file);
   };
 
-  const calculateFinancials = () => {
-      const validTx = historyTransactions.filter(tx => tx.status === 'Completado');
-      const volumeUSD = validTx.reduce((acc, tx) => {
-          const rate = getRate((tx.currency||'').split('_')[0], 'USD');
-          return acc + (tx.amount * (rate || 0));
-      }, 0);
-      const grossRevenueUSD = volumeUSD * (systemConfig.globalFee / 100);
-      const referralTx = validTx.filter(tx => tx.type === 'referral_payout' || tx.type === 'referral_commission');
-      const referralCostUSD = referralTx.reduce((acc, tx) => {
-          const rate = getRate((tx.currency||'').split('_')[0], 'USD');
-          return acc + (tx.amount * rate);
-      }, 0);
-      const netProfit = grossRevenueUSD - referralCostUSD;
-      const activeUsers = new Set(validTx.map(tx => tx.userId)).size;
-      const avgTicket = validTx.length > 0 ? volumeUSD / validTx.length : 0;
-      return { volumeUSD, grossRevenueUSD, referralCostUSD, netProfit, activeUsers, avgTicket };
-  };
-
-  const financials = calculateFinancials();
-  const chartData = [
-      { label: 'ENE', value: financials.volumeUSD * 0.4, percentage: 40 },
-      { label: 'FEB', value: financials.volumeUSD * 0.5, percentage: 50 },
-      { label: 'MAR', value: financials.volumeUSD * 0.3, percentage: 30 },
-      { label: 'ABR', value: financials.volumeUSD * 0.6, percentage: 60 },
-      { label: 'MAY', value: financials.volumeUSD * 0.8, percentage: 80 },
-      { label: 'JUN', value: financials.volumeUSD, percentage: 100 },
-  ];
+  // (El "Resumen financiero" de Reportes ya no se calcula aquí: sumaba la
+  // lista del panel y su gráfica de meses era el volumen total por 0,4, 0,5…
+  // Ahora lo calcula el servidor: ver ReporteFinanciero.)
 
   // --- RENDERERS ---
 
@@ -4473,56 +4431,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </button>
               </div>
 
-              {/* FINANCIAL TAB */}
-              {reportSubTab === 'financial' && (
-                  <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
-                      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                          <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2">
-                              <DollarSign size={20} className="text-[#0C0E0D]"/> Métricas de Rentabilidad
-                          </h3>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-                                  <p className="text-xs text-slate-500 font-bold uppercase mb-1">Volumen Bruto</p>
-                                  <p className="text-2xl font-bold text-slate-800 tracking-tight">${Math.round(financials.volumeUSD).toLocaleString()}</p>
-                                  <span className="text-[10px] text-green-600 bg-green-100 px-2 py-0.5 rounded-full">+12.5% vs mes anterior</span>
-                              </div>
-                              <div className="p-4 bg-green-50 rounded-xl border border-green-100">
-                                  <p className="text-xs text-green-700 font-bold uppercase mb-1">Ingresos (Fees)</p>
-                                  <p className="text-2xl font-bold text-green-700 tracking-tight">${Math.round(financials.grossRevenueUSD).toLocaleString()}</p>
-                                  <span className="text-[10px] text-green-600">Margen bruto: {systemConfig.globalFee}%</span>
-                              </div>
-                              <div className="p-4 bg-red-50 rounded-xl border border-red-100">
-                                  <p className="text-xs text-red-700 font-bold uppercase mb-1">Gastos Referidos</p>
-                                  <p className="text-2xl font-bold text-red-700 tracking-tight">-${Math.round(financials.referralCostUSD).toLocaleString()}</p>
-                                  <span className="text-[10px] text-red-600">Comisiones + Bonos</span>
-                              </div>
-                              <div className="p-4 bg-[#0C0E0D] rounded-xl border border-slate-900 text-white relative overflow-hidden">
-                                  <div className="absolute top-0 right-0 w-16 h-16 bg-white/10 rounded-full blur-xl -translate-y-1/2 translate-x-1/2"></div>
-                                  <p className="text-xs text-green-200 font-bold uppercase mb-1 relative z-10">Utilidad Neta</p>
-                                  <p className="text-2xl font-bold text-white tracking-tight relative z-10">${Math.round(financials.netProfit).toLocaleString()}</p>
-                                  <span className="text-[10px] text-green-300 relative z-10">Profit final operativo</span>
-                              </div>
-                          </div>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                              <h4 className="text-sm font-bold text-slate-600 mb-4">Evolución de Volumen (6 Meses)</h4>
-                              <SimpleBarChart data={chartData} />
-                          </div>
-                          <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center items-center text-center">
-                              <h4 className="text-sm font-bold text-slate-600 mb-6 self-start">Salud del Negocio</h4>
-                              <div className="w-40 h-40 rounded-full border-[12px] border-slate-100 border-t-[#4ADE80] border-r-[#4ADE80] flex flex-col items-center justify-center mb-4 transform -rotate-45">
-                                  <div className="transform rotate-45 text-center">
-                                      <span className="text-3xl font-bold text-slate-800">{financials.activeUsers}</span>
-                                      <span className="block text-[10px] text-slate-400 font-bold uppercase">Usuarios Activos</span>
-                                  </div>
-                              </div>
-                              <p className="text-sm text-slate-500">Ticket Promedio: <span className="font-bold text-slate-800">${Math.round(financials.avgTicket).toLocaleString()}</span></p>
-                          </div>
-                      </div>
-                  </div>
-              )}
+              {/* FINANCIAL TAB — el reporte sale del servidor (reporte_financiero):
+                  antes se sumaba aquí la lista del panel, con un "+12.5%" escrito
+                  a mano y una gráfica vacía. */}
+              {reportSubTab === 'financial' && <ReporteFinanciero />}
 
               {/* AUDIT TAB */}
               {reportSubTab === 'audit' && (

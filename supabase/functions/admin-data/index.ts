@@ -1776,6 +1776,8 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
   lincoin_resumen: ['plata.ver', 'tesoreria', 'fn.lincoin'],
+  // Reportes → Resumen financiero (solo lectura: utilidad, gastos, volumen).
+  reporte_financiero: ['plata.ver', 'tesoreria', 'fn.reportes'],
   // Enviar la utilidad a la empresa por Bre-B: dueño y Tesorería, con su
   // código 2FA en cada envío. Inscribir o quitar las llaves de Lincoin es
   // solo del dueño (no figuran acá).
@@ -5781,6 +5783,190 @@ Deno.serve(async (req: Request) => {
             envio: m.envio ? { estado: m.envio.estado ?? null, titular: m.envio.titular ?? null, llave: m.envio.llave ?? null, ref: m.envio.ref ?? null, costoDe: m.envio.costoDe ?? null, detalle: m.envio.detalle ?? null } : null,
             anulado: m.anulado ? { motivo: m.anulado.motivo, por: quien(m.anulado.por), at: m.anulado.at } : null })),
           caja: await estadoCaja(),
+        })
+      }
+
+      // ── Reporte financiero (Reportes → Resumen financiero) ────────────
+      // Antes esa pestaña sumaba en el navegador la lista del panel (que ya no
+      // trae toda la base), mostraba "+12.5% vs mes anterior" escrito a mano y
+      // una gráfica vacía. Aquí se calcula todo en el servidor, de la base
+      // entera, con las mismas reglas que el resto del panel:
+      //   · Margen de los cargues: la utilidad de su contabilidad (acct). Un
+      //     cargue en pérdida va aparte, como gasto, para que se vea.
+      //   · Costo Mouv: el 0,10 % de Bre-B en los cargues a Mouv (el mismo que
+      //     resta utilidadLincoin: es de Mouv, no de Lincoin).
+      //   · Envíos: la comisión cobrada al cliente es ingreso; el costo del
+      //     proveedor (costoProveedorCop, cuando quedó registrado) es gasto.
+      //   · Caja de Lincoin: los "egresos" son gastos y los "ingresos"
+      //     externos, ingresos. Retiros (utilidad que sale a la empresa) y
+      //     aportes NO son resultado: se muestran aparte.
+      // periodo: 'dia' | 'mes' | 'anio' con una fecha (YYYY-MM-DD) dentro del
+      // periodo. userId: solo ese cliente (sin la caja, que no es de nadie).
+      // Se compara con el MISMO tramo del periodo anterior (el mes en curso,
+      // del 1 a hoy, contra el 1 al mismo día del mes pasado): comparar medio
+      // mes contra un mes entero siempre "bajaba".
+      if (body.action === 'reporte_financiero') {
+        const accR: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const TZ = 5 * 3600_000
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const periodo = (['dia', 'mes', 'anio'] as const).includes(body.periodo) ? body.periodo as 'dia' | 'mes' | 'anio' : 'mes'
+        const ancla = esYmd(body.fecha) ? String(body.fecha) : hoy
+        if (ancla > hoy) return json({ ok: false, error: 'Esa fecha todavía no llega.' }, 400)
+        const ymd = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+        const finDeMes = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate()
+        const rangoDe = (p: 'dia' | 'mes' | 'anio', f: string) => {
+          const y = Number(f.slice(0, 4)), m = Number(f.slice(5, 7)) - 1
+          if (p === 'dia') return { desde: f, hasta: f }
+          if (p === 'mes') return { desde: `${f.slice(0, 7)}-01`, hasta: `${f.slice(0, 7)}-${String(finDeMes(y, m)).padStart(2, '0')}` }
+          return { desde: `${y}-01-01`, hasta: `${y}-12-31` }
+        }
+        // Instantes UTC de un día de Bogotá.
+        const ini = (f: string) => Date.parse(`${f}T00:00:00Z`) + TZ
+        const fin = (f: string) => ini(f) + 86_400_000
+        const actual = rangoDe(periodo, ancla)
+        const tIni = ini(actual.desde)
+        const tFin = Math.min(fin(actual.hasta), Date.now())
+        // El periodo anterior y el mismo tramo dentro de él.
+        const y0 = Number(actual.desde.slice(0, 4)), m0 = Number(actual.desde.slice(5, 7)) - 1
+        const antDesde = periodo === 'dia' ? ymd(Date.parse(`${actual.desde}T00:00:00Z`) - 86_400_000)
+          : periodo === 'mes' ? ymd(Date.UTC(m0 === 0 ? y0 - 1 : y0, m0 === 0 ? 11 : m0 - 1, 1))
+          : `${y0 - 1}-01-01`
+        const antRango = rangoDe(periodo, antDesde)
+        const tAntIni = ini(antRango.desde)
+        const tAntFin = Math.min(fin(antRango.hasta), tAntIni + (tFin - tIni))
+
+        // Un solo cliente: con sus filas duplicadas del mismo correo.
+        const uidR = String(body.userId ?? '')
+        let idsR: string[] | null = null
+        if (uidR) {
+          if (!UUID_RE.test(uidR)) return json({ ok: false, error: 'Cliente inválido.' }, 400)
+          idsR = await idsMismaPersona(uidR)
+        }
+        const visibleR = (t: any) => accR.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accR)
+        const esCopR = (c: unknown) => String(c ?? '').toUpperCase().startsWith('COP')
+        const fuenteDe = (c: unknown) => provDeRiel(c) ?? 'Saldo Lincoin'
+        const FUENTES = ['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin']
+
+        // Las partidas. Todo en COP y sin decimales al final.
+        const vacia = () => ({
+          margenCargues: 0, comisionesEnvios: 0, otrosIngresos: 0,
+          perdidaCargues: 0, costoMouv: 0, costoEnvios: 0, egresos: 0,
+          entradas: 0, salidas: 0, nEntradas: 0, nSalidas: 0, nCargues: 0, nEnvios: 0,
+        })
+        type Partidas = ReturnType<typeof vacia>
+        const ingresosDe = (p: Partidas) => p.margenCargues + p.comisionesEnvios + p.otrosIngresos
+        const gastosDe = (p: Partidas) => p.perdidaCargues + p.costoMouv + p.costoEnvios + p.egresos
+        const cerrar = (p: Partidas) => {
+          const r = Object.fromEntries(Object.entries(p).map(([k, v]) => [k, Math.round(v)])) as Partidas
+          return { ...r, ingresos: Math.round(ingresosDe(p)), gastos: Math.round(gastosDe(p)), utilidad: Math.round(ingresosDe(p) - gastosDe(p)) }
+        }
+
+        const leerMovs = (desdeIso: string, hastaIso: string) => leerPorPaginas(() => {
+          let q = db.from('transactions')
+            .select(`id, created_at, type, currency, amount, user_id, rail:raw_data->>rail, source:raw_data->>source, feeCop:raw_data->>feeCop, costo:raw_data->>costoProveedorCop, ${SELECT_UTILIDAD}`)
+            .in('type', ['load', 'dispersion']).eq('status', 'Completado')
+            .gte('created_at', desdeIso).lt('created_at', hastaIso)
+          if (idsR) q = q.in('user_id', idsR)
+          return q
+        }, { tope: 120_000 })
+
+        // Suma un periodo. Con detalle: por tramo (hora/día/mes), por fuente y
+        // por cliente; sin detalle (el periodo anterior) solo el total.
+        const nTramos = periodo === 'dia' ? 24 : periodo === 'mes' ? finDeMes(y0, m0) : 12
+        const tramoDe = (iso: string) => {
+          const local = new Date(Date.parse(iso) - TZ)
+          return periodo === 'dia' ? local.getUTCHours() : periodo === 'mes' ? local.getUTCDate() - 1 : local.getUTCMonth()
+        }
+        const calcular = async (tA: number, tB: number, conDetalle: boolean) => {
+          const total = vacia()
+          const tramos = conDetalle ? Array.from({ length: nTramos }, vacia) : []
+          const porFuente: Record<string, Partidas> = {}
+          const porCliente: Record<string, Partidas> = {}
+          let cargSinCont = 0, enviosSinCosto = 0, nPerdida = 0
+          const { filas, truncado } = await leerMovs(new Date(tA).toISOString(), new Date(tB).toISOString())
+          for (const t of filas as any[]) {
+            if (!esCopR(t.currency) || !visibleR(t)) continue
+            const sumar = (fn: (p: Partidas) => void) => {
+              fn(total)
+              if (!conDetalle) return
+              const i = Math.max(0, Math.min(nTramos - 1, tramoDe(String(t.created_at))))
+              fn(tramos[i]); fn(porFuente[fuenteDe(t.currency)] ??= vacia()); fn(porCliente[String(t.user_id)] ??= vacia())
+            }
+            const monto = Math.abs(Number(t.amount) || 0)
+            if (t.type === 'load') {
+              sumar(p => { p.entradas += monto; p.nEntradas++ })
+              if (t.source !== 'admin_cargue') continue
+              sumar(p => { p.nCargues++ })
+              // Oculto (contabilidad sospechosa) o sin contabilidad: no suma.
+              if (t.oculto) continue
+              if (t.utilidad == null || t.utilidad === '' || !isFinite(Number(t.utilidad))) { cargSinCont++; continue }
+              const u = Number(t.utilidad)
+              const mouv = String(t.currency).toUpperCase() === 'COP_BREB' ? (Number(t.feeBreb) || 0) : 0
+              if (u < 0) nPerdida++
+              sumar(p => { if (u >= 0) p.margenCargues += u; else p.perdidaCargues += -u; p.costoMouv += mouv })
+            } else {
+              const fee = Number(t.feeCop) || 0
+              const costo = t.costo == null || t.costo === '' ? null : Number(t.costo) || 0
+              if (costo == null && fee > 0) enviosSinCosto++
+              sumar(p => { p.salidas += monto; p.nSalidas++; p.nEnvios++; p.comisionesEnvios += fee; p.costoEnvios += costo ?? 0 })
+            }
+          }
+          // La caja de Lincoin: solo en el reporte general (no es de un cliente).
+          const caja = { retiros: 0, aportes: 0, nEgresos: 0, gastos: [] as any[] }
+          if (!idsR) {
+            const dA = ymd(tA - TZ), dB = ymd(tB - 1 - TZ)
+            const movs = (await movimientosCaja(dA, dB)).filter(m => !m.anulado)
+            for (const m of movs) {
+              const monto = Number(m.monto) || 0
+              // Los movimientos de caja llevan fecha (sin hora): en el reporte
+              // de un día van a la hora en que se registraron.
+              const iso = periodo === 'dia' && m.creado_at && fechaBogota(String(m.creado_at)) === String(m.fecha) ? String(m.creado_at) : `${m.fecha}T17:00:00Z`
+              const aTramo = (fn: (p: Partidas) => void) => { fn(total); if (conDetalle) { fn(tramos[Math.max(0, Math.min(nTramos - 1, tramoDe(iso)))]); fn(porFuente[String(m.proveedor)] ??= vacia()) } }
+              if (m.tipo === 'egreso') { aTramo(p => { p.egresos += monto }); caja.nEgresos++; if (conDetalle) caja.gastos.push({ id: m.id, fecha: m.fecha, proveedor: m.proveedor, monto: Math.round(monto), descripcion: m.descripcion ?? '' }) }
+              else if (m.tipo === 'ingreso') aTramo(p => { p.otrosIngresos += monto })
+              else if (m.tipo === 'retiro') caja.retiros += monto
+              else if (m.tipo === 'aporte') caja.aportes += monto
+            }
+          }
+          return { total, tramos, porFuente, porCliente, cargSinCont, enviosSinCosto, nPerdida, truncado, caja }
+        }
+
+        let act: Awaited<ReturnType<typeof calcular>>, ant: Awaited<ReturnType<typeof calcular>> | null = null
+        try {
+          ;[act, ant] = await Promise.all([calcular(tIni, tFin, true), tAntFin > tAntIni ? calcular(tAntIni, tAntFin, false) : Promise.resolve(null)])
+        } catch (e) {
+          return json({ ok: false, error: `No se pudieron leer los movimientos: ${(e as Error).message}` }, 500)
+        }
+
+        // Nombres de los clientes que aparecen.
+        const idsCli = Object.keys(act.porCliente).filter(id => UUID_RE.test(id))
+        const ficha: Record<string, { nombre: string; email: string | null; empresa: boolean }> = {}
+        for (let i = 0; i < idsCli.length; i += 200) {
+          const { data: us } = await db.from('users').select('id, full_name, company_name, email, role').in('id', idsCli.slice(i, i + 200))
+          for (const u of (us ?? []) as any[]) ficha[String(u.id)] = { nombre: String(u.company_name || u.full_name || u.email || '—'), email: u.email ?? null, empresa: u.role === 'business' }
+        }
+        const clientes = idsCli.map(id => ({ id, nombre: ficha[id]?.nombre ?? 'Cliente eliminado', email: ficha[id]?.email ?? null, empresa: ficha[id]?.empresa ?? false, ...cerrar(act.porCliente[id]) }))
+          .sort((a, b) => b.utilidad - a.utilidad || (b.entradas + b.salidas) - (a.entradas + a.salidas))
+        let cliente: any = null
+        if (uidR) {
+          const { data: u } = await db.from('users').select('id, full_name, company_name, email, role').eq('id', uidR).maybeSingle()
+          cliente = u ? { id: uidR, nombre: String((u as any).company_name || (u as any).full_name || (u as any).email || '—'), email: (u as any).email ?? null, empresa: (u as any).role === 'business' } : { id: uidR, nombre: 'Cliente eliminado', email: null, empresa: false }
+        }
+        const tot = cerrar(act.total)
+        return json({
+          ok: true, generado_at: new Date().toISOString(), hoy,
+          periodo, desde: actual.desde, hasta: actual.hasta,
+          // Hasta dónde se contó: en el periodo en curso, hasta ahora.
+          corte: new Date(tFin).toISOString(), enCurso: tFin < fin(actual.hasta),
+          anterior: ant ? { desde: antRango.desde, hasta: ymd(tAntFin - 1 - TZ), completo: tAntFin >= fin(antRango.hasta), ...cerrar(ant.total) } : null,
+          cliente,
+          totales: tot,
+          tramos: act.tramos.map((p, i) => ({ i, ...cerrar(p) })),
+          fuentes: FUENTES.map(n => ({ fuente: n, ...cerrar(act.porFuente[n] ?? vacia()) })),
+          clientes: clientes.slice(0, 300), nClientes: clientes.length,
+          caja: { retiros: Math.round(act.caja.retiros), aportes: Math.round(act.caja.aportes), gastos: act.caja.gastos.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha))) },
+          avisos: { carguesSinContabilidad: act.cargSinCont, enviosSinCosto: act.enviosSinCosto, carguesEnPerdida: act.nPerdida, parcial: act.truncado || !!ant?.truncado },
         })
       }
 
