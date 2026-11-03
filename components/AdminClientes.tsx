@@ -224,34 +224,47 @@ export const AdminClientes: React.FC<{
   // caso en que hace falta -- cuando el proveedor dice una cosa y nosotros
   // otra -- lo que se necesita es poder mirarlo con calma y copiarlo.
   const [diagSync, setDiagSync] = useState<any>(null);
-  const [sondeando, setSondeando] = useState<string | null>(null);
-  const [sonda, setSonda] = useState<any>(null);
+  // Varias consultas a la vez: antes había UN "consultando" y UN resultado,
+  // así que tocar Consultar en otro envío cortaba el primero (3 nov). Ahora
+  // cada envío lleva su consulta y su resultado.
+  const [sondeando, setSondeando] = useState<string[]>([]);
+  const [sondas, setSondas] = useState<any[]>([]);
 
   // Preguntarle al proveedor por UN movimiento. Solo lee: no cambia estados ni
   // toca saldos. Es la pregunta más simple que se puede hacer, y es la que
   // faltaba -- cada hipótesis sobre por qué un envío seguía "En curso" costaba
   // una vuelta entera de ida y vuelta.
   const sondear = async (txId: string) => {
-    setSondeando(txId); setSonda(null);
+    const id = String(txId);
+    setSondeando(v => v.includes(id) ? v : [...v, id]);
     const r = await pedirMouv({ action: 'sondear_dispersion', txId }).catch((e: any) => ({ ok: false, message: String(e?.message ?? e) }));
-    setSonda(r);
-    setSondeando(null);
+    setSondeando(v => v.filter(x => x !== id));
+    // El más nuevo arriba; si ya estaba ese envío, se reemplaza.
+    setSondas(v => [{ ...r, txId: r?.txId ?? txId }, ...v.filter(x => String(x?.txId) !== id)]);
     if (!r?.ok) showToast?.(r?.message ?? 'No se pudo consultar al proveedor.', 7000);
   };
+  const cerrarSonda = (txId: unknown) => setSondas(v => v.filter(x => String(x?.txId) !== String(txId)));
   // Devolver un envío de Finity que Finity rechazó y Lincoin dejó Completado
   // (3 nov). force_return: CAS anti doble reembolso y queda auditado.
-  const [reembolsando, setReembolsando] = useState(false);
-  const reembolsarSonda = async () => {
-    if (!sonda?.txId) return;
+  const [reembolsando, setReembolsando] = useState<string | null>(null);
+  const reembolsarSonda = async (sonda: any) => {
+    if (!sonda?.txId || reembolsando) return;
     const motivo = window.prompt(
       `Devolver al cliente el monto y la comisión de este envío, y marcarlo como rechazado.\n\n` +
       `Hazlo SOLO si en el portal de Finity aparece rechazado (FAILED). Si se pagó, el cliente cobraría dos veces.\n\nMotivo (queda en la auditoría):`,
       `Rechazado por Finity · ref ${sonda.providerRef ?? '—'}`);
     if (!motivo) return;
-    setReembolsando(true);
+    setReembolsando(String(sonda.txId));
     const r = await pedirMouv({ action: 'force_return', txId: sonda.txId, reason: motivo }).catch((e: any) => ({ ok: false, message: String(e?.message ?? e) }));
-    setReembolsando(false);
-    if (r?.ok) { showToast?.(r.already ? 'Ya estaba devuelto.' : `Devueltos ${Number(r.refundCop ?? 0).toLocaleString('es-CO')} al cliente.`, 7000); setSonda(null); }
+    setReembolsando(null);
+    if (r?.ok) {
+      showToast?.(r.already ? 'Ya estaba devuelto.' : `Devueltos ${Number(r.refundCop ?? 0).toLocaleString('es-CO')} al cliente.`, 7000);
+      cerrarSonda(sonda.txId);
+      // La lista de envíos de la ficha se vuelve a leer: antes seguía diciendo
+      // "Completado" después de devolver, porque mostraba lo cargado antes.
+      histSel.recargar?.();
+      refreshData?.();
+    }
     else showToast?.(r?.message ?? (r?.error ? `No se pudo: ${r.error}` : 'No se pudo devolver.'), 8000);
   };
   const [menu, setMenu] = useState(false);
@@ -772,11 +785,17 @@ export const AdminClientes: React.FC<{
                   dibujaba en la pestaña Movimientos, así que en Envíos y pagos el
                   botón consultaba y no se veía nada (3 nov). Y con la lista larga
                   quedaba arriba, fuera de la vista. */}
-              {sonda && (
-                <div className="fixed inset-0 z-[90] flex items-center justify-center" style={{ padding: 16, background: 'rgba(0,0,0,0.62)' }} onClick={() => !reembolsando && setSonda(null)}>
-                  <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Consulta al proveedor"
+              {sondas.length > 0 && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center" style={{ padding: 16, background: 'rgba(0,0,0,0.62)' }} onClick={() => !reembolsando && setSondas([])}>
+                  <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Consultas al proveedor"
                     style={{ width: 600, maxWidth: '100%', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto' }}>
-                    <ResultadoSonda r={sonda} onCerrar={() => setSonda(null)} onReembolsar={reembolsarSonda} reembolsando={reembolsando} />
+                    {sondeando.length > 0 && (
+                      <p style={{ margin: '0 0 10px', fontSize: 12, color: C.sub, fontFamily: FONT }}>Consultando {sondeando.length} {sondeando.length === 1 ? 'envío' : 'envíos'} más…</p>
+                    )}
+                    {sondas.map(r => (
+                      <ResultadoSonda key={String(r?.txId)} r={r} onCerrar={() => cerrarSonda(r?.txId)}
+                        onReembolsar={() => reembolsarSonda(r)} reembolsando={reembolsando === String(r?.txId)} />
+                    ))}
                   </div>
                 </div>
               )}
@@ -1341,9 +1360,9 @@ const Movimientos: React.FC<any> = ({ movs, onSondear, sondeando }) => (
               en una dispersión: es el caso donde Mouv y Lincoin pueden decir
               cosas distintas. */}
           {String(t.type) === 'dispersion' && (
-            <button onClick={() => onSondear?.(t.id)} disabled={sondeando === t.id}
-              style={{ flexShrink: 0, background: 'transparent', border: `1px solid ${C.b2}`, color: sondeando === t.id ? C.dim : C.sub, borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              {sondeando === t.id ? 'Consultando…' : 'Consultar'}
+            <button onClick={() => onSondear?.(t.id)} disabled={(sondeando ?? []).includes(String(t.id))}
+              style={{ flexShrink: 0, background: 'transparent', border: `1px solid ${C.b2}`, color: (sondeando ?? []).includes(String(t.id)) ? C.dim : C.sub, borderRadius: 8, padding: '4px 9px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {(sondeando ?? []).includes(String(t.id)) ? 'Consultando…' : 'Consultar'}
             </button>
           )}
         </div>
@@ -1409,7 +1428,7 @@ const enPeriodo = (iso: unknown, p: string) => {
   return t >= Date.now() - 90 * 86400_000;
 };
 
-const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo: boolean; truncado?: boolean; onSondear?: (id: string) => void; sondeando?: string | null }> = ({ sel, movs, cargando, completo, truncado, onSondear, sondeando }) => {
+const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo: boolean; truncado?: boolean; onSondear?: (id: string) => void; sondeando?: string[] }> = ({ sel, movs, cargando, completo, truncado, onSondear, sondeando }) => {
   const [periodo, setPeriodo] = useState<string>('todo');
   const [estado, setEstado] = useState<'todos' | 'ok' | 'curso' | 'mal'>('todos');
   const [q, setQ] = useState('');
@@ -1543,9 +1562,9 @@ const EnviosPagos: React.FC<{ sel: any; movs: any[]; cargando: boolean; completo
                 <div style={{ marginTop: 5, display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                   <Pill tono={tn as any}>{String(t.status ?? '—').toUpperCase()}</Pill>
                   {String(t.type) === 'dispersion' && onSondear && (
-                    <button onClick={() => onSondear(t.id)} disabled={sondeando === t.id}
-                      style={{ background: 'transparent', border: `1px solid ${C.b2}`, color: sondeando === t.id ? C.dim : C.sub, borderRadius: 8, padding: '3px 8px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                      {sondeando === t.id ? 'Consultando…' : 'Consultar'}
+                    <button onClick={() => onSondear(t.id)} disabled={(sondeando ?? []).includes(String(t.id))}
+                      style={{ background: 'transparent', border: `1px solid ${C.b2}`, color: (sondeando ?? []).includes(String(t.id)) ? C.dim : C.sub, borderRadius: 8, padding: '3px 8px', fontSize: 10.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                      {(sondeando ?? []).includes(String(t.id)) ? 'Consultando…' : 'Consultar'}
                     </button>
                   )}
                 </div>

@@ -1922,7 +1922,7 @@ async function conciliarFilaFinity(tx: any, origen: string, avisoFallo = false):
   // Sin una consulta exitosa no se clasifica nada: con ok:false, `data` es el
   // cuerpo de un ERROR de Finity, y un `status` dentro de ese error se leía
   // como si fuera el estado de la transferencia.
-  if (!st || st.ok !== true) return { id: tx.id, result: 'consulta_fallida', httpStatus: st?.status ?? null }
+  if (!st || st.ok !== true) { await marcarRevisionFinity(tx); return { id: tx.id, result: 'consulta_fallida', httpStatus: st?.status ?? null } }
   // Todo lo que respondió Finity (movimiento, orden de retiro y el estado de
   // la red), no solo el `status` de arriba: ver veredictoFinity.
   const v = veredictoFinity(st)
@@ -1979,15 +1979,25 @@ async function conciliarFilaFinity(tx: any, origen: string, avisoFallo = false):
     return { id: tx.id, result: 'refunded', refund, motivo: motivoFinal }
   }
   if (v.veredicto === 'completado') {
-    if (tx.status === 'Completado') return { id: tx.id, result: 'sigue_completado' }
-    if (avisoFallo) return { id: tx.id, result: 'aviso_contradice', providerStatus: s, estados: v.senales }
+    if (tx.status === 'Completado') { await marcarRevisionFinity(tx); return { id: tx.id, result: 'sigue_completado' } }
+    if (avisoFallo) { await marcarRevisionFinity(tx); return { id: tx.id, result: 'aviso_contradice', providerStatus: s, estados: v.senales } }
     await db.from('transactions').update({
       status: 'Completado',
       raw_data: { ...rd, providerStatus: s, estadosProveedor: v.senales, reconciledAt: new Date().toISOString() },
     }).eq('id', tx.id).eq('status', 'Procesando')
     return { id: tx.id, result: 'completed' }
   }
+  await marcarRevisionFinity(tx)
   return { id: tx.id, result: 'still_processing', providerStatus: s || null, estados: v.senales }
+}
+// Cuándo se le preguntó a Finity por última vez: el barrido revisa primero
+// los que nunca se miraron y los que llevan más tiempo sin mirar. Solo si la
+// fila sigue igual (mismo estado, sin devolver): nunca pisa un reembolso.
+async function marcarRevisionFinity(tx: any) {
+  try {
+    await db.from('transactions').update({ raw_data: { ...(tx.raw_data ?? {}), ultimaRevisionFinity: new Date().toISOString() } })
+      .eq('id', tx.id).eq('status', tx.status).filter('raw_data->>refunded', 'is', null)
+  } catch { /* la marca es para ordenar; no detiene nada */ }
 }
 
 // Qué permiso del equipo pide cada acción de admin. Lo que no figura queda
@@ -2276,23 +2286,31 @@ serve(async (req: Request) => {
     const vivas = [...((nuevas ?? []) as any[]), ...((viejas ?? []) as any[])].filter(t => !vistas.has(t.id) && !!vistas.add(t.id))
     let tardias: any[] = []
     if (payload?.barrido === true) {
-      // Devoluciones TARDÍAS sobre envíos ya Completados: Bre-B · Cuenta 2 y
-      // también ACH. Antes solo se miraba Bre-B, y un ACH que el banco devolvía
-      // al día siguiente de marcarse Completado no se reembolsaba nunca.
-      const { data } = await db.from('transactions')
-        .select('id, user_id, amount, currency, status, raw_data, created_at')
+      // Devoluciones TARDÍAS sobre envíos ya Completados (ACH y Bre-B ·
+      // Cuenta 2). Se lee una lista liviana de los últimos 15 días y se
+      // revisan primero los que NUNCA se revisaron (los más nuevos antes) y
+      // después los que llevan más tiempo sin revisar (ultimaRevisionFinity).
+      // Antes se tomaban 60 al azar y, con el tiempo tope, en cada vuelta se
+      // alcanzaban a mirar unos pocos: el 3 nov varios de 50.000.000 que
+      // Finity marcó FAILED después de darlos por completados seguían
+      // "Completado" horas después.
+      const { data: ligeras } = await db.from('transactions')
+        .select('id, created_at, ur:raw_data->>ultimaRevisionFinity, prov:raw_data->>proveedor')
         .eq('type', 'dispersion').eq('status', 'Completado').eq('currency', 'COP_ACH')
-        // Sin la Cuenta 3/4: su providerRef es un retiro de Coinsenda.
-        .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
         .not('raw_data->>providerRef', 'is', null)
-        // 15 días: el rechazo del banco puede llegar varios días después, y
-        // con la lectura nueva (veredictoFinity) hay que volver a mirar los
-        // que quedaron "Completado" con la vieja (3 nov).
         .gte('created_at', new Date(ahora - 15 * 86_400_000).toISOString())
-        .order('created_at', { ascending: false }).limit(120)
-      // En orden aleatorio: con sesenta filas no alcanza el tiempo para todas,
-      // y en el mismo orden siempre quedaban sin mirar las mismas.
-      tardias = ((data ?? []) as any[]).sort(() => Math.random() - 0.5)
+        .order('created_at', { ascending: false }).limit(3000)
+      const turno = ((ligeras ?? []) as any[])
+        // Sin la Cuenta 3/4: su providerRef es un retiro de Coinsenda.
+        .filter(t => t.prov !== 'coinsenda')
+        .sort((a, b) => (a.ur ? Date.parse(a.ur) || 0 : 0) - (b.ur ? Date.parse(b.ur) || 0 : 0) || String(b.created_at).localeCompare(String(a.created_at)))
+        .slice(0, 60)
+      if (turno.length) {
+        const { data } = await db.from('transactions')
+          .select('id, user_id, amount, currency, status, raw_data, created_at').in('id', turno.map(t => t.id))
+        const porId = new Map(((data ?? []) as any[]).map(t => [String(t.id), t]))
+        tardias = turno.map(t => porId.get(String(t.id))).filter(Boolean)
+      }
     }
     // Con tiempo tope: el barrido de 100 filas pasaba de los 2 minutos, la
     // base cortaba la llamada y no se sabía qué había quedado revisado. Lo que
