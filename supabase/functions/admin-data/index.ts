@@ -1936,6 +1936,25 @@ async function cambiarCorreoAcceso(uid: string, anterior: string, nuevo: string)
   }
   return null
 }
+// Suelta los ingresos de OTRO proveedor (Google…) atados al correo anterior.
+// Sin esto el correo viejo no quedaba libre: entrar con Google como ese
+// correo abría la cuenta que ya lo había cambiado (Google identifica por su
+// cuenta, no por el correo). Lo hace la base (2026_zz29), porque esas
+// identidades viven en auth.identities. Devuelve un aviso si no se pudo.
+async function soltarIdentidades(uid: string, anterior: string, nuevo: string): Promise<string | null> {
+  try {
+    const { data, error } = await db.rpc('lincoin_soltar_identidades', { p_user: uid, p_anterior: anterior, p_nuevo: nuevo })
+    if (error) {
+      return /lincoin_soltar_identidades|schema cache|does not exist|Could not find/i.test(error.message)
+        ? `El correo cambió, pero falta correr la migración 2026_zz29 para soltar el ingreso con Google de ${anterior}: hasta entonces ese Google sigue abriendo esta cuenta.`
+        : `El correo cambió, pero no se pudo soltar el ingreso con Google de ${anterior}: ${error.message}`
+    }
+    if ((data as any)?.ok === false) return `El correo cambió, pero no se pudo soltar el ingreso con Google de ${anterior}.`
+    return null
+  } catch (e) {
+    return `El correo cambió, pero no se pudo soltar el ingreso con Google de ${anterior}: ${(e as Error).message}`
+  }
+}
 async function enviarCorreoLincoin(para: string, asunto: string, titulo: string, cuerpoHtml: string) {
   if (!RESEND_KEY || !para) return
   const html = `
@@ -2934,7 +2953,10 @@ Deno.serve(async (req: Request) => {
         const falloY = await cambiarCorreoAcceso(uidY, anteriorY, nuevoY)
         if (falloY) return json({ ok: false, error: falloY }, 500)
         await borrarPend()
-        await auditAdmin(req, 'cliente.correo_cambiado', { userId: uidY, anterior: anteriorY, nuevo: nuevoY })
+        // El aviso (si no se pudo soltar el Google del correo anterior) va a
+        // la auditoría para el equipo; al cliente no se le habla de eso.
+        const avisoY = await soltarIdentidades(uidY, anteriorY, nuevoY)
+        await auditAdmin(req, 'cliente.correo_cambiado', { userId: uidY, anterior: anteriorY, nuevo: nuevoY, aviso: avisoY })
         await avisarCambioCorreo(anteriorY, nuevoY, String((filaY as any).full_name ?? ''))
         return json({ ok: true, email: nuevoY })
       }
@@ -5561,9 +5583,10 @@ Deno.serve(async (req: Request) => {
         if (ocupado) return json({ ok: false, error: `${ocupado} Elimina esa cuenta (o libera el correo con «Liberar correo») y vuelve a intentar.` }, 409)
         const fallo = await cambiarCorreoAcceso(uidC, anterior, nuevo)
         if (fallo) return json({ ok: false, error: fallo }, 500)
-        await auditAdmin(req, 'admin.cliente_cambiar_correo', { userId: uidC, anterior, nuevo })
+        const aviso = await soltarIdentidades(uidC, anterior, nuevo)
+        await auditAdmin(req, 'admin.cliente_cambiar_correo', { userId: uidC, anterior, nuevo, aviso })
         await avisarCambioCorreo(anterior, nuevo, String((filaC as any).full_name ?? ''))
-        return json({ ok: true, email: nuevo, anterior })
+        return json({ ok: true, email: nuevo, anterior, aviso })
       }
 
       // Libera un correo "huérfano": borra el usuario de Supabase Auth que

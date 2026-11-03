@@ -646,6 +646,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       deleteUser,
       logoutUser,
       refreshData,
+      correoCambiado,
       bumpLocalBalance,
       addLocalTx,
   } = useDatabase();
@@ -3622,7 +3623,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           <CambiarCorreo
                               correoActual={String(currentUser?.email ?? '')}
                               onCerrar={() => setCambiandoCorreo(false)}
-                              onListo={(c) => { setCambiandoCorreo(false); refreshData?.(); showToast(`Listo: desde ahora entras con ${c}.`, 7000); }}
+                              onListo={(c) => { setCambiandoCorreo(false); correoCambiado?.(c); refreshData?.(); showToast(`Listo: desde ahora entras con ${c}.`, 7000); }}
                           />
                       )}
                   </div>

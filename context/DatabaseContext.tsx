@@ -164,6 +164,8 @@ interface DatabaseContextType {
   accountLocked: boolean;
   /** Correo (enmascarado) de la cuenta a la que se le está pidiendo el código. */
   mfaCuenta: string | null;
+  /** El servidor ya cambió el correo de acceso: se refleja en la sesión y en pantalla. */
+  correoCambiado: (email: string) => Promise<void>;
   passkeyPending: boolean;
   /** 2 pasos, o 3 si la cuenta tiene una llave registrada. */
   mfaPasos: number;
@@ -3203,6 +3205,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       getLoginError: () => loginErrorRef.current, getMfaError: () => mfaErrorRef.current,
       emailStepPending, completeEmailLogin, resendEmailCode, startEmailStep, accountLocked,
       mfaCuenta: enmascararCorreo(pendingMFAProfile?.email),
+      // Tras cambiar el correo de acceso: la pantalla seguía mostrando el
+      // anterior (el perfil en memoria no se recarga solo) y el token de la
+      // sesión traía el correo viejo. Se actualizan los dos.
+      correoCambiado: async (email: string) => {
+        setCurrentUser(prev => prev ? { ...prev, email } as any : prev);
+        if (isSupabaseConfigured) { try { await supabase.auth.refreshSession(); } catch { /* el token se renueva solo después */ } }
+      },
       passkeyPending, mfaPasos, loginConPasskey,
       enrollMFA, verifyMFAEnrollment, unenrollMFA, getMFAStatus, verifyMfaCode, verificarCodigo2fa,
     }}>

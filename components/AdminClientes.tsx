@@ -898,6 +898,8 @@ export const AdminClientes: React.FC<{
                     if (cambioCorreo) {
                       const rc: any = await pedirAdmin({ action: 'cliente_cambiar_correo', userId: sel.id, email: correoNuevo });
                       if (!rc?.ok) { showToast?.(rc?.permisoDenegado ? 'Solo el dueño puede cambiar el correo de acceso de un cliente.' : (rc?.error ?? 'No se pudo cambiar el correo.'), 8000, 'error'); return; }
+                      // El correo cambió, pero el Google del correo anterior quedó atado (p. ej. falta la migración zz29).
+                      if (rc?.aviso) showToast?.(String(rc.aviso), 12000, 'error');
                     }
                     if (cambioPais) {
                       const r: any = await pedirAdmin({ action: 'cliente_modelo_factura_set', userId: sel.id, modelo: 'auto', pais: paisNuevo });
