@@ -268,3 +268,24 @@ export async function domicilioEmpresa(nitConOSinDv: string): Promise<{ domicili
   }
   return { domicilio: null, diagnostico: notas.join(' ‖ '), crudo: null }
 }
+
+// ── Razón social de una empresa por NIT ─────────────────────────────────
+// Para Lincoin Risk: una empresa solo se puede consultar con su razón social
+// (Sarblock la pide), y el cliente tenía que escribirla a mano aunque ya
+// tuviera el NIT. Mismas dos fuentes que el domicilio, pero aquí basta con
+// el nombre (el domicilio puede faltar). Nada se inventa: si ninguna fuente
+// lo trae, null con el diagnóstico.
+export async function razonSocialPorNit(nitConOSinDv: string): Promise<{ razonSocial: string | null; estado: string | null; fuente: string | null; diagnostico: string }> {
+  const digitos = String(nitConOSinDv ?? '').replace(/\D/g, '')
+  const nit = digitos.length === 10 ? digitos.slice(0, 9) : digitos
+  if (nit.length < 8) return { razonSocial: null, estado: null, fuente: null, diagnostico: 'NIT inválido.' }
+  const notas: string[] = []
+  for (const [nombre, fn] of [['datos.gov.co', datosAbiertos], ['portal RUES', portalRUES]] as const) {
+    try {
+      const r = await fn(nit)
+      if (r.ok && r.d.razonSocial) return { razonSocial: r.d.razonSocial.trim(), estado: r.d.estado, fuente: nombre, diagnostico: `${nombre}: ${r.d.razonSocial}` }
+      notas.push('motivo' in r ? `${nombre}: ${r.motivo}` : `${nombre}: sin razón social`)
+    } catch (e) { notas.push(`${nombre}: ${(e as Error)?.message ?? e}`) }
+  }
+  return { razonSocial: null, estado: null, fuente: null, diagnostico: notas.join(' ‖ ') }
+}

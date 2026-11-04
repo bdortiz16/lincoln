@@ -40,6 +40,7 @@ import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaC
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { razonSocialPorNit } from '../_shared/rues.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -399,6 +400,19 @@ async function empresaDe(uid: string) {
 const vista = (r: any, cfg: R.ConfigRisk, empresa?: { nombre: string; nit: string }) =>
   ({ ...R.fila(r), grupo: R.grupoDe(r), vence: R.vencimiento(cfg, r.at), ...(empresa ? { empresa } : {}) })
 
+// La razón social de un NIT en el RUES, con 30 min de memoria: la pantalla
+// la pide mientras se escribe y el servidor otra vez al consultar.
+const razonesVistas = new Map<string, { r: Awaited<ReturnType<typeof razonSocialPorNit>>; at: number }>()
+async function razonSocialRues(documento: string) {
+  const d = String(documento ?? '').replace(/\D/g, '')
+  const nit = d.length === 10 ? d.slice(0, 9) : d
+  const v = razonesVistas.get(nit)
+  if (v && Date.now() - v.at < 30 * 60_000) return v.r
+  const r = await razonSocialPorNit(nit)
+  razonesVistas.set(nit, { r, at: Date.now() })
+  return r
+}
+
 async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Record<string, any>): Promise<Response | Record<string, unknown>> {
   // ── Admin ──────────────────────────────────────────────────────────────
   if (accion.startsWith('admin_risk_') || accion === 'admin_sarblock_uso') {
@@ -556,7 +570,15 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     if (body.autorizado !== true) return { ok: false, motivo: 'Confirma que tienes autorización o una finalidad legítima para consultar estos datos.' }
     const juridica = body.tipoPersona === 'juridica'
     const tipo = juridica ? 'NIT' : String(body.tipoDocumento ?? 'CC').toUpperCase()
-    const nombre = String(body.nombre ?? '').trim() || undefined
+    let nombre = String(body.nombre ?? '').trim() || undefined
+    // Una empresa sin razón social escrita: se busca en el RUES por el NIT
+    // ANTES de cobrar. Antes había que escribirla a mano y, sin ella, la
+    // consulta de una empresa no salía (2026-11).
+    if (juridica && !nombre) {
+      const rues = await razonSocialRues(String(body.documento ?? ''))
+      if (!rues.razonSocial) return { ok: false, motivo: 'No encontramos la razón social de ese NIT en el RUES. Escríbela para consultar. No se usó ninguna consulta.' }
+      nombre = rues.razonSocial
+    }
     // El tipo lo elige el cliente; si el número dice claramente otra cosa, se
     // le pregunta ANTES de cobrar (visto el 2026-10-30: un NIT consultado como
     // cédula gastó una consulta sin resultado). Si confirma, se consulta igual.
@@ -660,6 +682,13 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     }
     const { data: final } = await db.from('risk_consultas').select('*').eq('id', cq.id).single()
     return { ok: true, consulta: vista(final, cfg, await empresaDe(uid)), saldo: await R.saldoDe(db, uid) }
+  }
+
+  // Mientras se escribe un NIT: la razón social del RUES, para no tener que
+  // escribirla. No gasta consultas (es información pública del registro).
+  if (accion === 'risk_razon_social') {
+    const r = await razonSocialRues(String(body.documento ?? ''))
+    return { ok: true, razonSocial: r.razonSocial, estado: r.estado }
   }
 
   // Mientras se escribe la cédula: ¿ya está consultada? (no gasta, no anota)

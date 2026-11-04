@@ -275,9 +275,12 @@ export function dvNit(base: string): number {
   const r = suma % 11
   return r > 1 ? 11 - r : r
 }
-export function tipoProbable(documento: string): { tipo: 'empresa' | 'persona' | null; seguro: boolean; nit?: string } {
+export function tipoProbable(documento: string): { tipo: 'empresa' | 'persona' | null; seguro: boolean; nit?: string; dvMal?: boolean } {
   const d = String(documento ?? '').replace(/\D/g, '')
   if (/^[89]\d{9}$/.test(d) && dvNit(d.slice(0, 9)) === Number(d[9])) return { tipo: 'empresa', seguro: true, nit: `${d.slice(0, 9)}-${d[9]}` }
+  // 10 dígitos que empiezan por 8 o 9 con el DV equivocado: un NIT mal
+  // copiado, no una cédula. Misma regla que lib/nit.ts.
+  if (/^[89]\d{9}$/.test(d)) return { tipo: 'empresa', seguro: false, nit: `${d.slice(0, 9)}-${dvNit(d.slice(0, 9))}`, dvMal: true }
   if (/^[89]\d{8}$/.test(d)) return { tipo: 'empresa', seguro: false, nit: `${d}-${dvNit(d)}` }
   if (/^1\d{9}$/.test(d)) return { tipo: 'persona', seguro: true }
   if (/^\d{6,8}$/.test(d)) return { tipo: 'persona', seguro: false }

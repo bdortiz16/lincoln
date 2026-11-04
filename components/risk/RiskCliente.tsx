@@ -11,6 +11,7 @@ import { MapaColombia } from './MapaColombia';
 import { llamarFuncion } from '../../lib/edge';
 import { lugaresDeDespachos, mapaDePersonas } from '../../lib/ubicacion';
 import { tipoProbable } from '../../lib/nit';
+import { CarnetRisk, CarnetMini } from './Carnet';
 
 // Va con el token de la sesión: la función sabe de qué cuenta es sin que la
 // pantalla mande un userId (y no se puede pedir el de otra).
@@ -135,25 +136,19 @@ export const Resultado: React.FC<{ consulta: any; compacto?: boolean; acciones?:
   };
   return (
     <div className="lr-entra">
-      <div style={{ padding: compacto ? '18px 20px' : '22px 24px', background: `linear-gradient(135deg, ${v.c}14, transparent 60%)`, borderBottom: `1px solid ${C.borde}` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Punto c={v.c} tam={10} />
-          <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: v.c }}>{v.t}</span>
+      {/* La consulta como carnet (Carnet.tsx), y debajo el veredicto en
+          palabras: el carnet resume, esto explica. */}
+      <div style={{ padding: compacto ? '18px 16px 4px' : '22px 24px 6px' }}>
+        <CarnetRisk consulta={consulta} />
+      </div>
+      <div style={{ padding: compacto ? '12px 20px 4px' : '14px 24px 4px', borderBottom: `1px solid ${C.borde}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <Punto c={v.c} tam={9} />
+          <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.3px', color: v.c }}>{v.t}</span>
+          <Vence v={consulta.vence} />
         </div>
-        <p style={{ fontSize: 13.5, color: C.texto, margin: '6px 0 0', lineHeight: 1.5 }}>{v.txt}</p>
-        <div style={{ marginTop: 14 }}>
-          <p style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>{nombre}</p>
-          <p style={{ fontSize: 12.5, color: C.sub, margin: '3px 0 0' }}>
-            {consulta.tipoDocumento} {consulta.documento} · {hace(consulta.at)}{consulta.deCache ? ' · del padrón Lincoin Risk' : ''}
-          </p>
-          {f?.nombreIncompleto && <p style={{ fontSize: 12, color: C.sub, margin: '6px 0 0' }}>Escrito como “{consulta.nombreEscrito}”: es el mismo nombre, incompleto.</p>}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-            <Vence v={consulta.vence} />
-            {(consulta.riesgos ?? []).filter((r: string) => r !== 'ninguno').map((r: string) => (
-              <span key={r} style={{ fontSize: 11.5, color: C.texto, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '3px 9px' }}>{TIPOS[r] ?? r}</span>
-            ))}
-          </div>
-        </div>
+        <p style={{ fontSize: 13.5, color: C.texto, margin: '6px 0 12px', lineHeight: 1.5 }}>{v.txt}{nombre && consulta.at ? <span style={{ color: C.sub }}> · consultada {hace(consulta.at)}</span> : null}</p>
+        {f?.nombreIncompleto && <p style={{ fontSize: 12, color: C.sub, margin: '-6px 0 12px' }}>Escrito como “{consulta.nombreEscrito}”: es el mismo nombre, incompleto.</p>}
       </div>
       <div style={{ padding: compacto ? '14px 20px' : '16px 24px', display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 12.5, color: C.sub }}>
         <span><b style={{ color: C.texto }}>{limpias}</b> sin novedad</span>
@@ -389,6 +384,26 @@ export const RiskCliente: React.FC = () => {
     }, 350);
     return () => clearTimeout(t);
   }, [doc, esEmpresa, tipoDoc, fase]);
+  // La razón social de una empresa sale del RUES por el NIT: antes había que
+  // escribirla a mano y, sin ella, el botón no se prendía (2026-11). Si el
+  // cliente la escribe, manda lo suyo; si la llenó el RUES y cambia el NIT,
+  // se vuelve a buscar.
+  const [rues, setRues] = useState<{ doc: string; razonSocial: string | null; estado: string | null } | 'buscando' | null>(null);
+  const autoNombre = useRef<string | null>(null);
+  useEffect(() => {
+    if (!esEmpresa || digitos.length < 9 || fase !== 'form') { setRues(null); return; }
+    setRues('buscando');
+    let vivo = true;
+    const t = setTimeout(async () => {
+      const r = await llamar('risk_razon_social', { documento: doc });
+      if (!vivo) return;
+      const razon = r?.ok && r.razonSocial ? String(r.razonSocial) : null;
+      setRues({ doc: digitos, razonSocial: razon, estado: r?.estado ?? null });
+      setNombre(n => (razon && (!n.trim() || n === autoNombre.current)) ? (autoNombre.current = razon) : n);
+    }, 450);
+    return () => { vivo = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [digitos, esEmpresa, fase]);
   const vigenteYa = existente && existente.vence?.estado !== 'vencida';
   const verExistente = async () => {
     const r = await llamar('risk_ver', { consultaId: existente.id, desdeBusqueda: true });
@@ -482,7 +497,10 @@ export const RiskCliente: React.FC = () => {
                     </select>
                   )}
                   {empresaForzada === null && probable.seguro && <span style={{ fontSize: 11.5, color: C.tenue }}>{probable.tipo === 'empresa' ? `Detectamos un NIT de empresa (${probable.nit})` : 'Detectamos una cédula'}</span>}
-                  {empresaForzada === null && !probable.seguro && pareceNit && <span style={{ fontSize: 11.5, color: C.tenue }}>Parece un NIT</span>}
+                  {empresaForzada === null && !probable.seguro && pareceNit && !probable.dvMal && <span style={{ fontSize: 11.5, color: C.tenue }}>Parece un NIT</span>}
+                  {/* NIT con el dígito de verificación equivocado: se consulta
+                      igual (va por los 9 dígitos), pero se avisa del DV bueno. */}
+                  {probable.dvMal && esEmpresa && <span style={{ fontSize: 11.5, color: C.ambar }}>El dígito de verificación no cuadra: el NIT sería {probable.nit}. Se consulta por los 9 dígitos.</span>}
                 </div>
                 {/* Lo elegido a mano no cuadra con el número: se avisa, sin cambiar nada. */}
                 {choca && (
@@ -494,7 +512,14 @@ export const RiskCliente: React.FC = () => {
                   </div>
                 )}
                 <input value={nombre} onChange={e => setNombre(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') consultar(); }}
-                  placeholder={esEmpresa ? 'Razón social (obligatoria)' : 'Nombre completo (opcional, confirma que el documento es suyo)'} style={INP} />
+                  placeholder={esEmpresa ? (rues === 'buscando' ? 'Buscando la razón social en el RUES…' : 'Razón social') : 'Nombre completo (opcional, confirma que el documento es suyo)'} style={INP} />
+                {esEmpresa && rues && rues !== 'buscando' && (
+                  <span style={{ fontSize: 11.5, color: rues.razonSocial ? C.sub : C.ambar, marginTop: -6 }}>
+                    {rues.razonSocial
+                      ? <>Del RUES{rues.estado ? ` · matrícula ${String(rues.estado).toLowerCase()}` : ''}. Si no es, corrígela.</>
+                      : 'No la encontramos en el RUES con ese NIT: escríbela tal como está registrada.'}
+                  </span>
+                )}
                 <label style={{ display: 'flex', gap: 9, alignItems: 'flex-start', fontSize: 12, color: C.sub, lineHeight: 1.45, cursor: 'pointer' }}>
                   <input type="checkbox" checked={autorizado} onChange={e => setAutorizado(e.target.checked)} style={{ width: 15, height: 15, marginTop: 1, accentColor: '#4ADE80', flexShrink: 0 }} />
                   Tengo autorización del titular o una finalidad legítima de debida diligencia.
@@ -517,6 +542,16 @@ export const RiskCliente: React.FC = () => {
                 {error.sinSaldo && <button onClick={() => setRecarga(true)} style={{ ...BTN, height: 34, fontSize: 12.5 }}>Recargar</button>}
               </div>
             )}
+            {/* Qué falta para poder consultar: el botón apagado no lo decía y
+                parecía que las empresas no se podían consultar. */}
+            {digitos.length >= 5 && !listo && !vigenteYa && fase === 'form' && (() => {
+              const falta = [
+                esEmpresa && nombre.trim().length < 3 ? (rues === 'buscando' ? 'que termine la búsqueda en el RUES' : 'la razón social') : null,
+                !autorizado ? 'marcar la autorización' : null,
+                (cuenta?.saldo ?? 0) <= 0 ? 'tener consultas disponibles' : null,
+              ].filter(Boolean) as string[];
+              return falta.length ? <p style={{ fontSize: 12, color: C.sub, margin: '12px 0 0' }}>Para consultar falta: <b style={{ color: C.texto, fontWeight: 600 }}>{falta.join(' · ')}</b>.</p> : null;
+            })()}
             {cuenta.saldo === 0 && !error && (
               <p style={{ fontSize: 12.5, color: C.sub, margin: '14px 0 0' }}>No tienes consultas disponibles. <button onClick={() => setRecarga(true)} style={{ background: 'none', border: 'none', color: C.texto, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>Recarga para empezar</button></p>
             )}
@@ -590,25 +625,12 @@ export const RiskCliente: React.FC = () => {
                 <p style={{ fontSize: 13.5, fontWeight: 700, margin: 0 }}>{q || cat !== 'todos' || riesgo || vence ? 'Nada con ese filtro' : 'Aún no has consultado a nadie'}</p>
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 0' }}>{q || cat !== 'todos' || riesgo || vence ? 'Prueba con otro filtro.' : 'Escribe una cédula o un NIT arriba para empezar.'}</p>
               </div>
-            ) : hist.filas.map((c: any, i: number) => {
-              const g = GRUPO[c.grupo];
-              return (
-                <button key={c.id} onClick={() => abrir(c.id)} className="lr-fila lr-entra" style={{ animationDelay: `${i * 25}ms`, display: 'flex', width: '100%', textAlign: 'left', alignItems: 'center', gap: 14, padding: '13px 18px', background: 'transparent', border: 'none', borderTop: i ? `1px solid ${C.borde}` : 'none', color: C.texto, cursor: 'pointer', fontFamily: 'inherit' }}>
-                  <span style={{ width: 34, height: 34, borderRadius: '50%', background: C.elevado, border: `1px solid ${C.borde}`, display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 800, color: C.sub, flexShrink: 0 }}>
-                    {String(c.nombreOficial || c.nombreEscrito || '?').split(' ').slice(0, 2).map((p: string) => p[0]).join('')}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.nombreOficial || c.nombreEscrito || 'Sin nombre'}</span>
-                    <span style={{ display: 'block', fontSize: 12, color: C.sub, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {c.tipoDocumento} {c.documento} · consultada {hace(c.at)}{(c.riesgos ?? []).filter((r: string) => r !== 'ninguno').length ? ` · ${(c.riesgos as string[]).filter(r => r !== 'ninguno').map(r => TIPOS[r]).join(', ')}` : ''}
-                    </span>
-                  </span>
-                  <Vence v={c.vence} />
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: g.c, minWidth: 54 }}><Punto c={g.c} tam={7} />{g.t}</span>
-                  <span style={{ color: C.tenue, fontSize: 16 }}>›</span>
-                </button>
-              );
-            }))}
+            ) : (
+              // Cada registrado como un carnet; tocarlo abre la consulta completa.
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))', gap: 14, padding: 14 }}>
+                {hist.filas.map((c: any, i: number) => <CarnetMini key={c.id} consulta={c} retraso={Math.min(i, 12) * 25} onClick={() => abrir(c.id)} />)}
+              </div>
+            ))}
 
           {lista === 'busquedas' && (!busq ? <p style={{ padding: 18, color: C.sub, fontSize: 13, margin: 0 }}>Cargando…</p>
             : busq.filas.length === 0 ? <p style={{ padding: '28px 18px', textAlign: 'center', color: C.sub, fontSize: 13, margin: 0 }}>Todavía no hay búsquedas.</p>

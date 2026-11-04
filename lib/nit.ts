@@ -70,9 +70,13 @@ export function nitSinDv(numero: string): string {
 // servidor en Lincoin Risk antes de cobrar). Solo orienta: el cliente elige.
 // 'seguro' = sin duda razonable: un NIT de empresa con su dígito de
 // verificación correcto, o una cédula nueva de 10 dígitos que empieza por 1.
-export function tipoProbable(numero: string): { tipo: 'empresa' | 'persona' | null; seguro: boolean; nit?: string } {
+export function tipoProbable(numero: string): { tipo: 'empresa' | 'persona' | null; seguro: boolean; nit?: string; dvMal?: boolean } {
     const d = String(numero ?? '').replace(/\D/g, '');
     if (/^[89]\d{9}$/.test(d) && digitoVerificacionNit(d.slice(0, 9)) === Number(d[9])) return { tipo: 'empresa', seguro: true, nit: `${d.slice(0, 9)}-${d[9]}` };
+    // 10 dígitos que empiezan por 8 o 9 con el DV equivocado: no es una
+    // cédula (las de 10 dígitos empiezan por 1), es un NIT mal copiado. Antes
+    // quedaba en "Persona" y la empresa no se podía consultar (2026-11).
+    if (/^[89]\d{9}$/.test(d)) return { tipo: 'empresa', seguro: false, nit: `${d.slice(0, 9)}-${digitoVerificacionNit(d.slice(0, 9))}`, dvMal: true };
     if (/^[89]\d{8}$/.test(d)) return { tipo: 'empresa', seguro: false, nit: `${d}-${digitoVerificacionNit(d)}` };
     if (/^1\d{9}$/.test(d)) return { tipo: 'persona', seguro: true };
     if (/^\d{6,8}$/.test(d)) return { tipo: 'persona', seguro: false };
