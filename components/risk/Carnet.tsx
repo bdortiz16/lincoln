@@ -19,15 +19,15 @@ import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { digitoVerificacionNit } from '../../lib/nit';
 
-type Nivel = { t: string; sub: string; c: string };
+export type Nivel = { k: string; t: string; sub: string; c: string };
 // Colores sobre fondo claro (el cuerpo del carnet es claro).
 const NIVELES: Record<string, Nivel> = {
-  bajo: { t: 'Bajo', sub: 'Se puede operar', c: '#22A35C' },
-  medio: { t: 'Medio', sub: 'Revisar antes', c: '#C27803' },
-  alto: { t: 'Alto', sub: 'No operar', c: '#D93636' },
-  revisar: { t: 'Revisar', sub: 'Nombre no corresponde', c: '#D93636' },
-  sin_validar: { t: 'Revisar', sub: 'Identidad sin validar', c: '#C27803' },
-  sin_verificar: { t: '—', sub: 'Sin verificar', c: '#6B726C' },
+  bajo: { k: 'bajo', t: 'Bajo', sub: 'Se puede operar', c: '#22A35C' },
+  medio: { k: 'medio', t: 'Medio', sub: 'Revisar antes', c: '#C27803' },
+  alto: { k: 'alto', t: 'Alto', sub: 'No operar', c: '#D93636' },
+  revisar: { k: 'revisar', t: 'Revisar', sub: 'Nombre no corresponde', c: '#D93636' },
+  sin_validar: { k: 'sin_validar', t: 'Revisar', sub: 'Identidad sin validar', c: '#C27803' },
+  sin_verificar: { k: 'sin_verificar', t: '—', sub: 'Sin verificar', c: '#6B726C' },
 };
 // Mismo criterio que el veredicto de la pantalla (RiskCliente).
 export function nivelDe(c: any): Nivel {
@@ -40,7 +40,7 @@ export function nivelDe(c: any): Nivel {
   return NIVELES.bajo;
 }
 
-const fechaCorta = (iso?: string | null) => {
+export const fechaCorta = (iso?: string | null) => {
   const d = iso ? new Date(iso) : null;
   return d && !isNaN(d.getTime()) ? d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
 };
@@ -59,7 +59,7 @@ export function documentoLegible(tipo: string, doc: string): string {
 
 // Las fuentes revisadas, para las fichas: primero las que dieron algo.
 type Ficha = { texto: string; alerta: boolean; aviso?: boolean };
-function fichasDe(c: any): Ficha[] {
+export function fichasDe(c: any): Ficha[] {
   const f = c?.ficha;
   const catalogo: any[] = f?.sarblock?.catalog ?? [];
   if (catalogo.length) {
@@ -81,7 +81,7 @@ function fichasDe(c: any): Ficha[] {
   return riesgos.length ? riesgos.map(r => ({ texto: TIPOS[r] ?? r, alerta: true })) : [{ texto: 'Sin hallazgos', alerta: false }];
 }
 
-const Silueta: React.FC<{ empresa: boolean; tam: number }> = ({ empresa, tam }) => empresa ? (
+export const Silueta: React.FC<{ empresa: boolean; tam: number }> = ({ empresa, tam }) => empresa ? (
   <svg viewBox="0 0 80 96" width={tam} height={tam * 1.2} aria-hidden="true">
     <rect x="14" y="30" width="34" height="62" rx="2" fill="#7D8A99" />
     <rect x="50" y="50" width="18" height="42" rx="2" fill="#5D6B7B" />
@@ -95,14 +95,14 @@ const Silueta: React.FC<{ empresa: boolean; tam: number }> = ({ empresa, tam }) 
   </svg>
 );
 
-const Wordmark: React.FC<{ tam: number }> = ({ tam }) => (
+export const Wordmark: React.FC<{ tam: number }> = ({ tam }) => (
   <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: tam * 0.35, whiteSpace: 'nowrap' }}>
     <span style={{ fontFamily: "Archivo, system-ui, sans-serif", fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', fontSize: tam }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span></span>
     <span style={{ fontFamily: "Archivo, system-ui, sans-serif", fontWeight: 600, color: 'rgba(244,244,242,0.75)', fontSize: tam * 0.85 }}>Risk</span>
   </span>
 );
 
-const ESTILOS_CARNET = `
+export const ESTILOS_CARNET = `
 .lc-carnet { font-family: Archivo, system-ui, sans-serif; background: #121413; color: #15181A; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
 .lc-cab { position: relative; background: #121413; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .lc-cab::after { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 38%; background: repeating-linear-gradient(135deg, rgba(255,255,255,0.045) 0 9px, transparent 9px 18px); pointer-events: none; }
@@ -188,52 +188,5 @@ export const CarnetRisk: React.FC<{ consulta: any }> = ({ consulta: c }) => {
       </div>
       </div>
     </div>
-  );
-};
-
-// ── Carnet compacto (la lista de registrados) ───────────────────────────
-export const CarnetMini: React.FC<{ consulta: any; onClick?: () => void; retraso?: number }> = ({ consulta: c, onClick, retraso = 0 }) => {
-  const nivel = nivelDe(c);
-  const empresa = c?.tipoPersona === 'juridica' || String(c?.tipoDocumento).toUpperCase() === 'NIT';
-  const nombre = c?.nombreOficial || c?.nombreEscrito || 'Sin nombre';
-  const vencida = c?.vence?.estado === 'vencida';
-  const porVencer = c?.vence?.estado === 'critico' || c?.vence?.estado === 'pronto';
-  const fichas = fichasDe(c);
-  return (
-    <button onClick={onClick} className="lc-carnet lr-entra lc-mini" aria-label={`${nombre}: riesgo ${nivel.t}`}
-      style={{ animationDelay: `${retraso}ms`, display: 'block', width: '100%', textAlign: 'left', border: 'none', padding: 0, cursor: onClick ? 'pointer' : 'default', boxShadow: '0 6px 18px rgba(0,0,0,0.3)' }}>
-      <style>{ESTILOS_CARNET}{'.lc-mini { transition: transform .15s } .lc-mini:hover { transform: translateY(-2px) }'}</style>
-      <div className="lc-cab" style={{ padding: '9px 14px' }}>
-        <Wordmark tam={13} />
-        <span style={{ position: 'relative', zIndex: 1, fontSize: 9, fontWeight: 700, letterSpacing: '1.4px', color: 'rgba(244,244,242,0.65)' }}>{empresa ? 'EMPRESA' : 'PERSONA'}</span>
-      </div>
-      <div style={{ height: 3, background: nivel.c }} />
-      <div className="lc-claro" style={{ height: '100%' }}>
-      <div className="lc-cuerpo" style={{ gridTemplateColumns: '64px minmax(0, 1fr) auto', gap: 12, padding: '12px 14px 8px' }}>
-        <div style={{ height: 78, borderRadius: 10, background: 'linear-gradient(180deg, #E3E7EB, #CDD3DA)', display: 'grid', placeItems: 'end center', overflow: 'hidden' }}>
-          <Silueta empresa={empresa} tam={empresa ? 46 : 54} />
-        </div>
-        <div style={{ minWidth: 0 }}>
-          <span className="lc-lbl">{empresa ? 'Razón social' : 'Nombre y apellidos'}</span>
-          <span className="lc-val" style={{ fontSize: 13.5, lineHeight: 1.25, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as React.CSSProperties}>{nombre}</span>
-          <span style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: '#3B423D', marginTop: 4 }}>{documentoLegible(c?.tipoDocumento, c?.documento)}</span>
-          <span style={{ display: 'block', fontSize: 11, color: vencida ? '#D93636' : porVencer ? '#8A5502' : '#6B726C', marginTop: 2, fontWeight: vencida || porVencer ? 700 : 500 }}>
-            {fechaCorta(c?.at)} · {vencida ? 'vencida' : `vence ${fechaCorta(c?.vence?.venceAt)}`}
-          </span>
-        </div>
-        <div style={{ borderRadius: 10, background: nivel.c, color: '#FFF', textAlign: 'center', padding: '7px 9px', minWidth: 62 }}>
-          <span style={{ display: 'block', fontSize: 8.5, fontWeight: 700, letterSpacing: '1.2px', opacity: 0.9 }}>RIESGO</span>
-          <span style={{ display: 'block', fontSize: 15, fontWeight: 800, lineHeight: 1.2 }}>{nivel.t}</span>
-        </div>
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0 14px 12px' }}>
-        {fichas.slice(0, 3).map((x, i) => (
-          <span key={i} className="lc-ficha" style={x.alerta ? { background: 'rgba(217,54,54,0.1)', color: '#B42318' } : { background: 'rgba(21,24,26,0.06)', color: '#3B423D' }}>
-            {x.alerta ? '⚠' : '✓'} {x.texto}
-          </span>
-        ))}
-      </div>
-      </div>
-    </button>
   );
 };

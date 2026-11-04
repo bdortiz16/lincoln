@@ -41,6 +41,7 @@ import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { razonSocialPorNit } from '../_shared/rues.ts'
+import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import * as K from './cartera.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -675,52 +676,69 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     const sujeto = sujetoDe(tipo, String(body.documento ?? ''), nombre)
     if (!sujeto) return { ok: false, motivo: juridica ? 'Escribe el NIT y la razón social.' : 'Revisa el tipo y el número de documento.' }
     const doc = sujeto.idNumber
-    // Ya la consultó y sigue vigente: se muestra la suya, sin gastar.
-    const { data: previa } = await db.from('risk_consultas').select('*').eq('user_id', uid).eq('tipo_documento', tipo).eq('documento', doc)
-      .eq('estado', 'lista').order('at', { ascending: false }).limit(1).maybeSingle()
-    if (previa && R.vencimiento(cfg, (previa as any).at).estado !== 'vencida') {
-      await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: (previa as any).nombre_oficial ?? nombre ?? null, resultado: 'existente', consultaId: (previa as any).id })
-      return { ok: true, existente: true, consulta: vista(previa, cfg, await empresaDe(uid)), saldo: await R.saldoDe(db, uid) }
+    // A una persona ya consultada no se le cobra otra vez (pedido del dueño,
+    // 2026-11). Leer "¿ya hay una?" no alcanza con dos pedidos al tiempo
+    // (doble clic, dos operadores, dos pestañas): los dos leen "no hay" y se
+    // cobran dos. El candado deja pasar a uno solo mientras se lanza; cuando
+    // la fila "consultando" ya está escrita, la ve el siguiente.
+    const llave = `risk:${uid}:${tipo}:${doc}`
+    if (await reclamarCandado(db, llave, 90, uid, 'risk_consultar') === 'ocupado') {
+      return { ok: false, motivo: 'Esa persona ya se está consultando en este momento. Espera unos segundos y vuelve a escribir su documento: no se usó ninguna consulta.' }
     }
-    const resultado = previa ? 'renovada' : 'nueva'
-    const id = crypto.randomUUID()
-    // Se reserva la consulta ANTES de gastar en Sarblock: con saldo 1, dos
-    // consultas al tiempo no pueden pasar las dos.
-    const m = await R.mover(db, uid, 'consumo', -1, `Consulta ${tipo} ${doc}`, por, id)
-    if (m.error) {
-      await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado: 'sin_saldo' })
-      return { ok: false, sinSaldo: true, motivo: 'No te quedan consultas. Compra un paquete para seguir consultando.' }
-    }
-    const base = { id, user_id: uid, por, por_id: yo.userId, tipo_persona: juridica ? 'juridica' : 'natural', tipo_documento: tipo, documento: doc, nombre_escrito: nombre ?? null }
-    const enPadron = await padronBuscar(db, tipo, doc, cfg.vigenciaDias)
-    if (enPadron) {
-      const ficha = fichaParaCuenta(enPadron.ficha, nombre, { documento: doc, tipoDocumento: tipo })
-      const fila = { ...base, de_cache: true, estado: 'lista', ficha, nombre_oficial: ficha.nombreReal ?? null, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null, riesgos: R.tiposDeRiesgo(ficha), despachos: R.despachos(ficha) }
-      const { data: ins, error } = await db.from('risk_consultas').insert(fila).select('*').single()
-      if (error) { await R.mover(db, uid, 'devolucion', 1, 'No se pudo guardar la consulta: se devuelve', null, id); return { ok: false, motivo: 'No se pudo consultar en este momento.' } }
-      await anotarUso(db, tipo, doc, uid)
-      await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: fila.nombre_oficial ?? nombre ?? null, resultado, consultaId: id })
-      await auditar('sarblock.risk_manual', { userId: uid, tipo, documento: doc, deCache: true, consultaId: id })
-      return { ok: true, consulta: vista(ins, cfg, await empresaDe(uid)), saldo: m.saldo }
-    }
-    try {
-      const sb = cliente()
-      if ((await conCupo(() => saldoParaConsultar(sb))) <= 0) throw new Error('caja')
-      const r = await conCupo(() => sb.crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
-      const { error } = await db.from('risk_consultas').insert({ ...base, check_id: r.id, estado: 'consultando' })
-      if (error) throw new Error(error.message)
-      await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado, consultaId: id })
-      await auditar('sarblock.risk_lanzado', { userId: uid, tipo, documento: doc, checkId: r.id, consultaId: id })
-      return { ok: true, enCurso: true, consultaId: id, saldo: m.saldo }
-    } catch (e) {
-      await R.mover(db, uid, 'devolucion', 1, 'La consulta no se pudo lanzar: se devuelve', null, id)
-      await auditar('sarblock.risk_fallido', { userId: uid, tipo, documento: doc, motivo: String((e as Error)?.message ?? e).slice(0, 300) })
-      if (esLimite(e)) {
-        const seg = Math.max(5, Math.ceil(((await pausadoHasta()) - Date.now()) / 1000))
-        return { ok: false, motivo: `El servicio de consulta está recibiendo muchas solicitudes. Intenta de nuevo en ${seg} segundos. No se usó ninguna consulta.` }
+    const lanzar = async () => {
+      // Ya se está consultando (la lanzó otro operador hace un momento): se
+      // espera esa, sin cobrar otra.
+      const { data: enVuelo } = await db.from('risk_consultas').select('id').eq('user_id', uid).eq('tipo_documento', tipo).eq('documento', doc)
+        .eq('estado', 'consultando').gte('at', new Date(Date.now() - 30 * 60_000).toISOString()).order('at', { ascending: false }).limit(1).maybeSingle()
+      if (enVuelo) return { ok: true, enCurso: true, yaEnCurso: true, consultaId: (enVuelo as any).id, saldo: await R.saldoDe(db, uid) }
+      // Ya la consultó y sigue vigente: se muestra la suya, sin gastar.
+      const { data: previa } = await db.from('risk_consultas').select('*').eq('user_id', uid).eq('tipo_documento', tipo).eq('documento', doc)
+        .eq('estado', 'lista').order('at', { ascending: false }).limit(1).maybeSingle()
+      if (previa && R.vencimiento(cfg, (previa as any).at).estado !== 'vencida') {
+        await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: (previa as any).nombre_oficial ?? nombre ?? null, resultado: 'existente', consultaId: (previa as any).id })
+        return { ok: true, existente: true, consulta: vista(previa, cfg, await empresaDe(uid)), saldo: await R.saldoDe(db, uid) }
       }
-      return { ok: false, motivo: 'No se pudo consultar en este momento. Intenta de nuevo en unos minutos. No se usó ninguna consulta.' }
+      const resultado = previa ? 'renovada' : 'nueva'
+      const id = crypto.randomUUID()
+      // Se reserva la consulta ANTES de gastar en Sarblock: con saldo 1, dos
+      // consultas al tiempo no pueden pasar las dos.
+      const m = await R.mover(db, uid, 'consumo', -1, `Consulta ${tipo} ${doc}`, por, id)
+      if (m.error) {
+        await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado: 'sin_saldo' })
+        return { ok: false, sinSaldo: true, motivo: 'No te quedan consultas. Compra un paquete para seguir consultando.' }
+      }
+      const base = { id, user_id: uid, por, por_id: yo.userId, tipo_persona: juridica ? 'juridica' : 'natural', tipo_documento: tipo, documento: doc, nombre_escrito: nombre ?? null }
+      const enPadron = await padronBuscar(db, tipo, doc, cfg.vigenciaDias)
+      if (enPadron) {
+        const ficha = fichaParaCuenta(enPadron.ficha, nombre, { documento: doc, tipoDocumento: tipo })
+        const fila = { ...base, de_cache: true, estado: 'lista', ficha, nombre_oficial: ficha.nombreReal ?? null, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null, riesgos: R.tiposDeRiesgo(ficha), despachos: R.despachos(ficha) }
+        const { data: ins, error } = await db.from('risk_consultas').insert(fila).select('*').single()
+        if (error) { await R.mover(db, uid, 'devolucion', 1, 'No se pudo guardar la consulta: se devuelve', null, id); return { ok: false, motivo: 'No se pudo consultar en este momento.' } }
+        await anotarUso(db, tipo, doc, uid)
+        await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: fila.nombre_oficial ?? nombre ?? null, resultado, consultaId: id })
+        await auditar('sarblock.risk_manual', { userId: uid, tipo, documento: doc, deCache: true, consultaId: id })
+        return { ok: true, consulta: vista(ins, cfg, await empresaDe(uid)), saldo: m.saldo }
+      }
+      try {
+        const sb = cliente()
+        if ((await conCupo(() => saldoParaConsultar(sb))) <= 0) throw new Error('caja')
+        const r = await conCupo(() => sb.crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
+        const { error } = await db.from('risk_consultas').insert({ ...base, check_id: r.id, estado: 'consultando' })
+        if (error) throw new Error(error.message)
+        await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado, consultaId: id })
+        await auditar('sarblock.risk_lanzado', { userId: uid, tipo, documento: doc, checkId: r.id, consultaId: id })
+        return { ok: true, enCurso: true, consultaId: id, saldo: m.saldo }
+      } catch (e) {
+        await R.mover(db, uid, 'devolucion', 1, 'La consulta no se pudo lanzar: se devuelve', null, id)
+        await auditar('sarblock.risk_fallido', { userId: uid, tipo, documento: doc, motivo: String((e as Error)?.message ?? e).slice(0, 300) })
+        if (esLimite(e)) {
+          const seg = Math.max(5, Math.ceil(((await pausadoHasta()) - Date.now()) / 1000))
+          return { ok: false, motivo: `El servicio de consulta está recibiendo muchas solicitudes. Intenta de nuevo en ${seg} segundos. No se usó ninguna consulta.` }
+        }
+        return { ok: false, motivo: 'No se pudo consultar en este momento. Intenta de nuevo en unos minutos. No se usó ninguna consulta.' }
+      }
     }
+    try { return await lanzar() } finally { await soltarCandado(db, llave) }
   }
 
   if (accion === 'risk_resultado') {
@@ -773,13 +791,25 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
   }
 
   // Mientras se escribe la cédula: ¿ya está consultada? (no gasta, no anota)
+  // Para no consultar dos veces a la misma persona se mira también el mismo
+  // número con OTRO tipo (una cédula consultada como CC y ahora escrita como
+  // CE, o una empresa buscada como persona): se avisa, y quien consulta
+  // decide si es la misma. Y si se está consultando ahora mismo, se dice.
   if (accion === 'risk_existente') {
     const tipo = body.tipoPersona === 'juridica' ? 'NIT' : String(body.tipoDocumento ?? 'CC').toUpperCase()
     const s = sujetoDe(tipo, String(body.documento ?? ''), tipo === 'NIT' ? 'x' : undefined)
     if (!s) return { ok: true, existe: false }
-    const { data: r } = await db.from('risk_consultas').select(R.COLS).eq('user_id', uid).eq('tipo_documento', tipo).eq('documento', s.idNumber)
-      .eq('estado', 'lista').order('at', { ascending: false }).limit(1).maybeSingle()
-    return r ? { ok: true, existe: true, consulta: vista(r, cfg) } : { ok: true, existe: false }
+    const { data } = await db.from('risk_consultas').select(R.COLS).eq('user_id', uid).eq('documento', s.idNumber)
+      .in('estado', ['lista', 'consultando']).order('at', { ascending: false }).limit(20)
+    const filas = (data ?? []) as any[]
+    const reciente = Date.now() - 30 * 60_000
+    const mismo = filas.find(r => r.estado === 'lista' && r.tipo_documento === tipo)
+    const enCurso = filas.find(r => r.estado === 'consultando' && r.tipo_documento === tipo && Date.parse(r.at) >= reciente)
+    const otro = filas.find(r => r.estado === 'lista' && r.tipo_documento !== tipo)
+    if (enCurso) return { ok: true, existe: false, enCurso: { id: enCurso.id, at: enCurso.at, por: enCurso.por } }
+    if (mismo) return { ok: true, existe: true, consulta: vista(mismo, cfg) }
+    if (otro) return { ok: true, existe: true, otroTipo: true, consulta: vista(otro, cfg) }
+    return { ok: true, existe: false }
   }
 
   // Abrir una consulta guardada. Desde la búsqueda se anota en el historial.
