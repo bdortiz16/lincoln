@@ -105,7 +105,21 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
         );
     }
 
-    return <AdminDashboard rol={acceso?.rol} paises={acceso?.paises.map(p => p.code)} funciones={acceso?.funciones ?? undefined} onLogout={async () => { olvidarPais(); await onSalir(); }} />;
+    // Con el país ya guardado de una visita anterior, el panel se dibujaba
+    // ANTES de que llegaran los permisos: sin rol, AdminDashboard es el panel
+    // completo del dueño, y un colaborador veía por un momento el Dashboard,
+    // todo el menú y la seguridad hasta que llegaba su rol (visto el
+    // 2026-11-04 con la primera colaboradora). El panel se dibuja solo con el
+    // acceso ya leído.
+    if (!acceso) {
+        return (
+            <div style={{ minHeight: '100vh', background: '#0C0E0D', color: '#878E88', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontFamily: "'Archivo', system-ui, sans-serif" }}>
+                Cargando tus permisos…
+            </div>
+        );
+    }
+
+    return <AdminDashboard rol={acceso.rol} paises={acceso.paises.map(p => p.code)} funciones={acceso.funciones ?? undefined} onLogout={async () => { olvidarPais(); await onSalir(); }} />;
 };
 
 // ─────────────────────────────────────────────
