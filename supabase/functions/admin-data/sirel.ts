@@ -233,3 +233,118 @@ export function clienteSirel(u: any, municipioDe: (t: string | null) => { codigo
   if (juridica && !c.repDocumento) c.faltan.push('documento del representante')
   return c
 }
+
+// ── El reporte de la EMPRESA cliente (Compliance → SIREL) ───────────────
+// Pedido del dueño (2026-11): una empresa que también reporta a la UIAF
+// (por ejemplo, es PSAV) ve en su Compliance sus transacciones hechas por
+// Lincoin en el mes o el día, con sus contrapartes, para armar su reporte.
+// Desde su lado: un cobro trae a quien pagó; un pago, al beneficiario; una
+// conversión de USDT, a Lincoin. Nunca el nombre de un aliado de
+// infraestructura (la regla de marca: el cliente no ve Mouv, Finity…).
+
+export type TipoMovEmpresa = 'cobro' | 'pago' | 'recarga' | 'av_deposito' | 'av_retiro' | 'av_venta' | 'av_compra'
+
+export const ETIQUETA_MOV_EMPRESA: Record<TipoMovEmpresa, string> = {
+  cobro: 'Cobro recibido', pago: 'Pago enviado', recarga: 'Recarga de saldo',
+  av_deposito: 'Depósito de activo virtual', av_retiro: 'Retiro de activo virtual',
+  av_venta: 'Venta de activo virtual', av_compra: 'Compra de activo virtual',
+}
+
+export type MovEmpresa = {
+  id: string
+  fecha: string
+  tipo: TipoMovEmpresa
+  medio: string
+  moneda: string
+  monto: number
+  montoCop: number | null
+  contraparteNombre: string | null
+  contraparteTipoDoc: string | null
+  contraparteDoc: string | null
+  contraparteBanco: string | null
+  contraparteCuenta: string | null
+  referencia: string | null
+  // Solo en las operaciones con activos virtuales.
+  activo: string | null
+  red: string | null
+  hash: string | null
+  faltan: string[]
+}
+
+const medioPorMoneda = (moneda: string, rd: any): string => {
+  const rail = String(rd?.rail ?? '').toUpperCase()
+  if (rail === 'BREB') return 'Bre-B'
+  if (rail === 'ACH') return 'ACH'
+  const m = moneda.toUpperCase()
+  if (m.includes('BREB')) return 'Bre-B'
+  if (m.includes('ACH')) return 'ACH'
+  return 'Saldo Lincoin'
+}
+
+export function movimientoEmpresa(t: any): MovEmpresa | null {
+  const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {}
+  if (rd.refunded === true || rd?.reverso?.anulado === true || rd?.oculto === true) return null
+  const tipoMov = String(t?.type ?? '')
+  const moneda = String(t?.currency ?? '')
+  const fuente = String(rd.source ?? '')
+  const base = { id: String(t.id), fecha: String(t.created_at), activo: null as string | null, red: null as string | null, hash: null as string | null }
+
+  // Operaciones con activos virtuales (las mismas reglas del reporte de Lincoin).
+  const av = operacionAv(t)
+  if (av) {
+    const conLincoin = av.tipo === 'venta' || av.tipo === 'compra'
+    const m: MovEmpresa = {
+      ...base, tipo: (`av_${av.tipo}`) as TipoMovEmpresa,
+      medio: `${av.activo}${av.red ? ` · ${av.red}` : ''}`, moneda: av.activo, monto: av.cantidad, montoCop: av.valorCop,
+      // En una venta o compra de USDT la contraparte de la empresa es Lincoin;
+      // en un depósito o un retiro, la wallet del otro lado.
+      contraparteNombre: conLincoin ? 'Lincoin' : null, contraparteTipoDoc: null, contraparteDoc: null,
+      contraparteBanco: null, contraparteCuenta: conLincoin ? null : av.walletContraparte,
+      referencia: av.referencia, activo: av.activo, red: av.red, hash: av.hash, faltan: [],
+    }
+    if (!conLincoin && !m.contraparteCuenta) m.faltan.push('wallet de la contraparte')
+    if ((av.tipo === 'deposito' || av.tipo === 'retiro') && !av.hash) m.faltan.push('hash')
+    return m
+  }
+
+  // Pago a un beneficiario (dispersión por Bre-B o ACH).
+  if ((tipoMov === 'dispersion' || tipoMov === 'send') && String(moneda).toUpperCase().startsWith('COP')) {
+    const r = rd.recipient ?? {}
+    const m: MovEmpresa = {
+      ...base, tipo: 'pago', medio: medioPorMoneda(moneda, rd), moneda: 'COP', monto: num(t.amount) ?? 0, montoCop: num(t.amount),
+      contraparteNombre: texto(rd.beneficiary ?? r.holderName ?? r.name),
+      contraparteTipoDoc: texto(rd.documentType ?? r.documentType),
+      contraparteDoc: texto(rd.documentNumber ?? rd.benefDoc ?? r.documentNumber),
+      contraparteBanco: texto(rd.bank ?? r.bankName ?? r.bankCode),
+      contraparteCuenta: texto(rd.account ?? r.key ?? r.accountNumber),
+      referencia: texto(rd.motivoTexto ?? rd.reason ?? rd.motivo ?? r.reference),
+      faltan: [],
+    }
+    if (!m.contraparteDoc) m.faltan.push('documento del beneficiario')
+    if (!m.contraparteNombre) m.faltan.push('nombre del beneficiario')
+    return m.monto > 0 ? m : null
+  }
+
+  // Lo que entra en pesos: un cobro (Bre-B a la llave, link de pago) o una
+  // recarga hecha por la propia empresa.
+  if (tipoMov === 'load' && String(moneda).toUpperCase().startsWith('COP')) {
+    const recarga = fuente === 'admin_cargue' || fuente === 'admin_backfill'
+    const pagador = texto(rd.pagador ?? rd.payerName ?? rd.payer?.name)
+    const m: MovEmpresa = {
+      ...base, tipo: recarga ? 'recarga' : 'cobro',
+      medio: fuente === 'finity_payment_link' || rd.method === 'LINK' ? 'Link de pago' : medioPorMoneda(moneda, rd),
+      // El valor de la transacción es lo que pagó la contraparte (el bruto),
+      // no lo que quedó después de la comisión. La llave es la de la empresa
+      // (por dónde entró), no una cuenta de quien pagó.
+      moneda: 'COP', monto: num(rd.brutoCop ?? rd.grossCop) ?? num(t.amount) ?? 0, montoCop: num(rd.brutoCop ?? rd.grossCop) ?? num(t.amount),
+      contraparteNombre: pagador, contraparteTipoDoc: texto(rd.pagadorTipoDocumento ?? rd.payer?.documentType),
+      contraparteDoc: texto(rd.pagadorDocumento ?? rd.payerDocument ?? rd.payer?.document),
+      contraparteBanco: texto(rd.pagadorBanco ?? rd.payerBank), contraparteCuenta: null,
+      referencia: texto(rd.reference ?? rd.note) ?? (texto(rd.llave) ? `Entró por la llave ${rd.llave}` : null), faltan: [],
+    }
+    if (!recarga && !m.contraparteDoc) m.faltan.push('documento de quien pagó')
+    if (!recarga && !m.contraparteNombre) m.faltan.push('nombre de quien pagó')
+    return m.monto > 0 ? m : null
+  }
+  return null
+}

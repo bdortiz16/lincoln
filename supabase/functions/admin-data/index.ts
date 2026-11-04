@@ -9,7 +9,7 @@ import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '.
 import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
-import { operacionAv, clienteSirel, VERIFICADO, type OperacionAv } from './sirel.ts'
+import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permisosDe, permite, visibleEnPais, ROLES_VALIDOS, normalizarFunciones, FUNCIONES_VALIDAS, type Rol, type Acceso } from '../_shared/equipo.ts'
@@ -2632,6 +2632,88 @@ Deno.serve(async (req: Request) => {
           porContacto[String(c.id)] = { ...publico, solicitud: sol ? { estado: sol.estado, at: sol.created_at, cupoAprobado: sol.cupo_aprobado ?? null, nota: sol.nota_revision ?? null, montoSolicitado: sol.monto_solicitado ?? null } : null }
         }
         return json({ ok: true, general, porContacto, documentos: TIPOS_DOC_CUPO })
+      }
+
+      // ── SIREL de la EMPRESA: sus transacciones hechas por Lincoin ────────
+      // Para la empresa que también reporta a la UIAF: lo que movió en el mes
+      // o el día con sus contrapartes (sirel.ts movimientoEmpresa). Lincoin no
+      // envía ese reporte por ella; se lo deja listo para descargar.
+      if (selfServiceBody.action === 'sirel_mis_transacciones' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) {
+          const g = await adminSobreOtro(req, ['clientes.ver'], 'sirel_mis_transacciones')
+          if ('res' in g) return g.res
+        }
+        const TZ = 5 * 3600_000
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const periodo = selfServiceBody.periodo === 'dia' ? 'dia' : 'mes'
+        const ancla = esYmd(selfServiceBody.fecha) ? String(selfServiceBody.fecha) : hoy
+        if (ancla > hoy) return json({ ok: false, error: 'Esa fecha todavía no llega.' }, 400)
+        const yS = Number(ancla.slice(0, 4)), mS = Number(ancla.slice(5, 7)) - 1
+        const desde = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-01`
+        const hasta = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-${String(new Date(Date.UTC(yS, mS + 1, 0)).getUTCDate()).padStart(2, '0')}`
+        const ids = await idsMismaPersona(uid)
+        const { filas, truncado } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, created_at, type, currency, amount, user_id, raw_data')
+          .in('user_id', ids).eq('status', 'Completado')
+          .in('type', ['load', 'dispersion', 'send', 'convert', 'otc_deposit'])
+          .gte('created_at', new Date(Date.parse(`${desde}T00:00:00Z`) + TZ).toISOString())
+          .lt('created_at', new Date(Date.parse(`${hasta}T00:00:00Z`) + TZ + 86_400_000).toISOString()), { tope: 50_000 })
+        const movimientos = (filas.map(movimientoEmpresa).filter(Boolean) as MovEmpresa[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
+        // Una fila por contraparte: por documento, o por nombre si no lo hay.
+        const porContra = new Map<string, any>()
+        for (const m of movimientos) {
+          if (m.tipo === 'recarga') continue
+          const clave = m.contraparteDoc ? `doc:${m.contraparteDoc.replace(/\W/g, '')}` : m.contraparteNombre ? `nom:${m.contraparteNombre.toUpperCase()}` : m.contraparteCuenta ? `cta:${m.contraparteCuenta}` : null
+          if (!clave) continue
+          const c = porContra.get(clave) ?? { nombre: m.contraparteNombre, tipoDoc: m.contraparteTipoDoc, documento: m.contraparteDoc, banco: m.contraparteBanco, cuenta: m.contraparteCuenta, recibidoCop: 0, enviadoCop: 0, operaciones: 0, primera: m.fecha, ultima: m.fecha }
+          c.operaciones++
+          if (m.tipo === 'cobro') c.recibidoCop += m.montoCop ?? 0
+          if (m.tipo === 'pago') c.enviadoCop += m.montoCop ?? 0
+          c.nombre = c.nombre ?? m.contraparteNombre; c.documento = c.documento ?? m.contraparteDoc; c.tipoDoc = c.tipoDoc ?? m.contraparteTipoDoc
+          c.ultima = m.fecha
+          porContra.set(clave, c)
+        }
+        const contrapartes = Array.from(porContra.values()).sort((a, b) => (b.recibidoCop + b.enviadoCop) - (a.recibidoCop + a.enviadoCop))
+        const { data: yoU } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+        const envios = (Array.isArray((yoU as any)?.raw_data?.sirelEnvios) ? (yoU as any).raw_data.sirelEnvios : []) as any[]
+        const sumar = (t: string) => movimientos.filter(m => m.tipo === t).reduce((s, m) => s + (m.montoCop ?? 0), 0)
+        return json({
+          ok: true, periodo, desde, hasta, clavePeriodo: periodo === 'dia' ? desde : desde.slice(0, 7), truncado,
+          movimientos, contrapartes,
+          resumen: {
+            movimientos: movimientos.length,
+            cobros: movimientos.filter(m => m.tipo === 'cobro').length, cobrosCop: Math.round(sumar('cobro')),
+            pagos: movimientos.filter(m => m.tipo === 'pago').length, pagosCop: Math.round(sumar('pago')),
+            activosVirtuales: movimientos.filter(m => m.tipo.startsWith('av_')).length,
+            contrapartes: contrapartes.length,
+            conFaltantes: movimientos.filter(m => m.faltan.length > 0).length,
+          },
+          envios: envios.slice(-40).reverse(),
+        })
+      }
+      // La empresa anota lo que subió a SIREL (su radicado). Es su registro:
+      // queda en su raw_data, escrito por el servidor.
+      if (selfServiceBody.action === 'sirel_mis_envios' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado.' }, 403)
+        const tipo = String(selfServiceBody.tipo ?? '')
+        if (!['transacciones', 'ausencia_transacciones', 'clientes', 'ros', 'ausencia_ros'].includes(tipo)) return json({ ok: false, error: 'Tipo de reporte inválido.' }, 400)
+        const periodoEnv = String(selfServiceBody.periodo ?? '').trim()
+        if (!/^\d{4}-\d{2}(-\d{2})?$/.test(periodoEnv)) return json({ ok: false, error: 'Período inválido.' }, 400)
+        const radicado = String(selfServiceBody.radicado ?? '').trim().slice(0, 80)
+        if (radicado.length < 3) return json({ ok: false, error: 'Escribe el número de radicado que te dio SIREL.' }, 400)
+        const { data: yoU } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+        const lista = (Array.isArray((yoU as any)?.raw_data?.sirelEnvios) ? (yoU as any).raw_data.sirelEnvios : []) as any[]
+        const registro = {
+          id: crypto.randomUUID(), tipo, periodo: periodoEnv, radicado,
+          filas: Number.isFinite(Number(selfServiceBody.filas)) ? Math.max(0, Math.round(Number(selfServiceBody.filas))) : null,
+          nota: String(selfServiceBody.nota ?? '').trim().slice(0, 300) || null, at: new Date().toISOString(),
+        }
+        const err = await mergeRaw(db, uid, { sirelEnvios: [...lista, registro].slice(-200) })
+        if (err) return errorGenerico('sirel_mis_envios', err)
+        return json({ ok: true, registro })
       }
 
       // Un documento para la solicitud (se sube uno por uno: un PDF de 5 MB

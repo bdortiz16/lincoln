@@ -13,6 +13,7 @@ import { ComplianceDashboard } from './ComplianceDashboard';
 import { CupoBeneficiario } from './CupoBeneficiario';
 import { KycBeneficiarioModal, agruparHallazgos } from './KycBeneficiarioModal';
 import { celdaCsv } from '../lib/csv';
+import { SirelEmpresa } from './SirelEmpresa';
 
 declare const __BUILD_TS__: string;
 
@@ -2433,6 +2434,10 @@ export const ContactsSection: React.FC<{
                     movimientosDe={movimientosDe}
                     onExtracto={(c) => setPanel({ c, tipo: 'contabilidad' })}
                 />
+            )}
+            {/* SIREL: el reporte de transacciones de la empresa para la UIAF. */}
+            {vista === 'compliance' && (
+                <SirelEmpresa userId={currentUser?.id} nombreEmpresa={(currentUser as any)?.companyName || (currentUser as any)?.name} />
             )}
 
             {/* ── Panel: Contabilidad / Compliance de UN beneficiario ──
