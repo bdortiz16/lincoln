@@ -27,6 +27,40 @@ if (!isSupabaseConfigured) {
 const validUrl = isSupabaseConfigured ? SUPABASE_URL : 'https://placeholder.supabase.co';
 const validKey = isSupabaseConfigured ? SUPABASE_ANON_KEY : 'placeholder-key';
 
+// ── Enlace del correo para crear o recuperar la contraseña ──────────────
+// Llega como #access_token=…&type=recovery. El cliente de Supabase (abajo)
+// lee ese token y BORRA el hash apenas se crea, y emite PASSWORD_RECOVERY en
+// ese momento. El panel de colaboradores se carga después (lazy): ya no veía
+// ni el hash ni el evento, la sesión del enlace quedaba como una sesión
+// normal y la pantalla decía "tu sesión no es de administrador" en vez de
+// pedir la contraseña (visto el 2026-11-04 con la primera invitación). Por
+// eso se anota AQUÍ, antes de crear el cliente, y en sessionStorage para que
+// sobreviva una recarga de la pestaña. Si el enlace venció o ya se usó,
+// Supabase vuelve con #error_code=…: también se anota, para decirlo.
+const CLAVE_ENLACE = 'lincoin_enlace_clave';
+export const enlaceClave: { abierto: boolean; error: 'vencido' | string | null } = (() => {
+    try {
+        const crudo = `${window.location.hash || ''}&${window.location.search || ''}`.replace(/[#?]/g, '&');
+        const p = new URLSearchParams(crudo);
+        const codigo = p.get('error_code') || p.get('error');
+        if (codigo) {
+            const texto = `${codigo} ${p.get('error_description') || ''}`;
+            return { abierto: false, error: /expired|invalid|otp/i.test(texto) ? 'vencido' : codigo };
+        }
+        if (p.get('type') === 'recovery' || p.get('type') === 'invite') {
+            try { sessionStorage.setItem(CLAVE_ENLACE, '1'); } catch { /* sin almacenamiento: vale para esta carga */ }
+            return { abierto: true, error: null };
+        }
+        let guardado = false;
+        try { guardado = sessionStorage.getItem(CLAVE_ENLACE) === '1'; } catch { /* */ }
+        return { abierto: guardado, error: null };
+    } catch { return { abierto: false, error: null }; }
+})();
+export const olvidarEnlaceClave = () => {
+    enlaceClave.abierto = false;
+    try { sessionStorage.removeItem(CLAVE_ENLACE); } catch { /* */ }
+};
+
 // Cliente Empresas (web) — usado por la app web actual
 export const supabase = createClient(validUrl, validKey, {
     auth: {

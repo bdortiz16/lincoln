@@ -1,6 +1,6 @@
 import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback, useRef } from 'react';
 import { useSystemConfig } from './SystemConfigContext';
-import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
+import { supabase, isSupabaseConfigured, enlaceClave, olvidarEnlaceClave } from '../lib/supabaseClient';
 import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
 import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 import { llamarFuncion } from '../lib/edge';
@@ -395,14 +395,17 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Recuperación de contraseña: cuando el usuario abre el enlace del correo
   // de "olvidé mi contraseña", Supabase dispara PASSWORD_RECOVERY. La app
   // muestra una pantalla para fijar la nueva clave.
-  const [isPasswordRecovery, setIsPasswordRecovery] = useState(() => {
-    // Se detecta desde la URL, no solo desde el evento: el orden en que
-    // Supabase dispara PASSWORD_RECOVERY y SIGNED_IN no está garantizado, y si
-    // llega primero el segundo la sesión de recuperación entraba al panel.
-    try { return /type=recovery/.test(window.location.hash || window.location.search); } catch { return false; }
-  });
+  // Se detecta desde la URL, no solo desde el evento: el orden en que
+  // Supabase dispara PASSWORD_RECOVERY y SIGNED_IN no está garantizado, y si
+  // llega primero el segundo la sesión de recuperación entraba al panel. La
+  // URL se lee al crear el cliente (lib/supabaseClient enlaceClave): cuando
+  // este componente monta, el hash ya puede estar borrado.
+  const abrioEnlaceClave = () => {
+    try { return enlaceClave.abierto || /type=recovery/.test(window.location.hash || window.location.search); } catch { return false; }
+  };
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(abrioEnlaceClave);
   // Ref para poder consultarlo dentro del listener sin depender del render.
-  const recoveryRef = useRef<boolean>(false);
+  const recoveryRef = useRef<boolean>(abrioEnlaceClave());
   useEffect(() => { recoveryRef.current = isPasswordRecovery; }, [isPasswordRecovery]);
   // Start online immediately if Supabase is configured — avoids a flash of "Modo Offline"
   // while the first fetchData() is still in flight.
@@ -512,8 +515,9 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // buzón entraba como admin. Una sesión de recuperación solo sirve para
         // fijar la clave nueva; después hay que iniciar sesión de verdad.
         if (recoveryRef.current && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
-          setIsPasswordRecovery(true);
-          return;
+          if (session?.user) { setIsPasswordRecovery(true); return; }
+          // Marca vieja de la pestaña sin sesión del enlace: se olvida.
+          olvidarEnlaceClave(); recoveryRef.current = false; setIsPasswordRecovery(false);
         }
         if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') && session?.user) {
           // Cancel any pending sign-out
@@ -2425,6 +2429,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   const logoutUser = async (motivo = 'cierre de sesión') => {
     anotarCierre(motivo);
+    olvidarEnlaceClave();
     // Increment before any await so in-flight SIGNED_IN handlers abort instead of re-setting the user
     logoutCounterRef.current++;
     sessionStorage.removeItem('cuypay_admin_session');
@@ -3184,6 +3189,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (error) return error.message;
     setIsPasswordRecovery(false);
     recoveryRef.current = false;
+    olvidarEnlaceClave();
     // Se CIERRA la sesión de recuperación: obliga a iniciar sesión de verdad,
     // con contraseña + 2FA + código de correo. Si se dejara abierta, el enlace
     // del correo seguiría siendo una entrada al panel sin segundo factor.

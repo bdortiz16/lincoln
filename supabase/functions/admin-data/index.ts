@@ -4092,6 +4092,19 @@ Deno.serve(async (req: Request) => {
             created_at: new Date().toISOString(), raw_data: { colaborador: true },
           })
           if (eFila && !/duplicate|unique/i.test(eFila.message)) return json({ ok: false, error: 'no_se_creo', message: `No se pudo crear el perfil: ${eFila.message}` }, 500)
+          // La fila ya existía: la crea sola la base al crear la cuenta de
+          // acceso (trigger on_auth_user_created, con role 'personal' y KYC
+          // 'pending'), y el insert de arriba chocaba con ella. Antes ese
+          // choque se ignoraba y el colaborador quedaba como cliente: al
+          // abrir el enlace el panel decía "tu sesión no es de administrador"
+          // (visto el 2026-11-04 con la primera invitación). Se ajusta aquí.
+          if (eFila) {
+            const { error: eAj } = await db.from('users').update({
+              role: 'admin', kyc_status: 'approved', full_name: nombre ?? email.split('@')[0], ...(nombre ? { name: nombre } : {}),
+            }).eq('id', nuevoId)
+            if (eAj) return json({ ok: false, error: 'no_se_creo', message: `No se pudo dejar la cuenta como colaborador: ${eAj.message}` }, 500)
+            await mergeRaw(db, nuevoId, { colaborador: true })
+          }
           id = nuevoId
           cuentaNueva = true
           await auditAdmin(req, 'equipo.colaborador_cuenta_creada', { email, id })
@@ -4131,6 +4144,23 @@ Deno.serve(async (req: Request) => {
         if (!m) return json({ ok: false, error: 'no_existe', message: 'Ese colaborador no existe.' }, 404)
         if (!(m as any).activo) return json({ ok: false, error: 'inactivo', message: 'Ese acceso está desactivado. Vuelve a invitarlo.' }, 400)
         const funciones = normalizarFunciones((m as any).funciones)
+        // Las invitaciones hechas antes del arreglo de arriba dejaron la
+        // cuenta como cliente ('personal', sin KYC, recién creada por la
+        // invitación). Si es ese caso —colaborador activo, cuenta sin plata—,
+        // se deja como colaborador antes de mandar el enlace nuevo; si la
+        // cuenta tiene saldo es de un cliente y no se toca.
+        if ((m as any).rol === 'colaborador') {
+          const { data: cu } = await db.from('users').select('id, role, balances, crypto_balances').eq('id', id).maybeSingle()
+          if (cu && (cu as any).role !== 'admin') {
+            const hayPlata = [...Object.values(((cu as any).balances ?? {}) as Record<string, unknown>), ...Object.values(((cu as any).crypto_balances ?? {}) as Record<string, unknown>)]
+              .some(v => Math.abs(Number(v) || 0) > 0)
+            if (hayPlata) return json({ ok: false, error: 'cuenta_con_saldo', message: 'Ese correo es de un cliente con saldo: no se puede usar como colaborador. Invita otro correo.' }, 400)
+            const { error: eAj } = await db.from('users').update({ role: 'admin', kyc_status: 'approved' }).eq('id', id)
+            if (eAj) return json({ ok: false, error: eAj.message }, 500)
+            await mergeRaw(db, id, { colaborador: true })
+            await auditAdmin(req, 'equipo.cuenta_colaborador_reparada', { id, email: (m as any).email, rolAnterior: (cu as any).role ?? null })
+          }
+        }
         const correo = await enviarInvitacionColaborador(req, String((m as any).email), (m as any).nombre ?? null, funciones, true)
         if (correo.ok) { try { await db.from('admin_miembros').update({ invitado_at: new Date().toISOString() }).eq('id', id) } catch { /* informativo */ } }
         await auditAdmin(req, 'equipo.invitacion_reenviada', { id, email: (m as any).email, correo: correo.ok ? 'enviado' : correo.motivo })

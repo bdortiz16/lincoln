@@ -5,7 +5,7 @@ import { DatabaseProvider, useDatabase } from '../context/DatabaseContext';
 import { ExchangeRateProvider } from '../context/ExchangeRateContext';
 import { ToastProvider } from './AdminPersonas/lib/toast';
 import { setRatesDbClient } from './AdminPersonas/sections/RatesPanel';
-import { supabase } from '../lib/supabaseClient';
+import { supabase, enlaceClave } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
 import { AdminIdleGuard } from './AdminIdleGuard';
 import { Logo } from './Logo';
@@ -390,6 +390,16 @@ const AdminEmpresasInner: React.FC = () => {
                             </button>
                         </form>
                     ) : (<>
+                    {/* El enlace del correo (crear o recuperar la contraseña) se
+                        abrió vencido o ya usado: Supabase vuelve con un error
+                        en la URL y antes no se decía nada. */}
+                    {enlaceClave.error && !currentUser && (
+                        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+                            {enlaceClave.error === 'vencido'
+                                ? (esColaboradores ? 'El enlace para crear tu contraseña ya se usó o venció. Pide que te reenvíen la invitación.' : 'El enlace del correo ya se usó o venció. Pide uno nuevo.')
+                                : 'No se pudo abrir el enlace del correo. Pide que te lo reenvíen.'}
+                        </div>
+                    )}
                     {currentUser && currentUser.role !== 'admin' && (
                         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
                             Tu sesión actual ({currentUser.email}) no es de administrador.
