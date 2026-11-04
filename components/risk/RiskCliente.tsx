@@ -464,7 +464,7 @@ export const RiskCliente: React.FC = () => {
             <div className="lr-input" style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.elevado, border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: '6px 6px 6px 16px', transition: 'all .15s' }}>
               <span style={{ color: C.sub, fontSize: 16 }}>⌕</span>
               <input ref={campo} value={doc} onChange={e => setDoc(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') consultar(); }} autoFocus inputMode="numeric"
-                placeholder="Cédula o NIT de la persona o empresa" style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: C.texto, fontSize: 16, fontFamily: 'inherit', padding: '10px 0' }} />
+                placeholder="Cédula o NIT de la persona o empresa" style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: C.texto, fontSize: 16, fontFamily: 'inherit', padding: '10px 0' }} />
               {vigenteYa
                 ? <button onClick={verExistente} style={{ ...BTN, height: 42 }}>Ver consulta</button>
                 : <button onClick={() => consultar()} disabled={!listo} style={{ ...BTN, height: 42, opacity: listo ? 1 : 0.35, cursor: listo ? 'pointer' : 'not-allowed' }}>{existente ? 'Consultar de nuevo' : 'Consultar'}</button>}
@@ -569,7 +569,7 @@ export const RiskCliente: React.FC = () => {
       {/* Mapa de calor */}
       {mapa && (mapa.departamentos?.length > 0 || mapa.sinUbicacion > 0) && (
         <div style={{ ...TARJETA, marginTop: 28, padding: '18px 20px', display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <MapaColombia datos={Object.fromEntries((mapa.departamentos ?? []).map((d: any) => [d.depto, { valor: d.personas, nombre: d.nombre, detalle: `${d.personas} persona(s) · ${d.procesos} proceso(s)` }]))} />
+          <MapaColombia tam={38} datos={Object.fromEntries((mapa.departamentos ?? []).map((d: any) => [d.depto, { valor: d.personas, nombre: d.nombre, detalle: `${d.personas} ${d.personas === 1 ? 'persona' : 'personas'} · ${d.procesos} ${d.procesos === 1 ? 'proceso' : 'procesos'}` }]))} />
           <div style={{ flex: 1, minWidth: 220 }}>
             <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Dónde aparecen tus registrados</p>
             <p style={{ fontSize: 12.5, color: C.sub, margin: '4px 0 14px', lineHeight: 1.5 }}>Según la ciudad de sus procesos en la Rama Judicial. Más intenso, más personas.</p>
