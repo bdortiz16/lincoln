@@ -408,6 +408,16 @@ async function alCerrarAml(uid: string, doc: string, ficha: any) {
     if (reg) await auditar(reg.id ? 'sarblock.cartera_beneficiario' : 'sarblock.cartera_beneficiario_fallido', { userId: uid, documento: doc, beneficiarioId: reg.id ?? null, error: reg.error ?? null })
   } catch (e) { console.warn('[sarblock] cartera beneficiario', String((e as Error)?.message ?? e)) }
 }
+// Una consulta de Risk terminada: el consultado queda como cliente en
+// Sarblock. Nunca frena la consulta ni lanza otro screening.
+async function alCerrarRisk(fila: any, ficha: any) {
+  try {
+    const c = await configCartera()
+    if (!c.activo || !c.risk || !fila || await enPausa()) return
+    const reg = await K.registrarClienteRisk(cliente(), db, fila, ficha)
+    if (reg) await auditar(reg.id ? 'sarblock.cartera_risk' : 'sarblock.cartera_risk_fallido', { userId: fila.user_id, consultaId: fila.id, documento: fila.documento, clienteId: reg.id ?? null, existia: reg.existia ?? false, error: reg.error ?? null })
+  } catch (e) { console.warn('[sarblock] cartera risk', String((e as Error)?.message ?? e)) }
+}
 // Una cuenta: avanza su alta (y la paga si `pagar`) y registra sus
 // beneficiarios pendientes, hasta `maxBenef`.
 async function carteraCuenta(uid: string, pagar: boolean, maxBenef = 25) {
@@ -717,12 +727,16 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
         await anotarUso(db, tipo, doc, uid)
         await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: fila.nombre_oficial ?? nombre ?? null, resultado, consultaId: id })
         await auditar('sarblock.risk_manual', { userId: uid, tipo, documento: doc, deCache: true, consultaId: id })
+        await alCerrarRisk(ins, ficha)
         return { ok: true, consulta: vista(ins, cfg, await empresaDe(uid)), saldo: m.saldo }
       }
       try {
         const sb = cliente()
         if ((await conCupo(() => saldoParaConsultar(sb))) <= 0) throw new Error('caja')
-        const r = await conCupo(() => sb.crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
+        // customer_onboarding: la misma revisión y el mismo costo, y su
+        // screeningRecordId sirve para dar de alta al consultado como
+        // cliente en Sarblock sin pagar otra (cartera.ts).
+        const r = await conCupo(() => sb.crearCheck({ purpose: 'customer_onboarding', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
         const { error } = await db.from('risk_consultas').insert({ ...base, check_id: r.id, estado: 'consultando' })
         if (error) throw new Error(error.message)
         await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado, consultaId: id })
@@ -778,6 +792,7 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
       else if (noVerificado) await R.mover(db, uid, 'devolucion', 1, 'Documento no encontrado en la Registraduría: se devuelve la consulta', null, cq.id)
       else await padronGuardar(db, cq.tipo_documento, cq.documento, ficha, uid, 'manual')
       await auditar('sarblock.risk_manual', { userId: uid, tipo: cq.tipo_documento, documento: cq.documento, deCache: false, categoria: ficha.categoria ?? null, consultaId: cq.id, estado: cambio.estado })
+      if (cambio.estado === 'lista') await alCerrarRisk(cerrada, ficha)
     }
     const { data: final } = await db.from('risk_consultas').select('*').eq('id', cq.id).single()
     return { ok: true, consulta: vista(final, cfg, await empresaDe(uid)), saldo: await R.saldoDe(db, uid) }
@@ -1034,6 +1049,25 @@ Deno.serve(async (req) => {
         }
         await auditar('sarblock.cartera_lote', { por: yo.userId, pedidas: cantidad, lanzadas, omitidas, errores: errores.length })
         return json({ ok: true, lanzadas, omitidas, errores })
+      }
+      // Las consultas de Risk ya hechas (últimos 3 meses: después Sarblock
+      // ya no acepta el screening para el alta). No lanza screenings: si
+      // Sarblock no acepta la consulta vieja, queda anotado.
+      if (accion === 'cartera_risk_lote') {
+        const desde = new Date(Date.now() - 88 * 86400_000).toISOString()
+        const { data: filas } = await db.from('risk_consultas').select('id, user_id, tipo_persona, tipo_documento, documento, nombre_escrito, nombre_oficial, ficha')
+          .eq('estado', 'lista').gte('at', desde).is('ficha->sarblockCliente', null).order('at', { ascending: false }).limit(40)
+        let registrados = 0, existian = 0, fallidos = 0
+        const inicio = Date.now()
+        for (const f of (filas ?? []) as any[]) {
+          if (Date.now() - inicio > 100_000) break
+          try {
+            const r = await K.registrarClienteRisk(cliente(), db, f, f.ficha)
+            if (r?.existia) existian++; else if (r?.id) registrados++; else if (r) fallidos++
+          } catch (e) { if (esLimite(e)) break; fallidos++ }
+        }
+        await auditar('sarblock.cartera_risk_lote', { por: yo.userId, revisadas: (filas ?? []).length, registrados, existian, fallidos })
+        return json({ ok: true, revisadas: (filas ?? []).length, registrados, existian, fallidos })
       }
       // Avanzar y registrar beneficiarios de una cuenta que ya está (gratis).
       if (accion === 'cartera_avanzar') {

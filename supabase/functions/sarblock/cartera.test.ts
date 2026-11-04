@@ -125,3 +125,24 @@ Deno.test('cartera: encender el alta automática fija la fecha desde la que apli
   assertEquals(b.altaDesde, a.altaDesde);   // no se corre al guardar otra cosa
   assertEquals(K.normalizarConfigCartera(b, { altaAutomatica: false }).altaDesde, null);
 });
+
+Deno.test('cartera: la persona consultada en Risk queda de cliente, una sola vez por documento', async () => {
+  demoraSimulada(0);
+  const { sb, n } = sbContado();
+  const c = await sb.crearCheck({ purpose: 'customer_onboarding', subject: { schema: 'Person', idNumber: '1030405061', documentType: 'CO-CC', fullName: 'Ana Ruiz Gómez' }, idempotencia: 't-risk' });
+  const ficha: any = traducir(await sb.leerCheck(c.id), { documento: '1030405061', tipoDocumento: 'CC', nombre: 'Ana Ruiz Gómez' });
+  const actualizadas: any[] = [];
+  const db = { from: () => ({ update: (v: any) => ({ eq: async () => { actualizadas.push(v); return { error: null }; } }) }) };
+  const fila = { id: 'q1', user_id: 'e1', tipo_persona: 'natural', tipo_documento: 'CC', documento: '1030405061', nombre_escrito: 'Ana Ruiz Gómez' };
+  const antes = n.screenings;
+  const r = await K.registrarClienteRisk(sb, db, fila, ficha);
+  assert(r?.id);
+  assertEquals(n.screenings, antes);   // el alta no lanza otro screening
+  assertEquals(actualizadas[0].ficha.sarblockCliente.id, r!.id);
+  // Otra empresa consulta al mismo documento: se enlaza al cliente que ya existe.
+  const otra = await K.registrarClienteRisk(sb, db, { ...fila, id: 'q2' }, ficha);
+  assertEquals(otra?.id, r!.id);
+  assertEquals(otra?.existia, true);
+  // Ya anotado: no se llama otra vez.
+  assertEquals(await K.registrarClienteRisk(sb, db, fila, { ...ficha, sarblockCliente: r }), null);
+});

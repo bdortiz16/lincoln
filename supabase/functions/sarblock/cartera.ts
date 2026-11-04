@@ -16,9 +16,13 @@
 //              beneficiary) → POST /customers/:id/beneficiaries, bajo la
 //              empresa que le paga.
 //
-// Lincoin Risk NO entra a la cartera (decisión del dueño, 4 nov 2026): son
-// terceros que consulta un cliente, no clientes ni beneficiarios de
-// Lincoin; en Clientes saldrían en el reporte UIAF como si lo fueran.
+//   Lincoin Risk → cada persona o empresa consultada queda también como
+//              CLIENTE (pedido del dueño, 4 nov 2026: cumplimiento usa la
+//              debida diligencia de Sarblock sobre todas). La consulta de
+//              Risk se lanza como customer_onboarding —la misma revisión y
+//              el mismo costo— para que su screeningRecordId sirva al alta
+//              sin pagar otra. Sin borrador KYB: no son cuentas nuestras.
+//              Ojo: entran a la cartera que Sarblock reporta a la UIAF.
 //
 // Estado: raw_data.sarblock.kyc (el de kyc.ts) y raw_data.sarblock.
 // beneficiarios[doc] = { id | error }. Va aparte de la ficha AML
@@ -42,8 +46,10 @@ export type ConfigCartera = {
   // Registrar solos los beneficiarios con AML terminada de las empresas que
   // ya son cliente en Sarblock.
   beneficiarios: boolean;
+  // Las personas y empresas consultadas en Lincoin Risk, como clientes.
+  risk: boolean;
 };
-export const POR_DEFECTO_CARTERA: ConfigCartera = { activo: false, altaAutomatica: false, altaDesde: null, beneficiarios: true };
+export const POR_DEFECTO_CARTERA: ConfigCartera = { activo: false, altaAutomatica: false, altaDesde: null, beneficiarios: true, risk: true };
 
 export async function leerConfigCartera(db: any): Promise<ConfigCartera> {
   try {
@@ -60,6 +66,7 @@ export function normalizarConfigCartera(previa: ConfigCartera, c: any): ConfigCa
     // momento se dan de alta solas (encenderla no gasta en toda la base).
     altaDesde: altaAutomatica ? (previa.altaAutomatica && previa.altaDesde ? previa.altaDesde : new Date().toISOString()) : null,
     beneficiarios: c?.beneficiarios === undefined ? previa.beneficiarios : !!c.beneficiarios,
+    risk: c?.risk === undefined ? previa.risk : !!c.risk,
   };
 }
 
@@ -186,4 +193,48 @@ export function beneficiariosPendientes(fichas: Record<string, any>, registros: 
       return !r?.id && !r?.definitivo && Number(r?.intentos ?? 0) < MAX_INTENTOS && !!cuerpoBeneficiario(doc, f);
     })
     .map(([doc]) => doc);
+}
+
+// ── Lincoin Risk: el consultado como cliente ────────────────────────────
+// `fila` es la de risk_consultas (tipo_persona, tipo_documento, documento,
+// nombre_escrito) y `ficha` el resultado traducido.
+export function cuerpoClienteRisk(fila: any, ficha: any): Record<string, unknown> | null {
+  const rec = ficha?.sarblock?.screeningRecordId;
+  if (!rec || ficha?.estado !== 'finalizado') return null;
+  const juridica = fila?.tipo_persona === 'juridica';
+  const nombre = limpio(ficha.nombreReal || fila?.nombre_oficial || fila?.nombre_escrito);
+  const s = sujetoDe(juridica ? 'NIT' : String(fila?.tipo_documento ?? 'CC'), String(fila?.documento ?? ''), nombre);
+  if (!s) return null;
+  const base = { screeningRecordId: rec, documentType: s.documentType, documentNumber: s.idNumber, documentCountry: 'CO', country: 'CO' };
+  if (juridica) return { ...base, personType: 'juridica', companyName: nombre };
+  const n = partirNombre(nombre);
+  return n ? { ...base, personType: 'natural', ...n } : null;
+}
+
+export type RegistroCliente = { id?: string; status?: string; existia?: boolean; at: string; error?: string; definitivo?: boolean; intentos?: number };
+
+// Da de alta al consultado y lo anota en ficha.sarblockCliente de la fila.
+// Si ya era cliente (409), se enlaza al existente: un documento es una sola
+// ficha en la organización aunque lo consulten varias empresas.
+export async function registrarClienteRisk(sb: ClienteSarblock, db: any, fila: any, ficha: any): Promise<RegistroCliente | null> {
+  const previo: RegistroCliente | undefined = ficha?.sarblockCliente;
+  if (previo?.id || previo?.definitivo || Number(previo?.intentos ?? 0) >= MAX_INTENTOS) return null;
+  const cuerpo = cuerpoClienteRisk(fila, ficha);
+  if (!cuerpo) return null;
+  let reg: RegistroCliente;
+  try {
+    const c = await sb.crearCliente(cuerpo, `risk-alta-${cuerpo.screeningRecordId}`);
+    reg = { id: String(c?.id ?? ''), status: c?.status, at: new Date().toISOString() };
+  } catch (e) {
+    if (e instanceof ErrorSarblock && e.status === 429) throw e;
+    if (e instanceof ErrorSarblock && e.tipo === 'CUSTOMER_ALREADY_EXISTS' && (e.detalle as any)?.id) {
+      reg = { id: String((e.detalle as any).id), status: (e.detalle as any).status, existia: true, at: new Date().toISOString() };
+    } else {
+      const tipo = e instanceof ErrorSarblock ? e.tipo : 'ERROR';
+      reg = { at: new Date().toISOString(), error: `${tipo}: ${String((e as Error)?.message ?? e).slice(0, 200)}`,
+        definitivo: DEFINITIVOS.has(tipo), intentos: Number(previo?.intentos ?? 0) + 1 };
+    }
+  }
+  if (fila?.id) await db.from('risk_consultas').update({ ficha: { ...ficha, sarblockCliente: reg } }).eq('id', fila.id);
+  return reg;
 }

@@ -3,8 +3,8 @@
 //
 // Dar de alta una cuenta cobra una consulta (el screening de alta); por eso
 // cada alta se confirma y el lote va de a 20 como mucho. Registrar los
-// beneficiarios usa la AML que ya se pagó. Lincoin Risk no entra: son
-// terceros que consulta un cliente, no clientes de Lincoin.
+// beneficiarios usa la AML que ya se pagó, y las personas consultadas en
+// Lincoin Risk entran como clientes con su misma consulta.
 import React, { useCallback, useEffect, useState } from 'react';
 import { llamar, C, INP, BTN, BTN2, TARJETA, hace } from './RiskCliente';
 
@@ -40,6 +40,7 @@ const Config: React.FC = () => {
     <div style={{ ...TARJETA, padding: '18px 20px', display: 'grid', gap: 10, marginBottom: 16 }}>
       <Interruptor k="activo" t="Cartera en Sarblock activa" sub="Apagada, no se crea nada en Sarblock: ni clientes ni beneficiarios." />
       <Interruptor k="beneficiarios" t="Registrar beneficiarios solos" sub="Al terminar la AML de un beneficiario, queda bajo su empresa en Sarblock. Usa la consulta ya pagada." />
+      <Interruptor k="risk" t="Consultados en Lincoin Risk como clientes" sub="Cada persona o empresa consultada queda en Clientes de Sarblock con su misma consulta. Entran a la cartera que se reporta a la UIAF." />
       <Interruptor k="altaAutomatica" t="Dar de alta solas las cuentas nuevas"
         sub={`Cada cuenta verificada creada desde que se enciende gasta una consulta.${cfg.altaDesde ? ` Encendida desde el ${new Date(cfg.altaDesde).toLocaleDateString('es-CO', { dateStyle: 'medium' })}.` : ''}`} />
       {msg && <span style={{ fontSize: 12.5, color: msg.ok ? C.verde : C.rojo }}>{msg.t}</span>}
@@ -67,6 +68,14 @@ export const CarteraSarblock: React.FC = () => {
       : { ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo.' });
     cargar();
   };
+  const pasarRisk = async () => {
+    setOcupado('risk'); setAviso(null);
+    const r = await llamar('cartera_risk_lote');
+    setOcupado(null);
+    setAviso(r?.ok
+      ? { ok: !r.fallidos, t: `Lincoin Risk: ${r.registrados} nuevos en Clientes${r.existian ? ` · ${r.existian} ya estaban` : ''}${r.fallidos ? ` · ${r.fallidos} que Sarblock no aceptó` : ''} (de ${r.revisadas} revisadas).` }
+      : { ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo.' });
+  };
   const altaLote = async () => {
     const n = Math.max(1, Math.min(20, Math.floor(Number(lote) || 0)));
     if (!window.confirm(`Dar de alta hasta ${n} cuentas que aún no están en Sarblock gasta hasta ${n} consultas. ¿Seguir?`)) return;
@@ -92,6 +101,7 @@ export const CarteraSarblock: React.FC = () => {
           </select>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input value={lote} onChange={e => setLote(e.target.value)} inputMode="numeric" style={{ ...INP, width: 56, padding: '8px 10px', fontSize: 13 }} aria-label="Cuántas cuentas" />
+            <button onClick={pasarRisk} disabled={!!ocupado} title="No gasta consultas" style={{ ...BTN2, height: 36, fontSize: 12.5, opacity: ocupado ? 0.5 : 1 }}>{ocupado === 'risk' ? 'Pasando…' : 'Pasar consultas de Risk'}</button>
             <button onClick={altaLote} disabled={!!ocupado} style={{ ...BTN, height: 36, fontSize: 12.5, opacity: ocupado ? 0.5 : 1 }}>{ocupado === 'lote' ? 'Dando de alta…' : 'Dar de alta en lote'}</button>
           </span>
         </div>
@@ -136,7 +146,7 @@ export const CarteraSarblock: React.FC = () => {
         )}
       </div>
       <p style={{ fontSize: 11.5, color: C.tenue, margin: '10px 2px 0' }}>
-        Dar de alta gasta una consulta por cuenta. El expediente KYB queda en borrador en Sarblock con lo que ya sabemos; cumplimiento lo completa allá. Las consultas de Lincoin Risk no entran a la cartera.
+        Dar de alta gasta una consulta por cuenta. El expediente KYB queda en borrador en Sarblock con lo que ya sabemos; cumplimiento lo completa allá. Las consultas de Lincoin Risk entran con su misma consulta, sin gastar otra; las de hace más de 3 meses Sarblock ya no las acepta.
       </p>
     </div>
   );
