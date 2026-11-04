@@ -2433,11 +2433,9 @@ export const ContactsSection: React.FC<{
                     onDetalle={(c) => setPanel({ c, tipo: 'compliance' })}
                     movimientosDe={movimientosDe}
                     onExtracto={(c) => setPanel({ c, tipo: 'contabilidad' })}
+                    // SIREL: el reporte de transacciones de la empresa para la UIAF, en su pestaña.
+                    sirel={<SirelEmpresa userId={currentUser?.id} nombreEmpresa={(currentUser as any)?.companyName || (currentUser as any)?.name} />}
                 />
-            )}
-            {/* SIREL: el reporte de transacciones de la empresa para la UIAF. */}
-            {vista === 'compliance' && (
-                <SirelEmpresa userId={currentUser?.id} nombreEmpresa={(currentUser as any)?.companyName || (currentUser as any)?.name} />
             )}
 
             {/* ── Panel: Contabilidad / Compliance de UN beneficiario ──

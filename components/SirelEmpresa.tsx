@@ -110,7 +110,7 @@ export const SirelEmpresa: React.FC<{ userId?: string; nombreEmpresa?: string }>
 
   const res = datos?.resumen;
   return (
-    <div style={{ ...TARJ, padding: '20px 22px', marginTop: 18, color: C.texto }}>
+    <div style={{ ...TARJ, padding: '20px 22px', color: C.texto }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ maxWidth: 620 }}>
           <p style={{ margin: 0, fontSize: 11, fontWeight: 700, letterSpacing: '1.6px', color: C.sub }}>SIREL · UIAF</p>

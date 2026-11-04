@@ -69,6 +69,8 @@ type Props = {
   // le movió a cada persona; por eso la tabla vive acá y no en Contabilidad.
   movimientosDe?: (c: MouvContact) => any[];
   onExtracto?: (c: MouvContact) => void;
+  // La sección SIREL de la empresa (SirelEmpresa), en su propia pestaña.
+  sirel?: React.ReactNode;
 };
 
 const Tarjeta: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
@@ -112,8 +114,12 @@ const motivoDe = (h: { nivel?: string; codigo?: string; texto?: string; fuente?:
 
 export const ComplianceDashboard: React.FC<Props> = ({
   contacts, amlDe, situacionAml, contactStatus, rowMeta, initialsOf, prettyName, amlActivo, amlMotivo, esAdmin, onDetalle,
-  movimientosDe, onExtracto,
+  movimientosDe, onExtracto, sirel,
 }) => {
+  // Antes todo iba en una sola página larga (cifras, barra, gráficos, lista,
+  // movimientos y SIREL uno debajo del otro). Ahora por pestañas, y el
+  // resumen dice primero qué hay que mirar (pedido del dueño, 2026-11).
+  const [tab, setTab] = useState<'resumen' | 'beneficiarios' | 'movimientos' | 'sirel'>('resumen');
   // ── Cuánto se le movió a cada beneficiario ──
   // Mes y año calendario en curso, contando Completado y Procesando. Se suma
   // por moneda y se muestra la dominante: COP con USDT en una cifra sería
@@ -255,15 +261,34 @@ export const ComplianceDashboard: React.FC<Props> = ({
   const areaH = G.h - G.padT - G.padB, slot = (G.w - G.padL - G.padR) / 8, barW = Math.min(34, slot * 0.6);
   const yDe = (v: number) => G.padT + areaH - (v / maxSem) * areaH;
 
+  const FILTRO_DE: Record<Situacion, Filtro> = { bloqueado: 'bloqueados', revision: 'revision', esperando: 'esperando', limpio: 'limpios', sin_consulta: 'sin_consulta' };
+  const irA = (f: Filtro) => { setFiltro(f); setLimite(20); setTab('beneficiarios'); };
+  // Cada cifra lleva a la lista ya filtrada por ese estado.
   const kpi = (s: Situacion, valor: number, nota: string, fuerte = false) => (
-    <Tarjeta style={{ border: `1px solid ${fuerte ? C.bordeFuerte : C.borde}` }}>
+    <button onClick={() => irA(FILTRO_DE[s])} className="lincoin-kpi-cumpl" title={`Ver ${ESTADO[s].rot.toLowerCase()}`}
+      style={{ textAlign: 'left', fontFamily: FONT, cursor: 'pointer', background: C.tarjeta, border: `1px solid ${fuerte && valor > 0 ? 'rgba(248,113,113,0.45)' : C.borde}`, borderRadius: 14, padding: '18px 20px', minWidth: 0 }}>
       <p className="flex items-center" style={{ gap: 8, fontSize: 10.5, fontWeight: 700, letterSpacing: '1.6px', color: C.sub, margin: 0 }}>
         <Swatch color={ESTADO[s].color} />{ESTADO[s].rot.toUpperCase()}
       </p>
-      <p style={{ fontSize: 30, fontWeight: 800, color: C.text, margin: '8px 0 0', letterSpacing: '-0.8px', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>{valor}</p>
+      <p style={{ fontSize: 30, fontWeight: 800, color: valor > 0 && (s === 'bloqueado' || s === 'revision') ? ESTADO[s].color : C.text, margin: '8px 0 0', letterSpacing: '-0.8px', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>{valor}</p>
       <p style={{ fontSize: 12, color: C.sub, margin: '6px 0 0' }}>{nota}</p>
-    </Tarjeta>
+    </button>
   );
+  // Quiénes requieren atención: todo lo que no está limpio, primero lo más grave.
+  const atencion = filas.filter(f => f.sit !== 'limpio').sort((a, b) => ORDEN.indexOf(a.sit) - ORDEN.indexOf(b.sit));
+  const cuentas = { verificadas: filas.filter(f => f.st === 'aprobada').length, validacion: enValidacion, rechazadas: filas.filter(f => f.st === 'rechazada').length };
+  const pct = total ? Math.round((limpios / total) * 100) : 0;
+  const titular = n('bloqueado') > 0
+    ? { t: `${n('bloqueado')} ${n('bloqueado') === 1 ? 'beneficiario bloqueado' : 'beneficiarios bloqueados'}`, d: 'No pueden recibir: el envío se rechaza.', c: ESTADO.bloqueado.color }
+    : n('revision') > 0
+      ? { t: `${n('revision')} en revisión`, d: 'Sus envíos quedan retenidos hasta que cumplimiento lo resuelva.', c: ESTADO.revision.color }
+      : n('esperando') > 0
+        ? { t: `${n('esperando')} ${n('esperando') === 1 ? 'consulta en curso' : 'consultas en curso'}`, d: 'Suele tardar cerca de un minuto.', c: C.sub }
+        : total > 0
+          ? { t: 'Todo en orden', d: `Tus ${total} beneficiarios pueden recibir.`, c: C.verde }
+          : { t: 'Sin beneficiarios todavía', d: 'Cuando inscribas uno, aquí verás si puede recibir.', c: C.sub };
+  // El anillo: la parte de los que pueden recibir.
+  const R = 46, PER = 2 * Math.PI * R;
 
   return (
     <div style={{ fontFamily: FONT, maxWidth: 1180, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -279,6 +304,24 @@ export const ComplianceDashboard: React.FC<Props> = ({
         </button>
       </div>
 
+      {/* Pestañas */}
+      <div role="tablist" aria-label="Secciones de Compliance" style={{ display: 'flex', gap: 24, borderBottom: `1px solid ${C.borde}`, overflowX: 'auto' }}>
+        {([['resumen', 'Resumen', null], ['beneficiarios', 'Beneficiarios', total], ['movimientos', 'Movimientos', null], ['sirel', 'SIREL', null]] as [typeof tab, string, number | null][])
+          .filter(([k]) => (k !== 'movimientos' || !!movido) && (k !== 'sirel' || !!sirel))
+          .map(([k, t, cnt]) => {
+            const sel = tab === k;
+            return (
+              <button key={k} role="tab" aria-selected={sel} onClick={() => setTab(k)}
+                style={{ position: 'relative', padding: '10px 0 12px', background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT, fontSize: 13.5, fontWeight: 700, color: sel ? C.text : C.sub, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                {t}
+                {cnt ? <span style={{ fontSize: 11, fontWeight: 700, color: sel ? '#15181A' : C.sub, background: sel ? '#F4F4F2' : 'rgba(255,255,255,0.07)', borderRadius: 999, padding: '1px 7px' }}>{cnt}</span> : null}
+                {k === 'beneficiarios' && atencion.some(f => f.sit === 'bloqueado' || f.sit === 'revision') && <span title="Hay beneficiarios que requieren atención" style={{ width: 7, height: 7, borderRadius: '50%', background: n('bloqueado') ? ESTADO.bloqueado.color : ESTADO.revision.color }} />}
+                {sel && <span style={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, borderRadius: 2, background: C.verde }} />}
+              </button>
+            );
+          })}
+      </div>
+
       {!amlActivo && (
         <Tarjeta>
           <p style={{ fontSize: 13, color: C.text, fontWeight: 600, margin: 0 }}>La verificación de antecedentes no está activa para esta cuenta.</p>
@@ -288,39 +331,90 @@ export const ComplianceDashboard: React.FC<Props> = ({
         </Tarjeta>
       )}
 
+      {tab === 'resumen' && (<>
+        {/* Salud de cumplimiento: el anillo con los que pueden recibir y, al
+            lado, lo primero que hay que saber. */}
+        <Tarjeta style={{ padding: '20px 22px' }}>
+          <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ position: 'relative', width: 116, height: 116, flexShrink: 0 }}>
+              <svg viewBox="0 0 116 116" width={116} height={116} aria-hidden="true">
+                <circle cx={58} cy={58} r={R} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={10} />
+                {total > 0 && <circle cx={58} cy={58} r={R} fill="none" stroke={pct === 100 ? C.verde : pct >= 60 ? C.verde : ESTADO.revision.color} strokeWidth={10} strokeLinecap="round"
+                  strokeDasharray={`${(pct / 100) * PER} ${PER}`} transform="rotate(-90 58 58)" style={{ transition: 'stroke-dasharray .6s ease' }} />}
+              </svg>
+              <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', textAlign: 'center' }}>
+                <span>
+                  <span style={{ display: 'block', fontSize: 26, fontWeight: 800, letterSpacing: '-0.8px', color: C.text, lineHeight: 1 }}>{pct}%</span>
+                  <span style={{ display: 'block', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.6px', color: C.sub, marginTop: 4, lineHeight: 1.25 }}>PUEDEN<br />RECIBIR</span>
+                </span>
+              </div>
+            </div>
+            <div style={{ flex: 1, minWidth: 240 }}>
+              <p style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.4px', color: titular.c, margin: 0 }}>{titular.t}</p>
+              <p style={{ fontSize: 13, color: C.medio, margin: '4px 0 0', lineHeight: 1.5 }}>{titular.d}</p>
+              <div className="flex" style={{ gap: 3, height: 10, marginTop: 14, borderRadius: 6, overflow: 'hidden' }}>
+                {total === 0 ? <div style={{ flex: 1, background: C.guia }} /> : ORDEN.map(st => {
+                  const v = n(st);
+                  return v > 0 ? <div key={st} title={`${ESTADO[st].rot}: ${v}`} style={{ flex: v, background: ESTADO[st].color, borderRadius: 6, minWidth: 3 }} /> : null;
+                })}
+              </div>
+              <div className="flex flex-wrap" style={{ gap: 14, marginTop: 9 }}>
+                {ORDEN.map(st => (
+                  <span key={st} className="flex items-center" style={{ gap: 6, fontSize: 11.5, color: n(st) > 0 ? C.medio : C.tenue }}>
+                    <Swatch color={ESTADO[st].color} />{ESTADO[st].rot} <b style={{ color: n(st) > 0 ? C.text : C.tenue, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{n(st)}</b>
+                  </span>
+                ))}
+              </div>
+            </div>
+            {/* Las cuentas destino según el banco: otra cosa que los antecedentes. */}
+            <div style={{ minWidth: 170, borderLeft: `1px solid ${C.borde}`, paddingLeft: 20 }} className="lincoin-cuentas-cumpl">
+              <Rotulo>CUENTAS DESTINO</Rotulo>
+              {[['Verificadas', cuentas.verificadas, C.verde], ['En validación', cuentas.validacion, C.sub], ['Rechazadas', cuentas.rechazadas, '#F87171']].map(([t, v, c]) => (
+                <p key={String(t)} className="flex items-center justify-between" style={{ gap: 14, fontSize: 12.5, color: C.medio, margin: '8px 0 0' }}>
+                  <span className="flex items-center" style={{ gap: 7 }}><Swatch color={String(c)} />{t}</span>
+                  <b style={{ color: Number(v) > 0 ? C.text : C.tenue, fontVariantNumeric: 'tabular-nums' }}>{v as number}</b>
+                </p>
+              ))}
+            </div>
+          </div>
+        </Tarjeta>
+
+        {/* Quiénes requieren atención, con su motivo y acceso al expediente. */}
+        <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '14px 20px', borderBottom: `1px solid ${C.borde}` }}>
+            <div>
+              <Rotulo>REQUIEREN ATENCIÓN</Rotulo>
+              <p style={{ fontSize: 11.5, color: C.tenue, margin: '3px 0 0' }}>Bloqueados, en revisión, esperando resultado o sin consulta</p>
+            </div>
+            {atencion.length > 5 && <button onClick={() => irA('todos')} style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, color: C.text, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Ver los {atencion.length} →</button>}
+          </div>
+          {atencion.length === 0 ? (
+            <p className="flex items-center" style={{ gap: 9, fontSize: 13, color: C.medio, padding: '16px 20px', margin: 0 }}>
+              <span style={{ width: 20, height: 20, borderRadius: '50%', display: 'grid', placeItems: 'center', background: 'rgba(74,222,128,0.12)', color: C.verde, fontSize: 12, fontWeight: 800 }}>✓</span>
+              {total ? 'Nadie requiere atención: todos tus beneficiarios pueden recibir.' : 'Sin beneficiarios inscritos.'}
+            </p>
+          ) : atencion.slice(0, 5).map(f => (
+            <div key={f.c.id} className="lincoin-fila-cumpl flex items-center" onClick={() => onDetalle(f.c)} style={{ gap: 12, padding: '11px 20px', borderTop: `1px solid ${C.borde}`, cursor: 'pointer' }}>
+              <span style={{ width: 4, alignSelf: 'stretch', borderRadius: 2, background: ESTADO[f.sit].color, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prettyName(f.c.name)}</p>
+                <p style={{ fontSize: 12, color: C.sub, margin: '2px 0 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.nota}</p>
+              </div>
+              <Pill s={f.sit} />
+            </div>
+          ))}
+        </Tarjeta>
+
       {/* 2. KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 125px), 1fr))', gap: 12 }}>
         {kpi('bloqueado', n('bloqueado'), 'no pueden recibir', true)}
         {kpi('revision', n('revision'), 'envíos retenidos')}
         {kpi('limpio', limpios, 'pueden recibir')}
         {kpi('esperando', n('esperando'), `${enValidacion} ${enValidacion === 1 ? 'cuenta' : 'cuentas'} en validación`)}
       </div>
 
-      {/* 3. Barra de distribución */}
-      <Tarjeta>
-        <div className="flex items-center justify-between flex-wrap" style={{ gap: 10 }}>
-          <Rotulo>ESTADO DE TUS {total} BENEFICIARIOS</Rotulo>
-          <p style={{ fontSize: 13, color: C.sub, margin: 0 }}>
-            <b style={{ color: C.text, fontWeight: 800, fontSize: 15 }}>{total ? Math.round((limpios / total) * 100) : 0} %</b> pueden recibir sin restricciones
-          </p>
-        </div>
-        <div className="flex" style={{ gap: 3, height: 14, marginTop: 12, borderRadius: 7, overflow: 'hidden' }}>
-          {total === 0 ? <div style={{ flex: 1, background: C.guia }} /> : ORDEN.map(s => {
-            const v = n(s);
-            return v > 0 ? <div key={s} title={`${ESTADO[s].rot}: ${v}`} style={{ flex: v, background: ESTADO[s].color, borderRadius: 7, minWidth: 3 }} /> : null;
-          })}
-        </div>
-        <div className="flex flex-wrap" style={{ gap: 16, marginTop: 10 }}>
-          {ORDEN.map(s => (
-            <span key={s} className="flex items-center" style={{ gap: 7, fontSize: 12, color: n(s) > 0 ? C.medio : C.tenue }}>
-              <Swatch color={ESTADO[s].color} />{ESTADO[s].rot} <b style={{ color: n(s) > 0 ? C.text : C.tenue, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{n(s)}</b>
-            </span>
-          ))}
-        </div>
-      </Tarjeta>
-
       {/* 4. Dos gráficos */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: 12 }}>
         <Tarjeta>
           <div className="flex items-start justify-between flex-wrap" style={{ gap: 10 }}>
             <div>
@@ -334,7 +428,7 @@ export const ComplianceDashboard: React.FC<Props> = ({
           </div>
           <div style={{ position: 'relative', marginTop: 8 }}>
             {!hayConsultas && <p style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', fontSize: 12.5, color: C.tenue, margin: 0 }}>Sin consultas en las últimas ocho semanas.</p>}
-            <svg viewBox={`0 0 ${G.w} ${G.h}`} width="100%" height={G.h} preserveAspectRatio="xMidYMid meet" style={{ display: 'block', fontFamily: FONT }} onMouseLeave={() => setSobre(null)}>
+            <svg viewBox={`0 0 ${G.w} ${G.h}`} width="100%" preserveAspectRatio="xMidYMid meet" style={{ display: 'block', fontFamily: FONT }} onMouseLeave={() => setSobre(null)}>
               {[0, 0.25, 0.5, 0.75, 1].map(f => (
                 <line key={f} x1={G.padL} x2={G.w - G.padR} y1={yDe(maxSem * f)} y2={yDe(maxSem * f)} stroke={C.guia} />
               ))}
@@ -384,6 +478,9 @@ export const ComplianceDashboard: React.FC<Props> = ({
         </Tarjeta>
       </div>
 
+      </>)}
+
+      {tab === 'beneficiarios' && (<>
       {/* 5. Lista */}
       <Tarjeta style={{ padding: 0, overflow: 'hidden' }}>
         <div className="flex items-center justify-between flex-wrap" style={{ gap: 12, padding: '14px 20px', borderBottom: `1px solid ${C.borde}` }}>
@@ -453,6 +550,12 @@ export const ComplianceDashboard: React.FC<Props> = ({
         </div>
       </Tarjeta>
 
+        <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.55 }}>
+          Un beneficiario bloqueado no puede recibir envíos. En revisión, el envío queda retenido hasta que cumplimiento lo resuelva.
+        </p>
+      </>)}
+
+      {tab === 'movimientos' && (<>
       {/* 6. Por beneficiario: cuánto se le movió a cada uno ──
           Es una pregunta de cumplimiento —a quién le está saliendo la plata y
           en qué proporción— por eso está acá y no en Contabilidad. */}
@@ -503,14 +606,19 @@ export const ComplianceDashboard: React.FC<Props> = ({
         </Tarjeta>
       )}
 
-      {/* 7. Nota */}
-      <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.55 }}>
-        Un beneficiario bloqueado no puede recibir envíos. En revisión, el envío queda retenido hasta que cumplimiento lo resuelva.
-      </p>
+      </>)}
+
+      {tab === 'sirel' && sirel}
+
 
       <style>{`
         .lincoin-fila-cumpl:hover { background: ${C.hover}; }
-        @media (max-width: 760px) { .lincoin-fila-cumpl { grid-template-columns: 1fr !important; } }
+        .lincoin-kpi-cumpl { transition: border-color .15s, transform .15s; }
+        .lincoin-kpi-cumpl:hover { border-color: ${C.bordeFuerte} !important; transform: translateY(-1px); }
+        @media (max-width: 760px) {
+          .lincoin-fila-cumpl { grid-template-columns: 1fr !important; }
+          .lincoin-cuentas-cumpl { border-left: none !important; padding-left: 0 !important; width: 100%; }
+        }
       `}</style>
     </div>
   );
