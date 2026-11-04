@@ -535,6 +535,17 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
     );
 };
 
+// La utilidad de un cargue como porcentaje del monto que se le acredita al
+// cliente. En pesos sola no se podía comparar un cargue de 5 M con uno de
+// 95 M (pedido del operador, 2026-11). Con tres decimales cuando es menos de
+// 0,1 %, para que un margen chico no se vea como 0,00 %.
+const pctUtilidad = (utilidad: unknown, monto: unknown): string | null => {
+    const u = Number(utilidad), m = Number(monto);
+    if (!Number.isFinite(u) || !(m > 0)) return null;
+    const p = (u / m) * 100;
+    return `${p.toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: Math.abs(p) < 0.1 ? 3 : 2 })} %`;
+};
+
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, paises, funciones }) => {
   const soloTesoreria = rol === 'tesoreria';
   // Colaborador: ve solo las pestañas de sus funciones. Para cualquier otro
@@ -2649,8 +2660,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                             ))}
                             <div className="flex items-center justify-between pt-1.5 mt-1" style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}>
                               <span className="text-xs font-bold" style={{ color: '#F4F4F2' }}>Tu utilidad</span>
-                              <span className="text-base font-bold" style={{ color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>
-                                {acctCalc.utilityCop.toLocaleString('es-CO')} COP
+                              <span className="text-right" title="Porcentaje sobre el monto que se le acredita al cliente">
+                                <span className="block text-base font-bold" style={{ color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>
+                                  {acctCalc.utilityCop.toLocaleString('es-CO')} COP
+                                </span>
+                                {pctUtilidad(acctCalc.utilityCop, acctCalc.creditedCop) && (
+                                  <span className="block text-[10.5px] font-bold" style={{ color: acctCalc.utilityCop >= 0 ? 'rgba(74,222,128,0.8)' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>
+                                    {pctUtilidad(acctCalc.utilityCop, acctCalc.creditedCop)} del monto
+                                  </span>
+                                )}
                               </span>
                             </div>
                             {acctCalc.utilityCop < 0 && (
@@ -2897,7 +2915,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                 {a ? (
                                   <>
                                     <span style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(a.usdtGross).toLocaleString('es-CO')} USDT · venta {Number(a.sellRate).toLocaleString('es-CO')} · cliente {Number(a.clientRate).toLocaleString('es-CO')}</span>
-                                    <p style={{ margin: '2px 0 0', fontWeight: 700, color: Number(a.utilityCop) >= 0 ? '#4ADE80' : '#F87171' }}>utilidad {fmt(a.utilityCop)} COP</p>
+                                    <p style={{ margin: '2px 0 0', fontWeight: 700, color: Number(a.utilityCop) >= 0 ? '#4ADE80' : '#F87171' }} title="Porcentaje sobre el monto acreditado al cliente">
+                                      utilidad {fmt(a.utilityCop)} COP{pctUtilidad(a.utilityCop, a.creditedCop ?? t.amount) ? ` · ${pctUtilidad(a.utilityCop, a.creditedCop ?? t.amount)}` : ''}
+                                    </p>
                                   </>
                                 ) : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
                               </td>
@@ -3102,7 +3122,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           </>}
                       <div className="flex items-center justify-between" style={{ gap: 12, paddingTop: 6, marginTop: 3, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
                         <span style={{ fontSize: 12.5, fontWeight: 700, color: '#F4F4F2' }}>Tu utilidad</span>
-                        <span style={{ fontSize: 14, fontWeight: 800, color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>{n(acctCalc.utilityCop)} COP</span>
+                        <span style={{ textAlign: 'right' }} title={`Porcentaje sobre el monto que se le acredita al cliente (${n(acctCalc.creditedCop)} COP)`}>
+                          <span style={{ display: 'block', fontSize: 14, fontWeight: 800, color: acctCalc.utilityCop >= 0 ? '#4ADE80' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>{n(acctCalc.utilityCop)} COP</span>
+                          {pctUtilidad(acctCalc.utilityCop, acctCalc.creditedCop) && (
+                            <span style={{ display: 'block', fontSize: 11, fontWeight: 700, color: acctCalc.utilityCop >= 0 ? 'rgba(74,222,128,0.8)' : '#F87171', fontVariantNumeric: 'tabular-nums' }}>
+                              {pctUtilidad(acctCalc.utilityCop, acctCalc.creditedCop)} del monto
+                            </span>
+                          )}
+                        </span>
                       </div>
                       {acctCalc.utilityCop < 0 && <p style={{ fontSize: 11, color: '#F87171', margin: '4px 0 0' }}>Estás pagando más de lo que recibiste. Revisá las tasas antes de autorizar.</p>}
                     </div>
