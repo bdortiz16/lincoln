@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { descargarReporteLincoin } from '../reporte/ReporteLincoin';
 import { MapaColombia } from './MapaColombia';
+import { Carnet } from './Carnet';
 import { llamarFuncion } from '../../lib/edge';
 import { lugaresDeDespachos, mapaDePersonas } from '../../lib/ubicacion';
 import { tipoProbable } from '../../lib/nit';
@@ -135,24 +136,21 @@ export const Resultado: React.FC<{ consulta: any; compacto?: boolean; acciones?:
   };
   return (
     <div className="lr-entra">
+      {/* El carnet arriba; debajo, el veredicto y toda la información. */}
       <div style={{ padding: compacto ? '18px 20px' : '22px 24px', background: `linear-gradient(135deg, ${v.c}14, transparent 60%)`, borderBottom: `1px solid ${C.borde}` }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Carnet consulta={consulta} nombre={nombre} tono={v} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18 }}>
           <Punto c={v.c} tam={10} />
-          <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: v.c }}>{v.t}</span>
+          <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', color: v.c }}>{v.t}</span>
         </div>
         <p style={{ fontSize: 13.5, color: C.texto, margin: '6px 0 0', lineHeight: 1.5 }}>{v.txt}</p>
-        <div style={{ marginTop: 14 }}>
-          <p style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>{nombre}</p>
-          <p style={{ fontSize: 12.5, color: C.sub, margin: '3px 0 0' }}>
-            {consulta.tipoDocumento} {consulta.documento} · {hace(consulta.at)}{consulta.deCache ? ' · del padrón Lincoin Risk' : ''}
-          </p>
-          {f?.nombreIncompleto && <p style={{ fontSize: 12, color: C.sub, margin: '6px 0 0' }}>Escrito como “{consulta.nombreEscrito}”: es el mismo nombre, incompleto.</p>}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-            <Vence v={consulta.vence} />
-            {(consulta.riesgos ?? []).filter((r: string) => r !== 'ninguno').map((r: string) => (
-              <span key={r} style={{ fontSize: 11.5, color: C.texto, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '3px 9px' }}>{TIPOS[r] ?? r}</span>
-            ))}
-          </div>
+        {consulta.deCache && <p style={{ fontSize: 12, color: C.sub, margin: '6px 0 0' }}>Tomada del padrón Lincoin Risk.</p>}
+        {f?.nombreIncompleto && <p style={{ fontSize: 12, color: C.sub, margin: '6px 0 0' }}>Escrito como “{consulta.nombreEscrito}”: es el mismo nombre, incompleto.</p>}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+          <Vence v={consulta.vence} />
+          {(consulta.riesgos ?? []).filter((r: string) => r !== 'ninguno').map((r: string) => (
+            <span key={r} style={{ fontSize: 11.5, color: C.texto, border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '3px 9px' }}>{TIPOS[r] ?? r}</span>
+          ))}
         </div>
       </div>
       <div style={{ padding: compacto ? '14px 20px' : '16px 24px', display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 12.5, color: C.sub }}>
@@ -395,6 +393,14 @@ export const RiskCliente: React.FC = () => {
     if (r?.ok) { setActual(r.consulta); setAviso('Ya la tenías consultada: no se usó ninguna consulta.'); setFase('resultado'); cargarHist(); }
   };
   const listo = digitos.length >= 5 && autorizado && (!esEmpresa || nombre.trim().length >= 3) && (cuenta?.saldo ?? 0) > 0;
+  // Qué falta para poder consultar: el botón gris solo no decía por qué
+  // (visto el 2026-11-04: un NIT de empresa "no dejaba consultar" y era que
+  // faltaban la razón social, la casilla y el saldo).
+  const falta = [
+    digitos.length < 5 && 'el número',
+    esEmpresa && nombre.trim().length < 3 && 'la razón social',
+    !autorizado && 'marcar la casilla de autorización',
+  ].filter(Boolean) as string[];
 
   const consultar = async (confirmarTipo = false) => {
     if (!listo || fase === 'consultando') return;
@@ -516,6 +522,9 @@ export const RiskCliente: React.FC = () => {
                 <span style={{ fontSize: 13 }}>{error.t}</span>
                 {error.sinSaldo && <button onClick={() => setRecarga(true)} style={{ ...BTN, height: 34, fontSize: 12.5 }}>Recargar</button>}
               </div>
+            )}
+            {digitos.length >= 3 && !vigenteYa && falta.length > 0 && !error && (
+              <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0' }}>Para consultar falta {falta.length > 1 ? `${falta.slice(0, -1).join(', ')} y ${falta[falta.length - 1]}` : falta[0]}.</p>
             )}
             {cuenta.saldo === 0 && !error && (
               <p style={{ fontSize: 12.5, color: C.sub, margin: '14px 0 0' }}>No tienes consultas disponibles. <button onClick={() => setRecarga(true)} style={{ background: 'none', border: 'none', color: C.texto, fontWeight: 700, textDecoration: 'underline', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>Recarga para empezar</button></p>
