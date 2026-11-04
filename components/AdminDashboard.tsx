@@ -94,6 +94,7 @@ import { AdminContabilidad } from './AdminContabilidad';
 import { AdminLimitesEnvio } from './AdminLimitesEnvio';
 import { AdminTarifasEnvio } from './AdminTarifasEnvio';
 import { AdminCupos } from './AdminCupos';
+import { AdminSirel } from './AdminSirel';
 import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminCoinsenda } from './AdminCoinsenda';
@@ -138,7 +139,7 @@ const FUNCION_DE_TAB: Record<string, string> = {
   lincoin: 'lincoin', otcCierres: 'otc', coinsenda: 'coinsenda', fallos: 'fallos',
   reports: 'reportes', otcConfig: 'contabilidad',
   compliance: 'cumplimiento', operadores: 'cumplimiento', cupos: 'cumplimiento',
-  risk: 'cumplimiento', sarblock: 'cumplimiento', tusdatos: 'cumplimiento',
+  risk: 'cumplimiento', sarblock: 'cumplimiento', tusdatos: 'cumplimiento', sirel: 'cumplimiento',
 };
 // Orden en que se busca la primera pestaña del colaborador al entrar.
 const ORDEN_TABS_COLABORADOR = ['overview', 'cargues', 'clients', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos', 'reports', 'otcConfig', 'compliance'];
@@ -272,7 +273,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
 // 'kumplo' salió el 2026-10-30: Kumplo se retiró de Lincoin.
-const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos'];
+const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'sirel'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera', lincoin: 'Lincoin',
@@ -280,7 +281,7 @@ const TAB_TITLES: Record<string, string> = {
   security: 'Seguridad',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
-  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores',
+  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores', sirel: 'SIREL',
   otcCierres: 'Cierres OTC',
 };
 
@@ -5796,6 +5797,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 {activeTab === 'comando' && <div className="animate-in fade-in duration-300"><AdminCommandCenter /></div>}
                 {activeTab === 'security' && renderSecurity()}
                 {activeTab === 'tusdatos' && <div className="animate-in fade-in duration-300"><AdminTusdatos /></div>}
+                {/* SIREL (UIAF): clientes y operaciones con activos virtuales para reportar. */}
+                {(activeTab as string) === 'sirel' && <div className="animate-in fade-in duration-300"><AdminSirel /></div>}
                 {activeTab === 'compliance' && <div className="animate-in fade-in duration-300 space-y-6"><AdminCompliance /><AdminLimitesEnvio /></div>}
                 {/* Normativa de cupo mensual por beneficiario: pestaña propia
                     dentro de Cumplimiento, para que las solicitudes de aumento

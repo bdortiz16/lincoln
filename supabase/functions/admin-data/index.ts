@@ -9,6 +9,8 @@ import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '.
 import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
+import { operacionAv, clienteSirel, VERIFICADO, type OperacionAv } from './sirel.ts'
+import { municipioPorNombre } from '../_shared/municipios.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permisosDe, permite, visibleEnPais, ROLES_VALIDOS, normalizarFunciones, FUNCIONES_VALIDAS, type Rol, type Acceso } from '../_shared/equipo.ts'
 
@@ -1754,6 +1756,9 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   cupos_config_set: 'cumplimiento',
   cupo_resolver: 'cumplimiento',
   cupo_quitar: 'cumplimiento',
+  // SIREL (UIAF): arma los reportes de clientes y operaciones con activos virtuales.
+  sirel_periodo: ['cumplimiento', 'fn.cumplimiento'],
+  sirel_registrar_envio: ['cumplimiento', 'fn.cumplimiento'],
   fact_lincoin_get: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_lista: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_probar: ['plata.mover', 'fn.contabilidad'],
@@ -3791,6 +3796,8 @@ Deno.serve(async (req: Request) => {
         'cliente_modelo_factura_set',
         // Lo que se le cobra a TODOS los clientes por cada envío
         'tarifas_envio_set',
+        // SIREL: datos de todos los clientes y sus operaciones (datos personales)
+        'sirel_periodo', 'sirel_registrar_envio',
       ])
       // Reconstruir movimientos escribe en la base; solo consultar, no.
       const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
@@ -6248,6 +6255,95 @@ Deno.serve(async (req: Request) => {
       // La tarifa = el costo más alto de los proveedores del riel + lo que
       // cuesta una consulta AML (Sarblock → Ventas) + la utilidad que se
       // quiera. Ver _shared/tarifas-envio.ts.
+      // ── SIREL (UIAF): clientes y operaciones con activos virtuales ───────
+      // Arma lo que se reporta en SIREL (sirel.ts tiene las reglas); el
+      // oficial lo descarga y lo sube él mismo con su usuario de SIREL. Solo
+      // lee, salvo el registro de lo que ya se envió (system_config).
+      if (body.action === 'sirel_periodo') {
+        const TZ = 5 * 3600_000
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const periodo = body.periodo === 'dia' ? 'dia' : 'mes'
+        const ancla = esYmd(body.fecha) ? String(body.fecha) : hoy
+        if (ancla > hoy) return json({ ok: false, error: 'Esa fecha todavía no llega.' }, 400)
+        const yS = Number(ancla.slice(0, 4)), mS = Number(ancla.slice(5, 7)) - 1
+        const finMes = new Date(Date.UTC(yS, mS + 1, 0)).getUTCDate()
+        const desde = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-01`
+        const hasta = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-${String(finMes).padStart(2, '0')}`
+        const desdeIso = new Date(Date.parse(`${desde}T00:00:00Z`) + TZ).toISOString()
+        const hastaIso = new Date(Date.parse(`${hasta}T00:00:00Z`) + TZ + 86_400_000).toISOString()
+        const { filas: movs, truncado } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, created_at, type, currency, amount, user_id, raw_data')
+          .in('type', ['load', 'send', 'convert', 'otc_deposit']).eq('status', 'Completado')
+          .gte('created_at', desdeIso).lt('created_at', hastaIso), { tope: 100_000 })
+        const ops = (movs.map(operacionAv).filter(Boolean) as OperacionAv[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
+        const idsConOps = Array.from(new Set(ops.map(o => o.userId)))
+
+        // Clientes: todos los vinculados (KYC aprobado) y, además, cualquiera
+        // que haya operado en el período aunque no lo esté (eso también se ve).
+        const COLS_SIREL = 'id, email, phone, role, kyc_status, is_blocked, created_at, country, full_name, name, company_name, company_country, company_city, company_address, tax_id, tax_id_type, rep_legal_name, rep_first_name, rep_last_name, rep_doc_type, rep_doc_number, doc_type, doc_number, city, address, rd_empresa:raw_data->>companyName, rd_nit:raw_data->>nit, rd_tax_id:raw_data->>taxId, rd_doc:raw_data->>documentNumber, rd_tipo_doc:raw_data->>documentType, rd_rep:raw_data->>legalRep'
+        const { filas: vinculados } = await leerPorPaginas(() => db.from('users').select(COLS_SIREL).in('kyc_status', Array.from(VERIFICADO)), { tope: 100_000 })
+        const porId = new Map<string, any>(vinculados.filter((u: any) => u.role !== 'admin').map((u: any) => [String(u.id), u]))
+        const faltantes = idsConOps.filter(id => !porId.has(id))
+        for (let i = 0; i < faltantes.length; i += 200) {
+          const { data } = await db.from('users').select(COLS_SIREL).in('id', faltantes.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) porId.set(String(u.id), u)
+        }
+        const muniDe = (t: string | null) => { const m = municipioPorNombre(t); return m ? { codigo: m.codigo, nombre: m.nombre, deptoNombre: m.deptoNombre } : null }
+        const usdPorCliente = new Map<string, { n: number; usd: number }>()
+        for (const o of ops) { const a = usdPorCliente.get(o.userId) ?? { n: 0, usd: 0 }; a.n++; a.usd += o.valorUsd ?? 0; usdPorCliente.set(o.userId, a) }
+        const clientes = Array.from(porId.values()).map(u => {
+          const c = clienteSirel(u, muniDe)
+          const a = usdPorCliente.get(c.userId)
+          return { ...c, operaciones: a?.n ?? 0, usdPeriodo: Math.round((a?.usd ?? 0) * 100) / 100 }
+        }).sort((a, b) => (b.operaciones - a.operaciones) || String(a.nombre ?? '').localeCompare(String(b.nombre ?? '')))
+        const cliPorId = new Map(clientes.map(c => [c.userId, c]))
+        const operaciones = ops.map(o => { const c = cliPorId.get(o.userId); return { ...o, clienteNombre: c?.nombre ?? null, clienteDoc: c?.documento ?? null, clienteTipoDoc: c?.tipoDocumento ?? null } })
+
+        const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
+        let envios: any[] = []
+        try { const v = (envCfg as any)?.value; envios = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { envios = [] }
+        const clavePeriodo = periodo === 'dia' ? desde : desde.slice(0, 7)
+        await auditAdmin(req, 'sirel.consultar', { periodo, desde, hasta, clientes: clientes.length, operaciones: operaciones.length })
+        return json({
+          ok: true, periodo, desde, hasta, clavePeriodo, truncado,
+          clientes, operaciones,
+          resumen: {
+            clientes: clientes.length,
+            clientesConOperaciones: clientes.filter(c => c.operaciones > 0).length,
+            clientesConFaltantes: clientes.filter(c => c.faltan.length > 0).length,
+            operaciones: operaciones.length,
+            operacionesConFaltantes: operaciones.filter(o => o.faltan.length > 0).length,
+            totalUsd: Math.round(operaciones.reduce((s, o) => s + (o.valorUsd ?? 0), 0) * 100) / 100,
+            porTipo: Object.fromEntries((['deposito', 'retiro', 'venta', 'compra'] as const).map(t => [t, operaciones.filter(o => o.tipo === t).length])),
+          },
+          envios: envios.filter(e => String(e.periodo ?? '').startsWith(clavePeriodo.slice(0, 7))).sort((a, b) => String(b.at).localeCompare(String(a.at))),
+          enviosRecientes: envios.slice(-30).reverse(),
+        })
+      }
+      // Lo que se subió a SIREL: tipo, período y el radicado que da la UIAF.
+      // Queda en system_config (solo el servidor) y en la auditoría.
+      if (body.action === 'sirel_registrar_envio') {
+        const TIPOS_SIREL = ['clientes', 'transacciones', 'ausencia_transacciones', 'ros', 'ausencia_ros']
+        const tipo = String(body.tipo ?? '')
+        if (!TIPOS_SIREL.includes(tipo)) return json({ ok: false, error: 'Tipo de reporte inválido.' }, 400)
+        const periodoEnv = String(body.periodo ?? '').trim()
+        if (!/^\d{4}-\d{2}(-\d{2})?$/.test(periodoEnv)) return json({ ok: false, error: 'Período inválido.' }, 400)
+        const radicado = String(body.radicado ?? '').trim().slice(0, 80)
+        if (radicado.length < 3) return json({ ok: false, error: 'Escribe el número de radicado que te dio SIREL.' }, 400)
+        const filasEnv = Number.isFinite(Number(body.filas)) ? Math.max(0, Math.round(Number(body.filas))) : null
+        const nota = String(body.nota ?? '').trim().slice(0, 500) || null
+        const registro = { id: crypto.randomUUID(), tipo, periodo: periodoEnv, radicado, filas: filasEnv, nota, por: await autorDe(auth), at: new Date().toISOString() }
+        const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
+        let lista: any[] = []
+        try { const v = (envCfg as any)?.value; lista = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { lista = [] }
+        lista.push(registro)
+        const { error: eS } = await db.from('system_config').upsert({ key: 'sirel_envios', value: JSON.stringify({ lista }) }, { onConflict: 'key' })
+        if (eS) return errorGenerico('sirel_registrar_envio', eS)
+        await auditAdmin(req, 'sirel.envio_registrado', { tipo, periodo: periodoEnv, radicado, filas: filasEnv })
+        return json({ ok: true, registro })
+      }
+
       if (body.action === 'tarifas_envio_get' || body.action === 'tarifas_envio_set') {
         const envNum = (k: string) => { const v = Number((globalThis as any).Deno?.env?.get(k) ?? ''); return Number.isFinite(v) && v > 0 ? v : null }
         // Lo que cuesta una consulta AML, de la configuración de Sarblock.
