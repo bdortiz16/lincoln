@@ -23,6 +23,10 @@ import { PASIVA } from './traductor.ts'
 export type ConfigRisk = {
   activo: boolean
   precioPorConsulta: number       // COP, sin IVA
+  // Lo que le cuesta a Lincoin cada consulta en Sarblock (COP). Lo escribe el
+  // dueño; lo usa la tarifa fija por envío, que incluye la consulta AML del
+  // beneficiario (admin-data tarifas_envio).
+  costoPorConsulta: number
   minimoCompra: number            // consultas
   ivaPct: number                  // 0 = sin IVA
   bolsillos: Record<string, { etiqueta: string; activo: boolean }>
@@ -35,13 +39,20 @@ export const CONFIG_KEY_RISK = 'risk_venta_config'
 export const CONFIG_INICIAL: ConfigRisk = {
   activo: true,
   precioPorConsulta: 0,
+  costoPorConsulta: 0,
   minimoCompra: 300,
   ivaPct: 0,
+  // Todas las cuentas en pesos del cliente, con el nombre que ve en su app.
+  // Antes solo estaban Bre-B y ACH, con el nombre del aliado entre
+  // paréntesis (el cliente nunca ve a los aliados), y un "Coincenda" con una
+  // clave que no es la de ningún saldo: la empresa con plata en la Cuenta 3
+  // o 4 no podía pagar con ella (2026-11).
   bolsillos: {
-    COP_ACH: { etiqueta: 'Pesos · ACH (Finity)', activo: true },
-    COP_BREB: { etiqueta: 'Pesos · Bre-B (Mouv)', activo: true },
-    // Bolsillo futuro: se deja listo y apagado.
-    COP_COINCENDA: { etiqueta: 'Pesos · Coincenda', activo: false },
+    COP_BREB: { etiqueta: 'Pesos · Bre-B', activo: true },
+    COP_ACH: { etiqueta: 'Pesos · ACH', activo: true },
+    COP_C3: { etiqueta: 'Pesos · Cuenta 3', activo: true },
+    COP_C4: { etiqueta: 'Pesos · Cuenta 4', activo: true },
+    COP: { etiqueta: 'Pesos · Saldo Lincoin', activo: true },
   },
   avisoClienteConsultas: 30,
   avisoCajaCoberturaPct: 120,
@@ -53,8 +64,13 @@ export async function leerConfigRisk(db: any): Promise<ConfigRisk> {
     const { data } = await db.from('system_config').select('value').eq('key', CONFIG_KEY_RISK).maybeSingle()
     const c = data?.value ? JSON.parse(data.value) : {}
     // Una configuración guardada antes de una regla nueva la toma con su
-    // valor por defecto; los bolsillos nuevos entran apagados si no estaban.
-    return { ...CONFIG_INICIAL, ...c, bolsillos: { ...CONFIG_INICIAL.bolsillos, ...(c.bolsillos ?? {}) } }
+    // valor por defecto. De los bolsillos se guarda solo si están prendidos:
+    // la lista y el nombre salen de aquí (una etiqueta vieja guardada traía
+    // el nombre del aliado) y una clave que ya no existe se descarta.
+    const guardados = (c.bolsillos ?? {}) as Record<string, any>
+    const bolsillos = Object.fromEntries(Object.entries(CONFIG_INICIAL.bolsillos).map(([k, v]) =>
+      [k, { ...v, activo: typeof guardados[k]?.activo === 'boolean' ? guardados[k].activo : v.activo }]))
+    return { ...CONFIG_INICIAL, ...c, bolsillos }
   } catch { return CONFIG_INICIAL }
 }
 
@@ -65,6 +81,7 @@ export function normalizarConfig(actual: ConfigRisk, c: any): ConfigRisk {
     ...actual,
     activo: typeof c?.activo === 'boolean' ? c.activo : actual.activo,
     precioPorConsulta: num(c?.precioPorConsulta, actual.precioPorConsulta),
+    costoPorConsulta: num(c?.costoPorConsulta, actual.costoPorConsulta),
     minimoCompra: Math.max(1, Math.floor(num(c?.minimoCompra, actual.minimoCompra))),
     ivaPct: Math.min(100, num(c?.ivaPct, actual.ivaPct)),
     avisoClienteConsultas: Math.floor(num(c?.avisoClienteConsultas, actual.avisoClienteConsultas)),
@@ -203,7 +220,8 @@ export async function resumen(db: any, cfg: ConfigRisk) {
   const cajas = (caja.data ?? []) as any[], cps = (compras.data ?? []) as any[], sds = (saldos.data ?? []) as any[], cns = (consultas.data ?? []) as any[]
   const compradas = cajas.reduce((n, c) => n + Number(c.unidades), 0)
   const costoTotal = cajas.reduce((n, c) => n + Number(c.costo_total), 0)
-  const costoUnit = compradas ? costoTotal / compradas : 0
+  // Sin compras registradas en la caja, el costo que escribió el dueño.
+  const costoUnit = compradas ? costoTotal / compradas : (cfg.costoPorConsulta || 0)
   // Cada check creado en Sarblock gasta un crédito de la caja, aunque falle.
   const consumidas = cns.filter(c => c.check_id).length
   const disponibles = compradas - consumidas

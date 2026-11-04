@@ -92,7 +92,10 @@ export const RiskAdmin: React.FC = () => {
   if (!d || !cfg) return <p style={{ color: C.sub, padding: 20 }}>Cargando…</p>;
   const precioCliente = Number(cfg.precioPorConsulta) || 0, ivaCliente = Number(cfg.ivaPct) || 0, minimo = Number(cfg.minimoCompra) || 0;
   const totalMinimo = Math.round(minimo * precioCliente * (1 + ivaCliente / 100));
-  const margenUnit = precioCliente - (d.caja.costoUnit || 0);
+  // El costo de referencia: el promedio de la caja si ya se registraron
+  // compras a Sarblock; si no, lo que el dueño escribió que le cuesta.
+  const costoRef = d.caja.compradas ? (d.caja.costoUnit || 0) : (Number(cfg.costoPorConsulta) || 0);
+  const margenUnit = precioCliente - costoRef;
   const clientes = d.clientes.filter((c: any) => !buscar || c.nombre.toLowerCase().includes(buscar.toLowerCase()));
 
   const registrarProveedor = async () => {
@@ -179,7 +182,12 @@ export const RiskAdmin: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr)', gap: 14, alignItems: 'start' }}>
           <div style={{ ...TARJETA, padding: '18px 20px' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div><label style={LBL}>Precio por consulta</label><input value={cfg.precioPorConsulta} onChange={e => setCfg({ ...cfg, precioPorConsulta: e.target.value })} style={INP} inputMode="numeric" /></div>
+              <div><label style={LBL}>Precio por consulta</label><input value={cfg.precioPorConsulta} onChange={e => setCfg({ ...cfg, precioPorConsulta: e.target.value })} style={INP} inputMode="numeric" />
+                <p style={{ fontSize: 11.5, color: C.tenue, margin: '5px 0 0' }}>Lo que paga la empresa (sin IVA).</p></div>
+              {/* Lo que le cuesta a Lincoin: también entra en la tarifa fija de
+                  cada envío (la consulta AML del beneficiario). */}
+              <div><label style={LBL}>Te cuesta cada consulta</label><input value={cfg.costoPorConsulta ?? ''} onChange={e => setCfg({ ...cfg, costoPorConsulta: e.target.value })} style={INP} inputMode="numeric" placeholder="Lo que cobra Sarblock" />
+                <p style={{ fontSize: 11.5, color: C.tenue, margin: '5px 0 0' }}>Lo que te cobra Sarblock. Se suma a la tarifa de cada envío (Configuración → Tarifa por envío).</p></div>
               <div><label style={LBL}>IVA %</label><input value={cfg.ivaPct} onChange={e => setCfg({ ...cfg, ivaPct: e.target.value })} style={INP} inputMode="numeric" /></div>
               <div><label style={LBL}>Compra mínima</label><input value={cfg.minimoCompra} onChange={e => setCfg({ ...cfg, minimoCompra: e.target.value })} style={INP} inputMode="numeric" /></div>
               <div><label style={LBL}>Avisar al cliente con ≤</label><input value={cfg.avisoClienteConsultas} onChange={e => setCfg({ ...cfg, avisoClienteConsultas: e.target.value })} style={INP} inputMode="numeric" /></div>
@@ -192,7 +200,7 @@ export const RiskAdmin: React.FC = () => {
             <div style={{ display: 'grid', gap: 8 }}>
               {Object.entries(cfg.bolsillos).map(([k, v]: any) => (
                 <label key={k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 13px', borderRadius: 12, background: C.elevado, border: `1px solid ${C.borde}`, cursor: 'pointer' }}>
-                  <span style={{ fontSize: 13 }}>{v.etiqueta}{k === 'COP_COINCENDA' ? <span style={{ color: C.tenue }}> · próximamente</span> : null}</span>
+                  <span style={{ fontSize: 13 }}>{v.etiqueta}</span>
                   <input type="checkbox" checked={v.activo} onChange={e => setCfg({ ...cfg, bolsillos: { ...cfg.bolsillos, [k]: { ...v, activo: e.target.checked } } })} style={{ width: 18, height: 18, accentColor: '#4ADE80' }} />
                 </label>
               ))}
@@ -217,7 +225,7 @@ export const RiskAdmin: React.FC = () => {
             <div style={{ ...TARJETA, padding: '16px 18px' }}>
               <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.3px', color: C.sub, margin: 0 }}>TU MARGEN</p>
               <p style={{ fontSize: 24, fontWeight: 800, margin: '8px 0 0', color: margenUnit >= 0 ? C.verde : C.rojo }}>{pesos(margenUnit)} <span style={{ fontSize: 13, color: C.sub, fontWeight: 500 }}>por consulta</span></p>
-              <p style={{ fontSize: 12, color: C.tenue, margin: '4px 0 0' }}>Costo promedio de la caja: {pesos(d.caja.costoUnit)}. Las consultas que salen del padrón no tienen costo.</p>
+              <p style={{ fontSize: 12, color: C.tenue, margin: '4px 0 0' }}>{d.caja.compradas ? `Costo promedio de la caja: ${pesos(d.caja.costoUnit)}` : `Te cuesta ${pesos(costoRef)} cada una`}. Las consultas que salen del padrón no tienen costo.</p>
             </div>
           </div>
         </div>

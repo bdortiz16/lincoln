@@ -6,6 +6,7 @@ import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda, cuent
 import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '../_shared/modelo-factura.ts'
+import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
@@ -3788,6 +3789,8 @@ Deno.serve(async (req: Request) => {
         'contabilidad_vincular_ajuste', 'contabilidad_autovincular', 'contabilidad_corregir_venta',
         // Cambia si a un cliente se le factura por día o por movimiento
         'cliente_modelo_factura_set',
+        // Lo que se le cobra a TODOS los clientes por cada envío
+        'tarifas_envio_set',
       ])
       // Reconstruir movimientos escribe en la base; solo consultar, no.
       const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
@@ -3820,6 +3823,8 @@ Deno.serve(async (req: Request) => {
         'coinsenda_config_guardar', 'coinsenda_cuenta_set', 'coinsenda_cuenta3_set',
         // Credenciales de facturación
         'fact_lincoin_set',
+        // Lo que se le cobra a todos los clientes por cada envío
+        'tarifas_envio_set',
         // La caja: abrirla, corregir la apertura, ocultar o anular movimientos
         // (con eso se maquillan las cifras de utilidad)
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar', 'caja_movimiento_anular',
@@ -6237,6 +6242,81 @@ Deno.serve(async (req: Request) => {
         await auditAdmin(req, `coinsenda.cuenta${cuentaCs}_cambio`, { cuenta: cuentaCs, antes, ahora: quiere })
         return json({ ok: true, cuenta: cuentaCs, interruptores: quiere, [clave]: quiere })
       }
+      // ── Tarifa fija por envío (Bre-B y ACH) ────────────────────────────
+      // Solo el dueño (no están en PERMISO_DE_ACCION) y guardar pide su
+      // código en cada cambio: es lo que se le cobra a todos los clientes.
+      // La tarifa = el costo más alto de los proveedores del riel + lo que
+      // cuesta una consulta AML (Sarblock → Ventas) + la utilidad que se
+      // quiera. Ver _shared/tarifas-envio.ts.
+      if (body.action === 'tarifas_envio_get' || body.action === 'tarifas_envio_set') {
+        const envNum = (k: string) => { const v = Number((globalThis as any).Deno?.env?.get(k) ?? ''); return Number.isFinite(v) && v > 0 ? v : null }
+        // Lo que cuesta una consulta AML, de la configuración de Sarblock.
+        const { data: cr } = await db.from('system_config').select('value').eq('key', 'risk_venta_config').maybeSingle()
+        let costoAmlSarblock = 0
+        try { const v = (cr as any)?.value; costoAmlSarblock = Math.max(0, Math.round(Number((typeof v === 'string' ? JSON.parse(v) : v)?.costoPorConsulta) || 0)) } catch { /* sin config */ }
+        if (body.action === 'tarifas_envio_set') {
+          const base = normalizarBase(body.base)
+          // La consulta AML sale de Sarblock, no de lo que mande la pantalla:
+          // una sola fuente para el costo.
+          base.costoAml = costoAmlSarblock
+          const activo = body.activo === true
+          const { breb, ach } = calcularTarifas(base)
+          if (activo && !(costoAmlSarblock > 0)) return json({ ok: false, error: 'Primero pon en Cumplimiento → Sarblock → Ventas → Configuración lo que te cuesta cada consulta: la tarifa la incluye.' }, 400)
+          if (activo && (!(breb > 0) || !(ach > 0))) return json({ ok: false, error: 'Las dos tarifas tienen que ser mayores que cero.' }, 400)
+          const antes = await leerTarifasEnvio(db, true)
+          const nueva = {
+            activo, breb, ach, base,
+            // Nunca baja: con él se topa la comisión que se devuelve en un
+            // reembolso, y un envío viejo cobrado más caro se devuelve entero.
+            topeReembolso: Math.max(antes?.topeReembolso ?? 0, antes?.breb ?? 0, antes?.ach ?? 0, breb, ach),
+            at: new Date().toISOString(), por: String(auth.userId ?? ''),
+          }
+          const { error: eT } = await db.from('system_config').upsert({ key: CLAVE_TARIFAS_ENVIO, value: JSON.stringify(nueva) }, { onConflict: 'key' })
+          if (eT) return errorGenerico('tarifas_envio_set', eT)
+          await auditAdmin(req, 'tarifas_envio.guardar', { antes: antes ? { activo: antes.activo, breb: antes.breb, ach: antes.ach } : null, despues: { activo, breb, ach }, base })
+          return json({ ok: true, tarifas: nueva })
+        }
+        // Lo que cobra hoy cada cuenta sin tarifa fija (mismas reglas que
+        // mouv-proxy, con los mismos secrets): solo para mostrarlo.
+        const brebC1 = (envNum('BREB_MOUV_FIXED') ?? 800) + (envNum('BREB_MARGIN_COP') ?? 400)
+        const porCuenta = {
+          'Bre-B · Cuenta 1': brebC1, 'Bre-B · Cuenta 2': envNum('BREB2_FEE_COP') ?? brebC1,
+          'Bre-B · Cuenta 3': envNum('BREB3_FEE_COP') ?? 2500, 'Bre-B · Cuenta 4': envNum('BREB4_FEE_COP') ?? 2500,
+          'ACH': envNum('ACH_FEE_COP') ?? 2500, 'ACH · Cuenta 3': envNum('ACH3_FEE_COP') ?? 2500, 'ACH · Cuenta 4': envNum('ACH4_FEE_COP') ?? 2500,
+        }
+        // Lo que de verdad cobró cada proveedor en los envíos de los últimos
+        // 60 días (costoProveedorCop, cuando el proveedor lo informa: Finity
+        // en Bre-B y Coinsenda; Mouv y el ACH de Finity no lo devuelven).
+        const desde60 = new Date(Date.now() - 60 * 86400_000).toISOString()
+        const vistos: Record<string, number[]> = {}
+        for (let off = 0; off < 10000; off += 1000) {
+          const { data, error } = await db.from('transactions').select('currency, rail:raw_data->>rail, costo:raw_data->>costoProveedorCop')
+            .eq('type', 'dispersion').in('status', ['Completado', 'Procesando']).gte('created_at', desde60)
+            .not('raw_data->>costoProveedorCop', 'is', null).order('created_at', { ascending: false }).range(off, off + 999)
+          if (error) break
+          for (const t of (data ?? []) as any[]) {
+            const c = Number(t.costo); if (!Number.isFinite(c) || c < 0) continue
+            const cur = String(t.currency ?? ''), breb = String(t.rail ?? '').toUpperCase() === 'BREB'
+            const k = cur === 'COP_BREB' ? 'breb.mouv' : cur === 'COP_ACH' ? (breb ? 'breb.finity' : 'ach.finity') : (cur === 'COP_C3' || cur === 'COP_C4') ? (breb ? 'breb.coinsenda' : 'ach.coinsenda') : null
+            if (k) (vistos[k] ??= []).push(c)
+          }
+          if (!data || data.length < 1000) break
+        }
+        const observados: Record<string, { n: number; max: number; prom: number }> = {}
+        for (const [k, xs] of Object.entries(vistos)) observados[k] = { n: xs.length, max: Math.round(Math.max(...xs)), prom: Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) }
+        // Lo que se sabe por contrato (anotado en mouv-proxy): Mouv cobra
+        // $800 fijos por Bre-B (+0,10% que ya se cobra al recibir), Coinsenda
+        // $2.000 por Bre-B y $1.000 por banco. Finity no está escrito en
+        // ningún lado: sale de lo observado o lo escribe el dueño.
+        const conocidos: Record<string, number | null> = { 'breb.mouv': envNum('BREB_MOUV_FIXED') ?? 800, 'breb.finity': null, 'breb.coinsenda': 2000, 'ach.finity': null, 'ach.coinsenda': 1000 }
+        const sugerida = normalizarBase({
+          costos: Object.fromEntries((['breb', 'ach'] as const).map(r => [r, Object.fromEntries(PROVEEDORES_RIEL[r].map(([p]) => [p, Math.max(conocidos[`${r}.${p}`] ?? 0, observados[`${r}.${p}`]?.max ?? 0)]))])),
+          costoAml: costoAmlSarblock, utilidad: { breb: 0, ach: 0 },
+        })
+        return json({ ok: true, tarifas: await leerTarifasEnvio(db, true), porCuenta, observados, conocidos, sugerida, costoAmlSarblock,
+          proveedores: PROVEEDORES_RIEL })
+      }
+
       if (body.action === 'coinsenda_config_guardar') {
         const cuentaCs = cuentaCoinsendaDe(body.cuenta)
         const email = String(body.email ?? '').trim().toLowerCase().slice(0, 120)

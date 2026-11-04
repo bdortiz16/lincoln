@@ -339,6 +339,26 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
     return () => { vivo = false; };
   }, [currentUser?.id, isSendModalOpen]);
 
+  // Lo que cobra el servidor por cada ruta (BREB, BREB2…, ACH, ACH3…). La
+  // lista de cuentas mostraba $1.200 y $2.500 escritos aquí, y si el dueño
+  // fija otra tarifa (Admin → Configuración → Tarifa por envío) el cliente
+  // veía un precio y se le cobraba otro. Los números de aquí quedan solo de
+  // respaldo mientras llega la respuesta.
+  const [tarifasSrv, setTarifasSrv] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+      if (!isSendModalOpen || !currentUser?.id) return;
+      let vivo = true;
+      callMouvProxy({ action: 'limite_envio', user_id: currentUser.id, userId: currentUser.id })
+          .then((r: any) => { if (vivo && r?.ok && r.tarifas && typeof r.tarifas === 'object') setTarifasSrv(r.tarifas); })
+          .catch(() => {});
+      return () => { vivo = false; };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSendModalOpen, currentUser?.id]);
+  const tarifa = (ruta: string, respaldo: number) => {
+      const v = Number(tarifasSrv?.[ruta]);
+      return Number.isFinite(v) && v > 0 ? v : respaldo;
+  };
+
   // Cotizar la comisión del riel al entrar a Confirmar (paso 4 · banco).
   useEffect(() => {
       if (!(sendStep === 4 && sendMode === 'bank' && currentUser?.id)) { setPayoutQuote(null); return; }
@@ -646,8 +666,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           // en el cargue). ACH = fijo $2.500. Si el servidor ya cotizó
           // (payoutQuote), se usa ese valor exacto.
           const feeCop = isBreb
-              ? Number(payoutQuote?.feeCop ?? (cuenta3B ? 2500 : 1200))
-              : Number(payoutQuote?.feeCop ?? 2500);
+              ? Number(payoutQuote?.feeCop ?? tarifa(cuenta2 ? 'BREB2' : nCs ? `BREB${nCs}` : 'BREB', cuenta3B ? 2500 : 1200))
+              : Number(payoutQuote?.feeCop ?? tarifa(nCs ? `ACH${nCs}` : 'ACH', 2500));
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
               showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : nCs ? `Cuenta ${nCs}` : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
@@ -703,7 +723,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                   // desenlaceDesconocido: el proveedor no confirmó. Se dice tal
                   // cual ("lo estamos verificando, no lo repitas"); antes salía
                   // el verde "Envío en camino" igual que un envío aceptado.
-                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? (isBreb && !cuenta3B ? 1200 : 2500)), rail, viaBreb: isBreb, cuentaBreb, cuentaAch, at: new Date().toISOString(), desconocido: !!r?.desenlaceDesconocido, message: r?.desenlaceDesconocido ? String(r?.message ?? '') : undefined });
+                  setSendResult({ ok: true, providerRef: r?.providerRef ?? null, feeCop: Number(r?.feeCop ?? feeCop), rail, viaBreb: isBreb, cuentaBreb, cuentaAch, at: new Date().toISOString(), desconocido: !!r?.desenlaceDesconocido, message: r?.desenlaceDesconocido ? String(r?.message ?? '') : undefined });
                   // Arranca la vigilancia rápida: 4 minutos preguntando cada 12 s
                   // por el desenlace de ESTE envío. Si se devolvió, el cliente
                   // se entera mientras todavía está en la pantalla.
@@ -1094,24 +1114,24 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           type CuentaRiel = { key: 'breb' | 'breb2' | 'breb3' | 'breb4'; n: number; rail: string; railLabel: string; fee: number };
                           const conCs = !metodos && !saldoUnificado;
                           const BREB_CUENTAS: CuentaRiel[] = ([
-                              { key: 'breb', n: 1, rail: 'COP_BREB', railLabel: 'Bre-B', fee: 1200 },
-                              { key: 'breb2', n: 2, rail: 'COP_ACH', railLabel: 'ACH', fee: 1200 },
+                              { key: 'breb', n: 1, rail: 'COP_BREB', railLabel: 'Bre-B', fee: tarifa('BREB', 1200) },
+                              { key: 'breb2', n: 2, rail: 'COP_ACH', railLabel: 'ACH', fee: tarifa('BREB2', 1200) },
                               // Cuentas 3 y 4: con el Saldo Cuenta 3 (COP_C3) / Saldo
                               // Cuenta 4 (COP_C4), cuando el admin las activa.
-                              ...(c3.breb && conCs ? [{ key: 'breb3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 }] : []),
-                              ...(c4.breb && conCs ? [{ key: 'breb4' as const, n: 4, rail: 'COP_C4', railLabel: 'Cuenta 4', fee: 2500 }] : []),
+                              ...(c3.breb && conCs ? [{ key: 'breb3' as const, n: 3, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: tarifa('BREB3', 2500) }] : []),
+                              ...(c4.breb && conCs ? [{ key: 'breb4' as const, n: 4, rail: 'COP_C4', railLabel: 'Cuenta 4', fee: tarifa('BREB4', 2500) }] : []),
                           ] as CuentaRiel[]).filter(c => permitido(c.key));
                           // ACH · Cuenta 3 y ACH · Cuenta 4, cuando el admin las activa.
                           type CuentaAch = { key: 'ach3' | 'ach4'; n: 3 | 4; rail: string; railLabel: string; fee: number };
                           const ACH_EXTRA: CuentaAch[] = [
-                              ...(c3.ach && conCs ? [{ key: 'ach3' as const, n: 3 as const, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: 2500 }] : []),
-                              ...(c4.ach && conCs ? [{ key: 'ach4' as const, n: 4 as const, rail: 'COP_C4', railLabel: 'Cuenta 4', fee: 2500 }] : []),
+                              ...(c3.ach && conCs ? [{ key: 'ach3' as const, n: 3 as const, rail: 'COP_C3', railLabel: 'Cuenta 3', fee: tarifa('ACH3', 2500) }] : []),
+                              ...(c4.ach && conCs ? [{ key: 'ach4' as const, n: 4 as const, rail: 'COP_C4', railLabel: 'Cuenta 4', fee: tarifa('ACH4', 2500) }] : []),
                           ];
                           const yJoin = (xs: string[]) => xs.length <= 1 ? (xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} y ${xs[xs.length - 1]}`;
                           const unirCuentas = (ns: number[]) => ns.length === 2 ? `Cuenta ${ns[0]} y Cuenta ${ns[1]}` : `Cuenta ${yJoin(ns.map(String))}`;
                           const textoProx = (ns: number[]) => ns.length ? ` · ${yJoin(ns.map(n => `la ${n}`))}, próximamente` : '';
                           const METHODS = ([
-                              { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: 2500 },
+                              { key: 'ach', title: 'ACH tradicional', pill: null, time: `Ciclos ACH · L–V sin festivos · ${achEtaShort()}`, rail: 'COP_ACH', railLabel: 'ACH', fee: tarifa('ACH', 2500) },
                               { key: 'pay', title: 'A otro usuario de Lincoin', pill: 'SIN COMISIÓN', time: 'Por ID o correo · instantáneo, 24/7', rail: 'COP', railLabel: 'Saldo Lincoin', fee: 0 },
                               // "Retiro en punto físico" se quitó de la lista (1 nov):
                               // no se ofrece a los clientes.
@@ -1746,7 +1766,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               const bal = getBalance(n >= 3 ? railCuenta(n) : rc);
                                               const sel = brebCuenta === n;
                                               // La comisión de cada cuenta: la cotizada si es la elegida.
-                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : n >= 3 ? 2500 : 1200;
+                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : tarifa(n === 1 ? 'BREB' : `BREB${n}`, n >= 3 ? 2500 : 1200);
                                               const alcanza = bal >= amt + feeN;
                                               const bloqueada = !sel && !alcanza;
                                               return (
@@ -1774,7 +1794,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           {nsAch.map(n => {
                                               const bal = getBalance(n >= 3 ? railCuenta(n) : 'COP_ACH');
                                               const sel = achCuenta === n;
-                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : 2500;
+                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : tarifa(n === 1 ? 'ACH' : `ACH${n}`, 2500);
                                               const alcanza = bal >= amt + feeN;
                                               // Beneficiario en validación: por la Cuenta 1 todavía no.
                                               const enValidacion = n === 1 && enValidacionAch(sendContact);

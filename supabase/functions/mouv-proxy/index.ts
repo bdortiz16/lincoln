@@ -28,6 +28,7 @@ import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { requireMfaSession } from '../_shared/admin-auth.ts'
 import { cuentaCoinsendaDe, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
+import { leerTarifasEnvio, tarifaFija } from '../_shared/tarifas-envio.ts'
 import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro } from '../_shared/coinsenda.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
@@ -171,7 +172,7 @@ function mensajeFalloBreb2(fb: ResultadoBreb2, debitado: boolean): string {
 async function reembolsoPermitido(tx: any, ref: string, origen: string): Promise<{ ok: boolean; refund: number }> {
   const rd = (tx.raw_data ?? {}) as Record<string, any>
   const amount = Number(tx.amount ?? 0)
-  const feeMax = Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(amount), BREB3_FEE_COP, ACH3_FEE_COP, BREB4_FEE_COP, ACH4_FEE_COP)
+  const feeMax = await topeComisionReembolso(amount)
   const fee = Math.min(Math.max(0, Number(rd.feeCop ?? 0) || 0), feeMax)
   const refund = Number((amount + fee).toFixed(2))
   if (!ref) return { ok: true, refund }
@@ -1190,6 +1191,34 @@ const BREB4_FEE_COP = Number(Deno.env.get('BREB4_FEE_COP') ?? '') || 2500
 const ACH4_FEE_COP = Number(Deno.env.get('ACH4_FEE_COP') ?? '') || 2500
 const feeCoinsenda = (cuenta: CuentaCoinsenda, rail: 'BREB' | 'ACH') =>
   cuenta === 4 ? (rail === 'BREB' ? BREB4_FEE_COP : ACH4_FEE_COP) : (rail === 'BREB' ? BREB3_FEE_COP : ACH3_FEE_COP)
+
+// ── La tarifa que paga el cliente por un envío ───────────────────────
+// Por ruta: BREB (Cuenta 1), BREB2 (Finity), BREB3/BREB4 (Coinsenda), ACH,
+// ACH3, ACH4. Si el dueño fijó la tarifa por riel (Admin → Configuración →
+// Tarifa por envío: el costo más alto de los proveedores + la consulta AML),
+// esa manda en TODAS las cuentas del riel. Si no, cada cuenta cobra lo de
+// antes. La cotización y el cobro pasan por aquí: no pueden diferir.
+async function tarifaEnvio(ruta: string, amount?: number): Promise<number> {
+  const fija = tarifaFija(await leerTarifasEnvio(db), ruta.startsWith('BREB') ? 'BREB' : 'ACH')
+  if (fija != null) return fija
+  switch (ruta) {
+    case 'BREB2': return BREB2_FEE_COP
+    case 'BREB3': return feeCoinsenda(3, 'BREB')
+    case 'BREB4': return feeCoinsenda(4, 'BREB')
+    case 'ACH3': return feeCoinsenda(3, 'ACH')
+    case 'ACH4': return feeCoinsenda(4, 'ACH')
+    case 'ACH': return ACH_FEE_COP
+    default: return brebFeeCop(amount)
+  }
+}
+// La comisión más alta que se puede devolver en un reembolso: la mayor de
+// las tarifas de cada cuenta y de las tarifas fijas que hayan estado vigentes
+// (topeReembolso no baja nunca: un envío viejo cobrado más caro se devuelve
+// completo aunque hoy la tarifa sea menor).
+async function topeComisionReembolso(amount: number): Promise<number> {
+  const t = await leerTarifasEnvio(db)
+  return Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(amount), BREB3_FEE_COP, ACH3_FEE_COP, BREB4_FEE_COP, ACH4_FEE_COP, t?.topeReembolso ?? 0)
+}
 
 // ── Cuentas 3 y 4 (Coinsenda) ────────────────────────────────────────
 // ¿Está activa para los clientes? La enciende el dueño en Admin → Coinsenda
@@ -2527,7 +2556,11 @@ serve(async (req: Request) => {
     const tPersona = await topeAchDe(dueno, 'persona')
     const BREB_MAX = Number(Deno.env.get('BREB_MAX_COP') ?? '12000000') || 12000000
     const BREB2_MAX = Number(Deno.env.get('BREB2_MAX_COP') ?? '') || BREB_MAX
-    return json(200, { ok: true, achMax: t.max, achMaxPersona: tPersona.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: BREB2_FEE_COP })
+    // Lo que cuesta cada ruta, para que la pantalla de envío no muestre un
+    // número fijo distinto al que cobra el servidor.
+    const rutas = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH', 'ACH3', 'ACH4']
+    const tarifas = Object.fromEntries(await Promise.all(rutas.map(async r => [r, await tarifaEnvio(r)] as const)))
+    return json(200, { ok: true, achMax: t.max, achMaxPersona: tPersona.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: tarifas.BREB2, tarifas })
   }
 
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
@@ -3844,7 +3877,7 @@ serve(async (req: Request) => {
 
     // La comisión de la fila con el mismo tope que el resto de reembolsos: una
     // fila con feeCop inflado no devuelve más de lo que se cobró de verdad.
-    const feeMaxFR = Math.max(ACH_FEE_COP, BREB2_FEE_COP, BREB_FEE_COP, brebFeeCop(Number(tx.amount ?? 0)))
+    const feeMaxFR = await topeComisionReembolso(Number(tx.amount ?? 0))
     const refund = Number(tx.amount ?? 0) + Math.min(Math.max(0, Number(rd.feeCop ?? 0) || 0), feeMaxFR)
     if (!(refund > 0)) return json(400, { error: 'bad_amount', refund })
     const railCol = String(tx.currency ?? 'COP_BREB')
@@ -4016,6 +4049,7 @@ serve(async (req: Request) => {
   }
 
   // ── Cotización de comisión para el paso Confirmar del cliente ──
+  // Sale de tarifaEnvio, igual que el cobro. Sin tarifa fija del dueño:
   // BREB → comisión FIJA Lincoin ($1.200 por envío; el costo Mouv lo
   //        absorbe Lincoin — al cliente ya se le cobró 0,10% al recibir
   //        el cargue). No depende de cotizar a Mouv en vivo.
@@ -4023,21 +4057,12 @@ serve(async (req: Request) => {
   if (action === 'payout_quote') {
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount' })
-    const rail = String(payload.rail ?? 'BREB').toUpperCase()
-    if (rail === 'BREB2') {
-      return json(200, { ok: true, rail: 'BREB2', provider: 'lincoin', feeCop: BREB2_FEE_COP, fixedCop: BREB2_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + BREB2_FEE_COP })
-    }
-    // Cuentas 3 y 4 (Coinsenda): precio fijo de Lincoin por envío, igual que las otras.
-    if (rail === 'BREB3' || rail === 'ACH3' || rail === 'BREB4' || rail === 'ACH4') {
-      const fee = feeCoinsenda(rail.endsWith('4') ? 4 : 3, rail.startsWith('BREB') ? 'BREB' : 'ACH')
-      return json(200, { ok: true, rail, provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
-    }
-    if (rail === 'BREB') {
-      const fee = brebFeeCop(amount)
-      return json(200, { ok: true, rail: 'BREB', provider: 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
-    }
-    // ACH: comisión FIJA única ($2.500) — SIN componente variable.
-    return json(200, { ok: true, rail: 'ACH', feeCop: ACH_FEE_COP, fixedCop: ACH_FEE_COP, variableCop: 0, ivaCop: 0, totalCop: amount + ACH_FEE_COP })
+    const pedido = String(payload.rail ?? 'BREB').toUpperCase()
+    const rail = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH', 'ACH3', 'ACH4'].includes(pedido) ? pedido : 'ACH'
+    // Todas fijas por envío, sin componente variable: la de la cuenta, o la
+    // tarifa fija por riel si el dueño la activó (tarifaEnvio).
+    const fee = await tarifaEnvio(rail, amount)
+    return json(200, { ok: true, rail, provider: rail === 'ACH' ? 'finity' : 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
   }
 
   // ── dispersión BREB (Mouv) / ACH (Finity) ──
@@ -4547,7 +4572,8 @@ serve(async (req: Request) => {
       }
     }
 
-    // 1) Comisión que SE COBRA AL CLIENTE
+    // 1) Comisión que SE COBRA AL CLIENTE (tarifaEnvio). Si el dueño activó
+    //    la tarifa fija por riel, es esa en todas las cuentas. Si no:
     //    BREB → FIJA Lincoin ($1.200 por envío, BREB_FEE_COP). El costo
     //           real de Mouv lo absorbe Lincoin; el 0,10% ya se cobró al
     //           recibir el cargue Bre-B.
@@ -4555,10 +4581,10 @@ serve(async (req: Request) => {
     let feeCop = 0
     let feeDetail: Record<string, unknown> = {}
     if (rail === 'BREB') {
-      feeCop = brebFinity ? BREB2_FEE_COP : cuentaCs ? feeCoinsenda(cuentaCs, 'BREB') : brebFeeCop(amount)
+      feeCop = await tarifaEnvio(brebFinity ? 'BREB2' : cuentaCs ? `BREB${cuentaCs}` : 'BREB', amount)
       feeDetail = { feeCop, feeFixedCop: feeCop, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
-      feeCop = cuentaCs ? feeCoinsenda(cuentaCs, 'ACH') : ACH_FEE_COP
+      feeCop = await tarifaEnvio(cuentaCs ? `ACH${cuentaCs}` : 'ACH', amount)
       feeDetail = { feeCop, feeProvider: porCoinsenda ? 'lincoin' : 'finity' }
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
@@ -5265,9 +5291,11 @@ serve(async (req: Request) => {
         ...(fin.amountMismatch ? { amountMismatch: fin.amountMismatch, needsReview: true } : {}),
         acceptedAt: new Date().toISOString(),
       })
-      await logAudit(userId, `finity.${action}.ok`, { amount, feeCop: fin.feeCop, providerRef: fin.providerRef ?? null })
+      await logAudit(userId, `finity.${action}.ok`, { amount, feeCop, providerRef: fin.providerRef ?? null })
       await notifyTx(txId) // correo "recibimos tu envío · en proceso"
-      return json(200, { ok: true, providerRef: fin.providerRef ?? null, feeCop: fin.feeCop, newBalance })
+      // La comisión que se le debitó (la tarifa vigente), no la constante
+      // que devuelve el camino de Finity.
+      return json(200, { ok: true, providerRef: fin.providerRef ?? null, feeCop, newBalance })
     }
     // ── SIN RESPUESTA CLARA DE FINITY: NO SE REEMBOLSA ──────────────
     // Igual que en Bre-B: un timeout o un 5xx no significan "no salió". Si

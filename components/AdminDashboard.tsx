@@ -92,6 +92,7 @@ import { AdminClientes } from './AdminClientes';
 import { AdminReconcile } from './AdminReconcile';
 import { AdminContabilidad } from './AdminContabilidad';
 import { AdminLimitesEnvio } from './AdminLimitesEnvio';
+import { AdminTarifasEnvio } from './AdminTarifasEnvio';
 import { AdminCupos } from './AdminCupos';
 import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
@@ -4701,6 +4702,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 
   const renderConfig = () => (
     <div className="space-y-6 animate-in fade-in duration-300">
+        <AdminTarifasEnvio />
         <AdminLimitesEnvio />
         {/* Países habilitados — modelo hub multi-país. Controla qué países ven
             los clientes en Enviar/Beneficiarios (Activo), cuáles aparecen como
