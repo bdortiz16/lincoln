@@ -353,6 +353,12 @@ type ModoLote = 'reemitir' | 'comision' | 'directo';
 type ItemLote = { a: Asiento; txId: string; modo: ModoLote; ordenante: ClienteFactura | null };
 type FacturaVivo = { estado: string | null; numero: string | null; error: string | null };
 const ROJO = '#F87171', AMBAR = '#F59E0B';
+// Un movimiento que se cayó DESPUÉS de completarse: el banco rechazó el envío
+// y la plata volvió a la cuenta, o un recaudo se reversó (Devuelto). Si
+// alcanzó a facturarse, esa factura sigue vigente en Siigo y hay que anularla
+// con nota crédito: pasó con envíos que se vieron Completado por horas y el
+// banco había rechazado (2026-11). El servidor ya no emite facturas de estos.
+const ESTADOS_RECHAZO = new Set(['Rechazado', 'Fallido', 'Devuelto']);
 
 const EmisionLoteModal: React.FC<{
   items: ItemLote[]; cfg: any; periodoTxt: string;
@@ -806,6 +812,7 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
   const sinRegistrar: any[] = res?.sin_registrar ?? [];
   const aSiMisma: any[] = res?.a_si_misma ?? [];
   const revertidas: any[] = res?.revertidas ?? [];
+  const rechazadas: any[] = res?.rechazadas ?? [];
   const posibles: any[] = res?.posibles ?? [];
   const nAnular = duplicadas.reduce((s, d) => {
     const vig = (d.facturas as FacturaRev[]).filter(f => !f.anulada);
@@ -886,6 +893,19 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                   <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
                     <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.ajuste ? ' · ajuste de saldo' : d.completo ? ' · revertido completo' : ` · revertido en parte (${monto(d.revertido)})`}</p>
                     {(d.facturas as FacturaRev[]).map(f => fila(f, d.completo ? { txt: 'anular', color: AMBAR } : { txt: 'nota crédito por lo revertido', color: AMBAR }))}
+                  </div>
+                ))}
+              </>
+            )}
+
+            {rechazadas.length > 0 && (
+              <>
+                {titulo(`DE MOVIMIENTOS RECHAZADOS · ${rechazadas.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
+                <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>El movimiento se facturó y después quedó rechazado o devuelto: la plata volvió a la cuenta. Anula estas facturas con una nota crédito por el total en Siigo. Lincoin ya no factura movimientos rechazados.</p>
+                {rechazadas.map(d => (
+                  <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.estado_mov ? ` · ${String(d.estado_mov).toLowerCase()}` : ''}</p>
+                    {(d.facturas as FacturaRev[]).map(f => fila(f, { txt: 'anular', color: AMBAR }))}
                   </div>
                 ))}
               </>
@@ -1003,6 +1023,9 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [filtroDir, setFiltroDir] = useState<'todos' | 'in' | 'out' | 'conv'>('todos');
   // Solo lo que falta facturar (se combina con la dirección y la búsqueda).
   const [soloSinFactura, setSoloSinFactura] = useState(false);
+  // Solo los rechazados (y si se facturaron): se excluye con «Sin factura»,
+  // que es solo de lo completado.
+  const [soloRechazados, setSoloRechazados] = useState(false);
   // Emisión en lote: la lista se congela al abrir, para que refrescar los
   // comprobantes mientras emite no la cambie a mitad.
   const [lote, setLote] = useState<ItemLote[] | null>(null);
@@ -1332,7 +1355,25 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // Mientras no llegan los comprobantes no se sabe qué tiene factura.
   // Lo que está en la cola del lote también está sin factura (todavía).
   const sinFactura = foliosEstado === 'ok' ? listaBase.filter(a => modoLote(a) != null || folios[String(a.tx?.id ?? '')]?.factura?.estado === 'en_cola') : [];
-  const lista = soloSinFactura ? sinFactura : listaBase;
+  // RECHAZADOS: qué pasa con la factura de cada uno. 'anular' = quedó
+  // emitida (vigente en Siigo): se anula con nota crédito. 'verificar' = se
+  // estaba emitiendo cuando se cayó: puede haberse creado en Siigo. Una
+  // rechazada por la DIAN nunca fue válida: no se anula ni se reenvía.
+  const facturaDeRechazo = (a: Asiento): 'anular' | 'verificar' | null => {
+    if (!ESTADOS_RECHAZO.has(a.estado)) return null;
+    const fa = folios[String(a.tx?.id ?? '')]?.factura;
+    if (fa?.estado === 'emitida') return fa.dian === 'rechazada' ? null : 'anular';
+    return fa?.estado === 'emitiendo' ? 'verificar' : null;
+  };
+  const rechazados = listaBase.filter(a => ESTADOS_RECHAZO.has(a.estado));
+  const nRechazados = new Set(rechazados.map(a => String(a.tx.id))).size;
+  const nRechPorAnular = foliosEstado === 'ok' ? new Set(rechazados.filter(a => facturaDeRechazo(a)).map(a => String(a.tx.id))).size : 0;
+  // El aviso de arriba mira todo el periodo (sin la dirección ni la
+  // búsqueda): una factura por anular no se puede esconder con un filtro.
+  const rechPorAnularPeriodo = foliosEstado === 'ok'
+    ? Array.from(new Map<string, Asiento>(enP.filter(a => facturaDeRechazo(a)).map(a => [String(a.tx.id), a] as [string, Asiento])).values())
+    : [] as Asiento[];
+  const lista = soloSinFactura ? sinFactura : soloRechazados ? rechazados : listaBase;
   const mostrados = lista.slice(0, limite);
   // El lote: lo que está sin factura en lo filtrado (periodo, moneda,
   // dirección y búsqueda), un ítem por movimiento.
@@ -1644,7 +1685,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const rotAnt = periodo === 'mes' ? 'el mes anterior' : 'el año anterior';
   const deltaTxt = (d: number | null) => d == null ? (periodo === 'historico' ? 'Todo el historial' : `Sin ${rotAnt} para comparar`) : `${d > 0 ? '+' : ''}${d.toLocaleString('es-CO', { maximumFractionDigits: 1 })} % vs. ${rotAnt}`;
   const fecha = (ts: number) => new Date(ts).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const estadoColor = (s: string) => s === 'Completado' ? C.entra : s === 'Rechazado' || s === 'Fallido' ? C.tenue : C.medio;
+  const estadoColor = (s: string) => s === 'Completado' ? C.entra : ESTADOS_RECHAZO.has(s) ? C.tenue : C.medio;
   const seg = (act: boolean): React.CSSProperties => ({ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 7, border: 'none', cursor: 'pointer', color: act ? C.text : C.sub, background: act ? 'rgba(255,255,255,0.09)' : 'transparent', transition: 'background 120ms, color 120ms' });
   const kpi = (rot: string, valor: string, nota: string, notaColor = C.sub) => (
     <Tarjeta>
@@ -1784,6 +1825,34 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         </div>
       )}
 
+      {/* Rechazados con factura vigente: el movimiento se cayó después de
+          facturarse (el banco rechazó el envío y la plata volvió). La factura
+          sobra y no se va sola: hay que anularla. Se avisa en cualquier
+          sección, con el periodo entero (sin filtros que la escondan). */}
+      {rechPorAnularPeriodo.length > 0 && (
+        <div role="status" style={{ padding: '12px 16px', borderRadius: 12, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.07)', fontFamily: FONT, fontSize: 12.5, color: C.text, lineHeight: 1.55 }}>
+          <b>{rechPorAnularPeriodo.length === 1 ? '1 movimiento rechazado tiene factura vigente' : `${rechPorAnularPeriodo.length} movimientos rechazados tienen factura vigente`}</b>
+          {(() => {
+            const nums = rechPorAnularPeriodo.map(a => folios[String(a.tx.id)]?.factura?.numero).filter(Boolean) as string[];
+            return nums.length ? ` (${nums.slice(0, 4).join(', ')}${nums.length > 4 ? ` y ${nums.length - 4} más` : ''})` : '';
+          })()}
+          {` en ${periodoTxt}. La plata volvió a la cuenta, así que esa factura sobra: anúlala en Siigo con una nota crédito por el total (un documento soporte, con una nota de ajuste). Al leer la nota crédito, Lincoin la muestra tachada como anulada.`}
+          <span className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 8 }}>
+            <button onClick={() => { elegirSeccion('movimientos'); setSoloRechazados(true); setSoloSinFactura(false); setFiltroDir('todos'); setBusca(''); setLimite(25); }}
+              style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.text, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.40)', borderRadius: 7, padding: '5px 11px', cursor: 'pointer' }}>
+              Ver los rechazados
+            </button>
+            {!soloLectura && (
+              <button onClick={reconciliarAhora} disabled={reconciliando} title="Lee en Siigo las notas crédito y marca como anuladas las facturas que ya cubren"
+                style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 7, padding: '5px 11px', cursor: 'pointer', opacity: reconciliando ? 0.5 : 1 }}>
+                {reconciliando ? 'Revisando en Siigo…' : 'Ya hice la nota crédito · revisar'}
+              </button>
+            )}
+          </span>
+          {reconciliadoMsg && !(chequeo && chequeo.sinComprobante > 0) && <span style={{ display: 'block', marginTop: 6, color: C.sub }}>{reconciliadoMsg}</span>}
+        </div>
+      )}
+
       {/* 2. KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
         {kpi('RECIBIDO', fmtMon(recibido, moneda), deltaTxt(dRec), dRec != null && dRec > 0 ? C.entra : C.sub)}
@@ -1887,12 +1956,21 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
             {/* Aparte de la dirección: se combina con ella (p. ej. Enviados
                 sin factura). El número es lo que falta en lo filtrado. */}
             {foliosEstado === 'ok' && (
-              <button onClick={() => { setSoloSinFactura(v => !v); setLimite(25); }} aria-pressed={soloSinFactura}
+              <button onClick={() => { setSoloSinFactura(v => !v); setSoloRechazados(false); setLimite(25); }} aria-pressed={soloSinFactura}
                 title="Movimientos completados que se pueden facturar y todavía no tienen factura emitida"
                 style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 999, cursor: 'pointer', marginLeft: 4, color: soloSinFactura ? C.text : C.sub, background: soloSinFactura ? 'rgba(74,222,128,0.10)' : 'transparent', border: `1px solid ${soloSinFactura ? 'rgba(74,222,128,0.40)' : C.borde}` }}>
                 Sin factura <span style={{ color: soloSinFactura ? C.entra : C.tenue, fontVariantNumeric: 'tabular-nums' }}>· {nSinFactura}</span>
               </button>
             )}
+            {/* Los rechazados se listaban mezclados (tachados) y no se veía
+                cuáles alcanzaron a facturarse. Acá van solos, con lo que hay
+                que anular en rojo. */}
+            <button onClick={() => { setSoloRechazados(v => !v); setSoloSinFactura(false); setLimite(25); }} aria-pressed={soloRechazados}
+              title="Movimientos rechazados o devueltos (la plata volvió a la cuenta) y si alguno quedó con factura que hay que anular"
+              style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '7px 13px', borderRadius: 999, cursor: 'pointer', color: soloRechazados ? C.text : C.sub, background: soloRechazados ? 'rgba(248,113,113,0.10)' : 'transparent', border: `1px solid ${soloRechazados ? 'rgba(248,113,113,0.45)' : nRechPorAnular ? 'rgba(248,113,113,0.35)' : C.borde}` }}>
+              Rechazados <span style={{ color: C.tenue, fontVariantNumeric: 'tabular-nums' }}>· {nRechazados}</span>
+              {nRechPorAnular > 0 && <span style={{ color: ROJO, fontVariantNumeric: 'tabular-nums' }}> · {nRechPorAnular} por anular</span>}
+            </button>
           </div>
           <div className="flex items-center flex-wrap" style={{ gap: 8, maxWidth: '100%' }}>
             {/* La cola del lote trabaja en el servidor: se ve acá aunque se
@@ -1932,9 +2010,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
             <thead><tr>{['FECHA', 'MOVIMIENTO', 'MONTO', 'ESTADO', 'COMPROBANTE', 'FACTURA', ''].map((h, i) => <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: C.tenue, textAlign: i === 2 ? 'right' : 'left', padding: '9px 20px', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
             <tbody>
-              {mostrados.length === 0 && <tr><td colSpan={7} style={{ padding: '18px 20px', fontSize: 12.5, color: C.tenue }}>{soloSinFactura && listaBase.length ? `Todo lo filtrado de ${periodoTxt} ya tiene factura (o no aplica).` : 'Sin movimientos que coincidan.'}</td></tr>}
+              {mostrados.length === 0 && <tr><td colSpan={7} style={{ padding: '18px 20px', fontSize: 12.5, color: C.tenue }}>{soloSinFactura && listaBase.length ? `Todo lo filtrado de ${periodoTxt} ya tiene factura (o no aplica).` : soloRechazados ? `Ningún movimiento rechazado ni devuelto en ${periodoTxt}${filtroDir !== 'todos' || q ? ' con este filtro' : ''}.` : 'Sin movimientos que coincidan.'}</td></tr>}
               {mostrados.map((a, i) => {
-                const rech = a.estado === 'Rechazado' || a.estado === 'Fallido';
+                const rech = ESTADOS_RECHAZO.has(a.estado);
+                const porAnular = facturaDeRechazo(a);
                 const f = folios[String(a.tx.id)];
                 return (
                   <tr key={`${a.tx.id}-${a.dir}-${i}`} className="lincoin-fila-mov" style={{ cursor: onVerMovimiento ? 'pointer' : 'default' }} onClick={() => onVerMovimiento?.(a.tx)}>
@@ -1962,6 +2041,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         if (foliosEstado === 'cargando') return <span style={{ color: C.tenue }}>cargando…</span>;
                         // 'emitiendo' de más de 3 min = se cayó a mitad: se ofrece otra vez.
                         const emitiendoSiigo = fa?.estado === 'emitiendo' && (!fa.at || Date.now() - new Date(fa.at).getTime() < 180000);
+                        // Rechazado mientras se emitía: Siigo pudo crearla.
+                        if (porAnular === 'verificar') return <span style={{ color: AMBAR, fontWeight: 700 }} title="El movimiento se rechazó mientras se emitía la factura: revisa en Siigo si se creó y, si está, anúlala con una nota crédito.">verificar en Siigo</span>;
                         if (emitiendoSiigo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
                         if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad|esperar/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
@@ -2009,7 +2090,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {fa.numero ?? 'factura'}
                             </button>
                             <span style={{ color: '#F87171', fontWeight: 700, fontSize: 11 }}>rechazada DIAN</span>
-                            {!soloLectura && txId && <button onClick={() => reenviarRechazada(txId, fa.numero)} disabled={reenviando === txId}
+                            {/* Un movimiento rechazado no se vuelve a facturar. */}
+                            {!soloLectura && txId && !rech && <button onClick={() => reenviarRechazada(txId, fa.numero)} disabled={reenviando === txId}
                               title="Corrige la fecha y vuelve a enviar a la DIAN la misma factura de Siigo"
                               style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(74,222,128,0.10)', border: '1px solid rgba(74,222,128,0.35)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', opacity: reenviando === txId ? 0.5 : 1 }}>
                               {reenviando === txId ? '…' : 'Volver a emitir'}
@@ -2017,12 +2099,23 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                           </span>
                         );
                         if (fa.estado === 'emitida') return (
-                          <span className="flex items-center" style={{ gap: 6 }}>
+                          <span className="flex items-center flex-wrap" style={{ gap: 6 }}>
                             <button onClick={() => onVerMovimiento?.(a.tx)} title={`${fa.tipo === 'DS' ? 'Documento soporte' : 'Factura de venta'} · ver el documento`}
-                              style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: C.text, background: 'transparent', border: 'none', padding: 0, cursor: onVerMovimiento ? 'pointer' : 'default', textDecoration: 'underline', textUnderlineOffset: 3 }}>
+                              style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: porAnular ? ROJO : C.text, background: 'transparent', border: 'none', padding: 0, cursor: onVerMovimiento ? 'pointer' : 'default', textDecoration: 'underline', textUnderlineOffset: 3 }}>
                               {rotulo}{fa.numero ?? 'emitida'}
                             </button>
                             {fa.url && <a href={fa.url} target="_blank" rel="noopener noreferrer" title="Abrir en Siigo" style={{ color: C.sub, fontSize: 11 }}>↗</a>}
+                            {/* Vigente de un movimiento rechazado: la plata volvió,
+                                la factura sobra. Se anula en Siigo; Lincoin la ve
+                                tachada al leer la nota crédito. */}
+                            {porAnular === 'anular' && (
+                              <span title={fa.tipo === 'DS'
+                                  ? `El movimiento quedó ${a.estado.toLowerCase()} y la plata volvió a la cuenta, pero el documento soporte ${fa.numero ?? ''} sigue vigente. Anúlalo en Siigo con una nota de ajuste al documento soporte por el total.`
+                                  : `El movimiento quedó ${a.estado.toLowerCase()} y la plata volvió a la cuenta, pero la factura ${fa.numero ?? ''} sigue vigente. Anúlala en Siigo con una nota crédito por el total.`}
+                                style={{ fontSize: 10.5, fontWeight: 700, color: ROJO, background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.35)', borderRadius: 999, padding: '2px 8px', whiteSpace: 'nowrap' }}>
+                                {fa.tipo === 'DS' ? 'anular · nota de ajuste' : 'anular · nota crédito'}
+                              </span>
+                            )}
                           </span>
                         );
                         if (fa.estado === 'error') return (
@@ -2054,7 +2147,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
 
       {/* 6. Notas */}
       <p style={{ fontSize: 12, color: C.tenue, margin: 0, lineHeight: 1.55 }}>
-        Cuenta lo Completado y lo Procesando: la plata ya se movió. Lo rechazado se lista tachado y no suma. Una conversión es una salida en una moneda y una entrada en la otra.
+        Cuenta lo Completado y lo Procesando: la plata ya se movió. Lo rechazado o devuelto se lista tachado y no suma; si alcanzó a facturarse, «Rechazados» marca la factura que hay que anular. Una conversión es una salida en una moneda y una entrada en la otra.
         {foliosEstado === 'sin_tabla' && ' Los comprobantes automáticos todavía no están activos en esta cuenta (falta la migración 2026_comprobantes.sql).'}
         {foliosEstado === 'ok' && ' El comprobante de cada operación se emite solo, con número consecutivo, apenas la operación se completa, y llega por correo.'}
       </p>

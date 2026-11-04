@@ -18,7 +18,7 @@ import { descargarReporteContabilidad } from './reporteContabilidad';
 // la misma cuenta que usa la factura: lo que se ve acá es lo que se factura.
 // ─────────────────────────────────────────────
 
-type Pestana = 'resumen' | 'clientes' | 'facturacion' | 'mesa';
+type Pestana = 'resumen' | 'clientes' | 'rechazados' | 'facturacion' | 'mesa';
 type TipoPeriodo = 'mes' | 'mes_pasado' | 'mes_elegido' | 'rango' | '90d' | 'anio' | 'todo';
 // mes: 'AAAA-MM'; desde y hasta: 'AAAA-MM-DD' (días de Colombia, los dos incluidos).
 type Periodo = { tipo: TipoPeriodo; mes?: string; desde?: string; hasta?: string };
@@ -1035,6 +1035,121 @@ async function pedirFacturas(estado: string) {
   return pedirAdmin({ action: 'fact_lincoin_lista', limite: 500, ...(estado ? { estado } : {}) });
 }
 
+// ── Rechazados ──────────────────────────────────────────────
+// Envíos, cargues y conversiones que se cayeron DESPUÉS de completarse (el
+// banco rechazó el envío y la plata volvió; un recaudo se reversó) y si
+// alcanzaron a facturarse: la factura del cliente en su Siigo, o la de
+// Lincoin (propia o dentro de la diaria). El Resumen solo cuenta lo
+// Completado, así que estas facturas no se veían en ningún lado. Solo se
+// listan: anular es con nota crédito en el Siigo de quien la emitió.
+const ACCION_FACTURA: Record<string, { txt: string; cls: string }> = {
+  anular: { txt: 'Anular · nota crédito', cls: 'bg-red-50 text-red-700 border-red-200' },
+  verificar: { txt: 'Verificar en Siigo', cls: 'bg-orange-50 text-orange-700 border-orange-300' },
+};
+const FacturaRech: React.FC<{ f: any; deLincoin?: boolean }> = ({ f, deLincoin }) => {
+  if (!f || (!f.numero && !f.accion && (!f.estado || f.estado === 'omitida'))) return <span className="text-[10px] text-slate-400">Sin factura</span>;
+  const acc = f.accion ? ACCION_FACTURA[f.accion] : null;
+  const tipoDoc = !deLincoin && f.tipo === 'DS' ? 'DS · ' : '';
+  return (
+    <div className="space-y-1">
+      <p className={`font-mono text-[11px] ${acc ? 'text-slate-800 font-semibold' : 'text-slate-400 line-through'}`}>
+        {tipoDoc}{f.numero ?? (f.estado === 'emitiendo' ? 'emitiendo' : f.estado ?? '—')}
+        {deLincoin && f.diaria ? <span className="font-sans not-italic text-[10px] text-slate-400"> · diaria del {fechaDia(f.diaria)}</span> : null}
+      </p>
+      {acc
+        ? <span title={deLincoin
+            ? (f.diaria ? 'La operación va dentro de la factura diaria: la nota crédito va por el valor de esta operación, no por toda la factura.' : 'Anúlala con una nota crédito por el total en el Siigo de Lincoin.')
+            : (f.tipo === 'DS' ? 'El cliente la anula en su Siigo con una nota de ajuste al documento soporte.' : 'El cliente (o su contadora) la anula en su Siigo con una nota crédito por el total.')}
+            className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${acc.cls}`}>{f.diaria && deLincoin && f.accion === 'anular' ? 'Nota crédito parcial' : (f.tipo === 'DS' && !deLincoin && f.accion === 'anular' ? 'Anular · nota de ajuste' : acc.txt)}</span>
+        : <EstadoFactura estado={f.estado === 'emitida' && f.dian === 'rechazada' ? 'omitida' : f.estado} />}
+    </div>
+  );
+};
+
+const Rechazados: React.FC<{ datos: any; cargando: boolean; error: string | null }> = ({ datos, cargando, error }) => {
+  const [q, setQ] = useState('');
+  const [filtro, setFiltro] = useState<'por_anular' | 'todos'>('por_anular');
+  const lista: any[] = datos?.movimientos ?? [];
+  const porAnular = (m: any) => !!(m.facturaCliente?.accion || m.facturaLincoin?.accion);
+  const nPorAnular = lista.filter(porAnular).length;
+  const filtrados = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    return lista
+      .filter(m => filtro === 'todos' || porAnular(m))
+      .filter(m => !n || String(m.cliente ?? '').toLowerCase().includes(n) || String(m.contraparte ?? '').toLowerCase().includes(n)
+        || String(m.facturaCliente?.numero ?? '').toLowerCase().includes(n) || String(m.facturaLincoin?.numero ?? '').toLowerCase().includes(n));
+  }, [lista, q, filtro]);
+  if (error) return <Aviso tono="error">{error}</Aviso>;
+  if (!datos) return <p className="text-sm text-slate-400">{cargando ? 'Cargando…' : 'Sin datos.'}</p>;
+  const t = datos.totales ?? {};
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Kpi titulo="Rechazados o devueltos" valor={String(t.movimientos ?? 0)} detalle={`${t.clientes ?? 0} cliente${t.clientes === 1 ? '' : 's'} · la plata volvió a la cuenta`} />
+        <Kpi titulo="Por anular" valor={String(nPorAnular)} acento={false} detalle={nPorAnular ? 'Con una factura vigente que sobra' : 'Ninguna factura vigente'} />
+        <Kpi titulo="Facturas del cliente" valor={String(t.facturaCliente ?? 0)} detalle="En el Siigo de cada cliente: la anula el cliente o su contadora" />
+        <Kpi titulo="Facturas de Lincoin" valor={String(t.facturaLincoin ?? 0)} detalle="En el Siigo de Lincoin: nota crédito de Lincoin" />
+      </div>
+      {nPorAnular > 0 && (
+        <Aviso tono="error">
+          {nPorAnular === 1 ? '1 movimiento rechazado tiene' : `${nPorAnular} movimientos rechazados tienen`} una factura vigente. La plata volvió a la cuenta del cliente, así que esa factura sobra: se anula con una nota crédito por el total en el Siigo de quien la emitió (si va dentro de una factura diaria de Lincoin, la nota crédito es solo por esa operación). Lincoin ya no emite facturas de movimientos rechazados.
+        </Aviso>
+      )}
+      {datos.truncado && <Aviso>Hay más de 5.000 movimientos rechazados en el período: se listan los más recientes. Elige un período más corto.</Aviso>}
+      {(!datos.conComprobantes || !datos.conFacturasLincoin) && <Aviso>No se pudo leer {!datos.conComprobantes ? 'el estado de las facturas de los clientes' : 'el estado de las facturas de Lincoin'}: la columna puede salir incompleta.</Aviso>}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1.5">
+          {([['por_anular', `Por anular · ${nPorAnular}`], ['todos', `Todos · ${lista.length}`]] as const).map(([k, l]) => (
+            <button key={k} onClick={() => setFiltro(k)}
+              className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
+          ))}
+        </div>
+        <div className="relative flex-1 min-w-[220px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por cliente, beneficiario o número de factura"
+            className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-sm bg-white" />
+        </div>
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <table className="w-full text-xs min-w-[920px]">
+          <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
+            <tr>
+              <th className="text-left px-4 py-2.5">Fecha</th>
+              <th className="text-left px-3 py-2.5">Cliente</th>
+              <th className="text-left px-3 py-2.5">Movimiento</th>
+              <th className="text-right px-3 py-2.5">Monto</th>
+              <th className="text-left px-3 py-2.5">Estado</th>
+              <th className="text-left px-3 py-2.5">Factura del cliente</th>
+              <th className="text-left px-4 py-2.5">Factura Lincoin</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {!filtrados.length && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : filtro === 'por_anular' && lista.length ? 'Ningún movimiento rechazado del período tiene factura vigente.' : 'Sin movimientos rechazados ni devueltos en el período.'}</td></tr>}
+            {filtrados.map(m => (
+              <tr key={m.id} className="hover:bg-slate-50">
+                <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(m.created_at)}</td>
+                <td className="px-3 py-2.5"><p className="font-semibold text-slate-800 truncate max-w-[200px]">{m.cliente}</p></td>
+                <td className="px-3 py-2.5">
+                  <p className="font-semibold text-slate-700">{m.tipo}</p>
+                  {m.contraparte && <p className="text-[10px] text-slate-400 truncate max-w-[220px]">{m.contraparte}</p>}
+                </td>
+                <td className="px-3 py-2.5 text-right font-semibold text-slate-400 line-through whitespace-nowrap">{String(m.currency ?? '').toUpperCase().startsWith('COP') ? cop(m.amount) : `${usd(m.amount)} ${String(m.currency ?? '').split('_')[0]}`}</td>
+                <td className="px-3 py-2.5">
+                  <p className="font-bold text-[10px] uppercase tracking-wider text-red-600">{m.status}</p>
+                  <p className="text-[10px] text-slate-400">{m.reembolsoExterno ? 'reembolsado a mano' : m.reembolsado ? 'reembolsado' : m.reversado ? 'reversado' : 'sin reembolso marcado'}</p>
+                  {m.motivo && <p className="text-[10px] text-slate-400 truncate max-w-[200px]" title={String(m.motivo)}>{String(m.motivo)}</p>}
+                </td>
+                <td className="px-3 py-2.5"><FacturaRech f={m.facturaCliente} /></td>
+                <td className="px-4 py-2.5"><FacturaRech f={m.facturaLincoin} deLincoin /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 // ── Contenedor ──────────────────────────────────────────────
 export const AdminContabilidad: React.FC = () => {
   // Entrar a Contabilidad abre SIEMPRE el Resumen. Antes se recordaba la
@@ -1086,11 +1201,34 @@ export const AdminContabilidad: React.FC = () => {
     else setError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudo leer la contabilidad.'));
   }, [sel.clave, sel.valido]);
   useEffect(() => { if (pestana === 'resumen' || pestana === 'clientes') cargar(); }, [cargar, pestana]);
+  // Rechazados del período: su pestaña, y el aviso del Resumen (una factura
+  // vigente de un movimiento rechazado no puede quedar escondida en otra
+  // pestaña). Mismo cuidado que arriba: solo cuenta el último pedido.
+  const [rech, setRech] = useState<any | null>(null);
+  const [rechError, setRechError] = useState<string | null>(null);
+  const [rechCargando, setRechCargando] = useState(false);
+  const pedidoRech = React.useRef(0);
+  const cargarRech = useCallback(async () => {
+    const yo = ++pedidoRech.current;
+    setRechCargando(true); setRechError(null); setRech(null);
+    if (!sel.valido) { setRechCargando(false); return; }
+    const r = await pedirAdmin({ action: 'contabilidad_rechazados', ...(sel.desde ? { desde: sel.desde } : {}), ...(sel.hasta ? { hasta: sel.hasta } : {}) });
+    if (yo !== pedidoRech.current) return;
+    setRechCargando(false);
+    if (r?.ok && (r.desde ?? '') === (sel.desde ?? '') && (r.hasta ?? '') === (sel.hasta ?? '')) setRech(r);
+    else if (r?.ok) setRechError('La respuesta no corresponde al período elegido. Actualiza.');
+    else setRechError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudieron leer los rechazados.'));
+  }, [sel.clave, sel.valido]);
+  useEffect(() => { if (pestana === 'resumen' || pestana === 'rechazados') cargarRech(); }, [cargarRech, pestana]);
+  const rechPorAnular = ((rech?.movimientos ?? []) as any[]).filter(m => m.facturaCliente?.accion || m.facturaLincoin?.accion).length;
+  const conPeriodo = pestana === 'resumen' || pestana === 'clientes' || pestana === 'rechazados';
+  const actualizar = () => { if (pestana === 'rechazados') cargarRech(); else { cargar(); if (pestana === 'resumen') cargarRech(); } };
   useEffect(() => { if (!aviso) return; const t = setTimeout(() => setAviso(null), 6000); return () => clearTimeout(t); }, [aviso]);
 
   const PESTANAS: { id: Pestana; nombre: string; icono: React.ElementType }[] = [
     { id: 'resumen', nombre: 'Resumen', icono: BarChart3 },
     { id: 'clientes', nombre: 'Clientes', icono: Users },
+    { id: 'rechazados', nombre: 'Rechazados', icono: AlertTriangle },
     { id: 'facturacion', nombre: 'Facturación Siigo', icono: Receipt },
     { id: 'mesa', nombre: 'Mesa OTC', icono: ArrowLeftRight },
   ];
@@ -1102,11 +1240,12 @@ export const AdminContabilidad: React.FC = () => {
           {PESTANAS.map(p => (
             <button key={p.id} onClick={() => cambiar(p.id)}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${pestana === p.id ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-              <p.icono size={14} className={pestana === p.id ? 'text-[#16A34A]' : ''} /> {p.nombre}
+              <p.icono size={14} className={pestana === p.id ? (p.id === 'rechazados' ? 'text-red-600' : 'text-[#16A34A]') : ''} /> {p.nombre}
+              {p.id === 'rechazados' && rechPorAnular > 0 && <span className="ml-0.5 text-[10px] font-bold text-white bg-red-600 rounded-full px-1.5 py-px">{rechPorAnular}</span>}
             </button>
           ))}
         </div>
-        {(pestana === 'resumen' || pestana === 'clientes') && (
+        {conPeriodo && (
           <div className="flex items-center gap-2 flex-wrap justify-end">
             <select value={periodo.tipo} onChange={e => cambiarTipo(e.target.value as TipoPeriodo)} aria-label="Período" className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-700">
               {TIPOS_PERIODO.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
@@ -1125,16 +1264,16 @@ export const AdminContabilidad: React.FC = () => {
                   className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-700" />
               </div>
             )}
-            <button onClick={cargar} disabled={cargando} className="p-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Actualizar"><RefreshCw size={14} className={cargando ? 'animate-spin' : ''} /></button>
+            <button onClick={actualizar} disabled={pestana === 'rechazados' ? rechCargando : cargando} className="p-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Actualizar"><RefreshCw size={14} className={(pestana === 'rechazados' ? rechCargando : cargando) ? 'animate-spin' : ''} /></button>
             {pestana === 'resumen' && <BotonInforme clientes={datos?.clientes ?? []} sel={sel} listo={!cargando && !!datos} onAviso={(m, ok) => setAviso({ m, ok })} />}
           </div>
         )}
       </div>
 
-      {(pestana === 'resumen' || pestana === 'clientes') && (
+      {conPeriodo && (
         <p className="text-[11px] text-slate-500 -mt-2">
           {sel.valido
-            ? <>Período: <span className="font-semibold text-slate-700">{sel.texto}</span> · hora de Colombia{cargando ? ' · cargando…' : ''}</>
+            ? <>Período: <span className="font-semibold text-slate-700">{sel.texto}</span> · hora de Colombia{(pestana === 'rechazados' ? rechCargando : cargando) ? ' · cargando…' : ''}</>
             : <span className="text-red-600 font-semibold">La fecha inicial tiene que ser anterior o igual a la final.</span>}
         </p>
       )}
@@ -1150,7 +1289,14 @@ export const AdminContabilidad: React.FC = () => {
       {(pestana === 'resumen' || pestana === 'clientes') && datos?.truncado && <Aviso>Hay más de 40.000 movimientos en el período: los totales cubren solo los más recientes. Elegí un período más corto.</Aviso>}
       {(pestana === 'resumen' || pestana === 'clientes') && datos && !datos.conFacturas && <Aviso>El estado de las facturas no se puede mostrar todavía: falta correr la migración 2026_zz9_facturacion_lincoin.sql.</Aviso>}
 
+      {pestana === 'resumen' && rechPorAnular > 0 && (
+        <Aviso tono="error">
+          <span>{rechPorAnular === 1 ? '1 movimiento rechazado o devuelto tiene' : `${rechPorAnular} movimientos rechazados o devueltos tienen`} factura vigente en el período (del cliente o de Lincoin): hay que anularla con nota crédito. </span>
+          <button onClick={() => cambiar('rechazados')} className="font-bold underline underline-offset-2">Ver rechazados</button>
+        </Aviso>
+      )}
       {pestana === 'resumen' && <Resumen datos={datos} cargando={cargando} />}
+      {pestana === 'rechazados' && <Rechazados datos={rech} cargando={rechCargando} error={rechError} />}
       {pestana === 'clientes' && <Clientes datos={datos} cargando={cargando} sel={sel} onAviso={(m, ok) => { setAviso({ m, ok }); cargar(); }} />}
       {pestana === 'facturacion' && <Facturacion onAviso={(m, ok) => setAviso({ m, ok })} />}
       {pestana === 'mesa' && <AdminOtcSection />}

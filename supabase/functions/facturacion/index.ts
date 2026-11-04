@@ -685,10 +685,27 @@ const motivoAjuste = (tipo: string, rd: any): string | null =>
   tipo === 'adjustment' ? MSG_AJUSTE : rd?.reverso?.anulado === true ? MSG_CARGUE_REVERTIDO : null
 const montoRevertido = (rd: any): number => rd?.reverso && rd.reverso.anulado !== true ? Math.max(0, Number(rd.reverso.montoCop) || 0) : 0
 async function rawDataVigente(txId: unknown): Promise<any> {
-  if (!txId) return {}
-  const { data } = await db.from('transactions').select('raw_data').eq('id', String(txId)).maybeSingle()
-  return (data as any)?.raw_data ?? {}
+  return (await txVigente(txId)).raw_data
 }
+async function txVigente(txId: unknown): Promise<{ status: string; raw_data: any }> {
+  if (!txId) return { status: '', raw_data: {} }
+  const { data } = await db.from('transactions').select('status, raw_data').eq('id', String(txId)).maybeSingle()
+  return { status: String((data as any)?.status ?? ''), raw_data: (data as any)?.raw_data ?? {} }
+}
+
+// ── Movimientos rechazados: no se facturan ───────────────────────
+// El comprobante (y la factura) salen cuando la operación queda Completado.
+// Pero una operación puede caerse DESPUÉS: el banco rechaza el envío y la
+// plata vuelve a la cuenta (reembolso: queda Rechazado con refunded), o un
+// recaudo se reversa (Devuelto). Pasó con envíos que el proveedor rechazó y
+// se vieron Completado por horas (2026-11): alcanzaron a facturarse. Ese
+// movimiento ya no existe para la contabilidad: una factura que quedó en
+// cola o con error no se emite, y una ya emitida se anula con nota crédito
+// (la lista «Rechazados» de Contabilidad y «Revisar duplicadas» la señalan).
+const ESTADOS_RECHAZO = new Set(['Rechazado', 'Fallido', 'Devuelto'])
+const MSG_RECHAZADO = 'El movimiento quedó rechazado (la plata volvió a la cuenta): no lleva factura.'
+const esMovRechazado = (status: unknown, rd: any) =>
+  ESTADOS_RECHAZO.has(String(status ?? '')) || rd?.refunded === true || rd?.reversado === true
 
 function partirNit(doc: string): { identification: string; check_digit?: string } {
   if (doc.length === 10 && dvNit(doc.slice(0, 9)) === Number(doc[9])) return { identification: doc.slice(0, 9), check_digit: doc[9] }
@@ -1052,9 +1069,10 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   // camino (se avisa en «Revisar duplicadas»); una anulada queda anulada.
   const tipo = String((comp as any).tipo ?? '')
   const esSalida = ['dispersion', 'send', 'pay_sent', 'otc_withdraw'].includes(tipo)
-  const rdVigente = await rawDataVigente((comp as any).transaction_id)
+  const vig = await txVigente((comp as any).transaction_id)
+  const rdVigente = vig.raw_data
   {
-    let nunca = motivoAjuste(tipo, rdVigente)
+    let nunca = esMovRechazado(vig.status, rdVigente) ? MSG_RECHAZADO : motivoAjuste(tipo, rdVigente)
     if (!nunca) {
       const mov = contraparteDe(comp, cfg ?? {})
       if (esDePropios(mov, await documentosPropios(userId))) nunca = MSG_CUENTA_PROPIA(mov, esSalida)
@@ -2092,9 +2110,12 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
   const reversoDe = new Map<string, any>()
   const txIds = [...comps.values()].map(c => String(c.transaction_id ?? '')).filter(Boolean)
   for (let i = 0; i < txIds.length; i += 200) {
-    const { data } = await db.from('transactions').select('id, type, reverso:raw_data->reverso').in('id', txIds.slice(i, i + 200))
-    for (const t of (data ?? []) as any[]) reversoDe.set(String(t.id), { type: t.type, reverso: t.reverso ?? null })
+    const { data } = await db.from('transactions').select('id, type, status, reverso:raw_data->reverso, refunded:raw_data->refunded, reversado:raw_data->reversado').in('id', txIds.slice(i, i + 200))
+    for (const t of (data ?? []) as any[]) reversoDe.set(String(t.id), { type: t.type, reverso: t.reverso ?? null, status: t.status, rechazado: esMovRechazado(t.status, { refunded: t.refunded, reversado: t.reversado }) })
   }
+  // Vigentes de un movimiento que después quedó rechazado (la plata volvió):
+  // se anulan completas con nota crédito.
+  const rechazadas: any[] = []
   const duplicadas: any[] = []
   const sinRegistrar: any[] = []
   // Vigentes a nombre de la misma empresa: se anulan con nota crédito.
@@ -2130,10 +2151,12 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
     // por lo que quedó; esa está bien.
     const sobran = completo ? vigentes : vigentes.filter(f => !(f.registrada && c.factura_at && rev?.vinculadoAt && Date.parse(c.factura_at) > Date.parse(rev.vinculadoAt)))
     if (revertida && sobran.length) revertidas.push({ ...mov, ajuste: esAjuste, completo, revertido: esAjuste ? null : Number(rev?.montoCop) || 0, facturas: sobran })
+    const rechazado = txR?.rechazado === true
+    if (rechazado && vigentes.length) rechazadas.push({ ...mov, estado_mov: txR?.status ?? null, facturas: vigentes })
     if (vigentes.length >= 2) duplicadas.push({ ...mov, facturas: lista })
-    // Una que se tiene que anular (a la misma empresa, o de un ajuste) no se
-    // ofrece registrar.
-    else if (vigentes.length === 1 && !propias.length && !revertida && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
+    // Una que se tiene que anular (a la misma empresa, de un ajuste o de un
+    // movimiento rechazado) no se ofrece registrar.
+    else if (vigentes.length === 1 && !propias.length && !revertida && !rechazado && !vigentes[0].registrada && c.factura_estado !== 'emitida' && c.factura_estado !== 'emitiendo') sinRegistrar.push({ ...mov, factura: vigentes[0] })
     for (const f of vigentes) {
       const k = `${f.cliente}|${Math.round(f.total)}`
       deLincoinPorClave.set(k, [...(deLincoinPorClave.get(k) ?? []), { ...f, comprobante: lc }])
@@ -2147,7 +2170,7 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
     const pares = deLincoinPorClave.get(`${rf.cliente}|${Math.round(rf.total)}`)
     if (pares?.length) posibles.push({ factura: rf, de_lincoin: pares })
   }
-  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, a_si_misma: aSiMisma, revertidas, posibles }
+  return { ok: true, desde, dias: nDias, revisadas: facturas.length, completo, duplicadas, sin_registrar: sinRegistrar, a_si_misma: aSiMisma, revertidas, rechazadas, posibles }
 }
 
 // Registra en Lincoin facturas que están en Siigo y Lincoin no tenía (las

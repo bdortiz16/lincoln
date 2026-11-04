@@ -1740,6 +1740,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // (credenciales) queda para el dueño: fact_lincoin_set no figura acá.
   contabilidad_resumen: ['plata.ver', 'fn.contabilidad'],
   contabilidad_cliente: ['plata.ver', 'fn.contabilidad'],
+  contabilidad_rechazados: ['plata.ver', 'fn.contabilidad'],
   contabilidad_vincular_ajuste: ['plata.mover', 'fn.contabilidad'],
   contabilidad_corregir_venta: ['plata.mover', 'fn.contabilidad'],
   // Cómo se le factura a un cliente (Colombia diaria / exterior por movimiento).
@@ -5028,6 +5029,112 @@ Deno.serve(async (req: Request) => {
           totales: { ...redondear(total), clientes: clientes.length, porModelo },
           meses, clientes, facturas: estados,
           ...(delCliente ? { cliente: clientes.find(c => c.userId === String(body.userId)) ?? clientes[0] ?? null, ids, detalle: detalle.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } : {}),
+        })
+      }
+
+      // ── Rechazados con factura ─────────────────────────────────────
+      // Un envío, cargue o conversión que se cayó DESPUÉS de completarse (el
+      // banco rechazó el envío y la plata volvió a la cuenta; un recaudo se
+      // reversó) pudo alcanzar a facturarse: la factura del cliente en su
+      // propio Siigo (comprobantes) o la de Lincoin (facturas_lincoin, propia o
+      // dentro de la diaria). Pasó con envíos que se vieron Completado por
+      // horas y el banco había rechazado (2026-11). Esas facturas no se anulan
+      // solas, y la contabilidad de arriba solo lee lo Completado: no se veían.
+      // Solo lee; anular es con nota crédito en Siigo.
+      if (body.action === 'contabilidad_rechazados') {
+        const accR: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const fecha = (v: unknown) => typeof v === 'string' && v && !isNaN(Date.parse(v)) ? new Date(v).toISOString() : null
+        const desde = fecha(body.desde), hasta = fecha(body.hasta)
+        const ESTADOS_RECHAZO = ['Rechazado', 'Fallido', 'Devuelto']
+        const TOPE = 5000
+        const filas: any[] = []
+        let truncado = false
+        for (let off = 0; off < TOPE; off += 1000) {
+          let q = db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, rail:raw_data->>rail, refunded:raw_data->refunded, reversado:raw_data->reversado, beneficiary:raw_data->>beneficiary, bank:raw_data->>bank, method:raw_data->>method, providerError:raw_data->>providerError, returnReason:raw_data->>returnReason, reembolsoExterno:raw_data->reembolsoExterno')
+            .in('status', ESTADOS_RECHAZO)
+          if (desde) q = q.gte('created_at', desde)
+          if (hasta) q = q.lt('created_at', hasta)
+          const { data, error } = await q.order('created_at', { ascending: false }).order('id', { ascending: true }).range(off, off + 999)
+          if (error) return json({ error: `No se pudieron leer los movimientos: ${error.message}` }, 500)
+          filas.push(...((data ?? []) as any[]))
+          if (!data || data.length < 1000) break
+          if (off + 1000 >= TOPE) truncado = true
+        }
+        const vis = filas.filter(t => accR.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accR))
+        const txIds = vis.map(t => String(t.id))
+        const usuarios = Array.from(new Set(vis.map(t => String(t.user_id)).filter(Boolean)))
+
+        // La factura del cliente (su Siigo), por movimiento.
+        const deCliente = new Map<string, any>()
+        let conComprobantes = true
+        for (let i = 0; i < txIds.length; i += 200) {
+          const { data, error } = await db.from('comprobantes').select('transaction_id, numero, factura_estado, factura_numero, factura_tipo, factura_at, dian:factura_detalle->>dian').in('transaction_id', txIds.slice(i, i + 200))
+          if (error) { conComprobantes = false; break }
+          for (const c of (data ?? []) as any[]) deCliente.set(String(c.transaction_id), c)
+        }
+        // La de Lincoin: la propia del movimiento, o la diaria que lo incluye
+        // (manda la enviada si hay varias).
+        const ENVIADAS = ['emitida', 'emitiendo', 'incierta']
+        const deLincoin = new Map<string, any>()
+        let conFacturasLincoin = true
+        for (let i = 0; i < txIds.length; i += 200) {
+          const { data, error } = await db.from('facturas_lincoin').select('transaction_id, estado, numero, total, emitida_at').in('transaction_id', txIds.slice(i, i + 200))
+          if (error) { conFacturasLincoin = false; break }
+          for (const f of (data ?? []) as any[]) if (f.estado !== 'omitida') deLincoin.set(String(f.transaction_id), f)
+        }
+        if (conFacturasLincoin && usuarios.length) {
+          const idsSet = new Set(txIds)
+          for (let i = 0; i < usuarios.length; i += 100) {
+            for (let off = 0; off < 20000; off += 1000) {
+              const { data, error } = await db.from('facturas_lincoin').select('transaction_id, estado, numero, total, emitida_at, txs:detalle->txs')
+                .in('user_id', usuarios.slice(i, i + 100)).like('transaction_id', 'dia:%').order('id', { ascending: true }).range(off, off + 999)
+              if (error) break
+              for (const f of (data ?? []) as any[]) {
+                if (!leerClaveDiaria(String(f.transaction_id)) || !Array.isArray(f.txs)) continue
+                for (const x of f.txs.map(String)) {
+                  if (!idsSet.has(x)) continue
+                  const ya = deLincoin.get(x)
+                  if (!ya || (!ENVIADAS.includes(String(ya.estado)) && ENVIADAS.includes(String(f.estado)))) deLincoin.set(x, { ...f, diaria: leerClaveDiaria(String(f.transaction_id))?.dia ?? null })
+                }
+              }
+              if (!data || data.length < 1000) break
+            }
+          }
+        }
+        const nombres = new Map<string, any>()
+        for (let i = 0; i < usuarios.length; i += 200) {
+          const { data } = await db.from('users').select('id, email, full_name, company_name').in('id', usuarios.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) nombres.set(String(u.id), u)
+        }
+        const TIPO: Record<string, string> = { dispersion: 'Envío', send: 'Retiro', load: 'Cargue', convert: 'Conversión', tx_created: 'Conversión', pay_sent: 'Pago enviado', pay_received: 'Pago recibido', otc_withdraw: 'Retiro OTC', otc_deposit: 'Depósito OTC', adjustment: 'Ajuste' }
+        // Vigente = hay que anularla. La del cliente: emitida y válida ante la
+        // DIAN (una rechazada por la DIAN nunca valió); 'emitiendo' = se
+        // estaba emitiendo cuando se cayó: verificar en Siigo.
+        const vigenteCliente = (c: any) => c?.factura_estado === 'emitida' ? (c.dian === 'rechazada' ? null : 'anular') : c?.factura_estado === 'emitiendo' ? 'verificar' : null
+        const vigenteLincoin = (f: any) => f?.estado === 'emitida' ? 'anular' : (f?.estado === 'emitiendo' || f?.estado === 'incierta') ? 'verificar' : null
+        const movimientos = vis.map(t => {
+          const u = nombres.get(String(t.user_id)) ?? {}
+          const c = deCliente.get(String(t.id)) ?? null
+          const f = deLincoin.get(String(t.id)) ?? null
+          return {
+            id: t.id, userId: t.user_id, cliente: u.company_name || u.full_name || u.email || String(t.user_id ?? ''),
+            tipo: TIPO[String(t.type)] ?? String(t.type), type: t.type, amount: Number(t.amount) || 0, currency: t.currency, status: t.status, created_at: t.created_at,
+            contraparte: t.beneficiary ?? t.bank ?? t.method ?? null,
+            motivo: t.returnReason ?? t.providerError ?? null,
+            reembolsado: t.refunded === true || t.refunded === 'true', reversado: t.reversado === true || t.reversado === 'true', reembolsoExterno: t.reembolsoExterno === true,
+            facturaCliente: c ? { comprobante: c.numero ?? null, estado: c.factura_estado ?? null, numero: c.factura_numero ?? null, tipo: c.factura_tipo ?? null, at: c.factura_at ?? null, dian: c.dian ?? null, accion: vigenteCliente(c) } : null,
+            facturaLincoin: f ? { estado: f.estado ?? null, numero: f.numero ?? null, total: f.total ?? null, emitida_at: f.emitida_at ?? null, diaria: f.diaria ?? null, accion: vigenteLincoin(f) } : null,
+          }
+        })
+        return json({
+          ok: true, desde, hasta, truncado, conComprobantes, conFacturasLincoin,
+          totales: {
+            movimientos: movimientos.length,
+            clientes: usuarios.length,
+            facturaCliente: movimientos.filter(m => m.facturaCliente?.accion).length,
+            facturaLincoin: movimientos.filter(m => m.facturaLincoin?.accion).length,
+          },
+          movimientos,
         })
       }
 
