@@ -41,6 +41,7 @@ import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { razonSocialPorNit } from '../_shared/rues.ts'
+import * as K from './cartera.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -302,6 +303,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     await archivarLaConDv()
     await anotarUso(db, d.tipoDocumento, doc, uid)
     await auditar('sarblock.reutilizado', { userId: uid, documento: doc, categoria: ficha.categoria })
+    await alCerrarAml(uid, doc, ficha)
     return { ok: true, documento: doc, reutilizado: true }
   }
   if (!esAdmin && await topeAgotado(uid, c)) return { ok: false, tope: true, motivo: 'Llegaste al máximo de verificaciones por hoy. Las que faltan se completan mañana.' }
@@ -369,6 +371,7 @@ async function recoger(uid: string) {
       // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
       await padronGuardar(db, f.tipoDocumento, doc, nueva, uid, 'sarblock')
       await auditar('sarblock.consulta', { userId: uid, documento: doc, checkId: f.jobid, categoria: nueva.categoria, operable: nueva.operable, criterio: nueva.criterio })
+      await alCerrarAml(uid, doc, nueva)
       cerrados++
     } catch (e) {
       if (e instanceof ErrorSarblock && e.status === 429) break   // la próxima vuelta
@@ -376,6 +379,84 @@ async function recoger(uid: string) {
     }
   }
   return { ok: true, cerrados, reintentados }
+}
+
+// ── Cartera en Sarblock (cartera.ts) ────────────────────────────────────
+// Empresas como clientes y sus beneficiarios bajo cada una. Nada de esto
+// frena la AML: si falla, queda anotado y la próxima vuelta lo reintenta.
+let cfgCartera = { valor: K.POR_DEFECTO_CARTERA, leido: 0 }
+async function configCartera(): Promise<K.ConfigCartera> {
+  if (Date.now() - cfgCartera.leido < 30_000) return cfgCartera.valor
+  cfgCartera = { valor: await K.leerConfigCartera(db), leido: Date.now() }
+  return cfgCartera.valor
+}
+async function cuentaCartera(uid: string): Promise<any> {
+  const { data } = await db.from('users').select(K.COLS_CUENTA).eq('id', uid).maybeSingle()
+  return data
+}
+// Una AML terminada: si la empresa ya es cliente en Sarblock, el
+// beneficiario queda bajo ella.
+async function alCerrarAml(uid: string, doc: string, ficha: any) {
+  try {
+    const c = await configCartera()
+    if (!c.activo || !c.beneficiarios || await enPausa()) return
+    const u = await cuentaCartera(uid)
+    const k = u?.sb?.kyc
+    if (!K.clienteListo(k)) return
+    const reg = await K.registrarBeneficiario(cliente(), db, uid, k.customerId, doc, ficha, u?.sb?.beneficiarios?.[doc])
+    if (reg) await auditar(reg.id ? 'sarblock.cartera_beneficiario' : 'sarblock.cartera_beneficiario_fallido', { userId: uid, documento: doc, beneficiarioId: reg.id ?? null, error: reg.error ?? null })
+  } catch (e) { console.warn('[sarblock] cartera beneficiario', String((e as Error)?.message ?? e)) }
+}
+// Una cuenta: avanza su alta (y la paga si `pagar`) y registra sus
+// beneficiarios pendientes, hasta `maxBenef`.
+async function carteraCuenta(uid: string, pagar: boolean, maxBenef = 25) {
+  const sb = cliente()
+  const u = await cuentaCartera(uid)
+  if (!u) return { ok: false, motivo: 'No existe la cuenta.' }
+  const tenia = !!(u.sb?.kyc?.checkId || u.sb?.kyc?.customerId)
+  const k: any = await K.altaCliente(sb, db, uid, u, pagar)
+  if ('motivo' in k) return { ok: false, motivo: k.motivo }
+  if (!tenia) await auditar('sarblock.cartera_alta', { userId: uid, checkId: k.checkId ?? null, fase: k.fase })
+  let registrados = 0, fallidos = 0
+  if (K.clienteListo(k)) {
+    const raw = await leerRaw(uid)
+    const fichas = raw?.tusdatos?.beneficiarios ?? {}
+    const regs = raw?.sarblock?.beneficiarios ?? {}
+    for (const doc of K.beneficiariosPendientes(fichas, regs).slice(0, maxBenef)) {
+      const r = await K.registrarBeneficiario(sb, db, uid, k.customerId, doc, fichas[doc], regs[doc])
+      if (r?.id) registrados++; else if (r) fallidos++
+    }
+    if (registrados || fallidos) await auditar('sarblock.cartera_beneficiarios', { userId: uid, registrados, fallidos })
+  }
+  return { ok: true, fase: k.fase, customerId: k.customerId ?? null, error: k.error ?? null, registrados, fallidos }
+}
+// En el barrido: avanza lo que está en curso (gratis), da de alta las
+// cuentas nuevas si la alta automática está encendida (paga) y registra
+// beneficiarios pendientes. Con tope de tiempo y de cuentas.
+async function carteraVuelta(hastaMs: number) {
+  const c = await configCartera()
+  if (!c.activo || await enPausa()) return { omitido: true }
+  let avanzadas = 0, altas = 0
+  // Solo las que esperan su screening (o cuya alta falló después de
+  // pagarlo): el resto ya es cliente y sus beneficiarios nuevos entran al
+  // cerrar su AML (alCerrarAml). Sarblock deja 60 llamadas por minuto para
+  // toda la organización: no se relee la cartera entera en cada vuelta.
+  const { data: enCurso } = await db.from('users').select('id')
+    .in('raw_data->sarblock->kyc->>fase', ['screening', 'error']).is('raw_data->sarblock->kyc->>customerId', null)
+    .in('role', K.ROLES_CLIENTE).limit(10)
+  for (const u of (enCurso ?? []) as any[]) {
+    if (Date.now() > hastaMs) break
+    try { await carteraCuenta(u.id, false, c.beneficiarios ? 10 : 0); avanzadas++ } catch (e) { if (esLimite(e)) break }
+  }
+  if (c.altaAutomatica && c.altaDesde) {
+    const { data: nuevas } = await db.from('users').select('id').in('role', K.ROLES_CLIENTE).in('kyc_status', K.KYC_VERIFICADO)
+      .gte('created_at', c.altaDesde).is('raw_data->sarblock->kyc', null).limit(5)
+    for (const u of (nuevas ?? []) as any[]) {
+      if (Date.now() > hastaMs) break
+      try { if ((await carteraCuenta(u.id, true)).ok) altas++ } catch (e) { if (esLimite(e)) break }
+    }
+  }
+  return { avanzadas, altas }
 }
 
 // ── Lincoin Risk prepago ────────────────────────────────────────────────
@@ -763,7 +844,9 @@ Deno.serve(async (req) => {
         if (Date.now() - inicio > 110_000) break
         try { cerrados += (await recoger(cu)).cerrados } catch (e) { console.warn('[sarblock] barrido', cu, String((e as Error)?.message ?? e)) }
       }
-      return json({ ok: true, cuentas: cuentas.length, cerrados })
+      let cartera: unknown = null
+      try { cartera = await carteraVuelta(inicio + 130_000) } catch (e) { console.warn('[sarblock] barrido cartera', String((e as Error)?.message ?? e)) }
+      return json({ ok: true, cuentas: cuentas.length, cerrados, cartera })
     }
 
     if (accion === 'estado') {
@@ -854,6 +937,81 @@ Deno.serve(async (req) => {
 
     // ── Lincoin Risk prepago (risk.ts) ───────────────────────────────────
     if (accion.startsWith('risk_') || accion.startsWith('admin_risk_') || accion === 'admin_sarblock_uso') { const r = await risk(req, yo, uid, accion, body); return r instanceof Response ? r : json(r) }
+
+    // ── Cartera en Sarblock (cartera.ts) ─────────────────────────────────
+    if (accion.startsWith('cartera_')) {
+      const no = await exigirAdmin(req, yo); if (no) return no
+      if (accion === 'cartera_config_get') return json({ ok: true, config: await K.leerConfigCartera(db) })
+      if (accion === 'cartera_config_set') {
+        const previa = await K.leerConfigCartera(db)
+        const nueva = K.normalizarConfigCartera(previa, body.config ?? {})
+        const { error } = await db.from('system_config').upsert({ key: K.CONFIG_KEY_CARTERA, value: JSON.stringify(nueva) }, { onConflict: 'key' })
+        if (error) return json({ ok: false, motivo: 'No se pudo guardar la configuración.' })
+        cfgCartera = { valor: nueva, leido: Date.now() }
+        await auditar('sarblock.cartera_config', { por: yo.userId, antes: previa, despues: nueva })
+        return json({ ok: true, config: nueva })
+      }
+      // Las cuentas verificadas con su estado en Sarblock. Solo lectura.
+      if (accion === 'cartera_lista') {
+        const pagina = Math.max(1, Number(body.pagina) || 1), porPagina = 50
+        // Sin las fichas AML (pesan: traen el catálogo de cada consulta).
+        let q = db.from('users').select(K.COLS_CUENTA, { count: 'exact' })
+          .in('role', K.ROLES_CLIENTE).in('kyc_status', K.KYC_VERIFICADO)
+        const texto = String(body.q ?? '').trim().replace(/[%,()]/g, '')
+        if (texto) q = q.or(`company_name.ilike.%${texto}%,full_name.ilike.%${texto}%,email.ilike.%${texto}%,tax_id.ilike.%${texto}%,doc_number.ilike.%${texto}%`)
+        if (body.filtro === 'sin') q = q.is('raw_data->sarblock->kyc', null)
+        else if (body.filtro === 'con') q = q.not('raw_data->sarblock->kyc', 'is', null)
+        const { data, count, error } = await q.order('created_at', { ascending: false }).range((pagina - 1) * porPagina, pagina * porPagina - 1)
+        if (error) return json({ ok: false, motivo: 'No se pudo leer la cartera.' })
+        const filas = ((data ?? []) as any[]).map(u => {
+          const k = u.sb?.kyc ?? null, regs = u.sb?.beneficiarios ?? {}
+          const d = K.datosDeCuenta(u)
+          return { id: u.id, nombre: u.company_name || u.rdEmpresa || u.full_name || u.name || u.email, documento: u.tax_id || u.rdNit || u.doc_number || null,
+            tipo: u.role === 'business' ? 'juridica' : 'natural', creado: u.created_at,
+            sarblock: k ? { fase: k.fase, customerId: k.customerId ?? null, nivel: k.nivel ?? null, estado: k.clienteStatus ?? null, error: k.error ?? null, actualizado: k.actualizado ?? null } : null,
+            faltaDato: 'motivo' in d ? d.motivo : null,
+            beneficiarios: { registrados: Object.values(regs).filter((r: any) => r?.id).length,
+              conError: Object.values(regs).filter((r: any) => !r?.id && r?.error).length } }
+        })
+        return json({ ok: true, total: count ?? 0, pagina, paginas: Math.max(1, Math.ceil((count ?? 0) / porPagina)), filas })
+      }
+      // Dar de alta (o avanzar) UNA cuenta. Si no tiene proceso, COBRA un
+      // crédito: la pantalla lo confirma antes.
+      if (accion === 'cartera_alta') {
+        if (!uid) return json({ ok: false, motivo: 'Falta la cuenta.' })
+        if (body.confirmado !== true) return json({ ok: false, motivo: 'Confirma que se gasta una consulta de Sarblock.' })
+        const r = await carteraCuenta(uid, true)
+        await auditar('sarblock.cartera_alta_manual', { por: yo.userId, userId: uid, ...r })
+        return json(r)
+      }
+      // Lote: las cuentas verificadas que aún no están en Sarblock, hasta 20
+      // por vez (cada una cobra un crédito).
+      if (accion === 'cartera_alta_lote') {
+        if (body.confirmado !== true) return json({ ok: false, motivo: 'Confirma cuántas consultas de Sarblock se gastan.' })
+        const cantidad = Math.max(1, Math.min(20, Math.floor(Number(body.cantidad) || 0)))
+        const { data: sin } = await db.from('users').select(K.COLS_CUENTA).in('role', K.ROLES_CLIENTE).in('kyc_status', K.KYC_VERIFICADO)
+          .is('raw_data->sarblock->kyc', null).order('created_at', { ascending: true }).limit(cantidad * 2)
+        let lanzadas = 0, omitidas = 0
+        const errores: { id: string; motivo: string }[] = []
+        const inicio = Date.now()
+        for (const u of (sin ?? []) as any[]) {
+          if (lanzadas >= cantidad || Date.now() - inicio > 100_000) break
+          if ('motivo' in K.datosDeCuenta(u)) { omitidas++; continue }
+          try {
+            const r = await carteraCuenta(u.id, true)
+            if (r.ok) lanzadas++; else errores.push({ id: u.id, motivo: String(r.motivo ?? '') })
+          } catch (e) { if (esLimite(e)) break; errores.push({ id: u.id, motivo: String((e as Error)?.message ?? e).slice(0, 160) }) }
+        }
+        await auditar('sarblock.cartera_lote', { por: yo.userId, pedidas: cantidad, lanzadas, omitidas, errores: errores.length })
+        return json({ ok: true, lanzadas, omitidas, errores })
+      }
+      // Avanzar y registrar beneficiarios de una cuenta que ya está (gratis).
+      if (accion === 'cartera_avanzar') {
+        if (!uid) return json({ ok: false, motivo: 'Falta la cuenta.' })
+        return json(await carteraCuenta(uid, false))
+      }
+      return json({ error: `Acción desconocida: ${accion}` }, 400)
+    }
 
     // ── Administración ───────────────────────────────────────────────────
     if (accion === 'config_get') {

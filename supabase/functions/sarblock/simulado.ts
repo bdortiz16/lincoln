@@ -211,6 +211,21 @@ async function kycSimulado(ruta: string, metodo: string, init?: RequestInit): Pr
     clientes.set(c.id, c);
     return json(fichaCliente(c), 201);
   }
+  // Beneficiarios bajo un cliente (docs → Beneficiarios): nacen del
+  // screening del beneficiario (purpose beneficiary), con su mismo
+  // documento. Un OFAC (7) no se deja registrar.
+  const mb = /^\/customers\/([^/]+)\/beneficiaries$/.exec(ruta);
+  if (mb && metodo === 'POST') {
+    const c = clientes.get(decodeURIComponent(mb[1]));
+    if (!c) return json({ statusCode: 404, type: 'CUSTOMER_NOT_FOUND', message: 'Cliente no encontrado' }, 404);
+    if (c.status === 'BLOCKED') return json({ statusCode: 400, type: 'CUSTOMER_NOT_ELIGIBLE', message: 'El cliente está bloqueado.' }, 400);
+    const b = cuerpo();
+    const check = [...checks.values()].find(s => `rec-${s.id}` === b.screeningRecordId);
+    if (!check || check.proposito !== 'beneficiary') return json({ statusCode: 400, type: 'INVALID_INPUT', message: 'El screening no es de un beneficiario.', fields: [{ path: 'screeningRecordId', message: 'No es un screening de beneficiario' }] }, 400);
+    if (String(b.documentNumber) !== check.doc) return json({ statusCode: 400, type: 'INVALID_INPUT', message: 'El documento no coincide con el del screening.', fields: [{ path: 'documentNumber', message: 'No es el del screening' }] }, 400);
+    if (Number(check.doc.slice(-1)) === 7) return json({ statusCode: 400, type: 'BENEFICIARY_SCREENING_BLOCKED', message: 'El screening pide bloquear.' }, 400);
+    return json({ id: `ben-sim-${crypto.randomUUID().slice(0, 8)}`, customerId: c.id, beneficiaryType: b.beneficiaryType, documentNumber: b.documentNumber, status: 'ACTIVE', isActive: true, identityVerified: true }, 201);
+  }
   const m = /^\/customers\/([^/]+)(\/kyc(\/templates|\/draft|\/submit)?)?$/.exec(ruta);
   if (!m) return null;
   const c = clientes.get(decodeURIComponent(m[1]));

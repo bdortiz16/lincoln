@@ -5,14 +5,17 @@
 //   Búsquedas   → cada vez que una empresa buscó a alguien.
 //   AML         → la verificación de beneficiarios: encendido, bloqueo, tope
 //                 diario y los créditos que quedan en Sarblock.
+//   Cartera     → nuestras cuentas como clientes en Sarblock y sus
+//                 beneficiarios bajo cada una (CarteraSarblock).
 // Lincoin Risk (consultas manuales) y la AML de beneficiarios son cosas
 // distintas: solo comparten la cuenta de Sarblock.
 import React, { useCallback, useEffect, useState } from 'react';
 import { llamar, C, LBL, INP, BTN, BTN2, TARJETA, ESTILOS, GRUPO, TIPOS, Vence, Punto, Panel, Resultado, hace } from './RiskCliente';
 import { RiskAdmin } from './RiskAdmin';
+import { CarteraSarblock } from './CarteraSarblock';
 
-type Vista = 'ventas' | 'consultas' | 'busquedas' | 'aml';
-const VISTAS: [Vista, string][] = [['ventas', 'Ventas'], ['consultas', 'Consultas'], ['busquedas', 'Búsquedas'], ['aml', 'AML de beneficiarios']];
+type Vista = 'ventas' | 'consultas' | 'busquedas' | 'aml' | 'cartera';
+const VISTAS: [Vista, string][] = [['ventas', 'Ventas'], ['consultas', 'Consultas'], ['busquedas', 'Búsquedas'], ['aml', 'AML de beneficiarios'], ['cartera', 'Cartera']];
 const RESULTADO: Record<string, { t: string; c: string }> = {
   nueva: { t: 'Consulta nueva', c: C.texto }, existente: { t: 'Ya estaba consultada', c: C.sub },
   renovada: { t: 'Consulta renovada', c: C.verde }, sin_saldo: { t: 'Sin consultas disponibles', c: C.ambar },
@@ -240,6 +243,7 @@ export const AdminSarblock: React.FC = () => {
       {vista === 'consultas' && <Historial key="c" tipo="consultas" clientes={clientes} abrir={abrir} />}
       {vista === 'busquedas' && <Historial key="b" tipo="busquedas" clientes={clientes} abrir={abrir} />}
       {vista === 'aml' && <Aml />}
+      {vista === 'cartera' && <CarteraSarblock />}
       {(vista === 'consultas' || vista === 'busquedas') && (
         <p style={{ fontSize: 11.5, color: C.tenue, margin: '10px 2px 0' }}>Abrir el detalle de una consulta queda registrado en la auditoría. El historial no se puede borrar.</p>
       )}

@@ -131,6 +131,12 @@ export class ClienteSarblock {
   guardarBorradorKyc(clienteId: string, datos: Record<string, unknown>) { return this.llamar<any>('PUT', `/customers/${encodeURIComponent(clienteId)}/kyc/draft`, datos); }
   enviarKyc(clienteId: string) { return this.llamar<any>('POST', `/customers/${encodeURIComponent(clienteId)}/kyc/submit`, {}); }
   leerKyc(clienteId: string) { return this.llamar<any>('GET', `/customers/${encodeURIComponent(clienteId)}/kyc`); }
+
+  // ── Beneficiarios de un cliente ───────────────────────────────────────
+  // Nacen del screening del beneficiario (purpose beneficiary, el de la AML)
+  // y cuelgan de la ficha del cliente que le paga. La documentación no dice
+  // que cobre; el screening ya se pagó.
+  crearBeneficiario(clienteId: string, cuerpo: Record<string, unknown>) { return this.llamar<any>('POST', `/customers/${encodeURIComponent(clienteId)}/beneficiaries`, cuerpo); }
 }
 
 // Saldo de screening, tolerante a las dos formas que hemos visto: la de la
