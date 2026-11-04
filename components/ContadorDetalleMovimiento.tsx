@@ -16,6 +16,7 @@ import { X, Copy, FileText, ExternalLink, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { ReenvioDianModal } from './ReenvioDianModal';
 import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
+import { nombreCuenta } from '../lib/nombreCuenta';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, Menlo, monospace';
@@ -193,7 +194,7 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   // envío por llave: manda el riel del envío, no la moneda.
   const esBreb = tx.currency === 'COP_BREB' || (tx.type === 'dispersion' && v('rail') === 'BREB');
   const nCuenta = Number(v('cuentaBreb')) || 1;
-  const riel = esBreb ? (nCuenta >= 2 ? `Bre-B · Cuenta ${nCuenta}` : 'Bre-B') : [3, 4].includes(Number(v('cuentaAch'))) ? `ACH · Cuenta ${Number(v('cuentaAch'))} · Colombia` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : tx.currency === 'COP_C3' ? 'Cuenta 3' : tx.currency === 'COP_C4' ? 'Cuenta 4' : '';
+  const riel = esBreb ? (nCuenta >= 2 ? `Bre-B · ${nombreCuenta(nCuenta)}` : 'Bre-B') : [3, 4].includes(Number(v('cuentaAch'))) ? `ACH · ${nombreCuenta(Number(v('cuentaAch')))} · Colombia` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : tx.currency === 'COP_C3' ? nombreCuenta(3) : tx.currency === 'COP_C4' ? nombreCuenta(4) : '';
   const ref = String(v('providerRef') ?? v('providerTraceId') ?? v('reference') ?? v('txHash') ?? '').trim();
   const motivoPago = String(v('motivo') ?? v('reason') ?? '').trim();
   const nota = String(v('note') ?? v('description') ?? '').trim();

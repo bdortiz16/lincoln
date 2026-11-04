@@ -14,6 +14,7 @@ import { CupoBeneficiario } from './CupoBeneficiario';
 import { KycBeneficiarioModal, agruparHallazgos } from './KycBeneficiarioModal';
 import { celdaCsv } from '../lib/csv';
 import { SirelEmpresa } from './SirelEmpresa';
+import { nombreCuenta } from '../lib/nombreCuenta';
 
 declare const __BUILD_TS__: string;
 
@@ -443,7 +444,7 @@ export const ContactsSection: React.FC<{
         : [];
     const enviableSinValidar = (c: Partial<MouvContact> | null | undefined, st: string) =>
         !!c && st === 'en_proceso' && c.accountKind !== 'wallet' && c.destKind !== 'breb' && cuentasAchSinValidacion.length > 0;
-    const txtCuentasSinValidar = cuentasAchSinValidacion.map(n => `ACH · Cuenta ${n}`).join(' o ');
+    const txtCuentasSinValidar = cuentasAchSinValidacion.map(n => `ACH · ${nombreCuenta(n)}`).join(' o ');
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
     // Países habilitados desde Admin → Configuración → Países. Por defecto

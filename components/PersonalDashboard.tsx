@@ -98,6 +98,7 @@ import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig } from '../context/SystemConfigContext'; 
 import { useDatabase } from '../context/DatabaseContext';
 import { celdaCsv } from '../lib/csv';
+import { nombreCuenta } from '../lib/nombreCuenta';
 
 interface PersonalDashboardProps {
   onLogout: () => void;
@@ -2541,7 +2542,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const nCuentaB = isBreb ? Number(t.cuentaBreb ?? rd.cuentaBreb) || 1 : 1;
           const nCuentaA = !isBreb ? Number(t.cuentaAch ?? rd.cuentaAch) || 1 : 1;
           let title = t.title || ROW_LABELS[t.type] || t.type;
-          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · Cuenta ${nCuentaB}` : 'Bre-B') : (nCuentaA === 3 ? 'ACH · Cuenta 3' : 'ACH')}${ben ? ` · ${ben}` : ''}`;
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · ${nombreCuenta(nCuentaB)}` : 'Bre-B') : (nCuentaA === 3 ? `ACH · ${nombreCuenta(3)}` : 'ACH')}${ben ? ` · ${ben}` : ''}`;
           else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
           else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
           const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -3080,7 +3081,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const filaAch = (n: 3 | 4, bal: number) => (
                       <div key={`ach-${n}`} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
                           <div style={{ minWidth: 0 }}>
-                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta {n}</span> · Saldo Cuenta {n} · llega en 6 a 24 h</p>
+                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{nombreCuenta(n)}</span> · Saldo Cuenta {n} · llega en 6 a 24 h</p>
                               <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(bal).toLocaleString('es-CO')}</p>
                           </div>
                           <button onClick={() => openSendMoney(undefined, { metodo: n === 4 ? 'ach4' : 'ach3' })} disabled={bal <= 0}
@@ -3090,7 +3091,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   );
                   const cuentaProxima = (n: number) => (
                       <div key={`prox-${n}`} aria-disabled="true" className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px dashed rgba(255,255,255,0.1)', background: 'transparent', opacity: 0.65 }}>
-                          <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta {n}</span> · Aún no disponible</p>
+                          <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{nombreCuenta(n)}</span> · Aún no disponible</p>
                           <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9, fontWeight: 700, letterSpacing: '0.7px', padding: '3px 7px', borderRadius: 999, whiteSpace: 'nowrap', flexShrink: 0 }}>PRÓXIMAMENTE</span>
                       </div>
                   );
@@ -3154,7 +3155,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                   ]).map(c => (
                                       <div key={c.n} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' }}>
                                           <div style={{ minWidth: 0 }}>
-                                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta {c.n}</span> · {c.sub}</p>
+                                              <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>{nombreCuenta(c.n)}</span> · {c.sub}</p>
                                               <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(c.bal).toLocaleString('es-CO')}</p>
                                           </div>
                                           <button onClick={() => openSendMoney(undefined, { metodo: c.metodo })} disabled={c.bal <= 0}
@@ -3906,7 +3907,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // pesos — el sufijo del riel va como contexto, no como ticker.
   const displayCurrency = (c?: string): string => String(c || '').split('_')[0];
   const railOfCurrency = (c?: string): string | null =>
-    c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : c === 'COP_C3' ? 'Cuenta 3' : c === 'COP_C4' ? 'Cuenta 4' : null;
+    c === 'COP_BREB' ? 'Bre-B' : c === 'COP_ACH' ? 'ACH' : c === 'COP_C3' ? nombreCuenta(3) : c === 'COP_C4' ? nombreCuenta(4) : null;
   // El riel de UN movimiento. Bre-B · Cuenta 2 se paga con el saldo ACH
   // (moneda COP_ACH) pero es un envío por llave: se mira el riel del envío,
   // no la moneda. Si no, el comprobante decía "ACH" en una transferencia Bre-B.
@@ -3914,9 +3915,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const rd = (tx?.raw_data ?? {}) as Record<string, any>;
     if (tx?.type === 'dispersion' && (tx?.rail === 'BREB' || rd.rail === 'BREB')) {
       const n = Number(tx?.cuentaBreb ?? rd.cuentaBreb) || 1;
-      return n >= 2 ? `Bre-B · Cuenta ${n}` : 'Bre-B';
+      return n >= 2 ? `Bre-B · ${nombreCuenta(n)}` : 'Bre-B';
     }
-    { const nA = Number(tx?.cuentaAch ?? rd.cuentaAch); if (tx?.type === 'dispersion' && (nA === 3 || nA === 4)) return `ACH · Cuenta ${nA}`; }
+    { const nA = Number(tx?.cuentaAch ?? rd.cuentaAch); if (tx?.type === 'dispersion' && (nA === 3 || nA === 4)) return `ACH · ${nombreCuenta(nA)}`; }
     return railOfCurrency(tx?.currency);
   };
 
@@ -4403,7 +4404,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const benInitials = benName ? benName.split(/\s+/).filter(Boolean).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase() : '';
     const isCop = String(tx.currency || '').startsWith('COP');
     const isBrebTx = esBrebDisp;
-    const railLabel = isBrebTx ? `Bre-B${nCuentaTx >= 2 ? ` · Cuenta ${nCuentaTx}` : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' || achCuenta3 ? (achCuenta3 ? `ACH · Cuenta ${nAchCs} · Colombia` : 'ACH · Colombia') : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
+    const railLabel = isBrebTx ? `Bre-B${nCuentaTx >= 2 ? ` · ${nombreCuenta(nCuentaTx)}` : ''}${dispKeyTypeLabel ? ` · Llave ${dispKeyTypeLabel.toLowerCase()}` : ''}` : tx.currency === 'COP_ACH' || achCuenta3 ? (achCuenta3 ? `ACH · ${nombreCuenta(nAchCs)} · Colombia` : 'ACH · Colombia') : railOfCurrency(tx.currency) || (isCop ? 'Colombia' : 'Red TRON · TRC-20');
     const feeCop = Number(tx.feeCop ?? rawData.feeCop ?? 0);
     // Cargue Bre-B con comisión de recepción: desglose transparente en el
     // detalle (Monto recibido − Comisión 0,10% = Acreditado). El número grande

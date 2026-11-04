@@ -30,7 +30,8 @@ const ROT: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacin
 const tarjeta: React.CSSProperties = { background: C.card, border: `1px solid ${C.b1}`, borderRadius: 13, padding: '16px 18px' };
 
 type Cuenta = 3 | 4;
-const NOMBRE: Record<Cuenta, string> = { 3: 'Coinsenda', 4: 'Coinsenda 2' };
+// Lo que se MUESTRA (lib/nombreCuenta): Cuenta 3 = Coinsenda Jero, Cuenta 4 = Coinsenda Kaupaloki.
+const NOMBRE: Record<Cuenta, string> = { 3: 'Coinsenda Jero', 4: 'Coinsenda Kaupaloki' };
 type Llave = { publica: string; huella: string; at: string; por?: { nombre?: string; email?: string } | null };
 
 // El tramo que distingue una clave pública RSA 2048: todas empiezan con el

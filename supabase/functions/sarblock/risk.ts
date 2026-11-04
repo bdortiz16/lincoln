@@ -50,8 +50,8 @@ export const CONFIG_INICIAL: ConfigRisk = {
   bolsillos: {
     COP_BREB: { etiqueta: 'Pesos · Bre-B', activo: true },
     COP_ACH: { etiqueta: 'Pesos · ACH', activo: true },
-    COP_C3: { etiqueta: 'Pesos · Cuenta 3', activo: true },
-    COP_C4: { etiqueta: 'Pesos · Cuenta 4', activo: true },
+    COP_C3: { etiqueta: 'Pesos · Cuenta 3 · Jero', activo: true },
+    COP_C4: { etiqueta: 'Pesos · Cuenta 4 · Kaupaloki', activo: true },
     COP: { etiqueta: 'Pesos · Saldo Lincoin', activo: true },
   },
   avisoClienteConsultas: 30,

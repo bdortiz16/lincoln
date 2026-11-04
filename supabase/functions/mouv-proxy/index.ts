@@ -31,6 +31,7 @@ import { cuentaCoinsendaDe, type CuentaCoinsenda } from '../_shared/coinsenda-ll
 import { leerTarifasEnvio, tarifaFija } from '../_shared/tarifas-envio.ts'
 import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro } from '../_shared/coinsenda.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
+import { nombreCuenta } from '../_shared/nombre-cuenta.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
 // algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
@@ -1240,7 +1241,7 @@ type PrepCuenta3 = {
 // el banco no está en su catálogo o la billetera no alcanza, el envío no
 // arranca — sin débito, sin fila Fallido y sin devolución.
 async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 'BREB' | 'ACH', recipient: Record<string, any>, amount: number, nombresEsperados: string[]): Promise<PrepCuenta3> {
-  const etiquetaRiel = rail === 'BREB' ? `Bre-B · Cuenta ${cuenta}` : `ACH · Cuenta ${cuenta}`
+  const etiquetaRiel = rail === 'BREB' ? `Bre-B · ${nombreCuenta(cuenta)}` : `ACH · ${nombreCuenta(cuenta)}`
   const fallaProveedor = (st: number | null | undefined) => !st || st >= 500 || st === 401 || st === 403 || st === 408 || st === 429
   const noDisponible = `${etiquetaRiel} no está disponible en este momento, así que no salió nada. Envíalo por otra cuenta o inténtalo de nuevo en unos minutos.`
   let cli: ClienteCoinsenda
@@ -1259,7 +1260,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       await logAudit(userId, 'coinsenda.prep_sin_fondos', { cuenta, rail, bruto, disponible: bill.disponible })
       await avisarAdminBreb2(`c${cuenta}_sin_fondos`, `Cuenta ${cuenta} (Coinsenda${cuenta === 4 ? ' 2' : ''}) sin fondos: hay que recargar la billetera COP`,
         `Un cliente intentó enviar ${amount.toLocaleString('es-CO')} COP por ${etiquetaRiel}. Con el costo de Coinsenda son ${bruto.toLocaleString('es-CO')} COP y la billetera COP de esa cuenta de Coinsenda (${cfgC.email ?? 'sin correo'}) tiene ${bill.disponible.toLocaleString('es-CO')} COP. Hay que recargarla. Mientras tanto los clientes pueden enviar por otra cuenta.`)
-      return { ok: false, mensaje: `La Cuenta ${cuenta} no está disponible temporalmente. Puedes enviarlo desde otra cuenta o intentarlo más tarde.` }
+      return { ok: false, mensaje: `La ${nombreCuenta(cuenta)} no está disponible temporalmente. Puedes enviarlo desde otra cuenta o intentarlo más tarde.` }
     }
     let destino: string
     let titular: string | undefined
@@ -1279,7 +1280,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       const dd = await destinoBreb(cli, prov, alias, String(recipient.holderName ?? ''))
       if ('error' in dd) {
         await logAudit(userId, 'coinsenda.prep_inscribir', { cuenta, rail, status: dd.status ?? null, error: dd.error })
-        return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : `La Cuenta ${cuenta} no pudo registrar la llave de este beneficiario, así que no salió nada. Envíalo por otra cuenta.` }
+        return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : `La ${nombreCuenta(cuenta)} no pudo registrar la llave de este beneficiario, así que no salió nada. Envíalo por otra cuenta.` }
       }
       destino = dd.id
     } else {
@@ -1291,7 +1292,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       if ('error' in dd) {
         await logAudit(userId, 'coinsenda.prep_inscribir', { cuenta, rail, status: dd.status ?? null, error: dd.error })
         if ((dd as any).datos) return { ok: false, mensaje: `${dd.error} No salió nada: envíalo por ACH · Cuenta 1.` }
-        return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : `La Cuenta ${cuenta} no pudo registrar la cuenta de este beneficiario, así que no salió nada. Envíalo por ACH · Cuenta 1.` }
+        return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : `La ${nombreCuenta(cuenta)} no pudo registrar la cuenta de este beneficiario, así que no salió nada. Envíalo por ACH · Cuenta 1.` }
       }
       destino = dd.id
     }
@@ -3757,7 +3758,7 @@ serve(async (req: Request) => {
     // proveedor: su referencia no es de Mouv y pedirla allá daba un "no existe".
     if (String(rd.proveedor ?? '') === 'coinsenda') {
       const n = cuentaCoinsendaDe(rd.coinsenda?.cuenta ?? rd.cuentaBreb ?? rd.cuentaAch)
-      return json(409, { error: 'sin_comprobante', message: `Este envío salió por la Cuenta ${n}, que no tiene comprobante del banco para descargar. La referencia del envío es ${ref}.` })
+      return json(409, { error: 'sin_comprobante', message: `Este envío salió por la ${nombreCuenta(n)}, que no tiene comprobante del banco para descargar. La referencia del envío es ${ref}.` })
     }
 
     const r = await fetch(`${MOUV_BASE}/wallets/transactions/${encodeURIComponent(ref)}/receipt.pdf`, {
@@ -4088,7 +4089,7 @@ serve(async (req: Request) => {
     const cuentaCs: CuentaCoinsenda | null = action === 'payout_breb3' || action === 'payout_ach3' ? 3 : action === 'payout_breb4' || action === 'payout_ach4' ? 4 : null
     const porCoinsenda = cuentaCs !== null   // Cuenta 3 o 4
     const railCol = cuentaCs === 4 ? 'COP_C4' : cuentaCs === 3 ? 'COP_C3' : rail === 'BREB' && !brebFinity ? 'COP_BREB' : 'COP_ACH'
-    const saldoLabel = cuentaCs ? `Cuenta ${cuentaCs}` : railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
+    const saldoLabel = cuentaCs ? `${nombreCuenta(cuentaCs)}` : railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
     // Los nombres que conocemos del beneficiario. Con la Cuenta 2 se comparan
     // con el titular que devuelve Finity antes de confirmar el envío.
     const nombresTitular: string[] = []
@@ -4108,7 +4109,7 @@ serve(async (req: Request) => {
     if (!userId) return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida. Vuelve a iniciar sesión.' })
     // Las Cuentas 3 y 4 solo salen si el dueño las activó en Admin → Coinsenda.
     if (cuentaCs && !(await cuentaCoinsendaActiva(cuentaCs, rail === 'BREB' ? 'breb' : 'ach'))) {
-      return json(403, { error: `cuenta${cuentaCs}_inactiva`, message: `${rail === 'BREB' ? 'Bre-B' : 'ACH'} · Cuenta ${cuentaCs} todavía no está disponible. Envíalo por otra cuenta.` })
+      return json(403, { error: `cuenta${cuentaCs}_inactiva`, message: `${rail === 'BREB' ? 'Bre-B' : 'ACH'} · ${nombreCuenta(cuentaCs)} todavía no está disponible. Envíalo por otra cuenta.` })
     }
 
     // ── Seguridad de la cuenta: bloqueo y 2FA ────────────────────────────────
@@ -4821,7 +4822,7 @@ serve(async (req: Request) => {
       ...(rail === 'BREB'
         ? { cuentaBreb: brebFinity ? 2 : cuentaCs ?? 1, proveedor: brebFinity ? 'finity' : cuentaCs ? 'coinsenda' : 'mouv' }
         : cuentaCs ? { cuentaAch: cuentaCs, proveedor: 'coinsenda' } : {}),
-      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : cuentaCs ? `Dispersión ${railLabel} · Cuenta ${cuentaCs}` : `Dispersión ${railLabel}`,
+      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : cuentaCs ? `Dispersión ${railLabel} · ${nombreCuenta(cuentaCs)}` : `Dispersión ${railLabel}`,
       // Cuentas 3 y 4: el retiro ya existe en Coinsenda (pending) desde antes
       // de debitar, así que su id va desde el primer registro. Sin él no se
       // podría conciliar si algo se cae a mitad de camino. `cuenta` dice con
@@ -4916,7 +4917,7 @@ serve(async (req: Request) => {
     //    (Cuenta 2) · ACH → Finity · Cuentas 3 y 4 (Bre-B o ACH) → Coinsenda,
     //    cada una con SU cuenta de Coinsenda (la misma que creó el retiro).
     if (cuentaCs) {
-      const etiqueta3 = `${railLabel} · Cuenta ${cuentaCs}`
+      const etiqueta3 = `${railLabel} · ${nombreCuenta(cuentaCs)}`
       let conf: Awaited<ReturnType<typeof confirmarRetiro>>
       try {
         const cli3 = new ClienteCoinsenda(db, await configCoinsenda(db, cuentaCs), 30_000)
@@ -4956,7 +4957,7 @@ serve(async (req: Request) => {
       await asentarTx('Fallido', {
         // errorMessage lo puede ver el cliente: sin el nombre del aliado. El
         // detalle técnico (con el nombre) queda aparte, para el admin.
-        ...base3, error: conf.crudo ?? 'c3_failed', errorMessage: `La Cuenta ${cuentaCs} no confirmó el envío, así que no salió.`,
+        ...base3, error: conf.crudo ?? 'c3_failed', errorMessage: `La ${nombreCuenta(cuentaCs)} no confirmó el envío, así que no salió.`,
         detalleProveedor: conf.error ?? `retiro en estado ${conf.estado || 'desconocido'}`,
         httpStatus: conf.status || null, ...marcasReintegro(reint3.ok), failedAt: ahora,
       })

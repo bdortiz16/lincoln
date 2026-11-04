@@ -113,6 +113,7 @@ import { useDatabase, AdminUser, Transaction, User, TreasuryAccount } from '../c
 import { useBusquedaClientes, conLocales } from './useBusquedaClientes';
 import { PromptCodigo2fa } from './PromptCodigo2fa';
 import { conCodigo2fa } from '../lib/codigo2fa';
+import { nombreBolsa } from '../lib/nombreCuenta';
 
 const SURL_ADMIN = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY_ADMIN = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -1068,7 +1069,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // en el saldo equivocado.
   const railLabelOf = (r: string | null) => (
     r === 'COP' ? 'Saldo Lincoin' : r === 'COP_BREB' ? 'Mouv' : r === 'COP_ACH' ? 'Finity'
-    : r === 'COP_C3' ? 'Coinsenda' : r === 'COP_C4' ? 'Coinsenda 2' : '—');
+    : r === 'COP_C3' ? nombreBolsa('Coinsenda') : r === 'COP_C4' ? nombreBolsa('Coinsenda 2') : '—');
 
   // Paso 1: validar y abrir la ventana de confirmación propia.
   // Cuenta de la operación. Se calcula igual que en el servidor solo para
@@ -2212,9 +2213,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         COP_BREB: { label: 'Mouv',          sub: 'Bre-B y ACH',            corto: 'Mouv',          icon: Zap },
         COP_ACH:  { label: 'Finity',        sub: 'Bre-B y ACH',            corto: 'Finity',        icon: Landmark },
         // El cliente lo ve como "Saldo Cuenta 3"; aquí va el proveedor.
-        COP_C3:   { label: 'Coinsenda',     sub: 'Cuenta 3 · Bre-B y ACH', corto: 'Coinsenda',     icon: Send },
+        COP_C3:   { label: nombreBolsa('Coinsenda'),   sub: 'Cuenta 3 · Bre-B y ACH', corto: nombreBolsa('Coinsenda'),   icon: Send },
         // Y la segunda cuenta de Coinsenda: "Saldo Cuenta 4" para el cliente.
-        COP_C4:   { label: 'Coinsenda 2',   sub: 'Cuenta 4 · Bre-B y ACH', corto: 'Coinsenda 2',   icon: Send },
+        COP_C4:   { label: nombreBolsa('Coinsenda 2'), sub: 'Cuenta 4 · Bre-B y ACH', corto: nombreBolsa('Coinsenda 2'), icon: Send },
       };
 
       // ── Respaldo y utilidad por riel ──────────────────────────────
@@ -2312,8 +2313,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
           detalle: mouvPool && !mouvPool.loading && !mouvPool.error ? `Bre-B ${mouvPool.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'} · ACH ${mouvPool.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}` : null },
         { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool, detalle: null },
-        { rail: 'COP_C3' as const, label: 'Coinsenda', icon: Send, pool: c3Pool, oblig: obligC3, free: freeC3, loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 3 · billetera COP' },
-        { rail: 'COP_C4' as const, label: 'Coinsenda 2', icon: Send, pool: c4Pool, oblig: obligC4, free: freeC4, loading: coinsenda2Pool?.loading, error: coinsenda2Pool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 4 · billetera COP' },
+        { rail: 'COP_C3' as const, label: nombreBolsa('Coinsenda'), icon: Send, pool: c3Pool, oblig: obligC3, free: freeC3, loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 3 · billetera COP' },
+        { rail: 'COP_C4' as const, label: nombreBolsa('Coinsenda 2'), icon: Send, pool: c4Pool, oblig: obligC4, free: freeC4, loading: coinsenda2Pool?.loading, error: coinsenda2Pool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 4 · billetera COP' },
       ];
 
       return (
@@ -3338,7 +3339,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                   {filasCaja.map(x => (
                                       <div key={x.proveedor} style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: 14 }}>
                                           <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                                              <span className="flex items-center" style={{ gap: 7, fontWeight: 800, fontSize: 14, color: '#F4F4F2' }}>{x.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {x.proveedor}</span>
+                                              <span className="flex items-center" style={{ gap: 7, fontWeight: 800, fontSize: 14, color: '#F4F4F2' }}>{x.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {nombreBolsa(x.proveedor)}</span>
                                               {x.dif == null ? null : x.dif === 0
                                                 ? <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={12} /> Cuadra</span>
                                                 : <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#FBBF24' }}><AlertTriangle size={12} /> No cuadra</span>}
@@ -3389,8 +3390,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   return (
                   <div key={b.n} style={{ ...CARD, padding: 16 }}>
                       <div className="flex items-center justify-between">
-                          <span className="flex items-center" style={{ gap: 7, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}><b.icon size={14} style={{ color: '#4ADE80' }} /> {b.n} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· Bre-B y ACH</span></span>
-                          <button onClick={b.reload} disabled={b.loading} title={`Actualizar ${b.n}`} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><RefreshCw size={12} className={b.loading ? 'animate-spin' : ''} /></button>
+                          <span className="flex items-center" style={{ gap: 7, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}><b.icon size={14} style={{ color: '#4ADE80' }} /> {nombreBolsa(b.n)} <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· Bre-B y ACH</span></span>
+                          <button onClick={b.reload} disabled={b.loading} title={`Actualizar ${nombreBolsa(b.n)}`} style={{ background: 'none', border: 'none', color: '#878E88', cursor: 'pointer' }}><RefreshCw size={12} className={b.loading ? 'animate-spin' : ''} /></button>
                       </div>
                       {b.error ? <p style={{ margin: '8px 0 0', fontSize: 12, color: '#F87171', fontWeight: 600 }}>{b.error}</p>
                         : b.loading ? <p style={{ margin: '8px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
@@ -3560,7 +3561,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4" style={{ gap: 10, marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                           {['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2'].map(n => (
                               <div key={n} style={{ fontSize: 12, color: '#878E88' }}>
-                                  <b style={{ color: '#F4F4F2' }}>{n}</b> · entra {millones(f.porProveedor?.[n]?.ent ?? 0)} · sale {millones(f.porProveedor?.[n]?.sal ?? 0)}
+                                  <b style={{ color: '#F4F4F2' }}>{nombreBolsa(n)}</b> · entra {millones(f.porProveedor?.[n]?.ent ?? 0)} · sale {millones(f.porProveedor?.[n]?.sal ?? 0)}
                               </div>
                           ))}
                       </div>
@@ -3574,7 +3575,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           <p style={{ margin: 0, fontSize: 26, fontWeight: 800, letterSpacing: '-0.8px', color: d.utilidadMes.total >= 0 ? '#4ADE80' : '#F87171' }}>{millones(d.utilidadMes.total)} <span style={{ fontSize: 12, color: '#878E88', fontWeight: 600 }}>COP</span></p>
                           <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88' }}>De la contabilidad de {d.utilidadMes.conContabilidad} cargues{d.utilidadMes.sinContabilidad ? ` · ${d.utilidadMes.sinContabilidad} sin contabilidad` : ''}</p>
                           <div className="flex flex-wrap" style={{ gap: 14, marginTop: 10, fontSize: 12, color: '#878E88' }}>
-                              {['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2'].map(n => <span key={n}>{n} <b style={{ color: '#F4F4F2' }}>{millones(d.utilidadMes.porProveedor?.[n] ?? 0)}</b></span>)}
+                              {['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2'].map(n => <span key={n}>{nombreBolsa(n)} <b style={{ color: '#F4F4F2' }}>{millones(d.utilidadMes.porProveedor?.[n] ?? 0)}</b></span>)}
                           </div>
                       </>}
                   </div>
@@ -3646,7 +3647,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                       {m.oculto && <><br /><span style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', fontWeight: 500 }}>Oculto por {m.oculto.por} · {m.oculto.motivo}</span></>}
                                   </td>
                                   <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.tipo}</td>
-                                  <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.proveedor}</td>
+                                  <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{nombreBolsa(m.proveedor)}</td>
                                   <td style={{ padding: '10px 18px', fontSize: 12.5, borderBottom: '1px solid rgba(255,255,255,0.06)', fontWeight: m.hechoPor === 'Cliente' ? 500 : 700, color: m.hechoPor === 'Tú' ? '#4ADE80' : m.hechoPor === 'Cliente' ? 'rgba(244,244,242,0.45)' : '#F4F4F2' }}>{m.hechoPor}</td>
                                   <td style={{ padding: '10px 18px', fontSize: 13, fontWeight: 800, textAlign: 'right', color: m.entrada ? '#4ADE80' : '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' }}>{m.entrada ? '+' : '−'}{fmtCop(m.monto)}</td>
                                   <td style={{ padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
@@ -3786,7 +3787,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           {cajaEditar && (
               <div className="fixed inset-0 z-[80] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.6)' }} onClick={() => !cajaOcupada && setCajaEditar(null)}>
                   <div onClick={e => e.stopPropagation()} style={{ width: 400, maxWidth: '100%', background: '#121413', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 16, padding: 18 }}>
-                      <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Saldo de apertura · {cajaEditar.proveedor}</p>
+                      <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: '#F4F4F2' }}>Saldo de apertura · {nombreBolsa(cajaEditar.proveedor)}</p>
                       <p style={{ margin: '6px 0 10px', fontSize: 12, color: '#878E88', lineHeight: 1.5 }}>Lo que era de Lincoin en la bolsa el 1.º del mes en que se abrió la caja: desde ese día cuenta la utilidad de los cargues. Queda en la auditoría quién lo cambió y el valor anterior.</p>
                       <input inputMode="numeric" value={cajaEditar.monto ? Number(cajaEditar.monto.replace(/[^\d-]/g, '') || 0).toLocaleString('es-CO') : ''} onChange={e => setCajaEditar(c => c && ({ ...c, monto: e.target.value.replace(/[^\d-]/g, '') }))}
                           style={{ width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 18, fontWeight: 800 }} />
@@ -4105,13 +4106,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       return (
                           <div key={c.proveedor} style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, padding: 14 }}>
                               <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                                  <span className="flex items-center" style={{ gap: 7, fontWeight: 800, color: '#F4F4F2' }}>{c.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {c.proveedor}</span>
+                                  <span className="flex items-center" style={{ gap: 7, fontWeight: 800, color: '#F4F4F2' }}>{c.proveedor === 'Mouv' ? <Zap size={14} style={{ color: '#4ADE80' }} /> : <Landmark size={14} style={{ color: '#4ADE80' }} />} {nombreBolsa(c.proveedor)}</span>
                                   {!esMesActual || c.dif == null ? null : c.dif === 0
                                     ? <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#4ADE80' }}><CheckCircle size={12} /> Cuadra</span>
                                     : <span className="inline-flex items-center" style={{ gap: 4, fontSize: 11, fontWeight: 700, color: '#FBBF24' }}><AlertTriangle size={12} /> No cuadra</span>}
                               </div>
                               {!c.apertura ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja abre hoy a las 23:59 (o desde Tesorería › Cierre de caja).</p>
-                               : !cm?.abierta ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja de {c.proveedor} abrió el {fechaAp}: en {mesLargo} todavía no había caja.</p>
+                               : !cm?.abierta ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja de {nombreBolsa(c.proveedor)} abrió el {fechaAp}: en {mesLargo} todavía no había caja.</p>
                                : <>
                                   {fila(cm.abreEnElMes ? `Saldo al empezar ${mesCorto} · apertura` : `Saldo al empezar ${mesCorto}`, cm.inicio)}
                                   {fila(`+ Utilidad de los cargues de ${mesCorto}`, cm.utilidad, { signo: cm.utilidad < 0 ? '−' : '+', color: '#4ADE80' })}
@@ -4241,7 +4242,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                           ); })()}
                                           {m.anulado && <><br /><span style={{ fontSize: 10.5, color: '#878E88', fontWeight: 500 }}>Anulado por {m.anulado.por} · {m.anulado.motivo}</span></>}
                                       </td>
-                                      <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.proveedor}</td>
+                                      <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#878E88', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{nombreBolsa(m.proveedor)}</td>
                                       <td style={{ padding: '10px 18px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{m.descripcion}</td>
                                       <td style={{ padding: '10px 18px', fontSize: 12, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                                           {m.soporte ? <button onClick={() => verSoporte(m.id)} className="inline-flex items-center" style={{ gap: 5, background: 'none', border: 'none', color: '#878E88', cursor: 'pointer', textDecoration: 'underline', fontSize: 12 }}><Paperclip size={12} />{m.soporte}</button> : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin soporte</span>}
@@ -4332,7 +4333,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       })() : (<>
                       <div className="grid grid-cols-2" style={{ gap: 8 }}>
                           <div><label style={RF}>Bolsa</label>
-                              <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Finity</option><option>Mouv</option><option>Coinsenda</option><option>Coinsenda 2</option></select></div>
+                              <select value={linForm.proveedor} onChange={e => setLinForm(f => f && ({ ...f, proveedor: e.target.value as any }))} style={CAMPO}><option>Finity</option><option>Mouv</option><option value="Coinsenda">{nombreBolsa('Coinsenda')}</option><option value="Coinsenda 2">{nombreBolsa('Coinsenda 2')}</option></select></div>
                           <div><label style={RF}>Fecha</label>
                               <input type="date" max={hoyBog()} value={linForm.fecha} onChange={e => setLinForm(f => f && ({ ...f, fecha: e.target.value }))} style={CAMPO} /></div>
                       </div>
