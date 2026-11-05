@@ -226,6 +226,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const txtAchSinValidacion = cuentasAchSinValidacion.map(n => `ACH · ${nombreCuenta(n)}`).join(' o ');
   const esContactoAch = (c: any) => !!c && c.accountKind !== 'wallet' && c.destKind !== 'breb';
   const enValidacionAch = (c: any) => esContactoAch(c) && contactStatus(c) === 'en_proceso';
+  // Cuenta ACH que la validación de ACH · Cuenta 1 todavía no aprueba o que
+  // RECHAZÓ. Por la Cuenta 1 no sale; por la 3 o la 4 sí, porque no usan esa
+  // validación: el proveedor de esas cuentas valida el destino al enviar y,
+  // si los datos no corresponden, el envío se rechaza y el saldo vuelve. Antes
+  // una cuenta rechazada en la Cuenta 1 quedaba sin poder recibir por ninguna,
+  // aunque por la 3 o la 4 sí le llegaba (pedido del dueño, 2026-11-05). Los
+  // antecedentes (AML) se revisan igual.
+  const sinValidarAch = (c: any) => esContactoAch(c) && ['en_proceso', 'rechazada'].includes(contactStatus(c));
   const railCuenta = (n: number) => n === 4 ? 'COP_C4' : 'COP_C3';
   // Cotización de la comisión del proveedor para el paso Confirmar:
   // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
@@ -445,10 +453,12 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           if (sendContact && sendMode && sendForm.beneficiaryName) {
               // En validación y saliendo por la Cuenta 1: en vez de frenar, se
               // pasa a elegir la cuenta, con la 3 o la 4 ya marcada.
-              if (enValidacionAch(sendContact) && achCuenta < 3 && cuentasAchSinValidacion.length && !metodoFijoRef.current) {
+              if (sinValidarAch(sendContact) && achCuenta < 3 && cuentasAchSinValidacion.length && !metodoFijoRef.current) {
                   const conSaldo = cuentasAchSinValidacion.find(n => getBalance(n === 3 ? 'COP_C3' : 'COP_C4') >= rawAmount) ?? cuentasAchSinValidacion[0];
                   setSendMethodSel(conSaldo === 3 ? 'ach3' : 'ach4');
-                  showToast(`Este beneficiario sigue en validación para ACH · Cuenta 1. Envíale por ${txtAchSinValidacion}.`, 6000);
+                  showToast(contactStatus(sendContact) === 'rechazada'
+                      ? `La validación de ACH · Cuenta 1 rechazó esta cuenta. Envíale por ${txtAchSinValidacion}.`
+                      : `Este beneficiario sigue en validación para ACH · Cuenta 1. Envíale por ${txtAchSinValidacion}.`, 6000);
                   setSendStep(2); return;
               }
               const motivo = motivoContactoNoSirve(sendContact);
@@ -474,9 +484,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const motivoContactoNoSirve = (c: any, cuentaAch: 1 | 3 | 4 = achCuenta): string | null => {
       if (!c) return null;
       const st = contactStatus(c);
-      if (st === 'rechazada') return 'El banco rechazó la cuenta de este beneficiario. Revísala en Beneficiarios.';
-      // En validación: por ACH · Cuenta 3/4 sí sale (no esperan esa validación).
+      // En validación o rechazada por la Cuenta 1: por ACH · Cuenta 3/4 sí sale
+      // (no usan esa validación; ver sinValidarAch).
       const porCuentaSinValidacion = esContactoAch(c) && cuentaAch >= 3 && cuentasAchSinValidacion.includes(cuentaAch as 3 | 4);
+      if (st === 'rechazada' && !porCuentaSinValidacion) {
+          return esContactoAch(c) && cuentasAchSinValidacion.length
+              ? `La validación de ACH · Cuenta 1 rechazó la cuenta de este beneficiario. Puedes enviarle por ${txtAchSinValidacion}.`
+              : 'El banco rechazó la cuenta de este beneficiario. Revísala en Beneficiarios.';
+      }
       if (st !== 'aprobada' && !porCuentaSinValidacion) {
           return esContactoAch(c) && cuentasAchSinValidacion.length
               ? `La cuenta de este beneficiario sigue en validación para ACH · Cuenta 1. Puedes enviarle ya por ${txtAchSinValidacion}.`
@@ -1143,7 +1158,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const selMeta = [...BREB_CUENTAS, ...METHODS, ...ACH_EXTRA].find(x => x.key === sendMethodSel);
                           // Beneficiario ya elegido que sigue en validación: por
                           // ACH · Cuenta 1 todavía no le llega; por la 3 o la 4 sí.
-                          const contactoEnValidacion = enValidacionAch(sendContact);
+                          const contactoEnValidacion = sinValidarAch(sendContact);
                           const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee
                               && !(sendMethodSel === 'ach' && contactoEnValidacion);
                           const brebSel = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' || sendMethodSel === 'brebX';
@@ -1470,7 +1485,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           const st = contactStatus(c);
                                           const aml = amlEtiqueta(c);
                                           // En validación: elegible solo si sale por ACH · Cuenta 3/4.
-                                          const sinValidarOk = st === 'en_proceso' && railKind === 'ach' && achCuenta >= 3 && cuentasAchSinValidacion.includes(achCuenta as 3 | 4);
+                                          const sinValidarOk = (st === 'en_proceso' || st === 'rechazada') && railKind === 'ach' && achCuenta >= 3 && cuentasAchSinValidacion.includes(achCuenta as 3 | 4);
                                           const selectable = (st === 'aprobada' || sinValidarOk) && !amlFrena(c);
                                           const sel = sendContact?.id === c.id;
                                           const railLine = c.destKind === 'breb'
@@ -1498,7 +1513,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                       {st === 'aprobada'
                                                           ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>VERIFICADA</span>
                                                           // En validación va en naranja: es un "todavía no", no un error.
-                                                          : <span style={{ border: `1px solid ${st === 'rechazada' ? 'rgba(255,255,255,0.14)' : 'rgba(251,191,36,0.32)'}`, color: st === 'rechazada' ? '#878E88' : '#FBBF24', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? 'RECHAZADA' : 'EN VALIDACIÓN'}</span>}
+                                                          : <span style={{ border: `1px solid ${st === 'rechazada' ? 'rgba(255,255,255,0.14)' : 'rgba(251,191,36,0.32)'}`, color: st === 'rechazada' ? '#878E88' : '#FBBF24', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? (sinValidarOk ? 'RECHAZADA EN C1' : 'RECHAZADA') : 'EN VALIDACIÓN'}</span>}
                                                       {aml && (
                                                           <span style={{ border: `1px solid ${AML_TONO[aml.tono].b}`, color: AML_TONO[aml.tono].c, fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{aml.t}</span>
                                                       )}
@@ -1506,11 +1521,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               </button>
                                           );
                                       })}
-                                      {railKind === 'ach' && cuentasAchSinValidacion.length > 0 && list.some((c: any) => contactStatus(c) === 'en_proceso') && (
+                                      {railKind === 'ach' && cuentasAchSinValidacion.length > 0 && list.some((c: any) => ['en_proceso', 'rechazada'].includes(contactStatus(c))) && (
                                           <p style={{ fontSize: 11.5, color: achCuenta >= 3 ? '#878E88' : '#FBBF24', lineHeight: 1.5, padding: '2px 2px' }}>
                                               {achCuenta >= 3
-                                                  ? `Los beneficiarios en validación también reciben por ACH · ${nombreCuenta(achCuenta)}: esta cuenta no espera esa validación. Los antecedentes se revisan igual.`
-                                                  : `Los beneficiarios en validación todavía no reciben por ACH · Cuenta 1. Por ${txtAchSinValidacion} sí: vuelve atrás y elige una de ellas.`}
+                                                  ? `Los beneficiarios en validación o rechazados por la Cuenta 1 también reciben por ACH · ${nombreCuenta(achCuenta)}: esta cuenta no usa esa validación. Los antecedentes se revisan igual.`
+                                                  : `Los beneficiarios en validación o rechazados por la Cuenta 1 no reciben por ACH · Cuenta 1. Por ${txtAchSinValidacion} sí: vuelve atrás y elige una de ellas.`}
                                           </p>
                                       )}
                                       {list.length === 0 && (
@@ -1798,11 +1813,12 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : tarifa(n === 1 ? 'ACH' : `ACH${n}`, 2500);
                                               const alcanza = bal >= amt + feeN;
                                               // Beneficiario en validación: por la Cuenta 1 todavía no.
-                                              const enValidacion = n === 1 && enValidacionAch(sendContact);
+                                              const enValidacion = n === 1 && sinValidarAch(sendContact);
+                                              const rechazadaC1 = enValidacion && contactStatus(sendContact) === 'rechazada';
                                               const bloqueada = !sel && (!alcanza || enValidacion);
                                               return (
                                                   <button key={n} type="button" disabled={bloqueada || isSending}
-                                                      title={enValidacion ? 'Tu beneficiario sigue en validación para ACH · Cuenta 1.' : undefined}
+                                                      title={enValidacion ? (rechazadaC1 ? 'La validación de ACH · Cuenta 1 rechazó esta cuenta.' : 'Tu beneficiario sigue en validación para ACH · Cuenta 1.') : undefined}
                                                       onClick={() => setAchCuenta(n)}
                                                       style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 10, minWidth: 0,
                                                           border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
@@ -1810,7 +1826,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                           opacity: bloqueada ? 0.5 : 1, cursor: bloqueada ? 'not-allowed' : 'pointer' }}>
                                                       <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{nombreCuenta(n)}</span>
                                                       <span style={{ display: 'block', fontSize: 11, color: sel ? '#4ADE80' : '#878E88', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                          {enValidacion ? <span style={{ color: '#FBBF24' }}>En validación</span> : <>{n >= 3 ? 'Llega en 6 a 24 h' : 'Ciclos ACH'} · {!alcanza ? 'no alcanza' : `$${Math.round(bal).toLocaleString('es-CO')}`}</>}
+                                                          {enValidacion ? <span style={{ color: '#FBBF24' }}>{rechazadaC1 ? 'Rechazada' : 'En validación'}</span> : <>{n >= 3 ? 'Llega en 6 a 24 h' : 'Ciclos ACH'} · {!alcanza ? 'no alcanza' : `$${Math.round(bal).toLocaleString('es-CO')}`}</>}
                                                       </span>
                                                   </button>
                                               );

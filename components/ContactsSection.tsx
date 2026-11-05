@@ -437,13 +437,16 @@ export const ContactsSection: React.FC<{
     // ACH · Cuenta 3 y 4 no esperan la validación de la cuenta destino que
     // hace ACH · Cuenta 1 (a veces tarda horas): el servidor solo la exige ahí.
     // Si alguna está activa, a un beneficiario EN VALIDACIÓN ya se le puede
-    // enviar por ellas — con el mismo AML de siempre. Una cuenta RECHAZADA no:
-    // el banco dijo que los datos no corresponden.
+    // enviar por ellas — con el mismo AML de siempre. Y también a uno que la
+    // validación de la Cuenta 1 RECHAZÓ: la 3 y la 4 no usan esa validación;
+    // su proveedor valida el destino al enviar y, si no corresponde, el envío
+    // se rechaza y el saldo vuelve. Antes quedaba sin poder recibir por ninguna
+    // aunque por la 3 o la 4 sí le llegaba (pedido del dueño, 2026-11-05).
     const cuentasAchSinValidacion = conCuentasAchExtra
         ? [3, 4].filter(n => (sysConfig as any)?.[`cuenta${n}`]?.ach === true)
         : [];
     const enviableSinValidar = (c: Partial<MouvContact> | null | undefined, st: string) =>
-        !!c && st === 'en_proceso' && c.accountKind !== 'wallet' && c.destKind !== 'breb' && cuentasAchSinValidacion.length > 0;
+        !!c && (st === 'en_proceso' || st === 'rechazada') && c.accountKind !== 'wallet' && c.destKind !== 'breb' && cuentasAchSinValidacion.length > 0;
     const txtCuentasSinValidar = cuentasAchSinValidacion.map(n => `ACH · ${nombreCuenta(n)}`).join(' o ');
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
@@ -2602,7 +2605,9 @@ export const ContactsSection: React.FC<{
                                                     ? 'Los envíos esperan el resultado de la consulta. Suele tardar cerca de un minuto.'
                                                     : 'No se puede transferir a esta persona. El envío se rechaza en el servidor, no solo en pantalla.')
                                                 : enviableSinValidar(c, st)
-                                                    ? `La cuenta destino sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}, que no esperan esa validación.`
+                                                    ? (st === 'rechazada'
+                                                        ? `La validación de ACH · Cuenta 1 rechazó la cuenta destino. Puedes enviarle por ${txtCuentasSinValidar}, que no usan esa validación; si los datos no corresponden, el envío se rechaza y el saldo vuelve.`
+                                                        : `La cuenta destino sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}, que no esperan esa validación.`)
                                                     : st !== 'aprobada'
                                                         ? 'La cuenta destino todavía no está validada por el banco. Hasta entonces no se puede enviar.'
                                                         : 'Se puede operar con esta persona. El veredicto se repite solo si cambian las listas.'}
