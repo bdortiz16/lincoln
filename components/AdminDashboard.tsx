@@ -396,6 +396,42 @@ const AvisoCorreos: React.FC = () => {
     );
 };
 
+// Resumen de la conciliación de las Cuentas 3 y 4 (Coinsenda) para el panel.
+// Va aparte de las cifras de Bre-B porque sus casos son otros: sobre todo los
+// envíos ya pagados que se releen por si el banco los devolvió después, y ahí
+// lo que importa es QUÉ estado dio el proveedor (si alguien dice "está
+// rechazado" y aquí sigue pagado, ese estado es el dato que falta).
+const ROTULO_CUENTAS34: Record<string, string> = {
+  refunded: 'devueltos y reembolsados',
+  completed: 'confirmados como pagados',
+  completado_ok: 'pagados que el proveedor sigue dando por buenos',
+  completado_consulta_fallida: 'pagados que no se pudieron consultar',
+  completado_no_encontrado: 'pagados que el proveedor no encuentra',
+  completado_sin_referencia: 'pagados sin referencia del proveedor',
+  still_processing: 'en curso (ya salieron, falta el banco)',
+  pendiente: 'pendientes en el proveedor',
+  muy_reciente: 'recién enviados',
+  sin_confirmar: 'sin confirmar',
+  consulta_fallida: 'en curso que no se pudieron consultar',
+  no_encontrado: 'en curso que el proveedor no encuentra (a revisión)',
+  sin_referencia: 'en curso sin referencia del proveedor',
+  revision_sin_firma: 'a revisión: fila sin firma del servidor',
+  revision_ref_duplicada: 'a revisión: referencia repetida',
+  reembolso_incierto: 'reembolso incierto (revisar el saldo)',
+  reembolso_fallido: 'reembolso fallido (se reintenta)',
+  refund_already_claimed: 'ya estaban reembolsados',
+  ya_cambio: 'ya habían cambiado',
+};
+function resumenCuentas34(c3: any): { cuentas34: [string, number][]; cuentas34Error?: string } {
+  if (!c3?.ok) return { cuentas34: [], cuentas34Error: c3?.message || c3?.error || 'No se pudieron consultar las Cuentas 3 y 4.' };
+  const m = new Map<string, number>();
+  for (const x of (c3.results ?? []) as any[]) {
+    const k = (ROTULO_CUENTAS34[x?.result] ?? String(x?.result ?? '¿?')) + (x?.estado ? ` · ${x.estado}` : '') + (x?.error ? ` · ${x.error}` : '');
+    m.set(k, (m.get(k) ?? 0) + 1);
+  }
+  return { cuentas34: [...m.entries()] };
+}
+
 const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ datos, onCerrar }) => {
     // Si el listado vino vacío, el crudo del proveedor es EL dato que hace
     // falta — no puede estar plegado esperando que a alguien se le ocurra
@@ -432,7 +468,7 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
                     <div>
                         <h3 style={{ fontSize: 15.5, fontWeight: 800, color: TXT, margin: 0, letterSpacing: '-0.3px' }}>
                             {datos.error ? 'No se pudo conciliar'
-                                : datos.automatica ? 'Se devolvió un envío' : 'Conciliación Bre-B'}
+                                : datos.automatica ? 'Se devolvió un envío' : 'Conciliación de envíos'}
                         </h3>
                         {!datos.error && (
                             <p style={{ fontSize: 12, color: TXT2, margin: '5px 0 0' }}>
@@ -476,6 +512,26 @@ const PanelConciliacion: React.FC<{ datos: any; onCerrar: () => void }> = ({ dat
                                 <div style={{ fontSize: 11.5, color: TXT2, marginTop: 3, lineHeight: 1.5 }}>
                                     Monto y comisión volvieron al riel de cada cliente. Ya les llegó el aviso.
                                 </div>
+                            </div>
+                        )}
+
+                        {datos.brebError && (
+                            <p style={{ fontSize: 12, color: ROJO, margin: '12px 0 0', lineHeight: 1.5 }}>Bre-B: {datos.brebError}</p>
+                        )}
+
+                        {(datos.cuentas34?.length > 0 || datos.cuentas34Error) && (
+                            <div style={{ marginTop: 14 }}>
+                                <p style={{ fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase', margin: '0 0 7px' }}>
+                                    Cuentas 3 y 4
+                                </p>
+                                {datos.cuentas34Error
+                                    ? <p style={{ fontSize: 12, color: ROJO, margin: 0, lineHeight: 1.5 }}>{datos.cuentas34Error}</p>
+                                    : datos.cuentas34.map(([k, n]: [string, number]) => (
+                                        <div key={k} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5, color: TXT2, padding: '3px 0' }}>
+                                            <span style={{ color: TXT, fontWeight: 700, minWidth: 26 }}>{n}</span>
+                                            <span style={{ overflowWrap: 'anywhere' }}>{k}</span>
+                                        </div>
+                                    ))}
                             </div>
                         )}
 
@@ -847,11 +903,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [resConciliar, setResConciliar] = useState<any>(null);
   const conciliarBreb = async () => {
     setConciliando(true);
-    const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
+    // Las Cuentas 3 y 4 (Coinsenda) no están en el listado de Mouv: tienen su
+    // propia conciliación, que además relee los Completado por si el banco de
+    // destino los devolvió después. El panel no la llamaba, y tres envíos
+    // rechazados se quedaron Completado con la plata del cliente descontada.
+    const [r, c3] = await Promise.all([
+      llamarMouv({ action: 'reconcile_breb', todos: true }),
+      llamarMouv({ action: 'reconcile_cuenta3', todos: true }),
+    ]);
     setConciliando(false);
-    if (!r?.ok) { setResConciliar({ error: r?.message || r?.error || 'No se pudo conciliar.' }); return; }
+    if (!r?.ok && !c3?.ok) { setResConciliar({ error: r?.message || r?.error || c3?.message || c3?.error || 'No se pudo conciliar.' }); return; }
 
-    const res = (r.results ?? []) as any[];
+    const res = [...(r?.ok ? (r.results ?? []) : []), ...(c3?.ok ? (c3.results ?? []) : [])] as any[];
     const dev = res.filter(x => x.result === 'refunded');
     const comp = res.filter(x => x.result === 'completed');
     const quedan = res.filter(x => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar');
@@ -876,7 +939,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     }
 
     setResConciliar({
-      revisados: r.checked ?? res.length,
+      revisados: Number(r?.ok ? (r.checked ?? 0) : 0) + Number(c3?.ok ? (c3.checked ?? 0) : 0),
       esperaFirma: firma,
       completados: comp.length,
       devueltos: dev.length,
@@ -884,8 +947,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       enCurso: quedan.length,
       vias: [...vias.entries()],
       motivos: [...motivos.entries()],
-      listado: r.listado ?? null,
+      listado: r?.ok ? (r.listado ?? null) : null,
       muestra: muestra?.diag ?? null,
+      ...resumenCuentas34(c3),
+      ...(!r?.ok ? { brebError: r?.message || r?.error || 'No se pudo consultar Bre-B.' } : {}),
     });
     refreshData?.();
   };
@@ -947,22 +1012,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       if (document.hidden) return;
       if (Date.now() - autoConcAt.current < 170000) return;
       autoConcAt.current = Date.now();
-      const r = await llamarMouv({ action: 'reconcile_breb', todos: true });
-      if (!vivo || !r?.ok) return;
-      const res = (r.results ?? []) as any[];
+      // Bre-B y, aparte, las Cuentas 3 y 4 (Coinsenda), que no están en el
+      // listado de Mouv. Sin esa segunda llamada, un envío de Cuenta 3/4 que
+      // el banco devolvió después de pagado solo se reembolsaba si corría el
+      // cron, y el cron no tenía sus secretos: no se reembolsaba nunca.
+      const [r, c3] = await Promise.all([
+        llamarMouv({ action: 'reconcile_breb', todos: true }),
+        llamarMouv({ action: 'reconcile_cuenta3', todos: true }),
+      ]);
+      if (!vivo || (!r?.ok && !c3?.ok)) return;
+      const res = [...(r?.ok ? (r.results ?? []) : []), ...(c3?.ok ? (c3.results ?? []) : [])] as any[];
       const dev = res.filter((x: any) => x.result === 'refunded');
       const comp = res.filter((x: any) => x.result === 'completed');
       if (dev.length || comp.length) refreshData?.();
       // Solo la plata devuelta justifica cortarle la pantalla a alguien.
       if (dev.length) {
         setResConciliar({
-          revisados: r.checked ?? res.length,
+          ...resumenCuentas34(c3),
+          revisados: Number(r?.ok ? (r.checked ?? 0) : 0) + Number(c3?.ok ? (c3.checked ?? 0) : 0),
           completados: comp.length,
           devueltos: dev.length,
           plata: dev.reduce((n: number, x: any) => n + Number(x.refund ?? 0), 0),
           enCurso: res.filter((x: any) => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar').length,
           esperaFirma: res.filter((x: any) => x.result === 'espera_firma').length,
-          vias: [], motivos: [], listado: r.listado ?? null, muestra: null,
+          vias: [], motivos: [], listado: r?.ok ? (r.listado ?? null) : null, muestra: null,
           automatica: true,
         });
       }

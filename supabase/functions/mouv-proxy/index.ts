@@ -2113,6 +2113,10 @@ const PERMISO_MOUV: Record<string, string | string[]> = {
   // Conciliar puede reembolsar: Fallos y Tesorería.
   reconcile_breb: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.tesoreria'],
   reconcile_ach: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.tesoreria'],
+  // Cuentas 3 y 4 (Coinsenda). No figuraba: solo el dueño podía correrla y el
+  // panel ni la llamaba, así que dependía del cron (que sin sus secretos en
+  // GitHub no hacía nada) y tres envíos rechazados se quedaron Completado.
+  reconcile_cuenta3: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.tesoreria'],
   confirmar_dispersion: ['plata.mover', 'fn.fallos'],
   force_return: ['plata.mover', 'fn.fallos'],
   marcar_reembolso_externo: ['plata.mover', 'fn.fallos'],
@@ -2855,9 +2859,15 @@ serve(async (req: Request) => {
     if (!barrido) qC = qC.eq('user_id', userId!)
     const { data: completadas } = await qC
     const topeCompletadas = barrido ? 25 : 10
+    // El admin que aprieta "Sincronizar" en la ficha de UN cliente quiere la
+    // respuesta ahora: si el barrido automático del panel acababa de tomar el
+    // candado, ese clic no releía nada y no mostraba el estado del proveedor.
+    // Son 10 consultas como mucho; el barrido y el cliente sí usan candado.
+    const sinCandado = caller.admin && !barrido
     const completadasARevisar: any[] = []
     for (const t of (completadas ?? []) as any[]) {
       if (completadasARevisar.length >= topeCompletadas) break
+      if (sinCandado) { completadasARevisar.push(t); continue }
       const c = await reclamarCandado(db, `cs_devolucion:${t.id}`, 20 * 60, null, 'coinsenda_devolucion')
       if (c === 'ok' || c === 'sin_tabla') completadasARevisar.push(t)
     }
@@ -2989,13 +2999,15 @@ serve(async (req: Request) => {
       try {
         if (!ref) { out.push({ id: tx.id, result: 'completado_sin_referencia' }); continue }
         const lr = await leerRetiro(await clienteDe(cuentaTx), ref)
-        if (!lr.ok) { out.push({ id: tx.id, result: 'completado_consulta_fallida' }); continue }
+        if (!lr.ok) { out.push({ id: tx.id, result: 'completado_consulta_fallida', ...(caller.admin ? { error: (lr as { error: string }).error } : {}) }); continue }
         if (!lr.existe) { out.push({ id: tx.id, result: 'completado_no_encontrado' }); continue }
         const estado = String(lr.estado ?? '')
         // Solo un rechazo explícito revierte un Completado. Cualquier otro
         // estado (accepted, confirmed…) lo deja como está.
         if (estado === 'rejected') { out.push(await devolverCoinsenda(tx, rd, ref, cuentaTx, 'rejected', 'Completado')); continue }
-        out.push({ id: tx.id, result: 'completado_ok' })
+        // Al admin se le dice qué estado dio Coinsenda: si alguien jura que
+        // está rechazado y aquí sigue Completado, ese dato es el que falta.
+        out.push({ id: tx.id, result: 'completado_ok', ...(caller.admin ? { estado } : {}) })
       } catch (e) {
         out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
       }

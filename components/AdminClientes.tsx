@@ -423,22 +423,29 @@ export const AdminClientes: React.FC<{
   const sincronizar = async () => {
     setSincronizando(true);
     try {
-      const [breb, ach] = await Promise.all([
+      // Y las Cuentas 3 y 4 (Coinsenda), que tienen su propia conciliación:
+      // además de los envíos en curso, relee los ya pagados por si el banco
+      // los devolvió después. Este botón no la llamaba.
+      const [breb, ach, c3] = await Promise.all([
         pedirMouv({ action: 'reconcile_breb', userId: sel?.id }),
         pedirMouv({ action: 'reconcile_ach',  userId: sel?.id }),
+        pedirMouv({ action: 'reconcile_cuenta3', userId: sel?.id }),
       ]);
       await refreshData?.();
 
-      setDiagSync({ at: new Date().toISOString(), breb, ach });
+      setDiagSync({ at: new Date().toISOString(), breb, ach, c3 });
 
-      const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0);
+      const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0) + Number(c3?.checked ?? 0);
       const cambios = [...(breb?.results ?? []), ...(ach?.results ?? [])]
-        .filter((r: any) => r?.result && r.result !== 'sin_cambios' && r.result !== 'no_encontrado').length;
+        .filter((r: any) => r?.result && r.result !== 'sin_cambios' && r.result !== 'no_encontrado').length
+        // De las Cuentas 3 y 4 solo cuenta lo que cambió de verdad: sus demás
+        // resultados (completado_ok, pendiente…) son "sigue igual".
+        + (c3?.results ?? []).filter((r: any) => r?.result === 'refunded' || r?.result === 'completed').length;
 
       // El mensaje dice lo que de verdad pasó. "Actualizado" cuando no se
       // actualizó nada es cómo este botón escondió el problema durante meses.
-      if (!breb?.ok && !ach?.ok) {
-        showToast?.(breb?.message ?? ach?.message ?? 'No se pudo consultar al proveedor.', 7000);
+      if (!breb?.ok && !ach?.ok && !c3?.ok) {
+        showToast?.(breb?.message ?? ach?.message ?? c3?.message ?? 'No se pudo consultar al proveedor.', 7000);
       } else if (revisados === 0) {
         showToast?.('Se consultó al proveedor y no había movimientos en la ventana de conciliación para este cliente.', 8000);
       } else if (cambios === 0) {
@@ -1187,9 +1194,14 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
 // con calma o copiarlo para preguntar.
 const DiagnosticoSync: React.FC<{ d: any; onCerrar: () => void }> = ({ d, onCerrar }) => {
   const [crudo, setCrudo] = useState(false);
-  const breb = d?.breb ?? {}, ach = d?.ach ?? {};
-  const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0);
-  const todos = [...(breb?.results ?? []), ...(ach?.results ?? [])];
+  const breb = d?.breb ?? {}, ach = d?.ach ?? {}, c3 = d?.c3 ?? {};
+  const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0) + Number(c3?.checked ?? 0);
+  // Los de las Cuentas 3 y 4 van marcados, con el estado que dio el proveedor:
+  // "completado_ok · accepted" responde de una vez si de verdad está rechazado.
+  const todos = [
+    ...(breb?.results ?? []), ...(ach?.results ?? []),
+    ...(c3?.results ?? []).map((r: any) => ({ ...r, result: `Cuenta 3/4 · ${r?.result ?? 'sin_resultado'}${r?.estado ? ` · ${r.estado}` : ''}${r?.error ? ` · ${r.error}` : ''}` })),
+  ];
 
   // Agrupado por desenlace: "8 sin cambios, 2 devueltos" dice más que una
   // lista de ids que nadie va a leer.
@@ -1241,6 +1253,9 @@ const DiagnosticoSync: React.FC<{ d: any; onCerrar: () => void }> = ({ d, onCerr
 
           {(breb?.message || ach?.message) && (
             <p style={{ fontSize: 11.5, color: C.amber, margin: '7px 0 0' }}>{breb?.message ?? ach?.message}</p>
+          )}
+          {c3?.ok !== true && c3?.message && (
+            <p style={{ fontSize: 11.5, color: C.amber, margin: '7px 0 0' }}>Cuentas 3 y 4: {c3.message}</p>
           )}
 
           {listado?.crudo != null && (
