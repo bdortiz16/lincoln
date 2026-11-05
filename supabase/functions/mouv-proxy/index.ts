@@ -2832,14 +2832,92 @@ serve(async (req: Request) => {
     if (!barrido) q = q.eq('user_id', userId!)
     const { data: filas, error: errFilas } = await q
     if (errFilas) return json(500, { ok: false, error: 'lectura', message: 'No se pudieron leer los envíos de las Cuentas 3 y 4.' })
+    // ── DEVOLUCIONES TARDÍAS ─────────────────────────────────────────
+    // Coinsenda marca un retiro 'accepted' (y aquí queda Completado) y el
+    // banco de destino todavía puede rechazarlo o devolverlo después: el
+    // retiro pasa a 'rejected'. Esta conciliación solo miraba los Procesando,
+    // así que esos envíos se quedaban Completado con la plata del cliente
+    // descontada aunque nunca llegó (5 nov: tres envíos ACH · Cuenta 4 de
+    // 1, 13,56 y 20 millones). Ahora también se relee cada Completado de los
+    // últimos días; si Coinsenda lo da por rechazado, se devuelve igual que
+    // a un Procesando. Cada uno se consulta como máximo cada 20 minutos (un
+    // candado por envío) y con un tope por vuelta, para no gastar el cupo
+    // de consultas de Coinsenda.
+    const diasDevolucion = Number(Deno.env.get('COINSENDA_RECONCILE_DAYS') ?? '7') || 7
+    let qC = db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data, created_at')
+      .eq('type', 'dispersion').eq('status', 'Completado')
+      .filter('raw_data->>proveedor', 'eq', 'coinsenda')
+      .filter('raw_data->>refunded', 'is', null)
+      .gte('created_at', new Date(Date.now() - diasDevolucion * 86_400_000).toISOString())
+      .order('created_at', { ascending: false })
+      .limit(barrido ? 300 : 60)
+    if (!barrido) qC = qC.eq('user_id', userId!)
+    const { data: completadas } = await qC
+    const topeCompletadas = barrido ? 25 : 10
+    const completadasARevisar: any[] = []
+    for (const t of (completadas ?? []) as any[]) {
+      if (completadasARevisar.length >= topeCompletadas) break
+      const c = await reclamarCandado(db, `cs_devolucion:${t.id}`, 20 * 60, null, 'coinsenda_devolucion')
+      if (c === 'ok' || c === 'sin_tabla') completadasARevisar.push(t)
+    }
     const out: Record<string, unknown>[] = []
-    if (!filas?.length) return json(200, { ok: true, checked: 0, results: out })
+    if (!filas?.length && !completadasARevisar.length) return json(200, { ok: true, checked: 0, results: out })
     const clientes = new Map<CuentaCoinsenda, ClienteCoinsenda>()
     const clienteDe = async (c: CuentaCoinsenda) => {
       if (!clientes.has(c)) clientes.set(c, new ClienteCoinsenda(db, await configCoinsenda(db, c), 20_000))
       return clientes.get(c)!
     }
-    for (const tx of filas as any[]) {
+    // Devuelve monto + comisión de un envío que Coinsenda dio por rechazado
+    // (o que no salió). `estadoPrevio` es el estado en que está la fila:
+    // 'Procesando', o 'Completado' cuando el banco lo devolvió después de
+    // aceptado. Todo condicionado a ese estado y a que no esté ya reembolsada:
+    // dos vueltas a la vez no devuelven dos veces.
+    const devolverCoinsenda = async (tx: any, rd: Record<string, any>, ref: string, cuentaTx: CuentaCoinsenda, estado: string, estadoPrevio: 'Procesando' | 'Completado'): Promise<Record<string, unknown>> => {
+      if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'coinsenda'); return { id: tx.id, result: 'revision_sin_firma' } }
+      const permiso = await reembolsoPermitido(tx, ref, 'coinsenda')
+      if (!permiso.ok) return { id: tx.id, result: 'revision_ref_duplicada' }
+      const refund = permiso.refund
+      const railCol = String(tx.currency ?? '')
+      const ahora = new Date().toISOString()
+      // providerError lo ve el cliente: sin el nombre del aliado.
+      const motivo = estado === 'no_salio'
+        ? 'La confirmación del envío no pasó, así que no salió.'
+        : estadoPrevio === 'Completado'
+          ? 'El banco de destino rechazó o devolvió el envío después de recibirlo.'
+          : 'El banco o el directorio Bre-B rechazó el envío.'
+      // CAS: se reclama ANTES de tocar el saldo (no hay doble reembolso).
+      const { data: claimed } = await db.from('transactions').update({
+        status: 'Rechazado',
+        raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, reconciledAt: ahora, revisionManual: undefined, confirmarPendiente: undefined,
+          ...(estadoPrevio === 'Completado' ? { devueltoDespuesDeCompletado: true, completadoAntes: true } : {}) },
+      }).eq('id', tx.id).eq('status', estadoPrevio).filter('raw_data->>refunded', 'is', null).select('id')
+      if (!claimed?.length) return { id: tx.id, result: 'refund_already_claimed' }
+      const credito = await creditBalanceAtomic3(String(tx.user_id), railCol, refund)
+      if (credito === 'incierto') {
+        // El saldo pudo haber vuelto (se perdió la respuesta): el reclamo
+        // se queda puesto para no devolver dos veces; lo revisa un admin.
+        await db.from('transactions').update({ raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: ahora } })
+          .eq('id', tx.id).eq('status', 'Rechazado')
+        await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_incierto', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref })
+        await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: railCol, created_at: tx.created_at, raw_data: rd })
+        return { id: tx.id, result: 'reembolso_incierto' }
+      }
+      if (credito !== 'ok') {
+        // Vuelve a Procesando (también si venía de Completado) sin la marca de
+        // reembolsado: la próxima vuelta lo encuentra rechazado y lo reintenta.
+        await db.from('transactions').update({ status: 'Procesando', raw_data: { ...rd, reembolsoPendiente: true, reembolsoFallidoAt: ahora, revisionManual: true, providerState: estado } })
+          .eq('id', tx.id).eq('status', 'Rechazado').filter('raw_data->>refunded', 'eq', 'true')
+        await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_fallido', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref })
+        await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: railCol, created_at: tx.created_at, raw_data: rd })
+        return { id: tx.id, result: 'reembolso_fallido' }
+      }
+      await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref, estado, estadoPrevio })
+      await notifyTx(tx.id)
+      await avisarCliente(String(tx.user_id), 'Tu envío fue devuelto', `El envío de ${Number(tx.amount).toLocaleString('es-CO')} COP no llegó y ya volvió a tu saldo, con la comisión.`, `devuelto-${tx.id}`)
+      return { id: tx.id, cuenta: cuentaTx, result: 'refunded', refund, ...(estadoPrevio === 'Completado' ? { devueltoDespuesDeCompletado: true } : {}) }
+    }
+    for (const tx of (filas ?? []) as any[]) {
       const rd = (tx.raw_data ?? {}) as Record<string, any>
       const ref = String(rd.providerRef ?? rd.coinsenda?.retiro ?? '').trim()
       // Las filas de antes de la Cuenta 4 no traen coinsenda.cuenta: son de la 3.
@@ -2897,47 +2975,32 @@ serve(async (req: Request) => {
           out.push({ id: tx.id, result: 'still_processing' }); continue
         }
         if (estado === 'rejected' || estado === 'no_salio') {
-          if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'coinsenda'); out.push({ id: tx.id, result: 'revision_sin_firma' }); continue }
-          const permiso = await reembolsoPermitido(tx, ref, 'coinsenda')
-          if (!permiso.ok) { out.push({ id: tx.id, result: 'revision_ref_duplicada' }); continue }
-          const refund = permiso.refund
-          const railCol = String(tx.currency ?? '')
-          // providerError lo ve el cliente: sin el nombre del aliado.
-          const motivo = estado === 'rejected' ? 'El banco o el directorio Bre-B rechazó el envío.' : 'La confirmación del envío no pasó, así que no salió.'
-          // CAS: se reclama ANTES de tocar el saldo (no hay doble reembolso).
-          const { data: claimed } = await db.from('transactions').update({
-            status: 'Rechazado',
-            raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, reconciledAt: ahora, revisionManual: undefined, confirmarPendiente: undefined },
-          }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null).select('id')
-          if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
-          const credito = await creditBalanceAtomic3(String(tx.user_id), railCol, refund)
-          if (credito === 'incierto') {
-            // El saldo pudo haber vuelto (se perdió la respuesta): el reclamo
-            // se queda puesto para no devolver dos veces; lo revisa un admin.
-            await db.from('transactions').update({ raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: ahora } })
-              .eq('id', tx.id).eq('status', 'Rechazado')
-            await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_incierto', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref })
-            await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: railCol, created_at: tx.created_at, raw_data: rd })
-            out.push({ id: tx.id, result: 'reembolso_incierto' }); continue
-          }
-          if (credito !== 'ok') {
-            await db.from('transactions').update({ status: 'Procesando', raw_data: { ...rd, reembolsoPendiente: true, reembolsoFallidoAt: ahora, revisionManual: true } })
-              .eq('id', tx.id).eq('status', 'Rechazado').filter('raw_data->>refunded', 'eq', 'true')
-            await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_fallido', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref })
-            await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: railCol, created_at: tx.created_at, raw_data: rd })
-            out.push({ id: tx.id, result: 'reembolso_fallido' }); continue
-          }
-          await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref, estado })
-          await notifyTx(tx.id)
-          await avisarCliente(String(tx.user_id), 'Tu envío fue devuelto', `El envío de ${Number(tx.amount).toLocaleString('es-CO')} COP no llegó y ya volvió a tu saldo, con la comisión.`, `devuelto-${tx.id}`)
-          out.push({ id: tx.id, result: 'refunded', refund }); continue
+          out.push(await devolverCoinsenda(tx, rd, ref, cuentaTx, estado, 'Procesando')); continue
         }
         out.push({ id: tx.id, result: 'estado_desconocido', ...(caller.admin ? { estado } : {}) })
       } catch (e) {
         out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
       }
     }
-    return json(200, { ok: true, checked: filas.length, results: out })
+    for (const tx of completadasARevisar) {
+      const rd = (tx.raw_data ?? {}) as Record<string, any>
+      const ref = String(rd.providerRef ?? rd.coinsenda?.retiro ?? '').trim()
+      const cuentaTx = cuentaCoinsendaDe(rd.coinsenda?.cuenta ?? rd.cuentaBreb ?? rd.cuentaAch)
+      try {
+        if (!ref) { out.push({ id: tx.id, result: 'completado_sin_referencia' }); continue }
+        const lr = await leerRetiro(await clienteDe(cuentaTx), ref)
+        if (!lr.ok) { out.push({ id: tx.id, result: 'completado_consulta_fallida' }); continue }
+        if (!lr.existe) { out.push({ id: tx.id, result: 'completado_no_encontrado' }); continue }
+        const estado = String(lr.estado ?? '')
+        // Solo un rechazo explícito revierte un Completado. Cualquier otro
+        // estado (accepted, confirmed…) lo deja como está.
+        if (estado === 'rejected') { out.push(await devolverCoinsenda(tx, rd, ref, cuentaTx, 'rejected', 'Completado')); continue }
+        out.push({ id: tx.id, result: 'completado_ok' })
+      } catch (e) {
+        out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
+      }
+    }
+    return json(200, { ok: true, checked: (filas?.length ?? 0) + completadasARevisar.length, results: out })
   }
 
   if (action === 'reconcile_breb') {
