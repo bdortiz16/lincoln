@@ -229,7 +229,21 @@ Deno.serve(async (req) => {
       }
       const code = codigoNuevo() // 6 dígitos
       const codeHash = await hmacCodigo(String(user.id), code)
-      const otp = { codeHash, v: 2, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, sentAt: Date.now() }
+      // ── LOS CÓDIGOS QUE ESTE REEMPLAZA ──────────────────────────────────
+      // Cada envío deja sin valor al anterior, pero el correo anterior sigue en
+      // la bandeja (y con otro asunto, así que el correo no los agrupa). Pasó
+      // el 2026-11-05 con la primera colaboradora: un ingreso en
+      // /admin-empresas mandó un código, el de /colaboradores mandó otro, ella
+      // escribió el primero —que SÍ le llegó a su correo— y contó como "código
+      // incorrecto"; con dos, el panel se bloqueó. Se guarda la huella de los
+      // reemplazados (los que no han vencido, máximo 3) solo para poder decir
+      // "ese ya fue reemplazado, usa el último": NO sirven para entrar.
+      const ahoraMs = Date.now()
+      const reemplazados = [
+        ...(prev?.codeHash && Number(prev.expiresAt ?? 0) > ahoraMs ? [{ h: String(prev.codeHash), v: Number(prev.v ?? 1), exp: Number(prev.expiresAt) }] : []),
+        ...(Array.isArray(prev?.reemplazados) ? prev.reemplazados : []),
+      ].filter((r: any) => r && typeof r.h === 'string' && Number(r.exp ?? 0) > ahoraMs).slice(0, 3)
+      const otp = { codeHash, v: 2, expiresAt: ahoraMs + 10 * 60 * 1000, attempts: 0, sentAt: ahoraMs, ...(reemplazados.length ? { reemplazados } : {}) }
 
       // ── UN SOLO CÓDIGO POR VEZ, AUNQUE LLEGUEN DOS PETICIONES JUNTAS ────
       // El freno de 30 s de arriba mira `prev`, que se leyó al empezar. Dos
@@ -332,10 +346,27 @@ Deno.serve(async (req) => {
         .eq('raw_data->otp->>attempts', String(previo))
         .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
         .select('id')
-      if (!turno?.length) return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
+      // Sin turno no se evaluó ningún código: otra petición con este mismo
+      // código (un doble toque, o la red reintentando el POST) está en curso.
+      // Antes respondía 'invalid', y quien llama lo contaba como un código
+      // equivocado —uno de los dos fallos que bloquean el panel— por un
+      // código que estaba bien. No da ventaja a nadie: aquí no se probó nada.
+      if (!turno?.length) return json(200, { ok: false, error: 'busy', message: 'Estamos verificando tu código. Espera un momento.' })
       const esperado = Number(otp.v) === 2 ? await hmacCodigo(String(user.id), code) : await sha256(code)
       const ok = igualesHex(esperado, String(otp.codeHash))
-      if (!ok) return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
+      if (!ok) {
+        // ¿Es uno de los que reemplazó el último envío? Entonces quien lo
+        // escribe tiene el correo: se equivocó de correo, no adivinó. No
+        // abre nada; solo se dice cuál usar. (El intento ya quedó cobrado.)
+        const vivos: any[] = Array.isArray(otp.reemplazados) ? otp.reemplazados.filter((r: any) => Number(r?.exp ?? 0) > Date.now()) : []
+        for (const r of vivos) {
+          const h = Number(r.v) === 2 ? await hmacCodigo(String(user.id), code) : await sha256(code)
+          if (igualesHex(h, String(r.h))) {
+            return json(200, { ok: false, error: 'superseded', message: 'Ese código ya fue reemplazado por uno más nuevo. Usa el del último correo que te llegó.' })
+          }
+        }
+        return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
+      }
 
       // ── CONSUMO DE UN SOLO USO, ATÓMICO ─────────────────────────────────
       // El borrado por sí solo NO alcanzaba: entre leer el código y borrarlo

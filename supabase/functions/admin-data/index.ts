@@ -2154,7 +2154,10 @@ Deno.serve(async (req: Request) => {
           // Contarlo como fallo llevaría a bloquear la cuenta del titular por
           // un doble toque — el bloqueo existe para quien ADIVINA, no para
           // quien acierta dos veces seguidas.
-          const inocente = ['used', 'no_code', 'expired'].includes(String(r?.error ?? ''))
+          // Tampoco uno REEMPLAZADO por un envío más nuevo (llegó a su correo:
+          // es del titular) ni el que no se alcanzó a evaluar porque el mismo
+          // código ya se estaba verificando ('busy').
+          const inocente = ['used', 'no_code', 'expired', 'superseded', 'busy'].includes(String(r?.error ?? ''))
           if (inocente) return json({ ok: false, message: r?.message ?? 'Solicita un código nuevo.' })
           const f = await registerAdminFailure(req, uidE, 'código incorrecto', 'correo', selfServiceBody.foto ?? null)
           if (f.bloqueada) {
@@ -3143,7 +3146,7 @@ Deno.serve(async (req: Request) => {
           }).then(x => x.json()).catch(() => null)
           if (!ver?.ok) {
             // Un código ya usado, vencido o sin pedir no es adivinar: no cuenta.
-            if (!['used', 'no_code', 'expired'].includes(String(ver?.error ?? ''))) {
+            if (!['used', 'no_code', 'expired', 'superseded', 'busy'].includes(String(ver?.error ?? ''))) {
               await auditAdmin(req, 'security.mfa_alta_codigo_correo_invalido', { userId: uidS, motivo: ver?.error ?? 'sin respuesta' })
             }
             return json({ success: false, pideCodigoCorreo: true, error: ver?.message ?? 'El código del correo no es válido o ya venció.' })
