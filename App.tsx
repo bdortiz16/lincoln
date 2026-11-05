@@ -15,6 +15,7 @@ import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
 import { useTheme } from './context/ThemeContext';
 import { isSupabaseConfigured } from './lib/supabaseClient';
+import { paginaDeRuta, rutaDePagina } from './lib/datosLegales';
 import { rutaDelPanel } from './lib/rutaPanel';
 import { X, WifiOff } from 'lucide-react';
 
@@ -304,8 +305,16 @@ const App: React.FC = () => {
   // Nota: el routing de /admin-personas Y /admin-empresas se maneja en
   // index.tsx (apps aisladas con su propio login) — acá solo llega el
   // flujo de clientes.
-  const [currentView, setCurrentView] = useState<ViewState>(() => rutaInicial()?.view ?? 'landing');
-  const [staticPageKey, setStaticPageKey] = useState<string>('privacy'); // State for static page content
+  // Los documentos legales tienen dirección propia (lincoin.me/terminos,
+  // /privacidad, /sarlaft…): se pueden enlazar desde el registro, los correos
+  // y los contratos, y abren directo al recargar.
+  const [currentView, setCurrentView] = useState<ViewState>(() => {
+    try { if (paginaDeRuta(window.location.pathname)) return 'static-page'; } catch { /* */ }
+    return rutaInicial()?.view ?? 'landing';
+  });
+  const [staticPageKey, setStaticPageKey] = useState<string>(() => {
+    try { return paginaDeRuta(window.location.pathname) ?? 'privacy'; } catch { return 'privacy'; }
+  });
   const [email, setEmail] = useState('');
   const [showDashboardBanner, setShowDashboardBanner] = useState(false);
   const [userRole, setUserRole] = useState<UserRole>(() => {
@@ -350,9 +359,11 @@ const App: React.FC = () => {
   }, [currentView, userRole]);
   useEffect(() => {
     const onPop = () => {
+      const doc = paginaDeRuta(window.location.pathname);
+      if (doc) { setStaticPageKey(doc); setCurrentView('static-page'); return; }
       const r = RUTAS_APP[window.location.pathname];
       if (r) { if (r.role) setUserRole(r.role); setCurrentView(r.view); }
-      else if (window.location.pathname === '/') setCurrentView(v => (['role-selection', 'login', 'register'].includes(v) ? 'landing' : v));
+      else if (window.location.pathname === '/') setCurrentView(v => (['role-selection', 'login', 'register', 'static-page'].includes(v) ? 'landing' : v));
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -546,7 +557,16 @@ const App: React.FC = () => {
   const navigateToStaticPage = (pageKey: string) => {
       setStaticPageKey(pageKey);
       setCurrentView('static-page');
+      try {
+        const ruta = rutaDePagina(pageKey);
+        if (ruta && window.location.pathname !== ruta) window.history.pushState({ pagina: pageKey }, '', ruta);
+      } catch { /* sin history */ }
       window.scrollTo(0, 0);
+  };
+  // Volver al inicio desde un documento: la dirección también vuelve a "/".
+  const salirDeDocumento = () => {
+      try { if (paginaDeRuta(window.location.pathname)) window.history.pushState({}, '', '/'); } catch { /* */ }
+      navigateToLanding();
   };
   
   const handleBusinessSelected = () => {
@@ -670,9 +690,10 @@ const App: React.FC = () => {
           );
         case 'static-page':
           return (
-            <StaticPage 
+            <StaticPage
               pageKey={staticPageKey}
-              onBack={navigateToLanding}
+              onBack={salirDeDocumento}
+              onNavigate={navigateToStaticPage}
             />
           );
         case 'role-selection':

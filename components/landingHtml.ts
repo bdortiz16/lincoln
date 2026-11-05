@@ -311,14 +311,14 @@ export const LANDING_HTML = `<style>
       </div>
       <div style="display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: #8f8f8a;">
         <strong style="color: #f4f4f2; font-size: 13px; letter-spacing: 1px;">SEGURIDAD</strong>
-        <a class="nl" data-page="security" href="#">Cómo te protegemos</a><a class="nl" data-page="status" href="#">Estado del sistema</a><a class="nl" data-page="support" href="#">Centro de ayuda</a>
+        <a class="nl" data-page="security" href="/seguridad">Cómo te protegemos</a><a class="nl" data-page="status" href="/estado">Estado del sistema</a><a class="nl" data-page="support" href="/ayuda">Centro de ayuda</a>
       </div>
       <div style="display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: #8f8f8a;">
         <strong style="color: #f4f4f2; font-size: 13px; letter-spacing: 1px;">LEGAL</strong>
-        <a class="nl" data-page="terms" href="#">Términos y condiciones</a><a class="nl" data-page="privacy" href="#">Política de privacidad</a><a class="nl" data-page="complaints" href="#">Reclamaciones</a>
+        <a class="nl" data-page="terms" href="/terminos">Términos y condiciones</a><a class="nl" data-page="privacy" href="/privacidad">Tratamiento de datos personales</a><a class="nl" data-page="sagrilaft" href="/sarlaft">Política SARLAFT</a><a class="nl" data-page="complaints" href="/reclamaciones">Peticiones, quejas y reclamos</a><a class="nl" data-page="licenses" href="/marco-legal">Marco legal</a>
       </div>
     </div>
-    <p style="color: #6b6b66; font-size: 12px; margin: 24px 0 8px; max-width: 900px;">Lincoin no es un banco ni una entidad de crédito. Los pagos se procesan a través de aliados de infraestructura de pagos en Colombia. Lincoin implementa el SARLAFT (Sistema de Administración del Riesgo de Lavado de Activos y de la Financiación del Terrorismo): conocimiento del cliente (KYC/KYB), debida diligencia, monitoreo transaccional y reporte de operaciones sospechosas.</p>
+    <p style="color: #6b6b66; font-size: 12px; margin: 24px 0 8px; max-width: 900px;">Lincoin no es un banco ni una entidad de crédito, no es una entidad vigilada por la Superintendencia Financiera de Colombia y los saldos no son depósitos ni están amparados por el seguro de depósitos. Los pagos se procesan a través de aliados de infraestructura de pagos en Colombia. Lincoin implementa el SARLAFT (Sistema de Administración del Riesgo de Lavado de Activos y de la Financiación del Terrorismo): conocimiento del cliente (KYC/KYB), debida diligencia, monitoreo transaccional y reporte de operaciones sospechosas.</p>
     <p style="color: #6b6b66; font-size: 12px; margin: 0;">© 2026 Lincoin.</p>
   </div>
 </footer>

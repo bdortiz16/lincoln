@@ -6,6 +6,7 @@ import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 import { llamarFuncion } from '../lib/edge';
 import { conCodigo2fa, conCodigoCorreo } from '../lib/codigo2fa';
 import { rutaDelPanel } from '../lib/rutaPanel';
+import { VERSION_LEGAL } from '../lib/datosLegales';
 
 // --- TYPES ---
 
@@ -2514,6 +2515,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const rolPedido: 'personal' | 'business' = data.role === 'personal' ? 'personal' : 'business';
     localStorage.setItem('cuypay_register_role', rolPedido);
 
+    // Constancia de lo que se aceptó al registrarse (el registro no deja
+    // seguir sin marcar la casilla): qué versión de los términos, la política
+    // de datos y el SARLAFT, y cuándo. Va también en los metadatos de la
+    // cuenta de acceso, que guarda el servidor de Auth con su propia hora:
+    // ante un reclamo hay que poder mostrar qué texto aceptó la empresa.
+    const aceptacionLegal = {
+      version: VERSION_LEGAL,
+      documentos: ['terminos', 'privacidad', 'sarlaft'],
+      at: new Date().toISOString(),
+    };
     const { data: authData, error } = await supabase.auth.signUp({
       email: data.email,
       password: data.password,
@@ -2521,6 +2532,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         data: {
           role: rolPedido,
           full_name: data.name || 'Usuario',
+          aceptacion_legal: aceptacionLegal,
         },
         ...(data.captchaToken ? { captchaToken: data.captchaToken } : {}),
       },
@@ -2544,6 +2556,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         notifications: [],
         ownReferralCode: id.slice(-6).toUpperCase(),
         referralCode: data.referralCode,
+        aceptacionLegal,
         // Operadores: persona natural o empresa (lo eligen al registrarse).
         ...(data.tipoOperador ? { tipoOperador: data.tipoOperador } : {}),
       },

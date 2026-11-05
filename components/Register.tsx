@@ -356,7 +356,12 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                         className="mt-1 w-4 h-4 rounded border-slate-500 text-[#5d87ff] focus:ring-[#5d87ff] cursor-pointer" 
                     />
                     <label htmlFor="privacy" className="text-sm text-slate-900 cursor-pointer">
-                        Al registrarme acepto las <a href="#" className="text-[#5d87ff] underline hover:text-[#0C0E0D]">políticas de privacidad</a>.
+                        {/* Enlaces reales y en pestaña nueva (antes "#", no llevaban a nada):
+                            la aceptación queda guardada con la versión de estos
+                            documentos (lib/datosLegales.ts). */}
+                        Acepto los <a href="/terminos" target="_blank" rel="noopener noreferrer" className="text-[#5d87ff] underline hover:text-[#0C0E0D]">Términos y Condiciones</a>,
+                        la <a href="/privacidad" target="_blank" rel="noopener noreferrer" className="text-[#5d87ff] underline hover:text-[#0C0E0D]">Política de Tratamiento de Datos Personales</a> (incluida
+                        la autorización para tratar mis datos) y la <a href="/sarlaft" target="_blank" rel="noopener noreferrer" className="text-[#5d87ff] underline hover:text-[#0C0E0D]">Política SARLAFT</a> de Lincoin.
                     </label>
                 </div>
 
