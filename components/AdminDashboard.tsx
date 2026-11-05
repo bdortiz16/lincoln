@@ -753,13 +753,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   type BolsaCs = { loading: boolean; cop?: number | null; error?: string };
   const [coinsendaPool, setCoinsendaPool] = useState<BolsaCs | null>(null);
   const [coinsenda2Pool, setCoinsenda2Pool] = useState<BolsaCs | null>(null);
-  const loadCoinsendaPool = async () => {
-    setCoinsendaPool({ loading: true }); setCoinsenda2Pool({ loading: true });
+  // Hora de la última lectura de las bolsas, para que se vea que están vivas.
+  const [bolsasAt, setBolsasAt] = useState<number | null>(null);
+  // `silencioso`: la vuelta automática de la Billetera (abajo). No pinta
+  // "Cargando…" encima de la cifra y un fallo pasajero no borra la que ya se
+  // ve. Va en un objeto y no como booleano suelto porque los botones pasan
+  // el loader directo a onClick, y el evento del clic llegaría como `true`.
+  const loadCoinsendaPool = async (opts?: { silencioso?: boolean }) => {
+    const silencioso = opts?.silencioso === true;
+    if (!silencioso) { setCoinsendaPool({ loading: true }); setCoinsenda2Pool({ loading: true }); }
     const r = await pedirAdmin({ action: 'coinsenda_bolsa' }).catch(() => null);
     const de = (c: any, n: number): BolsaCs => c && c.cop != null ? { loading: false, cop: Number(c.cop) } : { loading: false, error: c?.error ?? `No se pudo leer la bolsa de la Cuenta ${n}.` };
-    if (r?.ok && r.cuentas) { setCoinsendaPool(de(r.cuentas['3'] ?? r.cuentas[3], 3)); setCoinsenda2Pool(de(r.cuentas['4'] ?? r.cuentas[4], 4)); }
-    else if (r?.ok) { setCoinsendaPool({ loading: false, cop: r.cop ?? null }); setCoinsenda2Pool({ loading: false, error: 'Actualiza la página para ver la Cuenta 4.' }); }
-    else { const e = r?.error ?? 'No se pudo leer la bolsa de Coinsenda.'; setCoinsendaPool({ loading: false, error: e }); setCoinsenda2Pool({ loading: false, error: e }); }
+    const poner = (set: React.Dispatch<React.SetStateAction<BolsaCs | null>>, v: BolsaCs) =>
+      set(prev => (silencioso && v.error && prev && prev.cop != null && !prev.error) ? prev : v);
+    if (r?.ok && r.cuentas) { poner(setCoinsendaPool, de(r.cuentas['3'] ?? r.cuentas[3], 3)); poner(setCoinsenda2Pool, de(r.cuentas['4'] ?? r.cuentas[4], 4)); }
+    else if (r?.ok) { poner(setCoinsendaPool, { loading: false, cop: r.cop ?? null }); poner(setCoinsenda2Pool, { loading: false, error: 'Actualiza la página para ver la Cuenta 4.' }); }
+    else { const e = r?.error ?? 'No se pudo leer la bolsa de Coinsenda.'; poner(setCoinsendaPool, { loading: false, error: e }); poner(setCoinsenda2Pool, { loading: false, error: e }); }
   };
   // Resolver conversión trabada: el USDT llegó al proveedor pero el COP no se
   // acreditó → se acredita a mano y se cierra el movimiento.
@@ -816,8 +825,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
     setStuckBusy(false);
   };
-  const loadMouvPool = async () => {
-    setMouvPool({ loading: true });
+  const loadMouvPool = async (opts?: { silencioso?: boolean }) => {
+    const silencioso = opts?.silencioso === true;
+    // En la vuelta automática, un error no tapa la cifra buena que ya se ve.
+    const ponerError = (error: string) => setMouvPool(prev => (silencioso && prev && !prev.error && !prev.loading) ? prev : { loading: false, error });
+    if (!silencioso) setMouvPool({ loading: true });
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -833,10 +845,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         body: JSON.stringify({ action: 'treasury_balances' }),
       });
       const d = await r.json();
-      if (d?.error) setMouvPool({ loading: false, error: d.error });
+      if (d?.error) ponerError(d.error);
       else setMouvPool({ loading: false, total: d.total ?? d.cop ?? null, breb: d.breb ?? null, ach: d.ach ?? null });
     } catch (e: any) {
-      setMouvPool({ loading: false, error: e?.message ?? 'Error de red' });
+      ponerError(e?.message ?? 'Error de red');
     }
   };
 
@@ -1062,8 +1074,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo confirmar.');
   };
 
-  const loadFinityPool = async () => {
-    setFinityPool({ loading: true });
+  const loadFinityPool = async (opts?: { silencioso?: boolean }) => {
+    const silencioso = opts?.silencioso === true;
+    const ponerError = (error: string) => setFinityPool(prev => (silencioso && prev && !prev.error && !prev.loading) ? prev : { loading: false, error });
+    if (!silencioso) setFinityPool({ loading: true });
     try {
       const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
       const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
@@ -1079,10 +1093,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         body: JSON.stringify({ action: 'treasury_balances' }),
       });
       const d = await r.json();
-      if (d?.error) setFinityPool({ loading: false, error: d.error });
-      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null, error: d.ok === false ? (d.error ?? 'Finity no respondió') : undefined });
+      if (d?.error) ponerError(d.error);
+      else if (d?.ok === false) ponerError(d.error ?? 'Finity no respondió');
+      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null });
     } catch (e: any) {
-      setFinityPool({ loading: false, error: e?.message ?? 'Error de red' });
+      ponerError(e?.message ?? 'Error de red');
     }
   };
 
@@ -1121,9 +1136,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   };
 
   useEffect(() => {
-    if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !mouvPool) loadMouvPool();
-    if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !finityPool) loadFinityPool();
-    if ((activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin') && !coinsendaPool) loadCoinsendaPool();
+    const conBolsas = activeTab === 'cargues' || activeTab === 'treasury' || activeTab === 'lincoin';
+    if (conBolsas && (!mouvPool || !finityPool || !coinsendaPool)) {
+      Promise.all([
+        !mouvPool ? loadMouvPool() : null,
+        !finityPool ? loadFinityPool() : null,
+        !coinsendaPool ? loadCoinsendaPool() : null,
+      ]).then(() => setBolsasAt(Date.now()));
+    }
     if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
     // Al salir de la Billetera el cargue a medio hacer se descarta: al volver
     // arranca otra vez en el paso 1, sin un cliente elegido de antes.
@@ -1132,6 +1152,40 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       setCarguesAmount(''); setCarguesNote(''); setCarguesReversaDe(''); setCarguesMsg(null);
       setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  // ── Bolsas en vivo ──────────────────────────────────────────────────
+  // Las bolsas (Mouv, Finity, Coinsenda) se leían UNA vez al abrir la
+  // Billetera y no se volvían a leer hasta recargar la página o tocar el
+  // ícono. Lo comprometido (saldos de los clientes) sí se relee cada 30 s con
+  // el resto del panel, así que el "disponible" (bolsa − comprometido) mezclaba
+  // una bolsa vieja con deudas nuevas: tras un envío de un cliente el
+  // comprometido bajaba y el disponible subía sin que la bolsa hubiera
+  // cambiado. Ahora, con la Billetera, la Tesorería o Lincoin abiertas y la
+  // pestaña a la vista, las bolsas y la caja se releen solas cada 30 s, sin
+  // "Cargando…" encima de la cifra, y en seguida al volver a la pestaña.
+  useEffect(() => {
+    if (activeTab !== 'cargues' && activeTab !== 'treasury' && activeTab !== 'lincoin') return;
+    let vivo = true;
+    let enCurso = false;
+    let ultima = Date.now();
+    const releer = async () => {
+      if (!vivo || enCurso || document.hidden) return;
+      enCurso = true; ultima = Date.now();
+      try {
+        await Promise.all([
+          loadMouvPool({ silencioso: true }),
+          loadFinityPool({ silencioso: true }),
+          loadCoinsendaPool({ silencioso: true }),
+        ]);
+        if (vivo) { setBolsasAt(Date.now()); setCajaVer(v => v + 1); }
+      } finally { enCurso = false; }
+    };
+    const t = setInterval(() => { if (Date.now() - ultima >= 29000) releer(); }, 5000);
+    const alVolver = () => { if (!document.hidden && Date.now() - ultima > 5000) releer(); };
+    document.addEventListener('visibilitychange', alVolver);
+    return () => { vivo = false; clearInterval(t); document.removeEventListener('visibilitychange', alVolver); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -2435,6 +2489,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   en la cuenta correspondiente (Saldo Lincoin, Mouv o Finity). Cada cargue queda registrado en el historial del cliente.
                 </p>
               </details>}
+              {billeteraPais === 'CO' && (
+                <p style={{ margin: '6px 0 0', fontSize: 11, color: '#878E88' }}>
+                  Saldos en vivo · se actualizan solos cada 30 s
+                  {bolsasAt ? ` · última lectura ${new Date(bolsasAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}
+                </p>
+              )}
             </div>
             {/* Rejilla y no fila suelta: con cuatro bolsas, la tarjeta de
                 utilidades (su detalle es una línea larga) no cabía y caía
