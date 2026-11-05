@@ -1661,41 +1661,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       setUsdtVerifying(false);
   };
 
-  // ── Consolidación del Dólar digital ──
-  // El saldo USD visible ES el agregado de dólares digitales: cualquier
-  // USDT que quede en el libro cripto (USDT_TRON/USDT_BSC/USDT — llegan
-  // por webhook de GasFree, OTC o verificación) pasa solo, 1:1, al saldo
-  // USD. Sin esto, un depósito acreditado como USDT_TRON quedaba
-  // invisible en la tarjeta Dólar.
-  const usdtConsolidatingRef = useRef(false);
-  useEffect(() => {
-      if (!currentUser?.id || usdtConsolidatingRef.current) return;
-      const keys = ['USDT_TRON', 'USDT_BSC', 'USDT'];
-      const total = keys.reduce((s, k) => s + (Number(getBalance(k)) || 0), 0);
-      if (total < 0.000001) return;
-      usdtConsolidatingRef.current = true;
-      (async () => {
-          try {
-              const newBalances: Record<string, number> = { USD: getBalance('USD') + total };
-              for (const k of keys) if ((Number(getBalance(k)) || 0) > 0) newBalances[k] = 0;
-              await updateUserProfile(currentUser.id, { balances: newBalances });
-              try {
-                  await supabase.from('transactions').insert({
-                      user_id: currentUser.id,
-                      type: 'load', amount: total, currency: 'USD', status: 'Completado',
-                      raw_data: {
-                          initials: '₮', title: 'USDT acreditados al Dólar digital',
-                          date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
-                          userName: currentUser.name, source: 'USDT_CONSOLIDATION',
-                      },
-                  });
-              } catch { /* el saldo es la fuente de verdad */ }
-              showToast(`+${total.toLocaleString('en-US')} USDT acreditados a tu Dólar digital ⚡`);
-          } finally {
-              usdtConsolidatingRef.current = false;
-          }
-      })();
-  }, [currentUser?.id, currentUser?.balances]);
+  // ── Consolidación del Dólar digital: RETIRADA del navegador ──
+  // Antes, si quedaban USDT en el libro cripto (USDT_TRON/USDT_BSC/USDT), esta
+  // pantalla los "pasaba" sola al saldo USD escribiendo los saldos desde el
+  // navegador e insertando un 'load' Completado. La base rechaza esa escritura
+  // de saldo y fuerza el movimiento a Pendiente: en cada refresco quedaba un
+  // depósito USD "por aprobar" que nunca entró (si Tesorería lo aprobaba, se
+  // acreditaba plata inexistente). Y por el respaldo del servidor podía
+  // aplicarse solo la BAJADA a 0 de los USDT, sin la subida del USD. Mover
+  // saldo entre monedas es del servidor; si quedan USDT por consolidar, lo
+  // hace Tesorería.
 
   const handleLoadClick = (walletCode: string) => {
       if (handleActionRestricted(false)) return;
@@ -1869,7 +1844,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       if (!currentUser) return;
       const profile = { name: editName, nickname: editNickname, avatarUrl: editAvatar || undefined };
       // Estado local inmediato + intento directo
-      updateUserProfile(currentUser.id, profile);
+      // Si el guardado falla, updateUserProfile deshace la vista y avisa por
+      // la promesa; la persistencia de verdad va abajo, por el servidor.
+      updateUserProfile(currentUser.id, profile).catch(() => {});
       setIsEditProfileModalOpen(false);
       showToast("Perfil actualizado");
       // Persistencia CONFIABLE vía servidor (service role) — funciona aunque
@@ -2875,26 +2852,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       return;
     }
 
-    const newBalances = brebDir === 'to_breb'
-      ? { COP: cop - amount, COP_BREB: breb + amount }
-      : { COP: cop + amount, COP_BREB: breb - amount };
-    await updateUserProfile(currentUser.id, { balances: newBalances });
-    try {
-      await supabase.from('transactions').insert({
-        user_id: currentUser.id,
-        type: 'breb_move', amount, currency: 'COP', status: 'Completado',
-        raw_data: {
-          initials: 'BB',
-          title: brebDir === 'to_breb' ? 'Peso Lincoin → BreB Lincoin' : 'BreB Lincoin → Peso Lincoin',
-          date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
-          userName: currentUser.name,
-        },
-      });
-    } catch { /* el saldo es la fuente de verdad */ }
+    // Peso Lincoin ↔ BreB: el navegador escribía los dos saldos y un
+    // movimiento 'Completado'. La base rechaza esa escritura de saldo (y deja
+    // el movimiento en Pendiente), así que la pantalla decía "Saldo movido"
+    // sin que nada se moviera, y quedaba un movimiento fantasma. No hay acción
+    // del servidor para este movimiento: lo hace Tesorería a pedido.
     setBrebMoving(false);
-    setBrebMoveOpen(false);
-    setBrebAmountStr('');
-    showToast(brebDir === 'to_breb' ? 'Saldo movido a BreB Lincoin ⚡' : 'Saldo devuelto a Peso Lincoin');
+    showToast('Este movimiento entre cuentas lo hace Tesorería. Escríbenos a soporte@lincoin.me con el monto y la cuenta de destino.', 8000, 'error');
   };
 
   const renderWalletDetail = () => {
@@ -3529,7 +3493,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   const toggleNotifPref = (key: string) => {
       if (!currentUser) return;
       const current = (currentUser as any)[key];
-      updateUserProfile(currentUser.id, { [key]: current === false ? true : false });
+      updateUserProfile(currentUser.id, { [key]: current === false ? true : false }).catch(() => showToast('No se pudo guardar la preferencia. Intenta de nuevo.', 4000, 'error'));
   };
 
   const handleSendPasswordReset = async () => {
@@ -4955,23 +4919,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       setTimeout(() => refreshData?.(), 6000);
                       if (currentUser?.id) refreshGasfreeBal(currentUser.id);
                   }}
-                  onDispersed={async (amount, reference) => {
-                      // La dispersión sale del saldo BreB Lincoin
-                      await updateUserProfile(currentUser.id, {
-                          balances: { COP_BREB: getBalance('COP_BREB') - amount },
-                      });
-                      try {
-                          await supabase.from('transactions').insert({
-                              user_id: currentUser.id,
-                              type: 'send', amount, currency: 'COP', status: 'Completado',
-                              raw_data: {
-                                  initials: 'BB',
-                                  title: `Dispersión Bre-B${reference ? ` · ${reference}` : ''}`,
-                                  date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
-                                  userName: currentUser.name,
-                              },
-                          });
-                      } catch { /* saldo ya debitado; el registro es best-effort */ }
+                  onDispersed={async () => {
+                      // El envío ya lo descontó y lo registró el servidor
+                      // (mouv-proxy). Antes acá se volvía a escribir el saldo
+                      // desde el navegador (la base lo rechaza) y se insertaba
+                      // un segundo 'send' que quedaba como movimiento fantasma
+                      // por aprobar. Solo se refresca la vista.
+                      refreshData?.();
                   }}
               />
               )}

@@ -28,6 +28,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4'
 import { requireMfaSession } from '../_shared/admin-auth.ts'
+import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY      = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -84,6 +85,11 @@ Deno.serve(async (req) => {
     const roles = [caller?.role, (caller as any)?.admin_role].filter(Boolean)
     const allowed = roles.some(r => ['admin', 'super_admin', 'compliance', 'support'].includes(String(r)))
     if (!allowed) return json({ error: 'Forbidden' }, 403)
+    // Tener el rol no alcanza: un miembro desactivado, uno de "Solo lectura" o
+    // un colaborador sin 2FA activo leía y respondía todos los chats de
+    // soporte. Atender clientes es de quien los edita o de Cumplimiento.
+    const eq = await equipoPermite(sb, user.id, ['clientes.editar', 'cumplimiento'], { email: user.email ?? null })
+    if (!eq.ok) return json({ error: 'Forbidden' }, 403)
     // Los chats de soporte traen datos de clientes: la sesión tiene que haber
     // pasado el 2FA, como en el resto del panel.
     const mfa = await requireMfaSession(sb, req, user.id)

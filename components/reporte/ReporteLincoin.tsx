@@ -232,7 +232,7 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
       <div>{children}</div>
       <div style={{ position: 'absolute', left: MARGEN, right: MARGEN, bottom: 26, borderTop: `1px solid ${T.borde}`, paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 20 }}>
         <p style={{ fontSize: 8.5, color: T.tenue, margin: 0, lineHeight: 1.45, maxWidth: 560 }}>
-          Resumen de la consulta de listas internacionales y fuentes públicas realizada a través de Sarblock. La calidad de cada dato es atribuible a su fuente.
+          Resumen de la consulta de listas internacionales y fuentes públicas realizada a través de nuestro aliado de verificación. La calidad de cada dato es atribuible a su fuente.
           Documento de uso interno de cumplimiento{f.empresa?.nombre ? ` de ${f.empresa.nombre}` : ''}; contiene datos personales protegidos por la Ley 1581 de 2012.
           {sb.catalogVersion ? ` Catálogo de fuentes ${sb.catalogVersion}.` : ''}
         </p>
@@ -308,7 +308,7 @@ const cssDeLaFuente = () => {
 
 // Genera y descarga el PDF. Devuelve el número de páginas.
 export async function descargarReporteLincoin(f: any): Promise<number> {
-  if (!f?.sarblock?.catalog) throw new Error('Esta ficha no tiene el detalle de Sarblock para armar el reporte.');
+  if (!f?.sarblock?.catalog) throw new Error('Esta ficha no tiene el detalle de la verificación para armar el reporte.');
   const [{ toJpeg }, { jsPDF }, fontEmbedCSS] = await Promise.all([import('html-to-image'), import('jspdf'), cssDeLaFuente()]);
   const fuera = document.createElement('div');
   Object.assign(fuera.style, { position: 'fixed', left: '-20000px', top: '0', pointerEvents: 'none' });

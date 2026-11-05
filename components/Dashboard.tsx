@@ -374,28 +374,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
     if (!amount || amount <= 0) { showToast('Ingresa un monto válido'); return; }
     const source = brebDir === 'to_breb' ? cop : breb;
     if (amount > source) { showToast('Saldo insuficiente en la cuenta de origen'); return; }
-    setBrebMoving(true);
-    const newBalances = brebDir === 'to_breb'
-      ? { COP: cop - amount, COP_BREB: breb + amount }
-      : { COP: cop + amount, COP_BREB: breb - amount };
-    await updateUserProfile(currentUser.id, { balances: newBalances });
-    // Registro del movimiento (best-effort — el saldo ya quedó actualizado)
-    try {
-      await supabase.from('transactions').insert({
-        user_id: currentUser.id,
-        type: 'breb_move', amount, currency: 'COP', status: 'Completado',
-        raw_data: {
-          initials: 'BB',
-          title: brebDir === 'to_breb' ? 'Peso Lincoin → BreB Lincoin' : 'BreB Lincoin → Peso Lincoin',
-          date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
-          userName: currentUser.companyName || currentUser.name,
-        },
-      });
-    } catch { /* el saldo es la fuente de verdad */ }
-    setBrebMoving(false);
-    setBrebMoveOpen(false);
-    setBrebAmountStr('');
-    showToast(brebDir === 'to_breb' ? 'Saldo movido a BreB Lincoin ⚡' : 'Saldo devuelto a Peso Lincoin');
+    // El navegador escribía los dos saldos y un movimiento 'Completado'. La
+    // base rechaza esa escritura de saldo (y deja el movimiento en Pendiente):
+    // la pantalla decía "Saldo movido" sin que nada se moviera. No hay acción
+    // del servidor para este movimiento: lo hace Tesorería a pedido.
+    void cop; void breb;
+    showToast('Este movimiento entre cuentas lo hace Tesorería. Escríbenos a soporte@lincoin.me con el monto y la cuenta de destino.');
   };
   const [showAllWallets, setShowAllWallets] = useState(false);
   const [movementsTab, setMovementsTab] = useState<'all' | 'income' | 'expense'>('all');
@@ -2841,23 +2825,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout, showSuccessBanne
               <MouvSection
                   userId={currentUser.id}
                   brebBalance={getBalance('COP_BREB')}
-                  onDispersed={async (amount, reference) => {
-                      // La dispersión sale del saldo BreB Lincoin
-                      await updateUserProfile(currentUser.id, {
-                          balances: { COP_BREB: getBalance('COP_BREB') - amount },
-                      });
-                      try {
-                          await supabase.from('transactions').insert({
-                              user_id: currentUser.id,
-                              type: 'send', amount, currency: 'COP', status: 'Completado',
-                              raw_data: {
-                                  initials: 'BB',
-                                  title: `Dispersión Bre-B${reference ? ` · ${reference}` : ''}`,
-                                  date: new Date().toLocaleDateString('es-CO'), createdAt: new Date().toISOString(),
-                                  userName: currentUser.companyName || currentUser.name,
-                              },
-                          });
-                      } catch { /* saldo ya debitado; el registro es best-effort */ }
+                  onDispersed={async () => {
+                      // El envío ya lo descontó y lo registró el servidor.
+                      // Antes acá se volvía a escribir el saldo desde el
+                      // navegador (la base lo rechaza) y se insertaba un
+                      // segundo 'send' que quedaba como movimiento fantasma.
+                      refreshData?.();
                   }}
               />
           )}

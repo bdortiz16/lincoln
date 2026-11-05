@@ -83,7 +83,7 @@ async function auditar(action: string, metadata: Record<string, unknown>) {
 }
 
 // ── Quién llama ─────────────────────────────────────────────────────────
-type Yo = { userId: string | null; esAdmin: boolean; servicio?: boolean }
+type Yo = { userId: string | null; esAdmin: boolean; servicio?: boolean; mfaFalta?: string | null }
 async function quienLlama(req: Request): Promise<Yo> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, esAdmin: false }
@@ -95,19 +95,39 @@ async function quienLlama(req: Request): Promise<Yo> {
     // Ser admin no alcanza: del equipo, solo Cumplimiento (y el dueño) opera
     // acá. Antes un miembro de Tesorería o de "Solo lectura" podía leer los
     // veredictos AML o cambiar su configuración llamando directo.
-    const esAdmin = (data as any)?.role === 'admin'
+    const esAdminRol = (data as any)?.role === 'admin'
       && (await equipoPermite(db, user.id, 'cumplimiento', { email: user.email ?? null })).ok
-    return { userId: user.id, esAdmin }
+    if (!esAdminRol) return { userId: user.id, esAdmin: false }
+    // Admin solo con la sesión que pasó el 2FA. Sin esto, en su propia cuenta
+    // un admin con solo la contraseña se saltaba el "solo beneficiarios
+    // inscritos" y el tope diario (consultas pagadas por Lincoin).
+    const mfa = await requireMfaSession(db, req, user.id)
+    return { userId: user.id, esAdmin: !mfa, mfaFalta: mfa }
   } catch { return { userId: null, esAdmin: false } }
 }
 // Las acciones de administración exigen la sesión con segundo factor, igual
 // que admin-data y tusdatos.
 async function exigirAdmin(req: Request, yo: Yo): Promise<Response | null> {
-  if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+  if (!yo.esAdmin) return yo.mfaFalta ? json({ error: yo.mfaFalta }, 403) : json({ error: 'No autorizado' }, 401)
   if (yo.servicio) return null
   const mfa = await requireMfaSession(db, req, yo.userId)
   return mfa ? json({ error: mfa }, 403) : null
 }
+
+// Actuar sobre la cuenta `uid`. La propia, sin más. La de OTRO, solo un admin
+// de Cumplimiento con la sesión que pasó el 2FA (o el servidor). Antes bastaba
+// ser admin: con solo la contraseña de un miembro de Cumplimiento se leían las
+// fichas AML de cualquier cliente, se lanzaban consultas pagadas a su nombre
+// y se le gastaban sus consultas de Risk.
+async function sobreCuenta(req: Request, yo: Yo, uid: string): Promise<Response | null> {
+  if (!uid) return json({ error: 'No autorizado' }, 401)
+  if (yo.userId && yo.userId === uid) return null
+  return await exigirAdmin(req, yo)
+}
+
+// Las consultas de Risk se idempotentan por día (la clave del check lleva la
+// fecha UTC): un "en curso" de HOY es el mismo check, por viejo que sea.
+const inicioDelDiaUtc = () => `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`
 
 // ── La ficha ────────────────────────────────────────────────────────────
 async function leerRaw(uid: string): Promise<any> {
@@ -505,6 +525,66 @@ async function razonSocialRues(documento: string) {
   return r
 }
 
+// Cierra UNA consulta de Risk con el resultado de su check: lista, no
+// verificada (se devuelve) o fallida (se devuelve). La usan la pantalla
+// (risk_resultado) y el barrido. Solo cierra quien la pasa de "consultando":
+// dos cierres al tiempo no devuelven dos veces.
+async function cerrarConsultaRisk(cq: any, check: any) {
+  const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined })
+  // Una persona cuyo documento la Registraduría no encontró, sin ninguna
+  // coincidencia: no hubo revisión real (no se sabe de quién serían los
+  // antecedentes). Queda "no verificado" y se le devuelve la consulta.
+  const noVerificado = ficha.estado === 'finalizado' && cq.tipo_persona === 'natural' && ficha.documentoNoEncontrado === true && !ficha.hallazgo
+  let cambio: Record<string, unknown>
+  if (ficha.estado !== 'finalizado') {
+    cambio = { estado: 'fallida', actualizado_at: new Date().toISOString() }
+  } else if (noVerificado) {
+    cambio = { estado: 'no_verificado', ficha, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null, riesgos: [], despachos: [], actualizado_at: new Date().toISOString() }
+  } else {
+    cambio = { estado: 'lista', ficha, nombre_oficial: ficha.nombreReal ?? null, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null,
+      riesgos: R.tiposDeRiesgo(ficha), despachos: R.despachos(ficha), actualizado_at: new Date().toISOString() }
+  }
+  // Solo quien la pasa de "consultando" la cierra: dos lecturas al tiempo
+  // no devuelven dos veces.
+  const { data: upd } = await db.from('risk_consultas').update(cambio).eq('id', cq.id).eq('estado', 'consultando').select('*')
+  const cerrada = (upd as any[])?.[0]
+  if (cerrada) {
+    if (ficha.estado !== 'finalizado') await R.mover(db, cq.user_id, 'devolucion', 1, 'Consulta fallida: se devuelve la consulta', null, cq.id)
+    else if (noVerificado) await R.mover(db, cq.user_id, 'devolucion', 1, 'Documento no encontrado en la Registraduría: se devuelve la consulta', null, cq.id)
+    else await padronGuardar(db, cq.tipo_documento, cq.documento, ficha, cq.user_id, 'manual')
+    await auditar('sarblock.risk_manual', { userId: cq.user_id, tipo: cq.tipo_documento, documento: cq.documento, deCache: false, categoria: ficha.categoria ?? null, consultaId: cq.id, estado: cambio.estado })
+    if (cambio.estado === 'lista') await alCerrarRisk(cerrada, ficha)
+  }
+}
+
+// Consultas de Risk que se quedaron "consultando" más de un día. Nadie las
+// cerraba: si el cliente no volvía a abrirlas, la consulta pagada quedaba
+// perdida. Se le pregunta a Sarblock una última vez: si terminó, se cierra
+// con su resultado; si no, se da por fallida y se DEVUELVE la consulta. El
+// cierre exige pasar de "consultando" (cerrarConsultaRisk y el update de
+// abajo): una sola devolución aunque corran dos barridos.
+async function cerrarRiskAtascadas(hasta: number): Promise<number> {
+  const limite = new Date(Date.now() - 24 * 3600_000).toISOString()
+  const { data } = await db.from('risk_consultas').select('*').eq('estado', 'consultando').lt('at', limite).order('at', { ascending: true }).limit(20)
+  let n = 0
+  for (const cq of (data ?? []) as any[]) {
+    if (Date.now() > hasta) break
+    let check: any = null
+    if (cq.check_id) {
+      try { check = await cliente().leerCheck(String(cq.check_id)) } catch (e) { if (esLimite(e)) break }
+    }
+    if (check && terminado(check)) { await cerrarConsultaRisk(cq, check); n++; continue }
+    const { data: upd } = await db.from('risk_consultas').update({ estado: 'fallida', actualizado_at: new Date().toISOString() })
+      .eq('id', cq.id).eq('estado', 'consultando').select('id')
+    if ((upd as any[])?.length) {
+      await R.mover(db, cq.user_id, 'devolucion', 1, 'La consulta no terminó en 24 horas: se devuelve', null, cq.id)
+      await auditar('sarblock.risk_vencida', { userId: cq.user_id, consultaId: cq.id, documento: cq.documento })
+      n++
+    }
+  }
+  return n
+}
+
 async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Record<string, any>): Promise<Response | Record<string, unknown>> {
   // ── Admin ──────────────────────────────────────────────────────────────
   if (accion.startsWith('admin_risk_') || accion === 'admin_sarblock_uso') {
@@ -620,7 +700,7 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
   }
 
   // ── Cliente ────────────────────────────────────────────────────────────
-  if (!uid || !(yo.esAdmin || yo.userId === uid)) return json({ error: 'No autorizado' }, 401)
+  { const no = await sobreCuenta(req, yo, uid); if (no) return no }
   const cfg = await R.leerConfigRisk(db)
   const por = await nombreDe(yo.userId)
 
@@ -639,6 +719,9 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
   }
 
   if (accion === 'risk_comprar') {
+    // Comprar descuenta PESOS del cliente: lo decide solo el titular. Antes un
+    // admin podía convertir el saldo de cualquier cliente en consultas.
+    if (yo.userId !== uid) return json({ error: 'Solo el titular de la cuenta puede comprar consultas.' }, 403)
     const cantidad = Math.floor(Number(body.cantidad) || 0)
     const bolsillo = String(body.bolsillo ?? '')
     const { data: u } = await db.from('users').select('balances').eq('id', uid).maybeSingle()
@@ -698,8 +781,11 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     const lanzar = async () => {
       // Ya se está consultando (la lanzó otro operador hace un momento): se
       // espera esa, sin cobrar otra.
+      // Se mira todo el DÍA (UTC), no solo 30 minutos: la clave con la que se
+      // le pide el check a Sarblock es la misma todo el día, así que lanzar
+      // otra vez devolvía EL MISMO check y se cobraba dos veces un resultado.
       const { data: enVuelo } = await db.from('risk_consultas').select('id').eq('user_id', uid).eq('tipo_documento', tipo).eq('documento', doc)
-        .eq('estado', 'consultando').gte('at', new Date(Date.now() - 30 * 60_000).toISOString()).order('at', { ascending: false }).limit(1).maybeSingle()
+        .eq('estado', 'consultando').gte('at', inicioDelDiaUtc()).order('at', { ascending: false }).limit(1).maybeSingle()
       if (enVuelo) return { ok: true, enCurso: true, yaEnCurso: true, consultaId: (enVuelo as any).id, saldo: await R.saldoDe(db, uid) }
       // Ya la consultó y sigue vigente: se muestra la suya, sin gastar.
       const { data: previa } = await db.from('risk_consultas').select('*').eq('user_id', uid).eq('tipo_documento', tipo).eq('documento', doc)
@@ -769,35 +855,10 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
       throw e
     }
     if (!terminado(check)) return { ok: true, enCurso: true, consultaId: cq.id }
-    const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined })
-    // Una persona cuyo documento la Registraduría no encontró, sin ninguna
-    // coincidencia: no hubo revisión real (no se sabe de quién serían los
-    // antecedentes). Queda "no verificado" y se le devuelve la consulta.
-    const noVerificado = ficha.estado === 'finalizado' && cq.tipo_persona === 'natural' && ficha.documentoNoEncontrado === true && !ficha.hallazgo
-    let cambio: Record<string, unknown>
-    if (ficha.estado !== 'finalizado') {
-      cambio = { estado: 'fallida', actualizado_at: new Date().toISOString() }
-    } else if (noVerificado) {
-      cambio = { estado: 'no_verificado', ficha, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null, riesgos: [], despachos: [], actualizado_at: new Date().toISOString() }
-    } else {
-      cambio = { estado: 'lista', ficha, nombre_oficial: ficha.nombreReal ?? null, categoria: ficha.categoria ?? null, operable: ficha.operable ?? null,
-        riesgos: R.tiposDeRiesgo(ficha), despachos: R.despachos(ficha), actualizado_at: new Date().toISOString() }
-    }
-    // Solo quien la pasa de "consultando" la cierra: dos lecturas al tiempo
-    // no devuelven dos veces.
-    const { data: upd } = await db.from('risk_consultas').update(cambio).eq('id', cq.id).eq('estado', 'consultando').select('*')
-    const cerrada = (upd as any[])?.[0]
-    if (cerrada) {
-      if (ficha.estado !== 'finalizado') await R.mover(db, uid, 'devolucion', 1, 'Consulta fallida: se devuelve la consulta', null, cq.id)
-      else if (noVerificado) await R.mover(db, uid, 'devolucion', 1, 'Documento no encontrado en la Registraduría: se devuelve la consulta', null, cq.id)
-      else await padronGuardar(db, cq.tipo_documento, cq.documento, ficha, uid, 'manual')
-      await auditar('sarblock.risk_manual', { userId: uid, tipo: cq.tipo_documento, documento: cq.documento, deCache: false, categoria: ficha.categoria ?? null, consultaId: cq.id, estado: cambio.estado })
-      if (cambio.estado === 'lista') await alCerrarRisk(cerrada, ficha)
-    }
+    await cerrarConsultaRisk(cq, check)
     const { data: final } = await db.from('risk_consultas').select('*').eq('id', cq.id).single()
     return { ok: true, consulta: vista(final, cfg, await empresaDe(uid)), saldo: await R.saldoDe(db, uid) }
   }
-
   // Mientras se escribe un NIT: la razón social del RUES, para no tener que
   // escribirla. No gasta consultas (es información pública del registro).
   if (accion === 'risk_razon_social') {
@@ -817,7 +878,7 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     const { data } = await db.from('risk_consultas').select(R.COLS).eq('user_id', uid).eq('documento', s.idNumber)
       .in('estado', ['lista', 'consultando']).order('at', { ascending: false }).limit(20)
     const filas = (data ?? []) as any[]
-    const reciente = Date.now() - 30 * 60_000
+    const reciente = Date.parse(inicioDelDiaUtc())
     const mismo = filas.find(r => r.estado === 'lista' && r.tipo_documento === tipo)
     const enCurso = filas.find(r => r.estado === 'consultando' && r.tipo_documento === tipo && Date.parse(r.at) >= reciente)
     const otro = filas.find(r => r.estado === 'lista' && r.tipo_documento !== tipo)
@@ -869,7 +930,6 @@ Deno.serve(async (req) => {
     const accion = String(body.action ?? '')
     accionEnCurso = accion
     const uid = String(body.userId ?? yo.userId ?? '')
-    const propio = () => !!uid && (yo.esAdmin || yo.userId === uid)
 
     // ── Barrido programado (pg_cron, cada 5 min) ─────────────────────────
     // Recoge lo que quedó en curso de las cuentas con consultas recientes,
@@ -889,13 +949,15 @@ Deno.serve(async (req) => {
         if (Date.now() - inicio > 110_000) break
         try { cerrados += (await recoger(cu)).cerrados } catch (e) { console.warn('[sarblock] barrido', cu, String((e as Error)?.message ?? e)) }
       }
+      let riskCerradas = 0
+      try { riskCerradas = await cerrarRiskAtascadas(inicio + 120_000) } catch (e) { console.warn('[sarblock] barrido risk', String((e as Error)?.message ?? e)) }
       let cartera: unknown = null
       try { cartera = await carteraVuelta(inicio + 130_000) } catch (e) { console.warn('[sarblock] barrido cartera', String((e as Error)?.message ?? e)) }
-      return json({ ok: true, cuentas: cuentas.length, cerrados, cartera })
+      return json({ ok: true, cuentas: cuentas.length, cerrados, riskCerradas, cartera })
     }
 
     if (accion === 'estado') {
-      if (!propio()) return json({ error: 'No autorizado' }, 401)
+      { const no = await sobreCuenta(req, yo, uid); if (no) return no }
       const c = await leerConfig()
       const raw = await leerRaw(uid)
       const benefs: Record<string, any> = {}
@@ -904,7 +966,7 @@ Deno.serve(async (req) => {
     }
 
     if (accion === 'verificar_beneficiario') {
-      if (!propio()) return json({ error: 'No autorizado' }, 401)
+      { const no = await sobreCuenta(req, yo, uid); if (no) return no }
       const c = await leerConfig()
       if (!c.activo || !enLaPrueba(c, uid)) return json({ ok: true, omitido: 'Sarblock no está activo para esta cuenta' })
       if (!yo.esAdmin && !docEnContactos(await leerRaw(uid), String(body.documento ?? ''))) return json({ ok: false, motivo: 'Ese documento no es de un beneficiario inscrito.' }, 403)
@@ -912,7 +974,7 @@ Deno.serve(async (req) => {
     }
 
     if (accion === 'verificar_pendientes') {
-      if (!propio()) return json({ error: 'No autorizado' }, 401)
+      { const no = await sobreCuenta(req, yo, uid); if (no) return no }
       const c = await leerConfig()
       if (!c.activo || !enLaPrueba(c, uid)) return json({ ok: true, omitido: 'Sarblock no está activo para esta cuenta', pendientes: 0 })
       // Lo lanza un sondeo automático: en pausa espera a la próxima vuelta.
@@ -952,30 +1014,45 @@ Deno.serve(async (req) => {
     }
 
     if (accion === 'recoger_pendientes') {
-      if (!propio()) return json({ error: 'No autorizado' }, 401)
+      { const no = await sobreCuenta(req, yo, uid); if (no) return no }
       return json(await recoger(uid))
     }
 
     if (accion === 'hallazgos') {
       // Sarblock trae el catálogo entero en la misma respuesta: el detalle ya
       // está en la ficha. Las fichas viejas de TusDatos se leen igual.
-      if (!propio()) return json({ error: 'No autorizado' }, 401)
+      { const no = await sobreCuenta(req, yo, uid); if (no) return no }
       const f = (await leerRaw(uid))?.tusdatos?.beneficiarios?.[soloDigitos(body.documento)]
       return json(f ? { ok: true, hallazgos: f.hallazgos ?? [], deCache: true } : { ok: false, motivo: 'No hay consulta guardada para ese documento.' })
     }
 
     if (accion === 'archivar_beneficiario') {
       // Se archiva, no se borra: el resultado queda para cumplimiento.
-      if (!propio()) return json({ error: 'No autorizado' }, 401)
+      { const no = await sobreCuenta(req, yo, uid); if (no) return no }
       // Un NIT llega con el DV pegado y la ficha está por los 9 dígitos base:
       // sin esto no se archivaba, y al volver a inscribirlo se reutilizaba
       // la ficha vieja con el nombre viejo.
       // Se archivan LAS DOS si están: la de la época de TusDatos (con DV) y
       // la de Sarblock (base). Con una sola, la otra seguía mandando.
-      const fichas = (await leerRaw(uid))?.tusdatos?.beneficiarios ?? {}
-      for (const doc of new Set([soloDigitos(body.documento), normDoc(body.documento)])) {
+      const rawArch = await leerRaw(uid)
+      const fichas = rawArch?.tusdatos?.beneficiarios ?? {}
+      // Archivar abre la puerta a borrar el contacto (la base solo protege los
+      // de ficha 'finalizado'). Se puede a propósito —un beneficiario inscrito
+      // con el tipo de documento equivocado tiene que poder corregirse—, pero
+      // si la ficha era de riesgo ALTO o documento no vigente, sus datos
+      // bancarios no se pueden perder con el contacto: van copiados en la
+      // ficha archivada, para Cumplimiento.
+      const d0 = soloDigitos(body.documento)
+      const contactosDelDoc = (Array.isArray(rawArch?.mouvContacts) ? rawArch.mouvContacts : [])
+        .filter((x: any) => { const c = soloDigitos(x?.docNumber); return !!c && (c === d0 || c.slice(0, -1) === d0 || d0.slice(0, -1) === c) })
+        .slice(0, 5)
+      for (const doc of new Set([d0, normDoc(body.documento)])) {
         const f = doc ? fichas[doc] : null
-        if (vigenteF(f)) await guardarFicha(uid, doc, { ...f, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: String(body.motivo ?? '').slice(0, 300) || null })
+        if (!vigenteF(f)) continue
+        const sensible = f?.categoria === 'alto' || f?.documentoVigente === false || f?.operable === false
+        await guardarFicha(uid, doc, { ...f, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: String(body.motivo ?? '').slice(0, 300) || null,
+          archivadoPor: yo.userId ?? 'servidor', ...(sensible && contactosDelDoc.length ? { contactosArchivados: contactosDelDoc } : {}) })
+        if (sensible) await auditar('sarblock.beneficiario_sensible_archivado', { userId: uid, por: yo.userId ?? null, documento: doc, categoria: f?.categoria ?? null, documentoVigente: f?.documentoVigente ?? null, contactos: contactosDelDoc.length })
       }
       return json({ ok: true })
     }

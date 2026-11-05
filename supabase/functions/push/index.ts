@@ -25,6 +25,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { requireMfaSession } from '../_shared/admin-auth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -188,6 +189,20 @@ async function avisar(subs: any[], aviso: Aviso): Promise<{ enviados: number; fa
   return { enviados, fallidos, muertas, detalle }
 }
 
+// ─── Endpoints permitidos ───────────────────────────────
+// Los servicios de push de los navegadores (Chrome/Android, Firefox, Safari,
+// Edge/Windows). Cualquier otro host se rechaza.
+const HOSTS_PUSH = ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'push.services.mozilla.com', 'web.push.apple.com', 'push.apple.com', 'notify.windows.com']
+const MAX_SUBS_POR_USUARIO = 10
+function endpointDePushValido(endpoint: string): boolean {
+  try {
+    const u = new URL(endpoint)
+    if (u.protocol !== 'https:' || u.port || u.username || u.password) return false
+    const h = u.hostname.toLowerCase()
+    return HOSTS_PUSH.some(p => h === p || h.endsWith(`.${p}`))
+  } catch { return false }
+}
+
 // ─── Validacion del caller ──────────────────────────────
 //   0) service_role  → llamada interna
 //   a) JWT real de Supabase → identidad PROBADA; admin si users.role='admin'
@@ -217,8 +232,12 @@ async function validCaller(req: Request, payload: Record<string, unknown>): Prom
     const { data: prof } = await db.from('users').select('role').eq('id', data.user.id).maybeSingle()
     // Ser admin no alcanza: leer o mandar avisos de OTROS clientes pide poder
     // editar clientes en el equipo (_shared/equipo.ts).
+    // Y con la sesión que pasó el segundo factor: con solo la contraseña de un
+    // admin se registraba un teléfono a nombre de cualquier cliente y le
+    // llegaban sus avisos. Sin 2FA de la sesión, opera solo sobre sí mismo.
     const admin = String((prof as any)?.role ?? '') === 'admin'
       && (await equipoPermite(db, data.user.id, 'clientes.editar', { email: data.user.email ?? null })).ok
+      && (await requireMfaSession(db, req, data.user.id)) === null
     return { ok: true, userId: data.user.id, admin }
   }
   return { ok: false }
@@ -262,6 +281,15 @@ Deno.serve(async (req) => {
       const p256dh = String(sub.keys?.p256dh ?? '')
       const auth = String(sub.keys?.auth ?? '')
       if (!endpoint || !p256dh || !auth) return json(400, { ok: false, error: 'suscripcion incompleta' })
+      // Solo servicios de push de verdad. El servidor le hace POST a este
+      // endpoint (al probar y en cada aviso): con cualquier URL, una cuenta
+      // usaba la función para pegarle a hosts internos o de terceros y leer
+      // parte de la respuesta.
+      if (!endpointDePushValido(endpoint)) return json(400, { ok: false, error: 'endpoint_no_permitido' })
+      // Un tope por cuenta: sin él se registraban cientos de "aparatos" y cada
+      // aviso salía cientos de veces.
+      const { count: yaTiene } = await db.from('push_subs').select('id', { count: 'exact', head: true }).eq('user_id', uid).neq('endpoint', endpoint)
+      if ((yaTiene ?? 0) >= MAX_SUBS_POR_USUARIO) return json(400, { ok: false, error: 'demasiados_aparatos', message: `Ya hay ${MAX_SUBS_POR_USUARIO} aparatos registrados en esta cuenta. Quita alguno para agregar otro.` })
 
       // onConflict en endpoint: volver a suscribir el mismo aparato devuelve el
       // mismo endpoint. Sin esto, cada visita agregaría una fila y el mismo
@@ -302,7 +330,9 @@ Deno.serve(async (req) => {
         cuerpo: 'Prueba de notificación. Si ves esto, los avisos están funcionando.',
         url: '/', tag: 'prueba',
       })
-      return json(200, { ok: r.enviados > 0, ...r })
+      // Sin el detalle: traía el estado y 300 caracteres de lo que respondió
+      // el endpoint, y eso convertía la prueba en un lector de URLs ajenas.
+      return json(200, { ok: r.enviados > 0, enviados: r.enviados, fallidos: r.fallidos, muertas: r.muertas })
     }
 
     // ── Enviar (solo interno) ────────────────────────────

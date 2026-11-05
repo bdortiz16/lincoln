@@ -131,8 +131,16 @@ function cabeceraAuth(): string {
   return `Basic ${btoa(`${TD_USER}:${TD_PASS}`)}`
 }
 
+// La dirección base es FIJA. Antes salía de la configuración (editable desde
+// el panel) y las credenciales Basic viajan en cada petición: quien cambiara
+// la dirección a un servidor suyo recibía el usuario y la contraseña de
+// TusDatos en la siguiente consulta.
+const TD_BASE = 'https://dash-board.tusdatos.co'
 async function llamarTD(c: Config, ruta: string, metodo: 'GET' | 'POST', cuerpo?: unknown) {
-  const url = `${c.baseUrl.replace(/\/+$/, '')}${ruta.startsWith('/') ? '' : '/'}${ruta}`
+  void c
+  const destino = new URL(String(ruta ?? '').startsWith('/') ? String(ruta) : `/${ruta ?? ''}`, TD_BASE)
+  if (destino.host !== new URL(TD_BASE).host) return { ok: false, status: 0, body: null, texto: 'ruta inválida', url: TD_BASE }
+  const url = `${destino.origin}${destino.pathname}${destino.search}`
   try {
     const r = await fetch(url, {
       method: metodo,
@@ -157,7 +165,7 @@ async function auditar(action: string, metadata: Record<string, unknown>) {
 }
 
 // ── Identidad de quien llama ──────────────────────────────────────────────
-async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean; servicio?: boolean }> {
+async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean; servicio?: boolean; mfaFalta?: string | null }> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, esAdmin: false }
   if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) return { userId: null, esAdmin: true, servicio: true }
@@ -168,9 +176,16 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmi
     // Ser admin no alcanza: del equipo, solo Cumplimiento (y el dueño) opera
     // acá. Antes un miembro de Tesorería o de "Solo lectura" podía leer los
     // veredictos AML o cambiar su configuración llamando directo.
-    const esAdmin = (data as any)?.role === 'admin'
+    const esAdminRol = (data as any)?.role === 'admin'
       && (await equipoPermite(db, user.id, 'cumplimiento', { email: user.email ?? null })).ok
-    return { userId: user.id, esAdmin }
+    if (!esAdminRol) return { userId: user.id, esAdmin: false }
+    // Admin SOLO con la sesión que pasó el 2FA. Las acciones "de cliente"
+    // (estado, verificar, verificar_beneficiario) aceptan a un admin sobre la
+    // cuenta de OTRO y no pasaban por exigirAdmin: con solo la contraseña de
+    // un miembro de Cumplimiento se leían las fichas AML de cualquier cliente
+    // y se lanzaban consultas pagadas sin tope.
+    const mfa = await requireMfaSession(db, req, user.id)
+    return { userId: user.id, esAdmin: !mfa, mfaFalta: mfa }
   } catch { return { userId: null, esAdmin: false } }
 }
 
@@ -178,8 +193,8 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmi
 // bandeja de cumplimiento, la configuración) exigen además que la SESIÓN haya
 // pasado el segundo factor: la misma regla de admin-data. Con solo la
 // contraseña de un admin se podía aprobar un caso frenado por AML.
-async function exigirAdmin(req: Request, yo: { userId: string | null; esAdmin: boolean; servicio?: boolean }): Promise<Response | null> {
-  if (!yo.esAdmin) return json({ error: 'No autorizado' }, 401)
+async function exigirAdmin(req: Request, yo: { userId: string | null; esAdmin: boolean; servicio?: boolean; mfaFalta?: string | null }): Promise<Response | null> {
+  if (!yo.esAdmin) return yo.mfaFalta ? json({ error: yo.mfaFalta }, 403) : json({ error: 'No autorizado' }, 401)
   if (yo.servicio) return null
   const mfa = await requireMfaSession(db, req, yo.userId)
   return mfa ? json({ error: mfa }, 403) : null
@@ -1088,7 +1103,7 @@ async function cerrar(c: Config, userId: string, jobid: string, doc: string, esB
     codigos: det?.codigos ?? [],
     hallazgos: det?.hallazgos ?? [],
     fuentesConError: det?.fuentesConError ?? [],
-    pdfUrl: reportId ? `${c.baseUrl.replace(/\/+$/, '')}/api/v2/report_pdf/${reportId}` : undefined,
+    pdfUrl: reportId ? `${TD_BASE}/api/v2/report_pdf/${reportId}` : undefined,
     at: new Date().toISOString(),
   }, det?.crudo ?? res)
 
@@ -1319,16 +1334,18 @@ async function consultar(
   }
   if (!r.ok) {
     await auditar('tusdatos.launch_fallido', { userId, documento: doc, status: r.status, detalle: r.texto })
-    await fallo(`TusDatos respondió ${r.status}`)
-    return { ok: false, error: 'launch_fallido', message: `TusDatos respondió ${r.status}: ${r.texto}` }
+    // El texto crudo del proveedor queda en la auditoría; al cliente le llega
+    // un mensaje sin el nombre del aliado.
+    await fallo(`La verificación respondió ${r.status}`)
+    return { ok: false, error: 'launch_fallido', message: `El servicio de verificación no respondió como esperábamos (${r.status}). Intenta de nuevo en unos minutos.` }
   }
 
   const jobid = String(r.body?.jobid ?? '')
   // Cuenta para el tope diario de la cuenta (cada lanzamiento gasta crédito).
   await auditar('tusdatos.lanzado', { userId, documento: doc, jobid: jobid || null })
   if (!jobid) {
-    await fallo('TusDatos no devolvió un jobid')
-    return { ok: false, error: 'sin_jobid', message: 'TusDatos no devolvió un jobid.' }
+    await fallo('La verificación no devolvió un identificador')
+    return { ok: false, error: 'sin_jobid', message: 'El servicio de verificación no confirmó la consulta. Intenta de nuevo en unos minutos.' }
   }
 
   const inicial: Ficha = {
@@ -1536,7 +1553,10 @@ Deno.serve(async (req: Request) => {
     if (accion === 'config_set') {
       { const no = await exigirAdmin(req, yo); if (no) return no }
       const previa = await leerConfig()
-      const c = { ...previa, ...(body.config ?? {}) } as Config
+      // La dirección base no se toma del panel (ver TD_BASE).
+      const { baseUrl: _ignorada, ...pedida } = (body.config ?? {}) as Record<string, unknown>
+      void _ignorada
+      const c = { ...previa, ...pedida, baseUrl: TD_BASE } as Config
       if (c.activo && (!c.baseUrl || !hayCredencial())) {
         return json({ error: 'Faltan datos para encender: la dirección base y las credenciales en la Bóveda.' }, 400)
       }
@@ -1662,8 +1682,20 @@ Deno.serve(async (req: Request) => {
       const ahora = new Date().toISOString()
       const previa = ((raw?.tusdatos ?? {}).beneficiarios ?? {})[doc]
       const previaKumplo = ((raw?.kumplo ?? {}).beneficiarios ?? {})[doc]
+      // Se puede archivar aunque la ficha sea de riesgo alto (un beneficiario
+      // inscrito con el tipo de documento equivocado tiene que poder
+      // corregirse), pero archivar deja borrar el contacto: si la ficha era
+      // sensible, sus datos bancarios van copiados al archivo, para que
+      // Cumplimiento no los pierda.
+      const sensible = !!previa && (previa.categoria === 'alto' || previa.documentoVigente === false || previa.operable === false)
+      const contactosDelDoc = sensible
+        ? (Array.isArray(raw?.mouvContacts) ? raw.mouvContacts : []).filter((x: any) => {
+            const c2 = String(x?.docNumber ?? '').replace(/\D/g, '')
+            return !!c2 && (c2 === doc || c2.slice(0, -1) === doc || doc.slice(0, -1) === c2)
+          }).slice(0, 5)
+        : []
       if (previa && String(previa.estado ?? '') !== 'archivado') {
-        const e1 = await setRawPath(db, uid, ['tusdatos', 'beneficiariosArchivados', `${doc}_${Date.now()}`], { ...previa, archivadoAt: ahora, archivadoPor: yo.userId ?? 'admin', motivo: String(body.motivo ?? 'beneficiario eliminado por el cliente').slice(0, 200) }, false)
+        const e1 = await setRawPath(db, uid, ['tusdatos', 'beneficiariosArchivados', `${doc}_${Date.now()}`], { ...previa, archivadoAt: ahora, archivadoPor: yo.userId ?? 'admin', motivo: String(body.motivo ?? 'beneficiario eliminado por el cliente').slice(0, 200), ...(contactosDelDoc.length ? { contactosArchivados: contactosDelDoc } : {}) }, false)
         if (e1) return json({ ok: false, error: 'no_archivado', message: 'No se pudo archivar la consulta. Reintenta.' })
         const e2 = await setRawPath(db, uid, ['tusdatos', 'beneficiarios', doc], { estado: 'archivado', archivadoAt: ahora }, false)
         if (e2) return json({ ok: false, error: 'no_archivado', message: 'No se pudo archivar la consulta. Reintenta.' })
@@ -1750,7 +1782,7 @@ Deno.serve(async (req: Request) => {
       if (!f) return json({ ok: false, motivo: 'Este documento no tiene consulta de antecedentes en esta cuenta.' })
       if (f.estado !== 'finalizado' || !f.reportId) return json({ ok: false, motivo: `La consulta de antecedentes está en «${f.estado ?? 'sin estado'}»${f.reportId ? '' : ' y no tiene reporte'}.` })
       const det = await detalle(c, String(f.reportId))
-      if (!det) return json({ ok: false, motivo: 'TusDatos no devolvió el reporte.' })
+      if (!det) return json({ ok: false, motivo: 'El servicio de verificación no devolvió el reporte.' })
       const e = extraerExpedicion(det.crudo)
       const m = (e.codigo ? municipioPorCodigo(e.codigo) : null) ?? (e.lugar ? municipioPorNombre(e.lugar) : null)
       // Claves del reporte que suenan a lugar/expedición/Registraduría, con
@@ -1842,7 +1874,8 @@ Deno.serve(async (req: Request) => {
       })
       // 202 = todavía se está armando. Ellos piden reintentar a los 10 s.
       if (r.status === 202) return json({ ok: false, enProceso: true, motivo: 'El PDF todavía se está generando. Vuelve a intentar en unos segundos.' })
-      if (!r.ok) return json({ ok: false, motivo: `TusDatos respondió ${r.status} al pedir el PDF.` })
+      // Lo ve el cliente: sin el nombre del aliado.
+      if (!r.ok) return json({ ok: false, motivo: `No se pudo obtener el PDF del reporte (${r.status}). Intenta de nuevo en unos minutos.` })
       const buf = new Uint8Array(await r.arrayBuffer())
       let bin = ''
       for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode(...buf.subarray(i, i + 8192))

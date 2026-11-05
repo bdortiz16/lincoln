@@ -349,14 +349,15 @@ export const SystemConfigProvider: React.FC<{ children: ReactNode }> = ({ childr
       }
     }
 
-    // Último intento: escribir directo. Puede estar bloqueado por RLS.
-    const { error } = await supabase.from('app_config').upsert({ id: 1, settings: newFull });
-    if (!error) { guardarLocal(newFull); return; }
-
+    // Sin "último intento" escribiendo directo en app_config: si el servidor
+    // dijo que no (sin 2FA, sin código, sin permiso), es que no. Ese respaldo
+    // se saltaba el código por operación que save_config exige para las claves
+    // sensibles (hoy la RLS lo frena, pero no puede depender de eso).
+    //
     // No se guardó en ningún lado. NO se escribe el localStorage: si se
     // escribiera, este navegador seguiría mostrando el cambio para siempre y
     // nadie más lo vería -- que es exactamente lo que pasaba.
-    console.error('[config] no se pudo guardar:', motivo, error?.message);
+    console.error('[config] no se pudo guardar:', motivo);
     setConfig(previo);
     setConfigError(motivo);
   };

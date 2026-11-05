@@ -2289,11 +2289,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           // manda y responde pideCodigoCorreo): sin eso, quien tuviera solo la
           // contraseña se ponía su propio 2FA y enviaba dinero. La ventana del
           // código lo pide y se repite la llamada con él.
-          const r: any = await conCodigoCorreo((codigoCorreo?: string) => fetch(`${SURL}/functions/v1/admin-data`, {
+          // REEMPLAZAR un 2FA que ya está activo pide además el código ACTUAL de
+          // la app (el servidor responde pideCodigo y espera otpActual): una
+          // sesión robada —la marca de sesión dura 24 h— ya no alcanza para
+          // ponerle a la cuenta un 2FA ajeno y dejar al titular sin el suyo.
+          // Por fuera el código de la app, por dentro el del correo.
+          const r: any = await conCodigo2fa((otpActual?: string) => conCodigoCorreo((codigoCorreo?: string) => fetch(`${SURL}/functions/v1/admin-data`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-            body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId, ...(codigoCorreo ? { codigoCorreo } : {}) }),
-          }).then(x => x.json()).catch(() => null));
+            body: JSON.stringify({ action: 'mfa_set', userId: currentUser.id, secret, factorId, ...(codigoCorreo ? { codigoCorreo } : {}), ...(otpActual ? { otpActual } : {}) }),
+          }).then(x => x.json()).catch(() => null)));
           // Los códigos de respaldo se devuelven UNA sola vez: aquí. La tarjeta
           // de Seguridad los muestra para que el titular los guarde. Después ya
           // no se pueden volver a leer (en la base solo queda su hash).
@@ -2609,6 +2614,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     if (currentUser.role !== 'admin' && currentUser.id !== id) return;
     const base = id === currentUser.id ? currentUser : users.find(u => u.id === id);
     if (!base) return;
+    // Un CLIENTE no escribe saldos desde el navegador: los mueve el servidor.
+    // La base rechaza esa escritura, pero la pantalla ya había mostrado el
+    // saldo nuevo y seguía como si nada (consolidaciones y movimientos entre
+    // rieles "hechos" que nunca pasaron). Ahora se dice que no, sin tocar la
+    // vista.
+    if (data?.balances && currentUser.role !== 'admin') {
+      throw new Error('El saldo lo mueve el servidor: esta operación no se puede hacer desde aquí.');
+    }
     const updated = { ...base, ...data };
     // Always MERGE balances — never replace — so fiat ops don't wipe crypto and vice versa
     if (data.balances) {
@@ -2632,7 +2645,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // El saldo solo viaja si ESTE cambio es de saldo (data.balances).
       await saveUser(updated, Object.prototype.hasOwnProperty.call(data ?? {}, 'role') && currentUser.role === 'admin', !!data?.balances);
     } catch (e) {
-      console.error('saveUser failed, in-memory state is updated:', e);
+      // Antes el error se tragaba y la pantalla quedaba con el cambio puesto
+      // como si se hubiera guardado. Se deshace lo optimista y se avisa a
+      // quien llamó: si el servidor dijo que no, es que no.
+      console.error('saveUser failed:', e);
+      pendingWriteUntilRef.current = 0;
+      if (id === currentUser.id) setCurrentUser(base as any);
+      setUsers(prev => prev.map(u => u.id === id ? (base as any) : u));
+      throw e;
     }
   };
 
@@ -3165,16 +3185,13 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       // 2FA y la auditoría.
       return result.ok && !result.error ? {} : { error: String(result.error ?? 'No se pudo eliminar la cuenta.') };
     }
-    // Sin respuesta del servidor. Borrar la cuenta de OTRO sin el servidor no
-    // se hace nunca: se dice y se reintenta. La propia (delete_self) conserva
-    // el respaldo directo de antes.
-    if (!isSelf) return { error: 'No hubo respuesta del servidor. No se eliminó nada; intenta de nuevo.' };
-    // Clearing user_metadata.role ensures next Google OAuth uses the role
-    // chosen on the Register page, not the old stale value.
-    await safe(supabase.from('transactions').delete().eq('user_id', id));
-    await safe(supabase.from('users').delete().eq('id', id));
-    await safe(supabase.auth.updateUser({ data: { role: null, full_name: null } }));
-    return {};
+    // Sin respuesta del servidor: no se borra nada, tampoco la propia cuenta.
+    // Antes la propia tenía un "respaldo" que borraba directo en la base y
+    // respondía éxito: se saltaba el 2FA y la regla de no borrar una cuenta
+    // con saldo que exige delete_self (y la pantalla decía "eliminada" aunque
+    // la base lo hubiera rechazado). Si el servidor no contestó, se reintenta.
+    void isSelf;
+    return { error: 'No hubo respuesta del servidor. No se eliminó nada; intenta de nuevo.' };
   };
 
   const sendPasswordReset = async (email: string, captchaToken?: string) => {

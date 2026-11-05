@@ -27,7 +27,7 @@
 //  no se queda adivinando en silencio como nos pasó con el proveedor de rieles.
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { igualSeguro } from '../_shared/admin-auth.ts'
+import { igualSeguro, requireMfaSession } from '../_shared/admin-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -106,7 +106,8 @@ async function guardarConfig(c: Config) {
   await db.from('system_config').upsert({ key: CONFIG_KEY, value: JSON.stringify(c) }, { onConflict: 'key' })
 }
 
-async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmin: boolean }> {
+type Yo = { userId: string | null; esAdmin: boolean; mfaFalta?: string | null }
+async function quienLlama(req: Request): Promise<Yo> {
   const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { userId: null, esAdmin: false }
   if (SERVICE_KEY && igualSeguro(jwt, SERVICE_KEY)) return { userId: null, esAdmin: true }
@@ -117,11 +118,31 @@ async function quienLlama(req: Request): Promise<{ userId: string | null; esAdmi
     // Ser admin no alcanza: del equipo, solo Cumplimiento (y el dueño) opera
     // acá. Antes un miembro de Tesorería o de "Solo lectura" podía leer los
     // veredictos AML o cambiar su configuración llamando directo.
-    const esAdmin = (data as any)?.role === 'admin'
+    const esAdminRol = (data as any)?.role === 'admin'
       && (await equipoPermite(db, user.id, 'cumplimiento', { email: user.email ?? null })).ok
-    return { userId: user.id, esAdmin }
+    if (!esAdminRol) return { userId: user.id, esAdmin: false }
+    // Y con la sesión que pasó el segundo factor, como en admin-data. Antes
+    // bastaba la contraseña de un miembro de Cumplimiento para cambiar la
+    // configuración (y con ella mandar la llave de MistTrack a otro servidor)
+    // o para lanzar el monitoreo pagado. Sin 2FA de la sesión se le trata
+    // como a cualquier cuenta: sin tope de admin, sin crudo, sin acciones de
+    // administración.
+    const mfa = await requireMfaSession(db, req, user.id)
+    return { userId: user.id, esAdmin: !mfa, mfaFalta: mfa }
   } catch { return { userId: null, esAdmin: false } }
 }
+// Para las acciones solo de admin: si es del equipo pero le falta el 2FA de
+// la sesión, se le dice eso (y no un "no autorizado" que no explica nada).
+const soloAdmin = (yo: Yo): Response | null =>
+  yo.esAdmin ? null : yo.mfaFalta ? json({ error: yo.mfaFalta }, 403) : json({ error: 'no_autorizado' }, 401)
+
+// El host de MistTrack es FIJO. Antes salía de la configuración guardada
+// (editable desde el panel), y como la llave viaja en la URL (`api_key`),
+// quien cambiara la dirección base a un servidor suyo recibía la llave en la
+// siguiente consulta de cualquier cliente. Las RUTAS siguen configurables
+// (si MistTrack mueve un endpoint), pero siempre sobre este host.
+const MT_BASE = 'https://openapi.misttrack.io'
+const MT_HOST = new URL(MT_BASE).host
 
 // ── Llamada al proveedor ──────────────────────────────────────────
 // Devuelve SIEMPRE qué pasó, incluso cuando falla: el estado HTTP y el cuerpo
@@ -131,7 +152,12 @@ async function llamarMT(c: Config, ruta: string, params: Record<string, string>)
   Promise<{ ok: boolean; status: number; data: any; error?: string }> {
   if (!MT_KEY) return { ok: false, status: 0, data: null, error: 'sin_credencial' }
   const qs = new URLSearchParams({ ...params, api_key: MT_KEY }).toString()
-  const url = `${c.baseUrl.replace(/\/+$/, '')}${ruta.startsWith('/') ? '' : '/'}${ruta}?${qs}`
+  let destino: URL
+  try { destino = new URL(String(ruta ?? '').startsWith('/') ? String(ruta) : `/${ruta ?? ''}`, MT_BASE) } catch { return { ok: false, status: 0, data: null, error: 'ruta_invalida' } }
+  // Una ruta como "//otro-host/x" cambiaría el host: no se llama.
+  if (destino.host !== MT_HOST || destino.protocol !== 'https:') return { ok: false, status: 0, data: null, error: 'ruta_invalida' }
+  void c
+  const url = `${destino.origin}${destino.pathname}?${qs}`
   try {
     const ctrl = new AbortController()
     const reloj = setTimeout(() => ctrl.abort(), 20000)
@@ -781,14 +807,27 @@ async function logAuditKyt(userId: string | null, action: string, metadata: Reco
 // contraparte). Antes solo 'consultar' lo miraba, y con force:true el
 // reporte o las rutas se saltaban el caché y el tope. Las fallidas también
 // cuentan: igual llegaron al proveedor. Los admins no tienen tope.
-async function topeKytAgotado(c: any, yo: { userId: string | null; esAdmin: boolean }): Promise<boolean> {
-  if (yo.esAdmin || !yo.userId || !(Number(c.topeDiarioPorCliente) > 0)) return false
+async function kytRestantes(c: any, yo: { userId: string | null; esAdmin: boolean }): Promise<number> {
+  if (yo.esAdmin || !yo.userId || !(Number(c.topeDiarioPorCliente) > 0)) return Infinity
   const desde = new Date(Date.now() - 86400_000).toISOString()
   const { count } = await db.from('audit_log')
     .select('*', { count: 'exact', head: true })
     .eq('user_id', yo.userId).in('action', ['kyt.consulta_pagada', 'kyt.consulta_fallida'])
     .gte('created_at', desde)
-  return (count ?? 0) >= Number(c.topeDiarioPorCliente)
+  return Math.max(0, Number(c.topeDiarioPorCliente) - (count ?? 0))
+}
+async function topeKytAgotado(c: any, yo: { userId: string | null; esAdmin: boolean }): Promise<boolean> {
+  return (await kytRestantes(c, yo)) <= 0
+}
+// Una fila por CADA llamada pagada que de verdad salió hacia MistTrack. El
+// rastreo de rutas anotaba UNA por clic y hacía hasta 27 (riesgo +
+// investigación + una por contraparte): con tope de 25 al día, una cuenta
+// gastaba cientos.
+async function anotarPagadas(userId: string | null, n: number, metadata: Record<string, unknown>) {
+  if (!userId || !(n > 0)) return
+  try {
+    await db.from('audit_log').insert(Array.from({ length: n }, () => ({ user_id: userId, action: 'kyt.consulta_pagada', metadata })))
+  } catch { /* no bloquea */ }
 }
 const msgTopeKyt = (c: any) => `Llegaste al tope de ${c.topeDiarioPorCliente} consultas por día.`
 
@@ -966,14 +1005,23 @@ Deno.serve(async (req) => {
 
     // ── Configuración (admin) ─────────────────────────────────────
     if (accion === 'config_get') {
-      if (!yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+      { const no = soloAdmin(yo); if (no) return no }
       // Se dice SI hay credencial, nunca cuál ni dónde vive. La llave está en
       // la Bóveda y de ahí no sale ni en forma de pista.
       return json({ ok: true, config: c, credencial: !!MT_KEY })
     }
     if (accion === 'config_set') {
-      if (!yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
-      const nueva: Config = { ...c, ...(body.config ?? {}) }
+      { const no = soloAdmin(yo); if (no) return no }
+      // La dirección base no se acepta del panel (ver MT_BASE). Las rutas sí,
+      // pero solo como rutas: empiezan por "/" y no traen host ni esquema.
+      const { baseUrl: _ignorada, ...pedida } = (body.config ?? {}) as Record<string, unknown>
+      void _ignorada
+      for (const k of Object.keys(pedida)) {
+        if (/^ruta/.test(k) && !/^\/[A-Za-z0-9_\-./]*$/.test(String(pedida[k] ?? '')) || /^ruta/.test(k) && String(pedida[k] ?? '').startsWith('//')) {
+          return json({ ok: false, error: 'ruta_invalida', mensaje: `La ruta "${k}" tiene que empezar por "/" y no puede llevar otro dominio.` }, 400)
+        }
+      }
+      const nueva: Config = { ...c, ...(pedida as Partial<Config>), baseUrl: MT_BASE }
       nueva.diasVigencia = Math.max(0, Math.min(365, Number(nueva.diasVigencia) || 0))
       nueva.topeDiarioPorCliente = Math.max(0, Math.min(10000, Number(nueva.topeDiarioPorCliente) || 0))
       nueva.puntajeAlto = Math.max(1, Math.min(100, Number(nueva.puntajeAlto) || 70))
@@ -981,6 +1029,7 @@ Deno.serve(async (req) => {
       nueva.topeMonitoreadas = Math.max(1, Math.min(2000, Number(nueva.topeMonitoreadas) || 50))
       nueva.horasMonitoreo = Math.max(1, Math.min(720, Number(nueva.horasMonitoreo) || 24))
       await guardarConfig(nueva)
+      await logAuditKyt(yo.userId, 'kyt.config', { cambios: Object.keys(pedida) })
       return json({ ok: true, config: nueva })
     }
 
@@ -1415,9 +1464,12 @@ Deno.serve(async (req) => {
         && Date.now() - new Date(f.rutas_at).getTime() < c.diasVigencia * 86400_000
       // Sin cupo del día, el reporte sale igual pero sin rastrear rutas nuevas
       // (cada contraparte expandida es otra consulta pagada).
-      const sinCupoRutas = !rutasVigentes && body.sinRutas !== true && await topeKytAgotado(c, yo)
+      // Cada llamada se cuenta en el tope (antes se anotaba UNA por reporte y
+      // se hacían hasta 26: investigación + una por contraparte).
+      const restantesRutas = (!rutasVigentes && body.sinRutas !== true) ? await kytRestantes(c, yo) : 0
+      const sinCupoRutas = !rutasVigentes && body.sinRutas !== true && restantesRutas < 1
       if (!rutasVigentes && body.sinRutas !== true && !sinCupoRutas) {
-        await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'reporte_rutas' })
+        let pagadasRep = 1
         const rInv2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
         const inv2 = rInv2.ok ? leerInvestigacion(rInv2.data) : null
         if (inv2) {
@@ -1428,10 +1480,11 @@ Deno.serve(async (req) => {
           }))
           const cand = vecinos.filter((x: any) => x.tipoNum !== 2)
             .sort((a2: any, b2: any) => (b2.monto ?? 0) - (a2.monto ?? 0))
-            .slice(0, Math.max(1, Math.min(25, Number(c.presupuestoRutas) || 10)))
+            .slice(0, Math.max(0, Math.min(25, Number(c.presupuestoRutas) || 10, restantesRutas - 1)))
           const indirectas: any[] = []
           let expandidos = 0
           for (const v of cand) {
+            pagadasRep++
             const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
             if (!r2.ok) continue
             expandidos++
@@ -1473,6 +1526,7 @@ Deno.serve(async (req) => {
           await db.from('kyt_registry').update({ rutas: trazado, rutas_at: new Date().toISOString() })
             .eq('coin', coin).eq('address_lower', dir.toLowerCase())
         }
+        await anotarPagadas(yo.userId, pagadasRep, { coin, address: dir, origen: 'reporte_rutas' })
       }
       return json({
         ok: true,
@@ -1538,15 +1592,22 @@ Deno.serve(async (req) => {
       // Presupuesto: cuantas contrapartes se expanden. Cada una es una consulta
       // pagada. 10 por defecto; el tope evita que una direccion con cientos de
       // contrapartes se coma el plan en un clic.
-      const presupuesto = Math.max(1, Math.min(25, Number(body.presupuesto) || 10))
-      if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
-      await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'rutas', presupuesto })
+      // El tope cuenta las llamadas pagadas de verdad: riesgo (si no está en
+      // el padrón) + investigación + una por contraparte. El presupuesto se
+      // recorta a lo que le queda a la cuenta en el día, y cada llamada que
+      // sale se anota (ver anotarPagadas).
+      const restantes = await kytRestantes(c, yo)
+      const fichaR = await padronBuscar(coin, dir)
+      const base = (fichaR?.hop_at ? 0 : 1) + 1
+      if (restantes < base) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
+      const presupuesto = Math.max(0, Math.min(25, Number(body.presupuesto) || 10, restantes - base))
+      let pagadas = 0
+      const metaPagadas = { coin, address: dir, origen: 'rutas' }
 
       // ── 1) El camino que ya tenemos guardado ──
       // hop_dic viene con el veredicto, y el veredicto ya se pago al consultar.
       // Se lee del padron; solo si no hay ficha se gasta una consulta de riesgo
       // -- una, no una por contraparte.
-      const fichaR = await padronBuscar(coin, dir)
       let hopDic: any = fichaR?.hop_dic ?? null
       let expo: any = fichaR?.exposicion ?? null
       let riesgoRecien = false
@@ -1556,6 +1617,7 @@ Deno.serve(async (req) => {
       // consulta de mas en cada clic, o las fichas viejas nunca muestran el
       // camino que el proveedor si manda.
       if (!fichaR?.hop_at) {
+        pagadas++
         const rr = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
         if (rr.ok) {
           const vv = leerVeredicto(rr.data)
@@ -1624,9 +1686,11 @@ Deno.serve(async (req) => {
         })
       }
 
+      pagadas++
       const rInv = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
       const inv = rInv.ok ? leerInvestigacion(rInv.data) : null
       if (!inv) {
+        await anotarPagadas(yo.userId, pagadas, metaPagadas)
         // Antes esto cortaba la accion. Ahora ya no puede: si el proveedor
         // mando el camino, tenemos rutas reales aunque no podamos decir el
         // sentido del flujo -- y tirarlas para devolver un error seria esconder
@@ -1674,6 +1738,7 @@ Deno.serve(async (req) => {
       let expandidos = 0
       let fallos = 0
       for (const v of candidatos) {
+        pagadas++
         const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
         if (!r2.ok) { fallos++; continue }
         expandidos++
@@ -1773,6 +1838,7 @@ Deno.serve(async (req) => {
       const todasLasRutas = [...rutasProveedor, ...aMano]
         .sort((a, b) => (a.saltos ?? 99) - (b.saltos ?? 99) || (b.monto ?? 0) - (a.monto ?? 0))
 
+      await anotarPagadas(yo.userId, pagadas, metaPagadas)
       await logAuditKyt(yo.userId, 'kyt.rutas', {
         coin, address: dir, expandidos,
         proveedor: rutasProveedor.length, directas: directas.length, indirectas: indirectas.length,
@@ -1809,7 +1875,7 @@ Deno.serve(async (req) => {
     // tres llegaban a la pantalla como "el proveedor no devolvio X", y me
     // llevaron a inventar nombres de campo dos veces.
     if (accion === 'diagnostico') {
-      if (!yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+      { const no = soloAdmin(yo); if (no) return no }
       const coin = canonCoin(body.coin)
       const dir = normDir(body.address)
       if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
@@ -1856,7 +1922,7 @@ Deno.serve(async (req) => {
 
     // ── Padrón completo (admin) ───────────────────────────────────
     if (accion === 'padron') {
-      if (!yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+      { const no = soloAdmin(yo); if (no) return no }
       const q = String(body.q ?? '').trim()
       let sel = db.from('kyt_registry').select('*').order('actualizado_at', { ascending: false }).limit(300)
       if (q) sel = sel.ilike('address_lower', `%${q.toLowerCase()}%`)
