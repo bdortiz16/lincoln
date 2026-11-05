@@ -82,3 +82,20 @@ export function tipoProbable(numero: string): { tipo: 'empresa' | 'persona' | nu
     if (/^\d{6,8}$/.test(d)) return { tipo: 'persona', seguro: false };
     return { tipo: null, seguro: false };
 }
+
+// ── Cédula de ciudadanía ──────────────────────────────────────────────────
+// Entre 6 y 10 dígitos: es lo que acepta la Registraduría y lo que exige la
+// consulta de antecedentes. Una cédula de 11 dígitos (un dígito repetido al
+// digitar) se inscribía igual, la consulta la rechazaba en cada intento y el
+// beneficiario quedaba en "SIN RESULTADO" con Enviar apagado, sin que nadie
+// supiera por qué (caso Ider Luna, 2026-11-05: 11143899332).
+export function validarCedula(numero: string): { ok: boolean; texto: string } {
+    const d = String(numero ?? '').replace(/\D/g, '');
+    if (d.length >= 6 && d.length <= 10) return { ok: true, texto: '' };
+    return {
+        ok: false,
+        texto: d.length > 10
+            ? `La cédula tiene entre 6 y 10 dígitos y van ${d.length}. Revisa que no sobre un número.`
+            : `La cédula tiene entre 6 y 10 dígitos y van ${d.length}. Revisa el número.`,
+    };
+}

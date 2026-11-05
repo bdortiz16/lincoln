@@ -1434,6 +1434,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               // parecía un detalle informativo y no la razón por
                               // la que la fila está deshabilitada.
                               if (est === 'procesando' || !est) return { t: 'AML · CONSULTANDO · ESPERA', tono: 'gris' };
+                              if (est === 'documento_invalido') return { t: 'AML · DOCUMENTO INVÁLIDO', tono: 'rojo' };
                               if (est !== 'finalizado') return { t: 'AML · SIN RESULTADO · ESPERA', tono: 'gris' };
                               if (k.aprobadoManual === true) return { t: 'AML · APROBADO', tono: 'verde' };
                               const frena = amlFrena(c);

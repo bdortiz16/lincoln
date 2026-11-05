@@ -4687,7 +4687,9 @@ serve(async (req: Request) => {
                 })
                 return json(409, {
                   error: 'aml_pendiente',
-                  message: estadoF === 'procesando' || !estadoF
+                  message: estadoF === 'documento_invalido'
+                    ? String(f?.detalle ?? 'El documento de este beneficiario no es válido. Borra el beneficiario e inscríbelo con el número correcto.')
+                    : estadoF === 'procesando' || !estadoF
                     ? 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.'
                     : 'La verificación de antecedentes de este beneficiario no ha terminado. Se está reintentando; inténtalo de nuevo en unos minutos.',
                 })

@@ -71,6 +71,21 @@ export function sujetoDe(tipoDocumento: string, documento: string, nombre?: stri
   return { schema: t.schema, idNumber: id, documentType: t.id, ...(nombreLimpio ? { fullName: nombreLimpio } : {}) };
 }
 
+// Un documento que Sarblock va a rechazar con INVALID_INPUT, dicho en
+// palabras del cliente. Se mira ANTES de llamar: reintentarlo no lo arregla
+// (lo único que lo arregla es inscribirlo bien) y cada intento suma al cupo
+// de 60 por minuto. Caso Ider Luna, 2026-11-05: cédula 11143899332, siete
+// intentos fallidos en un día y el beneficiario trabado en "SIN RESULTADO".
+// Regla leída del propio error de Sarblock: la CC va entre 6 y 10 dígitos.
+export function documentoInvalido(tipoDocumento: string, documento: string): string | null {
+  const t = String(tipoDocumento || 'CC').toUpperCase();
+  const d = String(documento ?? '').replace(/\D/g, '');
+  if (t === 'CC' && (d.length < 6 || d.length > 10)) {
+    return `La cédula ${d} tiene ${d.length} dígitos y una cédula tiene entre 6 y 10. Borra el beneficiario e inscríbelo con el número correcto.`;
+  }
+  return null;
+}
+
 export class ClienteSarblock {
   constructor(private key: string, private f: Fetch = fetch, private base = SARBLOCK_URL) {
     if (!key?.startsWith('sb_org_')) throw new Error('La key de Sarblock debe empezar por sb_org_.');

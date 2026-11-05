@@ -4,7 +4,7 @@ import { useDatabase } from '../context/DatabaseContext';
 import { useSystemConfig } from '../context/SystemConfigContext';
 import { supabase } from '../lib/supabaseClient';
 import { llamarFuncion } from '../lib/edge';
-import { validarNit, completarNit, nitSinDv, esNitEmpresa } from '../lib/nit';
+import { validarNit, completarNit, nitSinDv, esNitEmpresa, validarCedula } from '../lib/nit';
 import { MUNICIPIOS, municipioPorCodigo } from '../lib/municipios';
 import { FlagImg } from './FlagImg';
 import { callFinity } from './FinitySection';
@@ -575,7 +575,9 @@ export const ContactsSection: React.FC<{
     const amlEsperando = (c: Partial<MouvContact>) => {
         const k = amlDe(c);
         if (!k) return false;
-        return String(k.estado ?? '') !== 'finalizado';
+        // Un documento inválido no se arregla esperando: eso es un bloqueo.
+        const e = String(k.estado ?? '');
+        return e !== 'finalizado' && e !== 'documento_invalido';
     };
     // No poder ENVIAR y no poder BORRAR son cosas distintas.
     //
@@ -632,6 +634,13 @@ export const ContactsSection: React.FC<{
         } else if (est === 'sin_autorizacion') {
             estado = 'SIN AUTORIZAR';
             ayuda = 'El titular del documento no autoriza la consulta de su información. No impide transferirle.';
+        } else if (est === 'documento_invalido') {
+            // Un dato mal inscrito no se arregla esperando: la insignia dice
+            // qué corregir. Antes decía "SIN RESULTADO · se está reintentando"
+            // y el cliente insistía con "Volver a consultar" sin saber por qué
+            // no servía (caso Ider Luna, 2026-11-05).
+            tono = ROJO; estado = 'DOCUMENTO INVÁLIDO'; motivo = 'Corrige el número';
+            ayuda = String(k.detalle ?? 'El número de documento no es válido. Borra el beneficiario e inscríbelo con el número correcto.');
         } else if (est !== 'finalizado') {
             const agotado = Number(k.intentos ?? 0) >= 8;
             tono = AMBAR; estado = agotado ? 'EN REVISIÓN' : 'SIN RESULTADO';
@@ -726,6 +735,8 @@ export const ContactsSection: React.FC<{
 
     // Revisión manual del cumplimiento de un beneficiario (id del contacto).
     const [revisando, setRevisando] = useState<string | null>(null);
+    // Por qué falló el último "Volver a consultar" de cada beneficiario.
+    const [falloConsulta, setFalloConsulta] = useState<Record<string, string>>({});
     const revisarCumplimiento = async (c: MouvContact) => {
         if (!currentUser?.id || revisando) return;
         setRevisando(c.id);
@@ -735,7 +746,7 @@ export const ContactsSection: React.FC<{
         // Se lanza y se recoge: la consulta tarda cerca de un minuto, así que
         // el primer intento de recoger casi nunca la encuentra lista. El
         // webhook la cierra después, o la siguiente vuelta del reloj.
-        await callTusdatos({
+        const r = await callTusdatos({
             action: 'verificar_beneficiario', userId: currentUser.id,
             nombre: c.name, documento: String(c.docNumber ?? '').replace(/\D/g, ''),
             tipoDocumento: String(c.docType ?? 'CC').toUpperCase(),
@@ -743,6 +754,16 @@ export const ContactsSection: React.FC<{
         await callTusdatos({ action: 'recoger_pendientes', userId: currentUser.id });
         await leerTusdatos(currentUser.id);
         setRevisando(null);
+        // Si no se pudo lanzar, se dice por qué. Antes no se miraba la
+        // respuesta: el botón "no hacía nada" y el motivo solo quedaba en el
+        // registro de auditoría.
+        // Va junto al botón (la ficha abierta tapa el aviso de la página).
+        setFalloConsulta(x => {
+            const y = { ...x };
+            if (r && r.ok === false) y[c.id] = String(r.motivo ?? r.message ?? 'No se pudo hacer la consulta. Inténtalo de nuevo en unos minutos.');
+            else delete y[c.id];
+            return y;
+        });
     };
 
     // Menú "···" abierto: el id del contacto Y la posición del botón.
@@ -1054,6 +1075,10 @@ export const ContactsSection: React.FC<{
                 const v = validarNit(f.docNumber);
                 if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
             }
+            if (f.docType === 'CC' && f.docNumber.trim()) {
+                const v = validarCedula(f.docNumber);
+                if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
+            }
             const keyNorm = f.brebKey.trim().toLowerCase();
             const dupK = bankContacts.find(c => c.destKind === 'breb' && (c.brebKey ?? '').trim().toLowerCase() === keyNorm);
             if (dupK) { setNotice({ ok: false, text: `Ya tienes esta llave inscrita como “${dupK.name}”.` }); return; }
@@ -1094,6 +1119,12 @@ export const ContactsSection: React.FC<{
         // Un NIT va completo: 10 dígitos, con el de verificación, y que cuadre.
         if (f.docType === 'NIT') {
             const v = validarNit(f.docNumber);
+            if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
+        }
+        // Una cédula de 11 dígitos se inscribía y la consulta de antecedentes
+        // la rechazaba en cada intento: se frena aquí, donde se corrige.
+        if (f.country === 'Colombia' && f.docType === 'CC') {
+            const v = validarCedula(f.docNumber);
             if (!v.ok) { setNotice({ ok: false, text: v.texto }); return; }
         }
         // Deduplicar: mismo banco + mismo número de cuenta ya inscrito → no repetir.
@@ -2589,6 +2620,9 @@ export const ContactsSection: React.FC<{
                                                         </button>
                                                     )}
                                                 </div>
+                                                {falloConsulta[c.id] && (
+                                                    <p style={{ fontSize: 11.5, color: '#F87171', marginTop: 8, lineHeight: 1.45 }}>{falloConsulta[c.id]}</p>
+                                                )}
                                                 {String(k.estado ?? '') === 'finalizado' && k.reportId && (
                                                     <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
                                                         Si algo cambia en las listas, TusDatos avisa y la consulta se repite sola.
@@ -2983,6 +3017,9 @@ export const ContactsSection: React.FC<{
                                                 }}>
                                                 {revisando === detail.id ? 'Consultando…' : 'Volver a consultar'}
                                             </button>
+                                        )}
+                                        {falloConsulta[detail.id] && (
+                                            <p style={{ fontSize: 11.5, color: '#F87171', marginTop: 8, lineHeight: 1.45 }}>{falloConsulta[detail.id]}</p>
                                         )}
                                         {est === 'finalizado' && k.reportId && (
                                             <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>

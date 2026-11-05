@@ -34,7 +34,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
-import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia } from './cliente.ts'
+import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
 import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuzgar, CRITERIO } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
@@ -276,9 +276,22 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   const doc = sujeto.idNumber
   const raw = await leerRaw(uid)
   const previa = raw?.tusdatos?.beneficiarios?.[doc]
+  // Documento que Sarblock rechaza seguro (una cédula de 11 dígitos): no se
+  // llama. La ficha queda en 'documento_invalido', que el envío sigue
+  // frenando ("sin resultado no sale plata") pero que ya no se reintenta, y
+  // la pantalla dice qué corregir en vez de "se está reintentando".
+  const invalido = documentoInvalido(d.tipoDocumento, doc)
+  if (invalido && previa?.estado !== 'finalizado') {
+    if (previa?.estado !== 'documento_invalido') {
+      await guardarFicha(uid, doc, conDecision({ proveedor: 'sarblock', documento: doc, tipoDocumento: d.tipoDocumento, estado: 'documento_invalido', nombreInscrito: d.nombre, detalle: invalido, at: new Date().toISOString() }, previa))
+      await auditar('sarblock.documento_invalido', { userId: uid, documento: doc, motivo: invalido })
+    }
+    return { ok: false, documentoInvalido: true, motivo: invalido }
+  }
   // Ya consultado (por Sarblock o por TusDatos) y no archivado: no se paga
-  // otra vez.
-  if (previa && previa.estado !== 'error' && previa.estado !== 'archivado') {
+  // otra vez. 'documento_invalido' se vuelve a mirar: si el rechazo fue por
+  // otra regla de Sarblock, se intenta otra vez cuando alguien lo pide.
+  if (previa && previa.estado !== 'error' && previa.estado !== 'archivado' && previa.estado !== 'documento_invalido') {
     // Se volvió a inscribir con OTRO nombre (p. ej. para corregirlo): el
     // nombre se compara otra vez contra el oficial desde la consulta ya
     // pagada, sin llamar a Sarblock. Antes la ficha quedaba con el nombre
@@ -336,6 +349,14 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     return { ok: true, documento: doc, checkId: r.id }
   } catch (e) {
     const motivo = e instanceof ErrorSarblock ? `${e.tipo}: ${e.message}` : String((e as Error)?.message ?? e)
+    // INVALID_INPUT es un dato mal inscrito: no se arregla esperando. Antes
+    // quedaba en 'error' y se reintentaba ocho veces, todas iguales.
+    if (e instanceof ErrorSarblock && e.tipo === 'INVALID_INPUT') {
+      const texto = `${e.message}. Borra el beneficiario e inscríbelo con los datos correctos.`
+      await guardarFicha(uid, doc, conDecision({ proveedor: 'sarblock', documento: doc, tipoDocumento: d.tipoDocumento, estado: 'documento_invalido', nombreInscrito: d.nombre, detalle: texto.slice(0, 300), at: new Date().toISOString() }, previa))
+      await auditar('sarblock.lanzamiento_fallido', { userId: uid, documento: doc, motivo: motivo.slice(0, 300) })
+      return { ok: false, documentoInvalido: true, motivo: texto }
+    }
     // La ficha queda en error: "sin resultado no sale plata" la sigue
     // frenando en mouv-proxy, y el siguiente barrido la puede relanzar.
     // Se cuentan los intentos: verificar_pendientes la relanza con espera
