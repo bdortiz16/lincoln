@@ -1198,6 +1198,10 @@ async function reiniciarFallos(req: Request, userId: string) {
   await auditAdmin(req, 'auth.mfa_reset', { userId })
 }
 
+const PASO_DEL_FALLO: Record<string, string> = {
+  correo: 'código del correo', app: 'código de la app', respaldo: 'código de respaldo', passkey: 'llave del dispositivo',
+}
+
 async function registerAdminFailure(
   req: Request, userId: string, motivo: string, tipo: string, foto?: string | null,
 ): Promise<{ fallos: number; bloqueada: boolean }> {
@@ -1208,7 +1212,11 @@ async function registerAdminFailure(
     const n = (await fallosRecientes(userId, desde)).length
     if (n >= MAX_FALLOS_ADMIN) {
       const { data: uu } = await db.from('users').select('email').eq('id', userId).single()
-      await lockAdminAndAlert(req, userId, String((uu as any)?.email ?? ''), motivo, foto ?? null)
+      // El correo decía solo "código incorrecto" y no se sabía de cuál paso
+      // (el del correo, el de la app...). Con eso se distingue al que se
+      // equivocó de correo de quien está probando códigos de la app.
+      const paso = PASO_DEL_FALLO[tipo] ?? tipo
+      await lockAdminAndAlert(req, userId, String((uu as any)?.email ?? ''), paso ? `${motivo} (${paso})` : motivo, foto ?? null)
       return { fallos: n, bloqueada: !!(await adminLock(userId)) }
     }
     return { fallos: n, bloqueada: false }
@@ -1245,6 +1253,8 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
   const geo = await geoOf(ip)
   const ua = req.headers.get('user-agent') ?? 'desconocido'
   const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })
+  const hora = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+  const ref = crypto.randomUUID().slice(0, 8).toUpperCase()
 
   await db.from('system_config').upsert({
     key: lockKey(userId),
@@ -1286,6 +1296,7 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
         Hubo ${MAX_FALLOS_ADMIN} intentos fallidos de ingreso. La cuenta quedó bloqueada por seguridad.
         Si fuiste tú, desbloquéala con el botón. Si no, <b style="color:#F4F4F2">no la desbloquees</b> y cambia la contraseña.
       </p>
+      <a href="${url}" style="display:inline-block;background:#4ADE80;color:#0C0E0D;font-weight:800;font-size:14px;text-decoration:none;padding:13px 22px;border-radius:10px;margin:0 0 20px">Desbloquear mi cuenta</a>
       <table style="width:100%;background:#121413;border-radius:10px;border-collapse:collapse;margin-bottom:18px">
         ${fila('Cuándo', cuando)}
         ${fila('Motivo', motivo)}
@@ -1295,9 +1306,9 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
         ${fila('Dispositivo', ua.slice(0, 90))}
         ${fila('Imagen de cámara', foto ? 'adjunta a este correo' : 'no disponible')}
       </table>
-      <a href="${url}" style="display:inline-block;background:#4ADE80;color:#0C0E0D;font-weight:800;font-size:14px;text-decoration:none;padding:13px 22px;border-radius:10px">Desbloquear mi cuenta</a>
-      <p style="color:rgba(244,244,242,0.45);font-size:11px;margin:18px 0 0">
+      <p style="color:rgba(244,244,242,0.45);font-size:11px;margin:0">
         El enlace sirve una sola vez. La ubicación se deduce de la IP: llega a ciudad o región, no es una dirección exacta.
+        Referencia del bloqueo: ${escHtml(ref)}.
       </p>
     </div>`
   try {
@@ -1306,7 +1317,13 @@ async function lockAdminAndAlert(req: Request, userId: string, email: string, mo
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         from: `Lincoin <${FROM_EMAIL}>`, to: [email],
-        subject: '⚠️ Se bloqueó el acceso a tu panel de Lincoin',
+        subject: `⚠️ Se bloqueó el acceso a tu panel de Lincoin · ${hora}`,
+        // Gmail juntaba todos los avisos de bloqueo en una conversación (mismo
+        // asunto) y escondía lo que se repetía —el botón para desbloquear—
+        // detrás de los "…": la colaboradora no lo encontraba (2026-11-05).
+        // Asunto con la hora, botón arriba y esta cabecera única hacen que
+        // cada aviso llegue como un correo aparte, completo.
+        headers: { 'X-Entity-Ref-ID': ref },
         html,
         ...(foto ? { attachments: [{ filename: 'intento-de-acceso.jpg', content: foto }] } : {}),
       }),
@@ -1481,7 +1498,10 @@ async function enviarInvitacionColaborador(
     const envio = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [email], subject: 'Tu acceso al panel de colaboradores de Lincoin', html }),
+      // Cabecera única: una invitación REENVIADA no se junta en Gmail con la
+      // anterior (mismo asunto), donde el botón con el enlace nuevo quedaba
+      // escondido entre lo repetido y se abría el del correo viejo, ya vencido.
+      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [email], subject: 'Tu acceso al panel de colaboradores de Lincoin', headers: { 'X-Entity-Ref-ID': crypto.randomUUID() }, html }),
       signal: AbortSignal.timeout(10000),
     })
     if (!envio.ok) {
