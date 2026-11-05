@@ -338,7 +338,10 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     const motivo = e instanceof ErrorSarblock ? `${e.tipo}: ${e.message}` : String((e as Error)?.message ?? e)
     // La ficha queda en error: "sin resultado no sale plata" la sigue
     // frenando en mouv-proxy, y el siguiente barrido la puede relanzar.
-    await guardarFicha(uid, doc, conDecision({ proveedor: 'sarblock', documento: doc, tipoDocumento: d.tipoDocumento, estado: 'error', nombreInscrito: d.nombre, detalle: motivo.slice(0, 300), at: new Date().toISOString() }, previa))
+    // Se cuentan los intentos: verificar_pendientes la relanza con espera
+    // creciente, y desde el octavo la pantalla dice "en revisión".
+    const intentos = (previa?.estado === 'error' ? Number(previa.intentos ?? 0) : 0) + 1
+    await guardarFicha(uid, doc, conDecision({ proveedor: 'sarblock', documento: doc, tipoDocumento: d.tipoDocumento, estado: 'error', nombreInscrito: d.nombre, detalle: motivo.slice(0, 300), intentos, at: new Date().toISOString() }, previa))
     await auditar('sarblock.lanzamiento_fallido', { userId: uid, documento: doc, motivo: motivo.slice(0, 300) })
     return { ok: false, motivo }
   }
@@ -1000,10 +1003,24 @@ Deno.serve(async (req) => {
         const d = soloDigitos(x.docNumber)
         return !contactos.some((o: any) => soloDigitos(o?.docNumber) === d && mismoNombre(o?.name, f.nombreInscrito))
       }
+      // Una ficha en error (el lanzamiento falló: Sarblock caído, sin saldo,
+      // un timeout) se relanza sola. Antes no entraba aquí ni en el barrido:
+      // quedaba en "SIN RESULTADO" para siempre con Enviar apagado, aunque la
+      // pantalla dijera que se estaba reintentando (caso Ider Luna,
+      // 2026-11-05). Espera creciente (5, 10, 20… min, tope 6 h) para no
+      // martillar a Sarblock, y desde el octavo intento queda para
+      // Cumplimiento. Un error de Sarblock no cobra el crédito.
+      const errorVencido = (f: any) => {
+        if (f?.estado !== 'error') return false
+        const n = Number(f.intentos ?? 1)
+        if (n >= 8) return false
+        const espera = Math.min(5 * 60_000 * 2 ** (n - 1), 6 * 3600_000)
+        return Date.now() - (Date.parse(f.at) || 0) >= espera
+      }
       // Archivada = la de un beneficiario borrado; si vuelve a estar inscrito
       // se retoma (del padrón, sin costo, si sigue vigente).
       const faltan = contactos.filter(x => x?.accountKind !== 'wallet' && soloDigitos(x?.docNumber)
-        && (!fichaDe(x) || fichaDe(x).estado === 'archivado' || renombrado(x)))
+        && (!fichaDe(x) || fichaDe(x).estado === 'archivado' || errorVencido(fichaDe(x)) || renombrado(x)))
       let lanzados = 0, tope = false
       for (const x of faltan.slice(0, limite)) {
         const r: any = await lanzar(uid, { documento: String(x.docNumber), tipoDocumento: String(x.docType ?? 'CC'), nombre: x.name }, c, yo.esAdmin)
