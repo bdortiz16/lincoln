@@ -364,7 +364,11 @@ Deno.serve(async (req) => {
     // Destinatario (para eventos de tercero: el dueño)
     const { data: user } = await db
       .from('users').select('email, full_name, raw_data').eq('id', targetUserId).maybeSingle()
-    const email = payload.table === 'users' ? (rec.email ?? user?.email) : user?.email
+    // El destinatario sale de la base, nunca del cuerpo: con `rec.email` el
+    // aviso le llegaba a cualquier dirección que viniera escrita ahí. En un
+    // cambio de correo legítimo la fila ya tiene el correo nuevo, así que el
+    // resultado es el mismo.
+    const email = user?.email
     if (!email) return new Response('no_email', { status: 200 })
 
     // Preferencias: solo silencian los eventos NO de seguridad

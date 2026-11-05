@@ -476,8 +476,20 @@ Deno.serve(async (req) => {
     const op = payload.type as string
     if (op !== 'INSERT' && op !== 'UPDATE') return new Response('ok', { status: 200 })
 
-    const tx: TxRecord = payload.record
-    console.log('[notify] op:', op, 'tx.type:', tx.type, 'tx.status:', tx.status, 'tx.user_id:', tx.user_id, 'tx.amount:', tx.amount)
+    // Del cuerpo se toma SOLO el id. Lo demás —a quién, cuánto, qué tipo, en
+    // qué estado— se lee de la base. Antes salía todo de `payload.record`: con
+    // la credencial del aviso, un cuerpo inventado (otro user_id, otro monto,
+    // estado 'Completado') emitía un comprobante numerado con datos falsos,
+    // pedía la factura en el Siigo de esa empresa y le mandaba el correo
+    // "tu envío llegó". Y un id que no existía hacía fallar la marca de
+    // repetidos, que entonces se daba por buena: correos sin límite.
+    const idTx = String(payload.record?.id ?? '')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idTx)) return new Response('bad_id', { status: 200 })
+    const { data: filaTx } = await db.from('transactions')
+      .select('id, user_id, type, amount, currency, status, raw_data').eq('id', idTx).maybeSingle()
+    if (!filaTx) return new Response('not_found', { status: 200 })
+    const tx: TxRecord = filaTx as any
+    console.log('[notify] op:', op, 'tx.type:', tx.type, 'tx.status:', tx.status, 'tx.amount:', tx.amount)
 
     if (!NOTIFY_TYPES.has(tx.type)) {
       console.log('[notify] skipping type:', tx.type)

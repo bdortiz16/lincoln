@@ -848,7 +848,7 @@ export const ContactsSection: React.FC<{
                     loading: false, found: true, bank: r.bank ?? null,
                     msg: chocaAviso
                         ? `Esta llave es de ${realN || 'otra persona'}${realD ? ` (${realD})` : ''}, no de lo que escribiste. Borra el nombre y el documento para que se llenen solos, o revisa la llave.`
-                        : r.fuente === 'finity'
+                        : (r.fuente === 'respaldo' || r.fuente === 'finity')
                             // Respaldo (Mouv caído): Finity no trae la cédula.
                             ? `Titular: ${realN || 'verificado'}. Escribe su documento: el directorio no lo trajo.`
                             : (realN ? `Titular: ${realN}` : 'Llave verificada'),
@@ -1300,10 +1300,11 @@ export const ContactsSection: React.FC<{
                     // propio usuario. Solo en la TRANSICIÓN a aprobada (la
                     // persistencia evita reenviarlo en cada sincronización).
                     for (const c of newlyApproved) {
+                        // El texto lo arma el servidor (lista cerrada de
+                        // eventos); acá solo va el nombre, que allá se escapa.
                         callMouv('email_event', currentUser!.id, {
-                            subject: 'Lincoin · Contacto aprobado',
-                            title: 'Contacto aprobado',
-                            message: `La cuenta de <strong>${c.name}</strong> quedó aprobada. Ya puedes transferirle.`,
+                            evento: 'contacto_aprobado',
+                            nombre: c.name,
                         }).catch(() => {});
                     }
                     if (!silent) setNotice({ ok: true, text: 'Estados sincronizados con el banco.' });

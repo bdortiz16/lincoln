@@ -879,6 +879,34 @@ Deno.serve(async (req) => {
       if (!FIJABLES.includes(String(r.cierre.status))) {
         return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : 'El cliente ya marcó el pago: verifícalo y complétalo, o cancélalo antes de cambiar la tasa.' })
       }
+      // Un cancelado se reabre solo si NUNCA se acreditó. Antes un cierre que
+      // se completaba y se cancelaba a la vez quedaba 'cancelada' con la plata
+      // ya acreditada; reabrirlo y completarlo acreditaba por segunda vez.
+      // (Cancelar ahora exige un estado vivo, así que eso ya no debería pasar;
+      // esto cubre las filas viejas.)
+      if (r.cierre.status === 'cancelada' && r.cierre.completada_at) {
+        return json(409, { ok: false, error: 'estado_invalido', message: 'Este cierre ya se había acreditado: no se puede reabrir.' })
+      }
+
+      // La tasa no puede alejarse más de un 15 % de la referencia. Sin tope,
+      // quien tiene la sección OTC fijaba cualquier número (1e6) y completaba:
+      // una acreditación por el monto que quisiera. La referencia es la del
+      // proveedor para este lado de la operación; si no responde, la que vio el
+      // cliente al pedir (rate_cotizada). Si no hay ninguna de las dos —el
+      // proveedor caído y un cierre pedido sin tasa—, la mesa cotiza a mano y
+      // no hay contra qué comparar: no se inventa una referencia.
+      {
+        const c = await tasaUsdCop(r.cierre.user_id, String(r.cierre.side ?? 'vende_usdt'))
+        const ref = Number(c.referencia) > 0 ? Number(c.referencia)
+          : Number(r.cierre.rate_cotizada) > 0 ? Number(r.cierre.rate_cotizada) : null
+        const TOPE_DESVIO = 0.15
+        if (ref && Math.abs(rate - ref) / ref > TOPE_DESVIO) {
+          return json(400, {
+            ok: false, error: 'tasa_fuera_de_rango',
+            message: `La tasa ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} se aleja más de ${TOPE_DESVIO * 100} % de la referencia (${ref.toLocaleString('es-CO', { maximumFractionDigits: 2 })}). Revisa el número.`,
+          })
+        }
+      }
       const instrucciones = String(payload.instrucciones ?? '').trim()
 
       const monto = Number(r.cierre.from_amount)
@@ -894,7 +922,7 @@ Deno.serve(async (req) => {
       const { data: fijado, error } = await db.from('otc_closes').update({
         rate_final: rate, to_amount: to, status: 'esperando_pago',
         confirmada_at: ahora(), vence_at: vence, updated_at: ahora(),
-      }).eq('id', r.cierre.id).in('status', FIJABLES).select('id')
+      }).eq('id', r.cierre.id).in('status', FIJABLES).is('completada_at', null).select('id')
       if (error) return json(500, { ok: false, error: error.message })
       if (!fijado?.length) return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga.' })
 
@@ -1065,9 +1093,18 @@ Deno.serve(async (req) => {
       }
       const motivo = String(payload.motivo ?? '').trim()
       if (caller.admin && !motivo) return json(400, { ok: false, error: 'falta el motivo de la cancelacion' })
-      await db.from('otc_closes').update({
+      // CAS sobre el estado: solo se cancela un cierre VIVO. Antes el UPDATE no
+      // tenía condición: si el cliente cancelaba mientras la mesa completaba,
+      // `completar` acreditaba y la cancelación dejaba el cierre 'cancelada'
+      // con la plata ya entregada — y un cancelado se puede reabrir y volver a
+      // completar (segundo crédito). El cliente, además, solo desde los
+      // estados en que nadie espera su plata (sin 'pagada', ver arriba).
+      const CANCELABLES: Estado[] = caller.admin ? VIVOS : VIVOS.filter(e => e !== 'pagada')
+      const { data: cancelado, error: errCancel } = await db.from('otc_closes').update({
         status: 'cancelada', cancelada_at: ahora(), motivo_cierre: motivo || (caller.admin ? null : 'Cancelada por el cliente'), updated_at: ahora(),
-      }).eq('id', r.cierre.id)
+      }).eq('id', r.cierre.id).in('status', CANCELABLES).select('id')
+      if (errCancel) return json(500, { ok: false, error: errCancel.message })
+      if (!cancelado?.length) return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga.' })
       await escribirMensaje(r.cierre.id, 'sistema',
         caller.admin ? `Cierre cancelado por la mesa. Motivo: ${motivo}` : 'El cliente cancelo la solicitud.')
       return json(200, { ok: true })

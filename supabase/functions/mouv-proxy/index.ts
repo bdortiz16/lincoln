@@ -26,7 +26,7 @@ import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
-import { requireMfaSession } from '../_shared/admin-auth.ts'
+import { requireMfaSession, sessionIdOf } from '../_shared/admin-auth.ts'
 import { cuentaCoinsendaDe, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { leerTarifasEnvio, tarifaFija } from '../_shared/tarifas-envio.ts'
 import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro } from '../_shared/coinsenda.ts'
@@ -53,10 +53,16 @@ function base32Decode(s: string): Uint8Array {
 // correcto, sin que ningún build lo detectara).
 
 async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+  return (await totpCounterServer(secret, token)) >= 0
+}
+
+// El CONTADOR del código aceptado (o -1 si no vale). Hace falta para que un
+// código no sirva dos veces: verifyTOTPServer solo dice sí o no.
+async function totpCounterServer(secret: string, token: string): Promise<number> {
   const code = String(token ?? '').replace(/\D/g, '')
-  if (code.length !== 6) return false
+  if (code.length !== 6) return -1
   const key = base32Decode(secret)
-  if (!key.length) return false
+  if (!key.length) return -1
   const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
   const step = 30, now = Math.floor(Date.now() / 1000)
   for (let w = -2; w <= 2; w++) {
@@ -66,9 +72,24 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
     const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, buf))
     const offset = hmac[hmac.length - 1] & 0x0f
     const bin = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3]
-    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return counter
   }
-  return false
+  return -1
+}
+
+// El último contador de código aceptado (el mismo raw_data.mfaLastCounter que
+// mantiene admin-data al verificar). null si no se pudo leer o nunca hubo uno.
+async function ultimoContadorTotp(userId: string): Promise<number | null> {
+  try {
+    const { data } = await db.from('users').select('c:raw_data->>mfaLastCounter').eq('id', userId).maybeSingle()
+    const n = Number((data as any)?.c)
+    return (data as any)?.c != null && Number.isFinite(n) ? n : null
+  } catch { return null }
+}
+// Se escribe SOLO esa clave, atómico (raw_data_merge): nunca el raw_data
+// entero desde una copia vieja.
+async function guardarContadorTotp(userId: string, counter: number): Promise<void> {
+  try { await mergeRaw(db, userId, { mfaLastCounter: counter }) } catch { /* el candado ya cubre el doble uso */ }
 }
 
 const CORS = {
@@ -216,27 +237,47 @@ async function reintegrarEnvio(userId: string, railCol: string, total: number): 
   return { ok, saldo: null }
 }
 
+// Resultado de un crédito con TRES estados. 'fallo' = la base respondió y
+// NO aplicó nada (se puede reintentar sin riesgo). 'incierto' = la respuesta
+// se perdió (red, timeout, 5xx): el ajuste PUDO haberse aplicado. Antes los
+// dos casos devolvían `false`, y quien llamaba soltaba la marca de reembolso
+// para que la siguiente conciliación lo reintentara: si el primer crédito sí
+// se había aplicado, el cliente cobraba el reembolso dos veces.
+type ResultadoCredito = 'ok' | 'fallo' | 'incierto'
+
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<boolean> {
+  return (await creditBalanceAtomic3(userId, col, delta)) === 'ok'
+}
+
+async function creditBalanceAtomic3(userId: string, col: string, delta: number): Promise<ResultadoCredito> {
+  // Un delta que no es un número finito viaja como null en el JSON, y
+  // adjust_balances con null dejaba el objeto de saldos en NULL (borraba
+  // todos los saldos del cliente). Se corta antes de llamar.
+  if (!Number.isFinite(delta)) {
+    await logAudit(userId, 'balance.ajuste_rechazado', { col, delta: String(delta), motivo: 'delta_no_finito' })
+    return 'fallo'
+  }
   // `adjust_balances` devuelve {error:'not_found'} o {error:'insufficient'}
   // como respuesta EXITOSA (200, sin error de transporte). Mirar solo `error`
   // daba el ajuste por bueno cuando el payload decia que no se hizo nada.
   const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
-  if (!error && !(adj as any)?.error) return true
+  if (!error && !(adj as any)?.error) return 'ok'
   // Un error DE PAYLOAD es una respuesta del servidor, no un problema de
   // transporte: reintentarlo a mano da el mismo resultado. 'insufficient' sobre
   // un delta negativo es un faltante real y hay que verlo, no taparlo.
   if (!error) {
     await logAudit(userId, 'balance.ajuste_rechazado', { col, delta, motivo: (adj as any)?.error ?? null })
-    return false
+    return 'fallo'
   }
 
   // Un error de transporte (la respuesta se perdió) NO se reintenta a mano:
   // el ajuste pudo haberse aplicado y repetirlo acreditaría dos veces. Queda
-  // como no hecho, y quien llama lo marca para revisión. El respaldo manual es
-  // solo para una base sin adjust_balances.
+  // como INCIERTO, y quien llama lo deja en revisión manual sin soltar la
+  // marca de reembolso. El respaldo manual es solo para una base sin
+  // adjust_balances.
   if (!rpcNoExiste(error)) {
     await logAudit(userId, 'balance.ajuste_incierto', { col, delta, motivo: error?.message ?? null })
-    return false
+    return 'incierto'
   }
   const { data: u, error: leerErr } = await db.from('users').select('balances').eq('id', userId).single()
   // SIN ESTA GUARDA se escribia `balances = { [col]: delta }` cuando la lectura
@@ -245,20 +286,20 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
   // inestable, que es cuando esa lectura tiene mas chance de fallar tambien.
   if (leerErr || !u || typeof (u as any).balances !== 'object' || (u as any).balances === null) {
     await logAudit(userId, 'balance.ajuste_fallido', { col, delta, motivo: leerErr?.message ?? 'no se pudo leer el saldo' })
-    return false
+    return 'fallo'
   }
   const bals: Record<string, number> = ((u as any).balances ?? {}) as any
   const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
   if (nb < 0) {
     await logAudit(userId, 'balance.ajuste_negativo', { col, delta, actual: bals[col] ?? 0 })
-    return false
+    return 'fallo'
   }
   const { error: escribirErr } = await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
   if (escribirErr) {
     await logAudit(userId, 'balance.ajuste_fallido', { col, delta, motivo: escribirErr.message })
-    return false
+    return 'fallo'
   }
-  return true
+  return 'ok'
 }
 
 // ── AVISO AL TELEFONO DEL CLIENTE ─────────────────────────────────
@@ -693,6 +734,15 @@ function digMotivoRechazo(o: any, excluir?: Set<string>, soloFuertes = false): s
 // inglés o el nombre de un aliado no: "Bad request to Kamin API" llegó tal
 // cual a la pantalla de un cliente — no le explica nada y le muestra con quién
 // operamos. Ese texto es para soporte y queda guardado en la fila.
+// Textos del proveedor que quedan en el movimiento (`errorMessage`): el
+// cliente puede leer su propio movimiento, así que el nombre del aliado se
+// cambia por "el proveedor". El texto crudo completo queda en `error` /
+// `detalleProveedor` y en la auditoría, para el admin.
+const ALIADOS_RE = /\b(mouv|finity|coinsenda|kamin|gowd|tusdatos|siigo|sarblock)\b/gi
+function sinAliados(t: unknown): string | null {
+  if (t === null || t === undefined || t === '') return null
+  return String(t).replace(ALIADOS_RE, 'el proveedor')
+}
 const JERGA_TECNICA = /[{}\[\]<>]|https?:|http\s*\d|status\s*code|\b(api|request|bad|internal|server|gateway|timeout|timed?\s*out|exception|stack|null|undefined|token|unauthori[sz]ed|forbidden|payload|endpoint|json|errors?|path|brebkey)\b/i
 const NOMBRES_ALIADOS = /\b(kamin|finity|mouv|gowd|kumplo|tusdatos|sumsub|fireblocks|circle|tatum|gasfree|resend|crisp)\b/i
 const EN_INGLES = /\b(the|to|of|is|was|not|could|cannot|can't|unable|failed|invalid|please|your|with|from)\b/i
@@ -1336,6 +1386,17 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
     // últimos dígitos: dos cuentas pueden terminar igual.
     const fila = (destId ? filas.find(r => idDe(r) === destId) : null)
       ?? (accDigits ? filas.find(r => accDe(r) === accDigits) : null)
+    // Un id de destino que la lista de Finity SÍ trajo pero no contiene no es
+    // "no se pudo verificar": es un id que no corresponde. El id lo guarda el
+    // contacto, que el cliente puede escribir en su raw_data; dejarlo pasar
+    // pagaba a la cuenta que fuera dueña de ese id. Solo se deja pasar (como
+    // antes) cuando la lista no se pudo leer, o cuando no hay id todavía y la
+    // cuenta se inscribe en el mismo envío.
+    const listaLeida = lista?.ok !== false && filas.length > 0
+    if (!fila && destId && listaLeida) {
+      await logAudit(userId, 'finity.payout.destino_desconocido', { destId, cuenta: accDigits.slice(-4) })
+      return { bloqueo: { estado: 'otra_cuenta', message: 'La cuenta destino no coincide con el beneficiario verificado. Vuelve a inscribirlo.' } }
+    }
     if (!fila) return { bloqueo: null }
     // El id de destino lo puede mandar el navegador: tiene que ser la MISMA
     // cuenta que se verificó (AML, documento). Si en Finity ese id es otra
@@ -1982,8 +2043,18 @@ async function conciliarFilaFinity(tx: any, origen: string, avisoFallo = false):
       raw_data: { ...rd, refunded: true, refundCop: refund, providerStatus: s, estadosProveedor: v.senales, providerError: motivoProveedor, ...(motivoProveedor ? {} : { motivoDiag: clavesDe(st).slice(0, 600) }), reconciledAt: ahora, ...(tx.status === 'Completado' ? { devolucionTardia: true } : {}) },
     }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
     if (!claimed?.length) return { id: tx.id, result: 'refund_already_claimed' }
-    const acreditado = await creditBalanceAtomic(dueno, railCol, refund)   // atómico (pentest #3)
-    if (!acreditado) {
+    const credito = await creditBalanceAtomic3(dueno, railCol, refund)   // atómico (pentest #3)
+    if (credito === 'incierto') {
+      // No se sabe si el saldo volvió (se perdió la respuesta). NO se suelta
+      // el reclamo: reintentarlo podía devolver dos veces. Queda para que un
+      // admin lo revise contra el saldo real.
+      await db.from('transactions').update({ raw_data: { ...rd, refunded: true, refundCop: refund, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: ahora } })
+        .eq('id', tx.id).eq('status', 'Rechazado')
+      await logAudit(dueno, 'finity.reconcile.reembolso_incierto', { txId: tx.id, refund, railCol, providerRef: ref, origen })
+      await avisarAdminSinConfirmar({ id: tx.id, user_id: dueno, amount: tx.amount, currency: railCol, raw_data: rd })
+      return { id: tx.id, result: 'reembolso_incierto' }
+    }
+    if (credito !== 'ok') {
       // El saldo NO volvió. Se deshace el reclamo para que la próxima vuelta
       // lo reintente: un envío rechazado no puede quedar marcado como
       // devuelto sin que la plata haya vuelto.
@@ -2101,10 +2172,17 @@ function requireOwner(caller: { userId: string | null; admin: boolean; viaJwt: b
   return null
 }
 
+// Estados de un recaudo PSE, completos (no subcadenas). Ver el webhook.
+const ESTADO_RECAUDO_PAGADO = new Set(['APPROVED', 'APROBADO', 'APROBADA', 'COMPLETED', 'COMPLETADO', 'COMPLETADA', 'SUCCESS', 'SUCCEEDED', 'SUCCESSFUL', 'PAID', 'PAGADO', 'PAGADA', 'CONFIRMED', 'CONFIRMADO', 'CONFIRMADA', 'ACCEPTED', 'ACEPTADO', 'ACEPTADA'])
+const ESTADO_RECAUDO_FALLIDO = new Set(['REJECTED', 'RECHAZADO', 'RECHAZADA', 'DECLINED', 'FAILED', 'FALLIDO', 'FALLIDA', 'CANCELED', 'CANCELLED', 'CANCELADO', 'CANCELADA', 'EXPIRED', 'EXPIRADO', 'EXPIRADA', 'VENCIDO', 'VENCIDA', 'ERROR'])
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
 
-  if (!MOUV_API_KEY) {
+  // La vigilancia de Finity no usa Mouv: sin esta excepción, faltar la llave
+  // de Mouv apagaba también la vigilancia, y el aviso de Finity se contestaba
+  // "bien" sin haberse revisado (Finity no reintenta).
+  if (!MOUV_API_KEY && !(await req.clone().json().then((b: any) => b?.action === 'vigilar_finity').catch(() => false))) {
     return json(200, { error: 'mouv_not_configured', message: 'El servicio de envíos no está disponible en este momento. Intenta más tarde o escríbenos a soporte@lincoin.me.' })
   }
 
@@ -2137,6 +2215,15 @@ serve(async (req: Request) => {
       if (dtx) {
         const drd = (dtx.raw_data ?? {}) as Record<string, any>
         if (dtx.status === 'Rechazado' || drd.refunded) return json(200, { ok: true, already: 'refunded' })
+        // Este aviso no trae firma: cualquiera que conozca la referencia de un
+        // envío (le llega al cliente en su correo) podía mandarlo varias veces
+        // por segundo, cada uno con una consulta a Mouv, y agotar el cupo de
+        // consultas (100/min). Sin cupo, la conciliación de cada 5 minutos no
+        // podía devolver la plata de los envíos rechazados de nadie. Una
+        // consulta por envío cada 30 s; lo que se salte lo toma la conciliación.
+        if ((await reclamarCandado(db, `mouv_wh:${transferId}`, 30, null, 'mouv_webhook')) === 'ocupado') {
+          return json(200, { ok: true, throttled: true, id: transferId })
+        }
         const st = await mouvTransferStatus(String(transferId))
         if (st.found && st.verdict === 'returned') {
           if (!(await filaFirmada(dtx, 'dispersion'))) { await aRevisionSinFirma(dtx, 'mouv_webhook'); return json(200, { ok: true, revision: 'sin_firma' }) }
@@ -2153,8 +2240,18 @@ serve(async (req: Request) => {
             // conciliación lo reintente. Antes se ignoraba el resultado: la fila
             // quedaba "reembolsada" sin que la plata volviera, y ninguna vuelta
             // posterior la miraba otra vez.
-            const acreditado = await creditBalanceAtomic(dtx.user_id, railCol, refund)
-            if (!acreditado) {
+            const credito = await creditBalanceAtomic3(dtx.user_id, railCol, refund)
+            if (credito === 'incierto') {
+              // Se perdió la respuesta: el saldo pudo haber vuelto. No se
+              // suelta el reclamo (reintentar podía devolver dos veces).
+              await db.from('transactions').update({
+                raw_data: { ...drd, refunded: true, refundCop: refund, providerState: st.state, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: new Date().toISOString(), source_event: 'mouv_webhook' },
+              }).eq('id', dtx.id).eq('status', 'Rechazado')
+              await logAudit(dtx.user_id, 'mouv.webhook.reembolso_incierto', { txId: dtx.id, refund, transferId })
+              await avisarAdminSinConfirmar({ id: dtx.id, user_id: dtx.user_id, amount: dtx.amount, currency: railCol, raw_data: drd })
+              return json(200, { ok: true, refunded: false, revision: true, id: transferId })
+            }
+            if (credito !== 'ok') {
               await db.from('transactions').update({
                 status: dtx.status,
                 raw_data: { ...drd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString(), providerState: st.state },
@@ -2187,8 +2284,11 @@ serve(async (req: Request) => {
       .eq('type', 'load').filter('raw_data->>reference', 'eq', ref).limit(2)
     const tx = (rows ?? [])[0] as any
     if (!tx) return json(200, { ok: true, matched: false, ref })
-    const paid = /APPROVED|APROBAD|COMPLETED|SUCCESS|PAID|CONFIRM|ACCEPTED|OK/.test(status)
-    const failed = /REJECT|DECLIN|FAILED|CANCEL|EXPIRED|ERROR/.test(status)
+    // Estados comparados ENTEROS. Con subcadenas, "UNPAID", "UNCONFIRMED",
+    // "NOT_APPROVED" o "TOKEN_EXPIRED" pasaban por pagados (PAID, CONFIRM,
+    // APPROVED, OK) y un recaudo sin pagar se podía acreditar.
+    const paid = ESTADO_RECAUDO_PAGADO.has(status)
+    const failed = ESTADO_RECAUDO_FALLIDO.has(status)
     if (tx.status === 'Completado' || tx.status === 'Rechazado') return json(200, { ok: true, already: tx.status })
     if (paid) {
       // SEGURIDAD: no se confía en el cuerpo del webhook (no está firmado y
@@ -2201,7 +2301,13 @@ serve(async (req: Request) => {
       let verified = false
       for (const p of [`/collections/${pref}`, `/payin/${pref}`, `/pse/${pref}`, `/collections/status/${pref}`]) {
         const chk = await mouvFetch(p, { method: 'GET' })
-        if (chk.ok) { const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').toUpperCase(); if (/APPROVED|APROBAD|COMPLETED|SUCCESS|PAID|CONFIRM|ACCEPTED|OK/.test(cs)) { verified = true; break } }
+        // La respuesta tiene que hablar de ESTE recaudo (como en
+        // mouvTransferStatus): una ruta adivinada que devuelve otra cosa con
+        // un "status" no confirma nada.
+        if (chk.ok && JSON.stringify(chk.data ?? '').includes(pref)) {
+          const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').trim().toUpperCase()
+          if (ESTADO_RECAUDO_PAGADO.has(cs)) { verified = true; break }
+        }
       }
       if (!verified) return json(200, { ok: true, unverified: true, ref, note: 'no se pudo verificar con Mouv — sin acreditar' })
       if (!(await filaFirmada(tx, 'load'))) { await aRevisionSinFirma(tx, 'payin_pse'); return json(200, { ok: true, revision: 'sin_firma', ref }) }
@@ -2229,7 +2335,10 @@ serve(async (req: Request) => {
       let confirmado = false
       for (const p of [`/collections/${pref}`, `/payin/${pref}`, `/pse/${pref}`, `/collections/status/${pref}`]) {
         const chk = await mouvFetch(p, { method: 'GET' })
-        if (chk.ok) { const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').toUpperCase(); if (/REJECT|DECLIN|FAILED|CANCEL|EXPIRED|ERROR/.test(cs)) { confirmado = true; break } }
+        if (chk.ok && JSON.stringify(chk.data ?? '').includes(pref)) {
+          const cs = String((chk.data as any)?.status ?? (chk.data as any)?.state ?? '').trim().toUpperCase()
+          if (ESTADO_RECAUDO_FALLIDO.has(cs)) { confirmado = true; break }
+        }
       }
       if (!confirmado) return json(200, { ok: true, unverified: true, ref, note: 'no se pudo verificar el fallo con Mouv — sin cambios' })
       await db.from('transactions').update({ status: 'Rechazado', raw_data: { ...rd, payinStatus: status, failedAt: new Date().toISOString(), verified: true } }).eq('id', tx.id).eq('status', 'Pendiente')
@@ -2541,7 +2650,9 @@ serve(async (req: Request) => {
     // Mouv no responde; el tope de arriba aplica igual.
     if (!rr.found && rr.caido) {
       const fr = await titularPorFinity(duenoBreb, rawKey, String((payload as any).keyType ?? '')).catch(() => null)
-      if (fr) return json(200, { ok: true, found: true, fuente: 'finity', matchedKey: fr.llave, fullName: fr.nombre, idValue: null, keyType: null, bank: fr.banco })
+      // 'respaldo' en vez del nombre del aliado: la respuesta va al cliente.
+      // (La pantalla de beneficiarios usa este valor para pedir el documento.)
+      if (fr) return json(200, { ok: true, found: true, fuente: 'respaldo', matchedKey: fr.llave, fullName: fr.nombre, idValue: null, keyType: null, bank: fr.banco })
     }
     if (!rr.found && rr.caido) return json(200, { ok: false, error: 'directorio_caido', message: 'El directorio Bre-B no responde en este momento. Intenta de nuevo en unos minutos o envía por ACH.' })
     if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.' })
@@ -2752,7 +2863,20 @@ serve(async (req: Request) => {
           const c = await confirmarRetiro(cli, ref)
           await logAudit(String(tx.user_id), 'coinsenda.reconcile.reconfirmar', { txId: tx.id, cuenta: cuentaTx, providerRef: ref, desenlace: c.desenlace, httpStatus: c.status || null })
           if (c.desenlace === 'salio' || c.desenlace === 'aceptado') estado = String(c.estado ?? 'confirmed')
-          else if (c.desenlace === 'no_salio' || c.desenlace === 'rechazado') estado = 'no_salio'
+          else if (c.desenlace === 'rechazado') estado = 'no_salio'
+          else if (c.desenlace === 'no_salio') {
+            // Un 4xx al reconfirmar NO prueba que el retiro no salió: entre la
+            // lectura de arriba y esta confirmación, la confirmación lenta del
+            // envío original pudo terminar, y Coinsenda contesta 4xx ("ya
+            // confirmado"). Reembolsar ahí devolvía plata que sí salió. Se
+            // vuelve a leer el retiro y solo se da por no salido si sigue
+            // pendiente o quedó rechazado.
+            const lr2 = await leerRetiro(cli, ref)
+            if (!lr2.ok || !lr2.existe) { out.push({ id: tx.id, result: 'sin_confirmar' }); continue }
+            const e2 = String(lr2.estado ?? '')
+            if (e2 === 'pending' || e2 === 'rejected') estado = 'no_salio'
+            else estado = e2
+          }
           else { out.push({ id: tx.id, result: 'sin_confirmar' }); continue }
         }
         const ahora = new Date().toISOString()
@@ -2786,8 +2910,17 @@ serve(async (req: Request) => {
             raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, reconciledAt: ahora, revisionManual: undefined, confirmarPendiente: undefined },
           }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null).select('id')
           if (!claimed?.length) { out.push({ id: tx.id, result: 'refund_already_claimed' }); continue }
-          const acreditado = await creditBalanceAtomic(String(tx.user_id), railCol, refund)
-          if (!acreditado) {
+          const credito = await creditBalanceAtomic3(String(tx.user_id), railCol, refund)
+          if (credito === 'incierto') {
+            // El saldo pudo haber vuelto (se perdió la respuesta): el reclamo
+            // se queda puesto para no devolver dos veces; lo revisa un admin.
+            await db.from('transactions').update({ raw_data: { ...rd, refunded: true, refundCop: refund, providerState: estado, providerError: motivo, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: ahora } })
+              .eq('id', tx.id).eq('status', 'Rechazado')
+            await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_incierto', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref })
+            await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: railCol, created_at: tx.created_at, raw_data: rd })
+            out.push({ id: tx.id, result: 'reembolso_incierto' }); continue
+          }
+          if (credito !== 'ok') {
             await db.from('transactions').update({ status: 'Procesando', raw_data: { ...rd, reembolsoPendiente: true, reembolsoFallidoAt: ahora, revisionManual: true } })
               .eq('id', tx.id).eq('status', 'Rechazado').filter('raw_data->>refunded', 'eq', 'true')
             await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_fallido', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref })
@@ -2878,6 +3011,22 @@ serve(async (req: Request) => {
       const k = String(((tx.raw_data ?? {}) as any).providerRef ?? '')
       if (k) reclamados.add(k)
     }
+    // Los envíos de UTILIDAD de Lincoin (lincoin_breb_enviar) salen de la
+    // misma billetera Bre-B de Mouv pero se registran en la caja, no en
+    // `transactions`. Sin sembrarlos, un envío de cliente sin referencia y uno
+    // de utilidad por el mismo monto podían emparejarse: el del cliente
+    // quedaba Completado sin haber salido, o se reembolsaba por el resultado
+    // ajeno. Si la caja no se puede leer, se sigue sin ellos (como antes).
+    try {
+      const { data: envCaja } = await db.from('caja_movimientos')
+        .select('envio').not('envio->>ref', 'is', null)
+        .gte('creado_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
+        .limit(500)
+      for (const f of (envCaja ?? []) as any[]) {
+        const k = String((f.envio ?? {}).ref ?? '')
+        if (k) reclamados.add(k)
+      }
+    } catch { /* sin caja: no se siembran */ }
 
     const out: any[] = []
     for (const tx of (rows ?? []) as any[]) {
@@ -3008,12 +3157,25 @@ serve(async (req: Request) => {
         // acreditarle a él la devolución de otro sería mover plata a la cuenta
         // equivocada.
         const duenio = String(tx.user_id)
-        const acreditado = await creditBalanceAtomic(duenio, railCol, refund)
-        // SI NO SE ACREDITO, SE SUELTA EL CLAIM.
+        const credito = await creditBalanceAtomic3(duenio, railCol, refund)
+        // INCIERTO: la respuesta se perdió y el saldo PUDO haber vuelto. Si se
+        // soltara el claim, la próxima corrida (cada 5 minutos) acreditaría
+        // otra vez y el cliente cobraría el reembolso dos veces. Se deja
+        // reclamado y en revisión manual.
+        if (credito === 'incierto') {
+          await db.from('transactions').update({
+            raw_data: { ...rd, refunded: true, refundCop: refund, providerState: st.state, providerError: motivoProveedor, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: new Date().toISOString() },
+          }).eq('id', tx.id).eq('status', 'Rechazado')
+          await logAudit(duenio, 'mouv.reconcile_breb.reembolso_incierto', { txId: tx.id, refund, providerRef: ref })
+          await avisarAdminSinConfirmar({ id: tx.id, user_id: duenio, amount: tx.amount, currency: railCol, raw_data: rd })
+          out.push({ id: tx.id, result: 'reembolso_incierto', refund })
+          continue
+        }
+        // SI NO SE ACREDITO (fallo seguro), SE SUELTA EL CLAIM.
         // El CAS ya marco la fila como reembolsada; dejarla asi con el saldo sin
         // tocar seria perder el reembolso para siempre, porque ninguna corrida
         // posterior vuelve a intentarlo. Se revierte y la proxima lo reintenta.
-        if (!acreditado) {
+        if (credito !== 'ok') {
           await db.from('transactions').update({
             status: tx.status,
             raw_data: { ...rd, reembolsoFallido: true, reembolsoFallidoAt: new Date().toISOString(), providerState: st.state },
@@ -3868,13 +4030,48 @@ serve(async (req: Request) => {
     if (txId == null) return json(400, { error: 'missing_tx' })
 
     const { data: tx } = await db.from('transactions')
-      .select('id, user_id, amount, currency, status, type, raw_data')
+      .select('id, user_id, amount, currency, status, type, raw_data, created_at')
       .eq('id', txId).maybeSingle()
     if (!tx) return json(404, { error: 'not_found' })
     if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion', type: tx.type })
 
     const rd = (tx.raw_data ?? {}) as Record<string, any>
     if (rd.refunded) return json(200, { ok: true, already: 'refunded', refundCop: rd.refundCop ?? null })
+
+    // ¿El proveedor dice que el envío LLEGÓ? Entonces no se devuelve. Este
+    // botón existe para cuando el proveedor rechazó y su estado no se pudo
+    // consultar; antes devolvía también un envío pagado y confirmado, y con
+    // solo la sección "Fallos" se le reintegraba a un cómplice un envío que
+    // sí había salido (plata doble). Si el proveedor no responde o no
+    // encuentra el envío, se sigue como antes: ese es justo el caso del botón.
+    {
+      const refFR = String(rd.providerRef ?? rd.coinsenda?.retiro ?? '').trim()
+      let completadoSegunProveedor = false
+      let estadoProv: string | null = null
+      if (refFR) {
+        try {
+          if (String(rd.proveedor ?? '') === 'coinsenda') {
+            const cFR = cuentaCoinsendaDe(rd.coinsenda?.cuenta ?? rd.cuentaBreb ?? rd.cuentaAch)
+            const lrFR = await leerRetiro(new ClienteCoinsenda(db, await configCoinsenda(db, cFR), 20_000), refFR)
+            if (lrFR.ok && lrFR.existe) { estadoProv = String(lrFR.estado ?? ''); completadoSegunProveedor = estadoProv === 'accepted' }
+          } else if ((String(tx.currency) === 'COP_ACH' && String(rd.proveedor ?? '') !== 'coinsenda') || rd.feeProvider === 'finity' || rd.proveedor === 'finity' || /^mvm-/i.test(refFR)) {
+            const stF = await finityCall('withdrawal_status', String(tx.user_id), { id: refFR })
+            const vF = stF?.ok === true ? veredictoFinity(stF) : null
+            if (vF) { estadoProv = vF.estado; completadoSegunProveedor = vF.veredicto === 'completado' }
+          } else {
+            const stM = await mouvTransferStatus(refFR, (tx as any).created_at ?? null)
+            if (stM.found) { estadoProv = stM.state; completadoSegunProveedor = stM.verdict === 'completed' }
+          }
+        } catch { /* sin respuesta del proveedor: se decide como antes */ }
+      }
+      if (completadoSegunProveedor) {
+        await logAudit(tx.user_id, 'mouv.force_return.denegado_completado', { txId: tx.id, admin: caller.userId, providerRef: refFR, estadoProveedor: estadoProv })
+        return json(409, {
+          error: 'proveedor_completado',
+          message: `El proveedor confirma que este envío llegó (${estadoProv}). No se puede devolver desde aquí: si de verdad no llegó, hay que reclamarlo al proveedor.`,
+        })
+      }
+    }
 
     // La comisión de la fila con el mismo tope que el resto de reembolsos: una
     // fila con feeCop inflado no devuelve más de lo que se cobró de verdad.
@@ -3919,8 +4116,16 @@ serve(async (req: Request) => {
     }
     if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
 
-    const acreditadoFR = await creditBalanceAtomic(tx.user_id, railCol, refund)
-    if (!acreditadoFR) {
+    const creditoFR = await creditBalanceAtomic3(tx.user_id, railCol, refund)
+    if (creditoFR === 'incierto') {
+      // No se sabe si el saldo volvió: si se soltara el reclamo, un segundo
+      // clic devolvería otra vez. Queda reclamado y en revisión.
+      await db.from('transactions').update({ raw_data: { ...reclamoFR.raw_data, revisionManual: true, reembolsoIncierto: true, reembolsoInciertoAt: new Date().toISOString() } })
+        .eq('id', tx.id).eq('status', 'Rechazado')
+      await logAudit(tx.user_id, 'mouv.force_return.reembolso_incierto', { txId: tx.id, refund, admin: caller.userId })
+      return json(502, { error: 'reembolso_incierto', message: 'No se pudo confirmar si el reembolso se aplicó. Revisa el saldo del cliente antes de hacer nada más: la devolución quedó marcada para revisión.' })
+    }
+    if (creditoFR !== 'ok') {
       // Se suelta el claim: si quedara marcada sin acreditar, el boton no se
       // podria volver a usar y el cliente perderia el reembolso.
       await db.from('transactions').update({
@@ -4063,7 +4268,9 @@ serve(async (req: Request) => {
     // Todas fijas por envío, sin componente variable: la de la cuenta, o la
     // tarifa fija por riel si el dueño la activó (tarifaEnvio).
     const fee = await tarifaEnvio(rail, amount)
-    return json(200, { ok: true, rail, provider: rail === 'ACH' ? 'finity' : 'lincoin', feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
+    // Sin el nombre del proveedor: esta respuesta la lee el navegador del
+    // cliente, y el cliente nunca ve con qué aliado operamos.
+    return json(200, { ok: true, rail, feeCop: fee, fixedCop: fee, variableCop: 0, ivaCop: 0, totalCop: amount + fee })
   }
 
   // ── dispersión BREB (Mouv) / ACH (Finity) ──
@@ -4107,6 +4314,17 @@ serve(async (req: Request) => {
     // la cuenta de otro con solo la llave pública + el id de la víctima.
     const userId = requireOwner(caller, payload)
     if (!userId) return json(403, { error: 'forbidden', message: 'Esta operación requiere una sesión válida. Vuelve a iniciar sesión.' })
+    // NADIE ENVÍA DESDE LA CUENTA DE OTRO. Con rol admin, requireOwner tomaba
+    // el user_id del cuerpo, y más abajo el código de dos pasos del titular se
+    // saltaba "por ser soporte": con la sesión del dueño (robada, o solo su
+    // contraseña si no tenía 2FA) se mandaba plata de cualquier cliente a una
+    // llave propia, hasta el tope por envío y sin límite de repeticiones. El
+    // panel no usa esta acción sobre clientes, y la llave de servicio tampoco
+    // (lo interno de Lincoin va por lincoin_breb_enviar).
+    if (caller.servicio || !caller.viaJwt || String(userId) !== String(caller.userId ?? '')) {
+      await logAudit(caller.userId ?? null, 'mouv.payout_ajeno_denegado', { action, objetivo: userId, admin: caller.admin, servicio: !!caller.servicio })
+      return json(403, { error: 'forbidden', message: 'Los envíos salen solo con el código del titular de la cuenta.' })
+    }
     // Las Cuentas 3 y 4 solo salen si el dueño las activó en Admin → Coinsenda.
     if (cuentaCs && !(await cuentaCoinsendaActiva(cuentaCs, rail === 'BREB' ? 'breb' : 'ach'))) {
       return json(403, { error: `cuenta${cuentaCs}_inactiva`, message: `${rail === 'BREB' ? 'Bre-B' : 'ACH'} · ${nombreCuenta(cuentaCs)} todavía no está disponible. Envíalo por otra cuenta.` })
@@ -4157,12 +4375,14 @@ serve(async (req: Request) => {
     // y la plata salía sin segundo factor. Activar el 2FA por primera vez
     // pide además un código al correo (admin-data mfa_set), así que quien
     // solo tiene la contraseña tampoco puede ponerse uno propio.
+    // Sin excepción por rol: desde arriba, la cuenta que envía es siempre la
+    // de quien llama, y su código se pide igual que a cualquier titular.
     const mfaActivo = seg.mfa === true || seg.mfa === 'true'
-    if (!caller.admin && !mfaActivo) {
+    if (!mfaActivo) {
       await logAudit(userId, 'mouv.envio_sin_2fa', { action })
       return json(403, { error: 'mfa_no_activo', message: 'Para enviar dinero activa primero la verificación en dos pasos (2FA) en Seguridad.' })
     }
-    if (!caller.admin && mfaActivo) {
+    if (mfaActivo) {
       // 2FA activo pero el secreto no está: puede ser una escritura de otro
       // proceso a medio camino. Se relee una vez antes de concluir nada.
       if (!seg.enc && !seg.plano) seg = (await leerSeguridad()) ?? seg
@@ -4188,9 +4408,46 @@ serve(async (req: Request) => {
           return json(429, { error: 'mfa_bloqueado', message: 'Demasiados códigos incorrectos. Espera 15 minutos antes de volver a intentar el envío.' })
         }
       } catch { /* si no se puede contar, sigue la verificación normal */ }
-      if (!(await verifyTOTPServer(mfaSecret, otp))) {
+      const counterOtp = await totpCounterServer(mfaSecret, otp)
+      if (counterOtp < 0) {
         await logAudit(userId, 'mouv.mfa_codigo_invalido', { action })
+        // También en el registro común de fallos del 2FA (el que cuenta
+        // admin-data): así los intentos por esta vía y por las demás se ven
+        // juntos y no se puede probar códigos repartiéndolos entre funciones.
+        await logAudit(userId, 'auth.mfa_failed', { userId, motivo: 'código incorrecto', tipo: 'app', origen: 'mouv-proxy' })
         return json(403, { error: 'mfa_required', message: 'El código de dos pasos no es válido o ya venció. Escribe el código nuevo de tu app y vuelve a intentar.' })
+      }
+      // UN CÓDIGO VALE UNA VEZ. Antes cualquier código dentro de su ventana
+      // (±2 pasos, unos 2,5 minutos) servía de nuevo: uno capturado —o el que
+      // se acaba de usar para entrar— alcanzaba para mandar plata. Se exige un
+      // contador mayor al último aceptado (el mismo que lleva admin-data) y un
+      // candado por código para dos pedidos simultáneos.
+      const ultimo = await ultimoContadorTotp(userId)
+      // Excepción, la misma de admin-data: quien acaba de ENTRAR con un código
+      // y enseguida envía ve el mismo código en su app. Si ESTA sesión quedó
+      // verificada con ese mismo código hace menos de 5 minutos, vale. Desde
+      // otra sesión (un código capturado) no.
+      const mismaSesionVerificada = async (): Promise<boolean> => {
+        const sid = sessionIdOf(req)
+        if (!sid || ultimo === null || counterOtp !== ultimo) return false
+        try {
+          const { data } = await db.from('users').select('s:raw_data->mfaSessions').eq('id', userId).maybeSingle()
+          const ses: any[] = Array.isArray((data as any)?.s) ? (data as any).s : []
+          const hit = ses.find((x: any) => x?.sid === sid && (x?.stage ?? 'full') === 'full')
+          return !!hit && Date.now() - new Date(hit.at).getTime() < 5 * 60_000
+        } catch { return false }
+      }
+      if (ultimo !== null && counterOtp <= ultimo) {
+        if (!(await mismaSesionVerificada())) {
+          await logAudit(userId, 'mouv.mfa_codigo_reusado', { action })
+          return json(403, { error: 'mfa_required', message: 'Ese código ya se usó. Espera el siguiente que muestre tu app y vuelve a intentar.' })
+        }
+      } else {
+        if ((await reclamarCandado(db, `totp:${userId}:${counterOtp}`, 600, userId, 'mfa_totp')) === 'ocupado') {
+          await logAudit(userId, 'mouv.mfa_codigo_reusado', { action, simultaneo: true })
+          return json(403, { error: 'mfa_required', message: 'Ese código ya se usó. Espera el siguiente que muestre tu app y vuelve a intentar.' })
+        }
+        await guardarContadorTotp(userId, counterOtp)
       }
     }
 
@@ -4270,6 +4527,45 @@ serve(async (req: Request) => {
           })
         }
         const hit = cands[0]
+        // ── ACH: SOLO A UN BENEFICIARIO INSCRITO, CON SUS DATOS ──────────
+        // Antes, si la cuenta no coincidía con ningún contacto, el documento,
+        // el tipo, el banco y el id de Finity salían del cuerpo. Así se
+        // inscribía a B (limpio en AML), se mandaba la cuenta de X con el
+        // documento de B, y el control AML y el cupo se evaluaban sobre B
+        // mientras la plata le llegaba a X — en las Cuentas 3 y 4 sin ningún
+        // otro control. Ahora la cuenta tiene que ser de un contacto inscrito,
+        // y todo lo demás del destino sale de ESE contacto, nunca del cuerpo
+        // (incluido el id de la cuenta en Finity: uno ajeno pagaba a otra
+        // cuenta ya inscrita en la bolsa compartida).
+        if (rail === 'ACH') {
+          if (!hit) {
+            await logAudit(userId, 'mouv.ach_destino_no_inscrito', { rail, cuenta: soloDig((payload.recipient as any)?.accountNumber).slice(-4) })
+            return json(409, {
+              error: 'beneficiario_no_inscrito',
+              message: 'Solo puedes enviar por ACH a un beneficiario inscrito. Inscríbelo en Beneficiarios y vuelve a intentar.',
+            })
+          }
+          if (!soloDig(hit.docNumber)) {
+            await logAudit(userId, 'mouv.ach_destino_sin_documento', { rail, beneficiario: hit?.name ?? null })
+            return json(409, {
+              error: 'beneficiario_sin_documento',
+              message: 'Ese beneficiario no tiene documento inscrito. Edítalo, agrega su documento y vuelve a intentar.',
+            })
+          }
+          // El documento que vino en el cuerpo se compara abajo con el
+          // inscrito (destinatario_incoherente); desde aquí, manda el inscrito.
+          const rec = ((payload.recipient && typeof payload.recipient === 'object') ? payload.recipient : {}) as Record<string, any>
+          payload.recipient = {
+            ...rec,
+            accountNumber: String(hit.accountNumber ?? rec.accountNumber ?? ''),
+            documentNumber: soloDig(hit.docNumber),
+            documentType: String(hit.docType ?? ''),
+            holderName: String(hit.name ?? rec.holderName ?? ''),
+            ...(hit.bank ? { bankCode: String(hit.bank) } : {}),
+            ...(hit.accountType ? { accountType: String(hit.accountType) === 'checking' ? 'corriente' : 'ahorros' } : {}),
+            finityId: hit.finityId ? String(hit.finityId) : null,
+          }
+        }
         if (hit?.name) nombresTitular.push(String(hit.name))
         if (hit) tipoBeneficiario = (String(hit.kind ?? '') === 'empresa' || /^NIT$/i.test(String(hit.docType ?? ''))) ? 'empresa' : 'persona'
         const docInscrito = soloDig(hit?.docNumber)
@@ -5016,7 +5312,7 @@ serve(async (req: Request) => {
       await asentarTx('Fallido', {
         ...prettyBase, ...feeDetail, ...delProveedor,
         ...(fb.providerRef ? { providerRef: fb.providerRef } : {}),
-        error: fb.body ?? 'finity_breb_failed', errorMessage: fb.mensaje ?? provMsgF ?? `paso ${fb.paso ?? '?'} · HTTP ${fb.httpStatus ?? 0}`,
+        error: fb.body ?? 'finity_breb_failed', errorMessage: sinAliados(fb.mensaje ?? provMsgF ?? `paso ${fb.paso ?? '?'} · HTTP ${fb.httpStatus ?? 0}`),
         pasoFallido: fb.paso ?? null, httpStatus: fb.httpStatus ?? null,
         ...marcasReintegro(reintF.ok), failedAt: ahora,
       })
@@ -5252,7 +5548,7 @@ serve(async (req: Request) => {
         })
       }
       // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
-      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: provMsg ?? techHint ?? null, bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, ...marcasReintegro(reintM.ok), failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
+      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: sinAliados(provMsg ?? techHint ?? null), bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, ...marcasReintegro(reintM.ok), failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
       // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
       // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
       await soltarCandados()
@@ -5340,7 +5636,7 @@ serve(async (req: Request) => {
     const finMsg = motivoParaCliente(finMsgRaw)
     // errorMessage: el motivo legible si lo hay (lo ven el comprobante y el
     // Panel de Fallos); si no, el detalle técnico. El cuerpo entero queda en `error`.
-    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: finMsg ?? finMsgRaw ?? detail ?? null, pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok), failedAt: new Date().toISOString() })
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: sinAliados(finMsg ?? finMsgRaw ?? detail ?? null), pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok), failedAt: new Date().toISOString() })
     if (!reintA.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { ...prettyBase, reembolsoPendiente: true } })
     await logAudit(userId, `finity.${action}.fail`, { amount, paso: finPaso || null, error: JSON.stringify(fin.error ?? {}).slice(0, 400) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"

@@ -70,11 +70,14 @@ function base32Decode(s: string): Uint8Array {
   return new Uint8Array(out)
 }
 
-async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+// Devuelve el CONTADOR del paso que coincidió (o -1). Hace falta el contador,
+// no un sí/no, para poder consumir el código: sin eso un código ya usado
+// seguía sirviendo durante toda su ventana.
+async function verifyTOTPCounter(secret: string, token: string): Promise<number> {
   const code = String(token ?? '').replace(/\D/g, '')
-  if (code.length !== 6) return false
+  if (code.length !== 6) return -1
   const key = base32Decode(secret)
-  if (!key.length) return false
+  if (!key.length) return -1
   const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
   const step = 30, now = Math.floor(Date.now() / 1000)
   for (let w = -2; w <= 2; w++) {
@@ -84,22 +87,117 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
     const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, buf))
     const offset = hmac[hmac.length - 1] & 0x0f
     const bin = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3]
-    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return counter
   }
-  return false
+  return -1
+}
+async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+  return (await verifyTOTPCounter(secret, token)) >= 0
 }
 
-async function require2FA(userId: string, otp: unknown): Promise<string | null> {
+// ── LÍMITE DE INTENTOS DEL CÓDIGO DE LA APP ────────────────────────────────
+// Antes este archivo verificaba el código sin contar nada: con solo la
+// contraseña de un cliente se podían probar códigos en bucle contra `my_send`
+// (un código malo respondía 403; uno bueno pasaba a la siguiente etapa y
+// fallaba distinto, así que se notaba cuál sirvió). Con 5 códigos válidos a
+// la vez sobre un millón, eran unas horas, y ese mismo código abría después
+// los envíos en pesos. Ahora cada fallo queda en audit_log con el MISMO
+// formato que admin-data ('auth.mfa_failed', tipo 'app'): el conteo es uno
+// solo para toda la app, y a los 5 fallos en 15 minutos no se verifica más.
+const VENTANA_FALLOS_MIN = 15
+const TOPE_FALLOS_APP = 5
+async function fallosAppRecientes(userId: string): Promise<{ n: number; masViejo: number | null }> {
+  const desdeIso = new Date(Date.now() - VENTANA_FALLOS_MIN * 60_000).toISOString()
+  let desde = desdeIso
+  // Como `fallosRecientes` de admin-data: un acierto deja la marca
+  // 'auth.mfa_reset' y solo cuentan los fallos posteriores.
+  try {
+    const { data: okRow } = await db.from('audit_log').select('created_at')
+      .eq('action', 'auth.mfa_reset').contains('metadata', { userId }).gte('created_at', desdeIso)
+      .order('created_at', { ascending: false }).limit(1)
+    const ult = String(((okRow ?? []) as any[])[0]?.created_at ?? '')
+    if (ult && ult > desde) desde = ult
+  } catch { /* sin marca: desde el inicio de la ventana */ }
+  const { data } = await db.from('audit_log').select('metadata, created_at')
+    .eq('action', 'auth.mfa_failed').contains('metadata', { userId }).gt('created_at', desde)
+    .order('created_at', { ascending: false }).limit(100)
+  // Igual que el límite del código de la app en admin-data: cuentan todos los
+  // fallos salvo los de códigos de respaldo (esos tienen su propio tope).
+  const mios = ((data ?? []) as any[]).filter(r => String(r?.metadata?.tipo ?? '') !== 'respaldo')
+  const masViejo = mios.length ? Math.min(...mios.map(r => new Date(r.created_at).getTime())) : null
+  return { n: mios.length, masViejo }
+}
+async function anotarFalloApp(userId: string, motivo: string) {
+  try {
+    await db.from('audit_log').insert({ user_id: userId, action: 'auth.mfa_failed', metadata: { userId, motivo, tipo: 'app', origen: 'gasfree', at: new Date().toISOString() } })
+  } catch { /* el conteo nunca rompe la verificación */ }
+}
+
+// El id de la sesión viaja firmado dentro del JWT (lo mismo que usa admin-data
+// para saber qué sesión verificó el 2FA).
+function sessionIdOf(req?: Request): string | null {
+  if (!req) return null
+  try {
+    const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+    const part = jwt.split('.')[1]
+    if (!part) return null
+    const pad = part.replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(pad + '='.repeat((4 - pad.length % 4) % 4)))
+    return payload?.session_id ?? null
+  } catch { return null }
+}
+
+// Verifica el código de la app de UNA cuenta: límite de intentos, verificación
+// y CONSUMO del código (mfaLastCounter + candado `totp:<uid>:<contador>`, los
+// mismos que admin-data). Devuelve null si pasó, o el mensaje para el usuario.
+async function verificarCodigoApp(userId: string, raw: Record<string, any>, otp: unknown, req: Request | undefined, msgInvalido: string): Promise<string | null> {
+  const f = await fallosAppRecientes(userId)
+  if (f.n >= TOPE_FALLOS_APP) {
+    const faltan = f.masViejo ? Math.max(1, Math.ceil((f.masViejo + VENTANA_FALLOS_MIN * 60_000 - Date.now()) / 60_000)) : VENTANA_FALLOS_MIN
+    return `Demasiados códigos incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.`
+  }
+  // FALLA CERRADO: si el secreto no se puede obtener (descifrado falla / falta
+  // la llave), se bloquea — no se pasa sin 2FA. Eso no es un intento del
+  // usuario, así que no cuenta como fallo.
+  let secret = ''
+  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+  if (!secret) return msgInvalido
+  const counter = await verifyTOTPCounter(secret, String(otp ?? ''))
+  if (counter < 0) { await anotarFalloApp(userId, 'código incorrecto'); return msgInvalido }
+  // Un código que ya se usó solo vale otra vez si es la MISMA sesión que
+  // acaba de verificarse con él (quien entra con un código y enseguida envía
+  // ve el mismo código en su app). Desde otra sesión es un código capturado.
+  const sid = sessionIdOf(req)
+  const mismaSesionYaVerificada = () => {
+    if (!sid) return false
+    const ses: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const hit = ses.find((x: any) => x?.sid === sid && (x?.stage ?? 'full') === 'full')
+    return !!hit && Number(raw.mfaLastCounter ?? -1) === counter && Date.now() - new Date(hit.at).getTime() < 5 * 60_000
+  }
+  const lastCounter = Number(raw.mfaLastCounter ?? -1)
+  if (Number.isFinite(lastCounter) && counter <= lastCounter) {
+    if (counter === lastCounter && mismaSesionYaVerificada()) return null
+    await anotarFalloApp(userId, 'código ya utilizado desde otra sesión')
+    return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+  }
+  // Dos pedidos con el mismo código a la vez leían el contador viejo y
+  // pasaban los dos: el candado (llave primaria en la base) deja uno.
+  if ((await reclamarCandado(db, `totp:${userId}:${counter}`, 600, userId, 'mfa_totp')) === 'ocupado') {
+    if (mismaSesionYaVerificada()) return null
+    await anotarFalloApp(userId, 'código ya utilizado desde otra sesión (simultáneo)')
+    return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+  }
+  await mergeRaw(db, userId, { mfaLastCounter: counter })
+  // Un acierto reinicia el conteo (marca, no borrado: como admin-data).
+  try { await db.from('audit_log').insert({ user_id: userId, action: 'auth.mfa_reset', metadata: { userId, origen: 'gasfree', at: new Date().toISOString() } }) } catch { /* */ }
+  return null
+}
+
+async function require2FA(userId: string, otp: unknown, req?: Request): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
   if (raw.mfaEnabled) {
-    // FALLA CERRADO: si el 2FA está activo y el secreto no se puede obtener
-    // (descifrado falla / falta la llave), se bloquea — no se pasa sin 2FA.
-    let secret = ''
-    try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
-    if (!secret || !(await verifyTOTPServer(secret, String(otp ?? '')))) {
-      return 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.'
-    }
+    return await verificarCodigoApp(userId, raw, otp, req, 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.')
   }
   return null
 }
@@ -109,18 +207,13 @@ async function require2FA(userId: string, otp: unknown): Promise<string | null> 
 // eso la contraseña de una cuenta sin 2FA bastaba para mandar sus USDT a
 // cualquier dirección — un envío que en la red no se devuelve. La app ya pedía
 // el 2FA para enviar; ahora también el servidor.
-async function require2FAEnvio(userId: string, otp: unknown): Promise<string | null> {
+async function require2FAEnvio(userId: string, otp: unknown, req?: Request): Promise<string | null> {
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
   if (raw.mfaEnabled !== true && raw.mfaEnabled !== 'true') {
     return 'Para enviar dinero activa primero la verificación en dos pasos (2FA) en Seguridad.'
   }
-  let secret = ''
-  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
-  if (!secret || !(await verifyTOTPServer(secret, String(otp ?? '')))) {
-    return 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.'
-  }
-  return null
+  return await verificarCodigoApp(userId, raw, otp, req, 'No pudimos verificar tu código de dos pasos. Vuelve a intentar el envío.')
 }
 
 // ── Ajuste de la tasa (los "puntos" que Lincoin le baja al proveedor) ──────
@@ -208,19 +301,16 @@ async function assertNotBlocked(userId: string): Promise<string | null> {
 // válido. Si la cuenta no tiene 2FA, NO deja pasar: obliga a activarlo primero.
 // (El require2FA normal deja pasar a quien no tiene 2FA — bien para operaciones
 // del cliente, pero PELIGROSO para cambiar un proveedor.)
-async function require2FAStrict(userId: string | null, otp: unknown): Promise<string | null> {
+async function require2FAStrict(userId: string | null, otp: unknown, req?: Request): Promise<string | null> {
   if (!userId) return 'Sesión de administrador no válida. Vuelve a iniciar sesión para hacer este cambio.'
   const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
   const raw = ((data as any)?.raw_data ?? {}) as Record<string, any>
   if (!raw.mfaEnabled) {
     return 'Para cambiar la dirección de un proveedor DEBES activar primero el código de dos pasos (2FA) en tu cuenta. Ve a Seguridad → activar 2FA y vuelve a intentarlo. (Sin 2FA, cualquiera con acceso al panel podría desviar el dinero.)'
   }
-  let secret = ''
-  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
-  if (!secret || !(await verifyTOTPServer(secret, String(otp ?? '')))) {
-    return 'Código de dos pasos (2FA) inválido o vencido. Ingresa el código actual de tu app de autenticación.'
-  }
-  return null
+  // Mismo límite de intentos y mismo consumo del código que el resto: el del
+  // admin es justo el que mueve la tesorería.
+  return await verificarCodigoApp(userId, raw, otp, req, 'Código de dos pasos (2FA) inválido o vencido. Ingresa el código actual de tu app de autenticación.')
 }
 
 const API_KEY    = (Deno.env.get('GASFREE_API_KEY') ?? '').trim()
@@ -593,7 +683,9 @@ async function latestIncomingTrc20(address: string, contract: string, decimals: 
 // cada depósito por su monto EXACTO y una sola vez, por txId).
 async function incomingTransfersTrc20(address: string, contract: string, decimals: number, limit = 60): Promise<{ from: string; txId: string; amount: number; ts: number }[]> {
   try {
-    const url = `${CFG.tronHost}/v1/accounts/${address}/transactions/trc20?only_to=true&limit=${limit}&order_by=block_timestamp,desc&contract_address=${contract}`
+    // Solo transferencias ya confirmadas en la cadena: una sin confirmar
+    // todavía se puede caer.
+    const url = `${CFG.tronHost}/v1/accounts/${address}/transactions/trc20?only_to=true&only_confirmed=true&limit=${limit}&order_by=block_timestamp,desc&contract_address=${contract}`
     const r = await fetch(url, { headers: tgHeaders() })
     const d = await r.json()
     const list: any[] = Array.isArray(d?.data) ? d.data : []
@@ -635,7 +727,13 @@ async function locate(userId: string) {
 async function gfConfig() {
   if (!API_KEY || !API_SECRET) throw new Error('Configura GASFREE_API_KEY y GASFREE_API_SECRET en Supabase Secrets')
   const [tokens, providers] = await Promise.all([gfGet('/api/v1/config/token/all'), gfGet('/api/v1/config/provider/all')])
-  const token = (tokens?.data?.tokens ?? []).find((t: any) => t.symbol === 'USDT' && t.supported) ?? (tokens?.data?.tokens ?? [])[0]
+  // Primero el contrato de USDT que conocemos para esta red; si GasFree lo
+  // reporta con otro formato, el USDT que marque como soportado. NUNCA "el
+  // primero de la lista": si GasFree cambiara su configuración, los saldos y
+  // movimientos se leerían de otro token y se tratarían como USDT 1:1.
+  const lista: any[] = tokens?.data?.tokens ?? []
+  const token = lista.find((t: any) => t.supported && String(t.tokenAddress ?? '') === NET_USDT[NET])
+    ?? lista.find((t: any) => t.symbol === 'USDT' && t.supported)
   const provider = (providers?.data?.providers ?? [])[0]
   if (!token) throw new Error(`GasFree no devolvió el token USDT (respuesta ${tokens?.code}: ${tokens?.message ?? ''})`)
   if (!provider) throw new Error(`GasFree no devolvió un proveedor (respuesta ${providers?.code}: ${providers?.message ?? ''})`)
@@ -1033,7 +1131,7 @@ async function userIndex(userId: string): Promise<number> {
   // estar en otra fila del mismo correo.
   let rows: any[] = primary ? [primary] : []
   if (email) {
-    const { data: sibs } = await db.from('users').select('id, email, raw_data').ilike('email', email)
+    const { data: sibs } = await db.from('users').select('id, email, raw_data').ilike('email', email.replace(/[%_\\]/g, '\\$&'))
     // Un "hermano" cuenta solo si su correo VERIFICADO (Auth) es el mismo:
     // cualquiera puede escribir otro correo en su propia fila de users.
     const validos: any[] = []
@@ -2173,14 +2271,20 @@ async function myConvertSettle(
 // SALDO DEL RIEL ACH (COP_ACH): la Mesa OTC hoy liquida por Finity/ACH y el
 // cliente dispone de ese saldo desde su billetera ACH. Idempotente.
 // Crédito/reintegro ATÓMICO (bloqueo de fila vía adjust_balances) — evita la
-// carrera de duplicación en las conversiones (pentest #3). Fallback a read-write.
+// carrera de duplicación en las conversiones (pentest #3).
+//
+// SIN respaldo de "leer y reescribir": antes, ante CUALQUIER error de la RPC,
+// se leía el objeto de saldos y se escribía entero. Un error de transporte
+// después de que la RPC sí aplicó (502, corte) acreditaba dos veces, y la
+// reescritura pisaba lo que otra operación hubiera movido entretanto en otras
+// columnas. Si la RPC falla, se anota para revisión y se avisa a quien llama.
 async function creditBalanceAtomic(userId: string, col: string, delta: number): Promise<void> {
-  const { error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
-  if (!error) return
-  const { data: u } = await db.from('users').select('balances').eq('id', userId).single()
-  const bals: Record<string, number> = (u?.balances as any) ?? {}
-  const nb = parseFloat((Number(bals[col] ?? 0) + delta).toFixed(2))
-  await db.from('users').update({ balances: { ...bals, [col]: nb } }).eq('id', userId)
+  if (!Number.isFinite(delta)) throw new Error('Monto inválido para acreditar.')
+  const { data, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
+  if (!error && !(data as any)?.error) return
+  const motivo = String(error?.message ?? (data as any)?.error ?? 'sin respuesta').slice(0, 200)
+  try { await db.from('audit_log').insert({ user_id: userId, action: 'gasfree.credito_fallido', metadata: { userId, col, delta, motivo, revisionManual: true, at: new Date().toISOString() } }) } catch { /* */ }
+  throw new Error(`No pudimos acreditar ${delta} ${col}: quedó para revisión manual.`)
 }
 
 // ── FIRMA DEL SERVIDOR EN LAS CONVERSIONES ─────────────────────────
@@ -2214,18 +2318,17 @@ async function conversionLegitima(tx: any): Promise<boolean> {
 // Sin esto el mismo depósito se gastaba dos veces: por dentro (convertir el
 // saldo USD) y on-chain (enviar o convertir el USDT).
 async function debitarEspejoUsd(userId: string, total: number): Promise<void> {
+  if (!Number.isFinite(total)) throw new Error('Monto inválido.')
   if (!(total > 0)) return
   const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { USD: -total } })
   if (!adjErr) {
     if ((adj as any)?.error) throw new Error(`Tu saldo en dólares no cubre esta operación (se necesitan ${total.toFixed(2)} USD, comisión de red incluida). Si crees que es un error, escríbenos a soporte.`)
     return
   }
-  // Sin la RPC desplegada: leer, comprobar y escribir (no atómico, como antes).
-  const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-  const bals = (uf?.balances as Record<string, number>) ?? {}
-  const usd = Number(bals.USD ?? 0)
-  if (usd + 1e-9 < total) throw new Error(`Tu saldo en dólares no cubre esta operación (disponible ${usd.toFixed(2)}, se necesitan ${total.toFixed(2)} USD).`)
-  await db.from('users').update({ balances: { ...bals, USD: parseFloat((usd - total).toFixed(2)) } }).eq('id', userId)
+  // Sin respaldo de "leer, comprobar y escribir": no era atómico (dos envíos a
+  // la vez pasaban los dos el chequeo) y reescribía el objeto de saldos entero.
+  // Si la RPC no responde, no se descuenta nada y la operación no sigue.
+  throw new Error('No pudimos reservar tu saldo para esta operación. Intenta de nuevo en un momento.')
 }
 
 // Comisión de la conversión USDT → COP: la del cliente (otcConfig, la escribe
@@ -2798,7 +2901,7 @@ async function myVerifyDeposit(userId: string) {
 // su propia wallet GasFree (o, peor, pagarse con USDT de otro cliente).
 // Se deja para pagos que sí deben salir de tesorería (ej. proveedores).
 async function myWalletWithdrawal(userId: string, toAddress: string, amount: number) {
-  if (!(amount > 0)) throw new Error('Monto inválido')
+  if (!Number.isFinite(amount) || !(amount > 0)) throw new Error('Monto inválido')
   // NO lleva lista blanca a propósito: aquí el CLIENTE saca SU propio USDT a la
   // wallet que quiera. La tesorería solo hace de custodio — el débito atómico de
   // abajo (adjust_balances con bloqueo de fila) impide que retire más de lo que
@@ -2825,12 +2928,9 @@ async function myWalletWithdrawal(userId: string, toAddress: string, amount: num
   if (!adjErr) {
     if ((adj as any)?.error) throw new Error(`Saldo USD insuficiente (se necesitan ${total.toFixed(2)} = ${amount} + comisión GasFree ${feeQuoted.toFixed(2)}).`)
   } else {
-    // Fallback si la RPC no está desplegada (no atómico, preserva la función).
-    const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
-    const bals = (uf?.balances as Record<string, number>) ?? {}
-    const usd = Number(bals.USD ?? 0)
-    if (usd < total) throw new Error(`Saldo USD insuficiente (disponible ${usd.toFixed(2)}, se necesitan ${total.toFixed(2)} = ${amount} + comisión GasFree ${feeQuoted.toFixed(2)})`)
-    await db.from('users').update({ balances: { ...bals, USD: parseFloat((usd - total).toFixed(2)) } }).eq('id', userId)
+    // Sin respaldo de "leer y reescribir" (no atómico, pisaba otras columnas):
+    // si la RPC falla no se descuenta ni se envía nada.
+    throw new Error('No pudimos reservar el saldo para este retiro. Intenta de nuevo en un momento.')
   }
   try {
     // 2) Enviar on-chain vía GasFree desde la recaudadora
@@ -3131,6 +3231,17 @@ Deno.serve(async (req) => {
     }
     const body = await req.json()
     const { action, userId, toAddress, amount } = body
+    // Un monto que no es un número finito (Infinity, NaN, "1e400") viaja como
+    // null en el JSON hacia adjust_balances, y un delta nulo dejaba el objeto
+    // de saldos entero en NULL: el usuario perdía COP, COP_ACH y todo lo demás.
+    // `!amount` no lo frena (Infinity es "verdadero"). Se corta aquí, para toda
+    // acción que traiga monto.
+    for (const campo of ['amount', 'copAmount'] as const) {
+      const v = (body as any)?.[campo]
+      if (v === undefined || v === null || v === '') continue
+      const n = Number(v)
+      if (!Number.isFinite(n) || n < 0) return err(`Monto inválido (${campo})`, 400)
+    }
 
     // GUARDIA DE BLOQUEO / LISTA NEGRA — server-side. Ninguna cuenta bloqueada
     // o en lista negra puede mover dinero, aunque llame la API directo (el
@@ -3237,7 +3348,7 @@ Deno.serve(async (req) => {
     if (action === 'my_send') {
       if (!userId || !toAddress || !amount) return err('Faltan userId, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      const mfaErr = await require2FAEnvio(userId, body.otp)
+      const mfaErr = await require2FAEnvio(userId, body.otp, req)
       if (mfaErr) return err(mfaErr, 403)
       // CANDADO CONTRA EL DOBLE ENVÍO. Un envío de USDT en la red NO se puede
       // revertir, y acá no había ningún control: dos toques seguidos al botón
@@ -3388,7 +3499,7 @@ Deno.serve(async (req) => {
     if (action === 'my_archived_send') {
       if (!userId || body.index == null || !toAddress || !amount) return err('Faltan userId, index, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      const mfaErr = await require2FAEnvio(userId, body.otp)
+      const mfaErr = await require2FAEnvio(userId, body.otp, req)
       if (mfaErr) return err(mfaErr, 403)
       { const dup = await candadoEnvioUsdt(userId, body.idemKey, `archivada${Number(body.index)}`, String(toAddress), Number(amount)); if (dup) return err(dup, 409) }
       return ok(await myArchivedSend(userId, Number(body.index), String(toAddress), Number(amount)))
@@ -3401,7 +3512,7 @@ Deno.serve(async (req) => {
     if (action === 'my_wallet_send') {
       if (!userId || !body.id || !toAddress || !amount) return err('Faltan userId, id, toAddress o amount', 400)
       if (!(await verifySelfOrAdmin(req, userId))) return err('No autorizado', 401)
-      const mfaErr = await require2FAEnvio(userId, body.otp)   // envío on-chain → 2FA server-side
+      const mfaErr = await require2FAEnvio(userId, body.otp, req)   // envío on-chain → 2FA server-side
       if (mfaErr) return err(mfaErr, 403)
       { const dup = await candadoEnvioUsdt(userId, body.idemKey, `wallet${String(body.id)}`, String(toAddress), Number(amount)); if (dup) return err(dup, 409) }
       return ok(await myWalletSend(userId, String(body.id), String(toAddress), Number(amount)))
@@ -3425,14 +3536,15 @@ Deno.serve(async (req) => {
       }))
     }
     if (action === 'my_wallet_withdrawal') {
-      if (!userId || !toAddress || !amount) return err('Faltan userId, toAddress o amount', 400)
-      // Pagaba desde la TESORERÍA contra el saldo USD mientras el USDT seguía
-      // en la wallet del cliente (gasto doble). La app ya no lo usa: queda
-      // solo para un admin.
-      if (!(await callerIsAdmin(req, 'plata.mover'))) return err('No autorizado', 401)
-      const mfaErr = await require2FA(userId, body.otp)   // retiro on-chain → 2FA server-side
-      if (mfaErr) return err(mfaErr, 403)
-      return ok(await myWalletWithdrawal(userId, String(toAddress), Number(amount)))
+      // RETIRADA. Pagaba desde la TESORERÍA contra el saldo USD mientras el
+      // USDT seguía en la wallet del cliente (gasto doble), y al final quedó
+      // "solo para un admin": con solo el permiso plata.mover (también lo tiene
+      // Operaciones) y la contraseña, sin el 2FA de la sesión del admin, sin
+      // código por operación y sin la lista blanca de la acción `send`, sacaba
+      // USDT de la tesorería a cualquier dirección y se lo descontaba a un
+      // cliente sin 2FA. La app ya no la usa; los pagos desde tesorería van por
+      // `send`, que sí exige todo eso.
+      return err('retirada', 410)
     }
 
     // Acción INTERNA: la llama finity-webhook (con el service key) cuando Finity
@@ -3503,7 +3615,7 @@ Deno.serve(async (req) => {
       const jwtS = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
       let uidS: string | null = null
       try { if (jwtS) { const { data } = await db.auth.getUser(jwtS); uidS = data?.user?.id ?? null } } catch { /* */ }
-      const mfaErrS = await require2FAStrict(uidS, body.otp)
+      const mfaErrS = await require2FAStrict(uidS, body.otp, req)
       if (mfaErrS) return err(mfaErrS, 403)
       // DESTINO EN LISTA BLANCA: si hay wallets de proveedor fijadas por secret,
       // la tesorería SOLO puede enviar a esas. Aunque roben la sesión de admin y
@@ -3662,7 +3774,7 @@ Deno.serve(async (req) => {
     if (action === 'user_by_email') {
       const email = String(body.email ?? '').trim().toLowerCase()
       if (!email) return err('Falta email', 400)
-      const { data: rows } = await db.from('users').select('*').ilike('email', email)
+      const { data: rows } = await db.from('users').select('*').ilike('email', email.replace(/[%_\\]/g, '\\$&'))
       const list = (rows ?? []).map((u: any) => {
         const raw = (u.raw_data ?? {}) as Record<string, any>
         // Diagnóstico del BLOQUEO: qué bandera exactamente está frenando las
@@ -3764,7 +3876,7 @@ Deno.serve(async (req) => {
       try { if (jwt) { const { data } = await db.auth.getUser(jwt); uid = data?.user?.id ?? null } } catch { /* */ }
       // FALLA CERRADO: sin sesión válida, sin 2FA activo o sin código válido → se
       // rechaza. Antes require2FA dejaba pasar si la cuenta no tenía 2FA (hueco).
-      const mfaErr = await require2FAStrict(uid, body.otp)
+      const mfaErr = await require2FAStrict(uid, body.otp, req)
       if (mfaErr) return err(mfaErr, 403)
       // AUDITORÍA: a dónde sale el dinero de tesorería es lo más sensible.
       const before = await getProviders()

@@ -5,7 +5,7 @@ import { DatabaseProvider, useDatabase } from '../context/DatabaseContext';
 import { ExchangeRateProvider } from '../context/ExchangeRateContext';
 import { ToastProvider } from './AdminPersonas/lib/toast';
 import { setRatesDbClient } from './AdminPersonas/sections/RatesPanel';
-import { supabase, enlaceClave } from '../lib/supabaseClient';
+import { supabase, enlaceClave, marcarEnlaceClave, olvidarEnlaceClave } from '../lib/supabaseClient';
 import { AdminDashboard } from './AdminDashboard';
 import { AdminIdleGuard } from './AdminIdleGuard';
 import { Logo } from './Logo';
@@ -21,6 +21,13 @@ import { PromptCodigo2fa } from './PromptCodigo2fa';
 // /admin-empresas, PuertaDePais cambia la dirección a la suya y, al salir, el
 // ingreso tiene que mostrarle "Colaboradores", no "Admin Empresas".
 const esColaboradoresAhora = () => typeof window !== 'undefined' && /^\/colaboradores\/?$/.test(window.location.pathname);
+
+// El token de la invitación (lincoin.me/colaboradores?invitacion=…). No se usa
+// al abrir la página —los filtros de correo abren los enlaces solos y lo
+// gastaban—, sino al tocar "Crear mi contraseña".
+const tokenInvitacion: string | null = (() => {
+    try { return new URLSearchParams(window.location.search).get('invitacion'); } catch { return null; }
+})();
 
 // ─────────────────────────────────────────────
 // PuertaDePais — entre las verificaciones y el panel.
@@ -174,6 +181,7 @@ const AdminEmpresasInner: React.FC = () => {
     const [pwd2, setPwd2] = useState('');
     const [pwdMsg, setPwdMsg] = useState<string | null>(null);
     const [pwdBusy, setPwdBusy] = useState(false);
+    const [invEstado, setInvEstado] = useState<'listo' | 'usando' | 'error'>('listo');
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -256,6 +264,46 @@ const AdminEmpresasInner: React.FC = () => {
         setVerifying(false);
     };
 
+    if (tokenInvitacion && esColaboradores) {
+        const usarInvitacion = async () => {
+            setInvEstado('usando');
+            const { error: errInv } = await supabase.auth.verifyOtp({ token_hash: tokenInvitacion, type: 'recovery' });
+            if (errInv) { olvidarEnlaceClave(); setInvEstado('error'); return; }
+            // Con la sesión ya abierta, se recarga sin el token: la marca hace
+            // que la pantalla abra "crear contraseña", como el enlace viejo.
+            marcarEnlaceClave();
+            window.location.replace('/colaboradores');
+        };
+        return (
+            <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#0C0E0D' }}>
+                <div className="w-full max-w-sm">
+                    <div className="flex justify-center mb-6"><Logo variant="white" /></div>
+                    <div className="bg-white rounded-2xl shadow-2xl p-6">
+                        <div className="flex items-center gap-2 mb-1">
+                            <ShieldCheck size={18} className="text-[#16A34A]" />
+                            <h1 className="font-bold text-lg text-[#0C0E0D]">Tu acceso de colaborador</h1>
+                        </div>
+                        {invEstado === 'error' ? (
+                            <>
+                                <p className="text-sm text-slate-600 mb-4 leading-relaxed">El enlace para crear tu contraseña ya se usó o venció. Pide que te reenvíen la invitación.</p>
+                                <a href="/colaboradores" className="block w-full py-3 rounded-xl text-center bg-[#0C0E0D] font-bold text-sm" style={{ color: '#FFFFFF' }}>Ir al ingreso</a>
+                            </>
+                        ) : (
+                            <>
+                                <p className="text-sm text-slate-600 mb-4 leading-relaxed">Toca el botón para crear tu contraseña. El enlace sirve una sola vez.</p>
+                                <button type="button" onClick={usarInvitacion} disabled={invEstado === 'usando'}
+                                    className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm disabled:opacity-60" style={{ color: '#FFFFFF' }}>
+                                    {invEstado === 'usando' ? 'Abriendo…' : 'Crear mi contraseña'}
+                                </button>
+                            </>
+                        )}
+                    </div>
+                    <p className="text-center text-[10px] text-white/30 mt-4">Lincoin · Panel de colaboradores</p>
+                </div>
+            </div>
+        );
+    }
+
     if (isAuthLoading) {
         return (
             <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#0C0E0D' }}>
@@ -298,8 +346,7 @@ const AdminEmpresasInner: React.FC = () => {
                                 <p className="text-sm font-bold mb-1" style={{ color: '#F87171' }}>Cuenta bloqueada</p>
                                 <p className="text-xs leading-relaxed" style={{ color: '#878E88' }}>
                                     Se bloqueó por intentos fallidos. Enviamos al titular un correo con los datos
-                                    del intento y un enlace para reactivarla. También se bloqueó la conexión desde
-                                    donde se hicieron los intentos.
+                                    del intento y un enlace para reactivarla.
                                 </p>
                             </div>
                             <button type="button" onClick={() => { cancelMFALogin(); setMfaCode(''); setEmailCode(''); setMfaError(null); setPassword(''); setUseBackup(false); }}

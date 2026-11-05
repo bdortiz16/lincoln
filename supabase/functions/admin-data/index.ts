@@ -587,6 +587,20 @@ async function rememberMfaSession(req: Request, userId: string, stage: 'email' |
   } catch { /* si no se puede anotar, la acción sensible pedirá 2FA de nuevo */ }
 }
 
+// En qué etapa del ingreso está ESTA sesión ('email', 'app', 'full'), o null.
+async function etapaDeSesion(req: Request, userId: string): Promise<string | null> {
+  const sid = sessionIdOf(req)
+  if (!sid) return null
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid)
+    if (!hit) return null
+    if ((hit.stage ?? 'full') === 'full' && Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) return null
+    return String(hit.stage ?? 'full')
+  } catch { return null }
+}
+
 // ¿Esta sesión ya superó el código del CORREO (primer paso)? Vale 15 minutos.
 async function emailStagePassed(req: Request, userId: string): Promise<boolean> {
   const sid = sessionIdOf(req)
@@ -690,13 +704,32 @@ async function requireAdminOtp(adminUserId: string | undefined, code: unknown): 
   const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
   if (!raw.mfaEnabled) return 'Activa tu 2FA en Seguridad: sin segundo factor no se autoriza esta operación.'
   if (otp.length !== 6) return 'Falta tu código de 6 dígitos.'
+  // ── Tope de intentos ────────────────────────────────────────────────────
+  // Este código no tenía tope: con solo la contraseña de una cuenta se podían
+  // probar códigos sin fin (p. ej. en correo_cambio_iniciar) y, con uno
+  // acertado, salir a enviar plata dentro de su ventana. Los fallos de aquí
+  // se cuentan aparte de los del ingreso (no suman al bloqueo de la cuenta del
+  // panel, que es a los 2): equivocarse en una operación no debe dejar al
+  // dueño afuera, pero tampoco se puede adivinar.
+  const desdeOtp = new Date(Date.now() - 15 * 60_000).toISOString()
+  try {
+    const { data: fallosOtp } = await db.from('audit_log').select('created_at')
+      .eq('action', 'auth.otp_operacion_fallido').contains('metadata', { userId: adminUserId }).gte('created_at', desdeOtp).limit(10)
+    if ((fallosOtp ?? []).length >= 5) return 'Demasiados códigos incorrectos. Espera 15 minutos e intenta de nuevo.'
+  } catch { /* sin poder contar, se sigue: el código igual se verifica */ }
+  const fallo = async (motivo: string) => {
+    try { await db.from('audit_log').insert({ user_id: adminUserId, action: 'auth.otp_operacion_fallido', metadata: { userId: adminUserId, motivo, at: new Date().toISOString() } }) } catch { /* */ }
+    // Un solo mensaje para "incorrecto" y "ya usado": distinguirlos le decía a
+    // quien adivina cuál de sus intentos fue un código válido.
+    return 'Código incorrecto o ya usado. Espera al siguiente que muestre tu app.'
+  }
   let secret = ''
   try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
   if (!secret) return 'No se pudo leer tu segundo factor. Reactiva el 2FA en Seguridad.'
   const counter = await verifyTOTPServer(secret, otp)
-  if (counter < 0) return 'Código incorrecto o vencido.'
+  if (counter < 0) return await fallo('incorrecto')
   const last = Number(raw.mfaLastCounter ?? -1)
-  if (Number.isFinite(last) && counter <= last) return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+  if (Number.isFinite(last) && counter <= last) return await fallo('ya usado')
   // Dos operaciones con el MISMO código a la vez leían el contador viejo y
   // pasaban las dos: el candado deja una sola.
   if ((await reclamarCandado(db, `totp:${adminUserId}:${counter}`, 600, adminUserId, 'admin_otp')) === 'ocupado') return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
@@ -1477,8 +1510,17 @@ async function enviarInvitacionColaborador(
       type: 'recovery', email, options: { redirectTo: `${ORIGEN_APP}/colaboradores` },
     })
     const link = (data as any)?.properties?.action_link
-    if (error || !link) return { ok: false, motivo: `no se pudo generar el enlace: ${error?.message ?? 'sin enlace'}` }
-    enlace = String(link)
+    const hashed = (data as any)?.properties?.hashed_token
+    if (error || (!link && !hashed)) return { ok: false, motivo: `no se pudo generar el enlace: ${error?.message ?? 'sin enlace'}` }
+    // El enlace de Supabase (action_link) se GASTA con solo abrirlo, y los
+    // filtros de correo (Gmail, Outlook, antivirus) abren los enlaces para
+    // revisarlos: la colaboradora llegaba a "el enlace ya se usó o venció".
+    // Ahora el correo lleva a lincoin.me/colaboradores con el token, y el
+    // token solo se usa cuando ella toca "Crear mi contraseña" (regla del
+    // proyecto: un enlace de correo no actúa al abrirse).
+    enlace = hashed
+      ? `${ORIGEN_APP}/colaboradores?invitacion=${encodeURIComponent(String(hashed))}`
+      : String(link)
   }
   const lista = funciones.map(f => `<li style="margin:2px 0">${escHtml(NOMBRE_FUNCION[f] ?? f)}</li>`).join('')
   const saludo = nombre ? `Hola, ${escHtml(nombre)}:` : 'Hola:'
@@ -1944,7 +1986,9 @@ const CORREO_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 // null = el correo está libre; si no, por qué no.
 async function correoOcupado(nuevo: string, uid: string): Promise<string | null> {
   const { data: otraFila } = await db.from('users').select('id, full_name').eq('email', nuevo).neq('id', uid).limit(1).maybeSingle()
-  if (otraFila) return `Ese correo ya es de otra cuenta${(otraFila as any).full_name ? ` (${(otraFila as any).full_name})` : ''}.`
+  // Sin el nombre del titular: un cliente que cambiaba su correo podía probar
+  // direcciones y ver de quién es cada una.
+  if (otraFila) return 'Ese correo ya es de otra cuenta.'
   for (let page = 1; page <= 20; page++) {
     const { data: lst, error } = await db.auth.admin.listUsers({ page, perPage: 200 })
     if (error) return `No se pudo revisar si el correo está libre: ${error.message}`
@@ -2139,7 +2183,10 @@ Deno.serve(async (req: Request) => {
             blocked = true
           }
         }
-        return json({ ok: true, blocked })
+        // Respuesta igual siempre: con `blocked` un tercero sabía, al tercer
+        // intento, si un correo es una cuenta del panel (solo esas bloquean).
+        void blocked
+        return json({ ok: true })
       }
 
       // Segundo paso del ingreso: el código que llegó al correo. Solo aquí se
@@ -2186,7 +2233,12 @@ Deno.serve(async (req: Request) => {
           return json({ ok: false, message: r?.message ?? 'Código incorrecto o vencido.' })
         }
         // Primer paso superado. NO abre la sesión: falta el código de la app.
-        await rememberMfaSession(req, uidE, 'email')
+        // Si esta sesión YA estaba completa (es el código del correo que se
+        // vuelve a pedir a mitad de sesión, AdminStepUp), no se le baja la
+        // etapa: antes quedaba en 'correo', el código de la app siguiente
+        // respondía "inicia sesión completa" y desde ahí el panel entero
+        // decía que la sesión no había verificado el segundo factor.
+        if ((await etapaDeSesion(req, uidE)) !== 'full') await rememberMfaSession(req, uidE, 'email')
         await marcarFactor(req, uidE, 'email')
         return json({ ok: true, needsAppCode: true })
       }
@@ -2301,14 +2353,35 @@ Deno.serve(async (req: Request) => {
             // en base64 y se deja pasar entera; lo demás es texto corto.
             rd[k] = typeof v === 'string' && k !== 'proofUrl' ? v.slice(0, 500) : v
           }
+          // Marca de que esta fila la pidió el cliente, SIN débito. La base la
+          // pone sola cuando el cliente inserta directo, pero por aquí la fila
+          // entra con la llave de servicio y no quedaba marcada. Sin la marca,
+          // Tesorería al RECHAZAR un 'send' le devolvía el monto
+          // (admin_reject_withdrawal): un retiro pedido por 50 millones que
+          // nunca se descontó terminaba abonándole 50 millones.
+          rd.insertadoPorCliente = true
           txRow = { user_id: txUid, type: String(txRow.type), amount: monto, currency: String(txRow.currency), status: 'Pendiente', raw_data: rd }
         } else {
           // Admin con su propia cuenta: igual pasa por los candados del panel.
           const g = await adminSobreOtro(req, ['plata.mover'], 'insert_transaction')
           if ('res' in g) return g.res
         }
+        // Un movimiento registrado desde el panel tampoco puede decir que ya se
+        // descontó: 'debitado' lo escriben solo los flujos que de verdad
+        // descuentan. Con esa marca, rechazarlo en Tesorería abonaba el monto
+        // a quien fuera: plata creada con solo el permiso de mover plata.
+        if (txRow && typeof txRow === 'object') {
+          const rdx = (txRow.raw_data && typeof txRow.raw_data === 'object') ? { ...(txRow.raw_data as Record<string, unknown>) } : {}
+          delete rdx.debitado
+          delete rdx.debitadoCol
+          if (String(txRow.type) === 'send') rdx.insertadoPorCliente = true
+          txRow = { ...txRow, raw_data: rdx }
+        }
         const { data: inserted, error: insErr } = await db.from('transactions').insert(txRow).select('id').single()
         if (insErr) return errorGenerico('insert_transaction', insErr)
+        if (!propio || (await verifyAdmin(req)).ok) {
+          await auditAdmin(req, 'tx.registrada_desde_panel', { txId: inserted?.id ?? null, userId: txUid, type: txRow?.type ?? null, amount: txRow?.amount ?? null, currency: txRow?.currency ?? null })
+        }
         return json({ success: true, id: inserted?.id })
       }
 
@@ -2361,6 +2434,9 @@ Deno.serve(async (req: Request) => {
           // cliente (no a otro admin, ver arriba).
           if (userRow.role != null && (!puede('clientes.editar') || !['personal', 'business'].includes(String(userRow.role)))) delete (userRow as any).role
           for (const k of ['is_admin', 'admin_role']) delete (userRow as any)[k]
+          // El bloqueo de CUMPLIMIENTO (documentos pendientes) lo levanta
+          // Cumplimiento, no cualquiera con permiso de editar clientes.
+          if ((userRow as any).compliance_hold !== undefined && !puede('cumplimiento')) delete (userRow as any).compliance_hold
           // El CORREO de otro no se cambia por aquí: solo cambiaba el perfil y
           // no la cuenta de acceso (el cliente entraba con un correo y recibía
           // los códigos en otro), y sin código 2FA. Va por
@@ -2401,7 +2477,14 @@ Deno.serve(async (req: Request) => {
               && String((userRow as any).company_country ?? '').trim() !== paisDb) delete (userRow as any).company_country
           }
           if (userRow.kyc_status != null && !['pending', 'in_review', 'not_started', 'incomplete', 'rejected'].includes(String(userRow.kyc_status))) delete (userRow as any).kyc_status
-          for (const k of ['is_blocked', 'is_admin', 'admin_role', 'limits', 'status', 'kyc_verified_at', 'assigned_currency', 'didit_session_id']) delete (userRow as any)[k]
+          // Las mismas columnas que protege la base (guard_users_sensitive_cols,
+          // 2026_zz11): este guardado corre con la llave de servicio y el
+          // guardia no lo frena, así que la lista tiene que estar acá también.
+          // Faltaban compliance_hold, el bloqueo y los límites propios: una
+          // empresa con documentos pendientes se quitaba el bloqueo de
+          // cumplimiento mandando compliance_hold:false.
+          for (const k of ['is_blocked', 'is_admin', 'admin_role', 'limits', 'status', 'kyc_verified_at', 'assigned_currency', 'didit_session_id',
+            'block_type', 'block_reason', 'compliance_hold', 'custom_daily_limit', 'custom_monthly_limit', 'is_custom_daily', 'is_custom_monthly', 'limits_currency']) delete (userRow as any)[k]
 
           // ── CANDADO ANTI AUTO-CRÉDITO (CRÍTICO 2) ──────────────────────────
           // Un usuario NO puede SUBIRSE el saldo por esta vía (sería inflar
@@ -2448,7 +2531,17 @@ Deno.serve(async (req: Request) => {
           // dispersión, que lee justo ese objeto, lo dejaba pasar.
           // Igual con los límites y las banderas de bloqueo: quien está
           // bloqueado no puede desbloquearse guardando su propio perfil.
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets', 'tusdatos', 'kumplo', 'blacklisted', 'isBlocked', 'complianceHold', 'limits', 'otcConfig', 'passwordHash', 'trustedDevices', '__role']
+          // Tiene que cubrir TODO lo que protege la base (guard_raw_data_server_keys
+          // de 2026_zz11), porque este guardado no pasa por ese guardia.
+          // Faltaban las autorizaciones de operadores y contadores: una empresa
+          // se escribía `personasAutorizadas` y aprobaba sola a sus operadores
+          // —sin Cumplimiento y sin tope mensual—, que es lo que miran la carga
+          // de saldo, las transferencias entre cuentas y el tope de envíos.
+          // Más 'sarblock' (la ficha de riesgo de la empresa) y 'colaborador'
+          // (la marca del equipo interno), que también escribe solo el servidor.
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets', 'tusdatos', 'kumplo', 'blacklisted', 'isBlocked', 'complianceHold', 'limits', 'otcConfig', 'passwordHash', 'trustedDevices', '__role',
+            'passkeys', 'blacklistedAt', 'blockReason', 'blockType', 'personasSolicitudes', 'personasAutorizadas', 'empresaAutorizante', 'autorizacion', 'contadores', 'contadoresSolicitudes', 'contadorDe',
+            'sarblock', 'colaborador']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
           // La copia del país en raw_data, igual que la columna: el titular no
@@ -2499,6 +2592,14 @@ Deno.serve(async (req: Request) => {
         const bal = (k: string) => Number((CRYPTO.has(k) ? cry[k] : fiat[k]) ?? 0)
         const setBal = (k: string, v: number) => { if (CRYPTO.has(k)) cry[k] = v; else fiat[k] = v }
         if (bal(src) + 1e-9 < amtS) return json({ error: 'Saldo insuficiente' }, 400)
+        // Los rieles de envío en pesos (COP_ACH, COP_BREB, COP_C3, COP_C4…) no
+        // entran ni salen por conversión. El bloqueo de abajo solo miraba
+        // COP→COP, así que dando la vuelta por USD (COP → USD → COP_ACH) se
+        // pasaba plata del Saldo Lincoin a un riel desde el que se envía, sin
+        // la aprobación de Tesorería de "Mover saldo".
+        if (/^COP_/i.test(src) || /^COP_/i.test(tgt)) {
+          return json({ error: 'Para mover saldo entre rieles de pesos usa la opción "Mover saldo", no la conversión.' }, 400)
+        }
 
         // Plausibilidad del monto recibido según la tasa real.
         const baseOf = (k: string) => (/^USD/.test(k) || k === 'USD') ? 'USD' : /^COP/.test(k) ? 'COP' : /^EUR/.test(k) ? 'EUR' : k
@@ -2663,9 +2764,16 @@ Deno.serve(async (req: Request) => {
       // envía ese reporte por ella; se lo deja listo para descargar.
       if (selfServiceBody.action === 'sirel_mis_transacciones' && selfServiceBody.userId) {
         const uid = String(selfServiceBody.userId)
+        // Desde el panel, sobre otra empresa: es el mismo dato que SIREL
+        // (contrapartes con documento, banco y cuenta), así que pide lo mismo
+        // que sirel_periodo —Cumplimiento— y respeta los países del miembro.
+        // Antes bastaba 'clientes.ver', que tienen todos los roles, y sin
+        // filtro de país.
+        let accesoPanel: any = null
         if (!(await verifySelfOrAdmin(req, uid))) {
-          const g = await adminSobreOtro(req, ['clientes.ver'], 'sirel_mis_transacciones')
+          const g = await adminSobreOtro(req, ['cumplimiento', 'fn.cumplimiento'], 'sirel_mis_transacciones')
           if ('res' in g) return g.res
+          accesoPanel = g.admin.acceso
         }
         const TZ = 5 * 3600_000
         const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
@@ -2683,7 +2791,8 @@ Deno.serve(async (req: Request) => {
           .in('type', ['load', 'dispersion', 'send', 'convert', 'otc_deposit'])
           .gte('created_at', new Date(Date.parse(`${desde}T00:00:00Z`) + TZ).toISOString())
           .lt('created_at', new Date(Date.parse(`${hasta}T00:00:00Z`) + TZ + 86_400_000).toISOString()), { tope: 50_000 })
-        const movimientos = (filas.map(movimientoEmpresa).filter(Boolean) as MovEmpresa[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
+        const filasVisibles = accesoPanel ? filas.filter((t: any) => visibleEnPais(paisDeMovimiento(t), accesoPanel)) : filas
+        const movimientos = (filasVisibles.map(movimientoEmpresa).filter(Boolean) as MovEmpresa[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
         // Una fila por contraparte: por documento, o por nombre si no lo hay.
         const porContra = new Map<string, any>()
         for (const m of movimientos) {
@@ -3124,6 +3233,16 @@ Deno.serve(async (req: Request) => {
         if (raw.mfaEnabled) {
           const falta = await requireMfaSession(req, String(selfServiceBody.userId))
           if (falta) return json({ error: 'Para cambiar tu verificación en dos pasos, primero ingresa con tu código actual.' }, 403)
+          // Y el código ACTUAL de la app, en esta misma operación. La sesión
+          // verificada vale 24 h: con un token robado o un equipo que quedó
+          // abierto se ponía un secreto propio, se reemplazaban los códigos de
+          // respaldo del titular y desde ahí se enviaba plata. Cambiar el
+          // segundo factor exige demostrar que se tiene el que hay hoy.
+          const otpActual = String(selfServiceBody.otpActual ?? '').replace(/\D/g, '')
+          if (!otpActual) return json({ success: false, pideCodigo: true, error: 'Escribe el código que muestra hoy tu app para poder reemplazarla.' })
+          const errActual = await requireAdminOtp(String(selfServiceBody.userId), otpActual)
+          if (errActual) return json({ success: false, pideCodigo: true, error: errActual })
+          await auditAdmin(req, 'security.mfa_reemplazado', { userId: String(selfServiceBody.userId) })
         } else {
           // ── ACTIVARLO POR PRIMERA VEZ PIDE EL CORREO ─────────────────────
           // Bastaba la sesión, o sea la contraseña. Y como enviar dinero exige
@@ -3312,6 +3431,15 @@ Deno.serve(async (req: Request) => {
             keyMismatch: decErr === 'key',
             hasBackupCodes: hashes.length > 0,
           })
+        }
+        // El orden se comprueba ANTES de mirar el código (como con el de
+        // respaldo). Antes se comprobaba después de aceptarlo, y un código de
+        // la app correcto reiniciaba el contador de fallos: quien tenía la
+        // contraseña y el celular, pero no el correo, alternaba un código de
+        // correo errado con uno de la app bueno y nunca llegaba al bloqueo.
+        if (etapaLogin && esAdmin && !(await emailStagePassed(req, uidV))) {
+          await auditAdmin(req, 'security.orden_ingreso_saltado', { userId: uidV })
+          return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
         }
         const counter = await verifyTOTPServer(secret, code)
         if (counter < 0) {
@@ -3833,6 +3961,23 @@ Deno.serve(async (req: Request) => {
     if (auth.userId && await adminLock(auth.userId)) {
       return json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423)
     }
+    // El 2FA de la SESIÓN para todo lo del panel, también para consultar.
+    // Antes solo lo pedían las acciones de SENSITIVE_ADMIN_ACTIONS: con la
+    // contraseña del dueño (o de cualquier miembro), sin el código, se
+    // descargaban todos los clientes con sus datos de KYB y sus movimientos
+    // por la API, sin pasar por la pantalla. La regla del proyecto es que toda
+    // función que acepte a un admin exige el 2FA de la sesión. Quedan fuera
+    // solo las dos que la pantalla usa para saber quién eres y anotar el
+    // ingreso. (Una cuenta del equipo sin 2FA activo sigue igual: eso lo
+    // exige aparte falta2faColaborador.)
+    {
+      const accionPedida = String(selfServiceBody?.action ?? '')
+      const sinSesion2fa = req.method === 'POST' && (accionPedida === 'mi_acceso' || accionPedida === 'log_login')
+      if (!sinSesion2fa) {
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+      }
+    }
 
     if (req.method === 'POST') {
       const body = selfServiceBody ?? {}
@@ -3956,6 +4101,9 @@ Deno.serve(async (req: Request) => {
         'globalFee', 'minWithdrawal', 'volumeLimit', 'referralCommission', 'coupons',
         'otcUsdtAddress', 'otcUsdcAddress', 'collectionWalletTron',
         'otcUsdtRate', 'otcUsdcRate', 'otcFiatPairs', 'recaptchaSiteKey', 'kycProvider', 'adminTeam',
+        // Las cuentas bancarias donde se le dice al cliente que consigne:
+        // cambiarlas es cambiar a dónde llega la plata.
+        'bankingOptions',
       ]
       let pideCodigoConfig = false
       if (body.action === 'save_config' && body.settings && typeof body.settings === 'object') {
@@ -4088,7 +4236,7 @@ Deno.serve(async (req: Request) => {
         // admin. Si no existe, se dice claro en vez de guardar una fila
         // huérfana que no sirve para nada y que nadie entiende después.
         const { data: cuenta } = await db.from('users')
-          .select('id, role, name').ilike('email', email).maybeSingle()
+          .select('id, role, name').ilike('email', email.replace(/[\\%_]/g, ch => `\\${ch}`)).maybeSingle()
         if (!cuenta) {
           return json({ ok: false, error: 'sin_cuenta', message: 'Esa persona todavía no tiene cuenta en Lincoin. Que se registre primero.' }, 400)
         }
@@ -4167,8 +4315,10 @@ Deno.serve(async (req: Request) => {
         if (!paises.length) return json({ ok: false, error: 'sin_paises', message: 'Elige al menos un país.' }, 400)
         const nombre = String(body.nombre ?? '').trim().slice(0, 120) || null
 
+        // Sin comodines: en ilike '_' y '%' son patrones, y "a_b@x.co"
+        // encontraba (y volvía admin) la cuenta de "axb@x.co".
         const { data: cuenta } = await db.from('users')
-          .select('id, role, name, full_name, balances, crypto_balances').ilike('email', email).maybeSingle()
+          .select('id, role, name, full_name, balances, crypto_balances').ilike('email', email.replace(/[\\%_]/g, ch => `\\${ch}`)).maybeSingle()
         let id: string
         let cuentaNueva = false
         if (cuenta) {
@@ -4393,6 +4543,14 @@ Deno.serve(async (req: Request) => {
             ip: r?.metadata?.ip ?? null,
           }))
         const rot = all.find((r: any) => r.action === 'security.key_rotation')
+        // Con la sección "Dashboard", un colaborador recibía las IPs, el
+        // historial de ingresos, la política de acceso y los cambios de 2FA del
+        // equipo. Eso es del dueño (y de Cumplimiento): a los demás, solo el
+        // conteo.
+        const rolSeg = String(auth.acceso?.rol ?? '')
+        if (rolSeg !== 'dueno' && rolSeg !== 'cumplimiento') {
+          return json({ ok: true, failedToday: failedToday.length, failedByIp: [], blockedIps: [], access: [], incidents: [], mfaChanges: [], keyRotation: null, restringido: true })
+        }
         return json({
           ok: true,
           failedToday: failedToday.length,
@@ -5749,6 +5907,15 @@ Deno.serve(async (req: Request) => {
         let res = await db.from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit)
         if (res.error) res = await db.from('audit_log').select('*').order('id', { ascending: false }).limit(limit)
         if (!res.error) rows = res.data ?? []
+        // El monitoreo del EQUIPO es del dueño. Con la sección "Dashboard", un
+        // colaborador veía las IPs, la ubicación y el navegador del dueño, y la
+        // lista de países e IPs desde los que se puede entrar al panel. A quien
+        // no es dueño ni de Cumplimiento se le quitan los registros de ingreso,
+        // seguridad y equipo.
+        const rolAud = String(auth.acceso?.rol ?? '')
+        if (rolAud !== 'dueno' && rolAud !== 'cumplimiento') {
+          rows = rows.filter((r: any) => !/^(auth|security|equipo)\./.test(String(r?.action ?? '')))
+        }
         return json({ ok: true, audit: rows })
       }
 
@@ -5889,6 +6056,20 @@ Deno.serve(async (req: Request) => {
       // registro nuevo sin que nadie lo notara.
       if (body.action === 'force_delete_by_email' && body.email) {
         const email = String(body.email).trim().toLowerCase()
+        // Es para liberar un correo que quedó a medias (cuenta de acceso sin
+        // perfil, o perfil vacío). Antes borraba el perfil sin mirar nada: una
+        // cuenta CON SALDO o del equipo se iba sin dejar rastro, saltándose la
+        // regla de delete_user (no se borra una cuenta con saldo).
+        {
+          const { data: perfil } = await db.from('users').select('id, role, balances, crypto_balances').eq('email', email).maybeSingle()
+          if (perfil) {
+            const conPlata = [...Object.values(((perfil as any).balances ?? {}) as Record<string, unknown>), ...Object.values(((perfil as any).crypto_balances ?? {}) as Record<string, unknown>)]
+              .some(v => Math.abs(Number(v) || 0) > 0)
+            if (conPlata) return json({ error: 'Esa cuenta tiene saldo: no se borra por aquí.' }, 400)
+            if ((perfil as any).role === 'admin') return json({ error: 'Esa cuenta es del equipo: quítala desde Seguridad → Equipo.' }, 400)
+          }
+          await auditAdmin(req, 'usuario.borrado_por_correo', { email, perfil: perfil ? String((perfil as any).id) : null })
+        }
         await db.from('users').delete().eq('email', email)
         let found: any = null
         for (let page = 1; page <= 20 && !found; page++) {
@@ -7225,8 +7406,11 @@ Deno.serve(async (req: Request) => {
         // ── 2FA por operación ──────────────────────────────────────────
         // No basta con que la sesión lo haya pasado al entrar: cada cargue
         // mueve dinero real, así que se confirma uno por uno. El registro
-        // histórico (recordOnly) no toca saldo y queda fuera.
-        if (!recordOnlyEarly) {
+        // histórico (recordOnly) también: no toca saldo, pero deja un cargue
+        // Completado de cualquier monto en Contabilidad y, con reversaDe,
+        // anula un cargue real (su utilidad y su factura). El panel ya no lo
+        // ofrece; si alguien lo usa por la API, que sea con el código.
+        {
           const otpErr = await requireAdminOtp(auth.userId, body.otp)
           if (otpErr) return json({ success: false, error: otpErr, needs2fa: true }, 403)
         }
@@ -7441,7 +7625,10 @@ Deno.serve(async (req: Request) => {
         if (tx && !visibleEnPais(paisDeMovimiento(tx as Record<string, unknown>), accesoTx)) {
           return json({ error: 'Ese movimiento es de un país que no tienes asignado.', permisoDenegado: true }, 403)
         }
-        return json({ raw_data: tx?.raw_data ?? {} })
+        // Quién del equipo lo hizo (nombre y correo) solo lo ve el dueño, como
+        // en las demás vistas del panel.
+        const esDuenoTx = accesoTx.rol === 'dueno'
+        return json({ raw_data: autoresParaPanel(tx?.raw_data ?? {}, esDuenoTx, String(auth.userId ?? '')) })
       }
 
       // ── CLIENTES POR PÁGINAS ────────────────────────────────────────────

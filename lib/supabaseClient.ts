@@ -56,6 +56,13 @@ export const enlaceClave: { abierto: boolean; error: 'vencido' | string | null }
         return { abierto: guardado, error: null };
     } catch { return { abierto: false, error: null }; }
 })();
+// La invitación de colaboradores llega con el token en ?invitacion= y se usa
+// al tocar un botón (verifyOtp). Esto deja la marca para que, al recargar, la
+// pantalla abra el formulario de crear contraseña igual que con el enlace viejo.
+export const marcarEnlaceClave = () => {
+    enlaceClave.abierto = true;
+    try { sessionStorage.setItem(CLAVE_ENLACE, '1'); } catch { /* */ }
+};
 export const olvidarEnlaceClave = () => {
     enlaceClave.abierto = false;
     try { sessionStorage.removeItem(CLAVE_ENLACE); } catch { /* */ }

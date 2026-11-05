@@ -870,8 +870,10 @@ Deno.serve(async (req) => {
       //    vuelve a pegar hasta que pase la espera: insistir es justo lo que
       //    hace que un proveedor bloquee (pasó el 6 y el 7 de octubre).
       const freno = await leerFrenoInscripciones()
+      // Los mensajes de esta acción los ve el cliente (estado del contacto):
+      // sin el nombre del aliado.
       if (freno) {
-        return json(200, { ok: false, status: 429, frenado: true, path: null, data: { message: `Inscripciones en pausa hasta ${new Date(freno.hasta).toISOString()} (Finity respondió ${freno.http}). Se reintenta sola.` } })
+        return json(200, { ok: false, status: 429, frenado: true, path: null, data: { message: `Inscripciones en pausa hasta ${new Date(freno.hasta).toISOString()} (el banco respondió ${freno.http}). Se reintenta sola.` } })
       }
 
       // 2) ¿YA ESTÁ INSCRITA? Se busca en la lista (de caché) por número de
@@ -938,7 +940,7 @@ Deno.serve(async (req) => {
           status: 0, path, ok: false, enviado: payload.data, idCreado: null,
           error: String((e as Error)?.message ?? e).slice(0, 200),
         })
-        return json(200, { ok: false, status: 0, path, sinRespuesta: true, data: { message: 'Finity no respondió a tiempo. Se reintenta solo en unos minutos.' } })
+        return json(200, { ok: false, status: 0, path, sinRespuesta: true, data: { message: 'El banco no respondió a tiempo. Se reintenta solo en unos minutos.' } })
       }
       const data = await res.json().catch(() => null)
       if (res.status === 403 || res.status === 429) await ponerFrenoInscripciones(res.status)
@@ -1194,17 +1196,30 @@ Deno.serve(async (req) => {
       if (!uid) return json(400, { error: 'missing_userId' })
       const { data: u } = await db.from('users').select('email').eq('id', uid).single()
       if (!u?.email) return json(200, { ok: false, error: 'no_email' })
+      // El texto lo arma el SERVIDOR a partir de una lista cerrada de eventos.
+      // Antes el navegador mandaba asunto, título y mensaje en HTML, y Lincoin
+      // los enviaba tal cual desde no-reply@lincoin.me: cualquier cliente podía
+      // fabricar un correo con formularios y enlaces "de Lincoin" (phishing
+      // contra el buzón compartido de su propia empresa). Lo que escribe el
+      // cliente —el nombre del contacto— va escapado.
+      const evento = String(payload.evento ?? '')
+      const escapar = (v: unknown) => String(v ?? '').slice(0, 120)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+      const EVENTOS: Record<string, () => { subject: string; title: string; message: string }> = {
+        contacto_aprobado: () => ({
+          subject: 'Lincoin · Contacto aprobado',
+          title: 'Contacto aprobado',
+          message: `La cuenta de <strong>${escapar(payload.nombre)}</strong> quedó aprobada. Ya puedes transferirle.`,
+        }),
+      }
+      const armar = EVENTOS[evento]
+      if (!armar) return json(400, { ok: false, error: 'evento_desconocido' })
+      const correo = armar()
       try {
         const r = await fetch(`${SUPABASE_URL}/functions/v1/notify-transaction`, {
           method: 'POST',
           headers: await cabecerasInternas(db),
-          body: JSON.stringify({
-            type: 'CUSTOM_EMAIL',
-            to: u.email,
-            subject: String(payload.subject ?? 'Lincoin'),
-            title: String(payload.title ?? 'Notificación'),
-            message: String(payload.message ?? ''),
-          }),
+          body: JSON.stringify({ type: 'CUSTOM_EMAIL', to: u.email, ...correo }),
         })
         return json(200, { ok: r.ok })
       } catch (e) {
@@ -1464,9 +1479,25 @@ Deno.serve(async (req) => {
       const { res } = await finityTry('movements', {})
       const md: any = await res.json().catch(() => null)
       const rows: any[] = Array.isArray(md) ? md : Array.isArray(md?.data) ? md.data : Array.isArray(md?.items) ? md.items : []
-      const isRecarga = (m: any) => /recarga|pse|payment.?link|deposit|top.?up|cobro/i.test(JSON.stringify(m?.type ?? m?.concept ?? m?.description ?? ''))
-      const isDone = (m: any) => /complet|success|paid|aprobad|settled/i.test(String(m?.status ?? m?.state ?? ''))
+      // El movimiento tiene que estar TERMINADO. Antes estas dos funciones
+      // existían pero no se usaban: bastaba con que la referencia del link
+      // apareciera en cualquier movimiento —también un intento de pago PSE
+      // pendiente o fallido— para acreditar el cobro, y el cliente retiraba
+      // plata que nunca entró. El estado se compara entero: un /complet/ suelto
+      // aceptaba "INCOMPLETE".
+      const ESTADOS_PAGADO = new Set(['COMPLETE', 'COMPLETED', 'COMPLETADO', 'COMPLETADA', 'SUCCESS', 'SUCCEEDED', 'SUCCESSFUL', 'PAID', 'PAGADO', 'PAGADA', 'APROBADO', 'APROBADA', 'APPROVED', 'SETTLED', 'LIQUIDADO'])
+      const isDone = (m: any) => ESTADOS_PAGADO.has(String(m?.status ?? m?.state ?? '').trim().toUpperCase())
       const amountOf = (m: any) => Number(m?.origin_amount ?? m?.amount ?? m?.original_amount ?? m?.monto ?? 0)
+      // La referencia tiene que ser el VALOR de un campo del movimiento, no un
+      // pedazo de texto en cualquier parte del JSON.
+      const traeReferencia = (o: any, ref: string, prof = 0): boolean => {
+        if (!o || typeof o !== 'object' || prof > 4) return false
+        for (const v of Object.values(o)) {
+          if ((typeof v === 'string' || typeof v === 'number') && String(v) === ref) return true
+          if (v && typeof v === 'object' && traeReferencia(v, ref, prof + 1)) return true
+        }
+        return false
+      }
       let credited = 0
       // Un mismo movimiento REAL de Finity solo puede pagar UN cobro. Sin esto,
       // dos cobros pendientes del mismo monto (o un cobro nunca pagado + una
@@ -1491,9 +1522,17 @@ Deno.serve(async (req) => {
         }
         const match = rows.find(m => {
           if (consumed.has(movId(m))) return false
-          return JSON.stringify(m).includes(String(rd.reference))
+          return traeReferencia(m, String(rd.reference))
         })
         if (!match) continue
+        if (!isDone(match)) continue   // pendiente o fallido: todavía no hay plata
+        // Lo que entró tiene que cubrir lo que se va a acreditar. Si Finity no
+        // trae un monto legible, no se acredita solo: queda para el admin.
+        const montoMov = amountOf(match)
+        if (!(montoMov > 0) || montoMov < Number(tx.amount ?? 0)) {
+          await logAudit(uid, 'finity.payin.monto_no_cuadra', { txId: tx.id, esperado: tx.amount, movimiento: montoMov, movement: match?.id ?? null })
+          continue
+        }
         consumed.add(movId(match))
         // CAS: reclamar la acreditación.
         const { data: claimed } = await db.from('transactions').update({
