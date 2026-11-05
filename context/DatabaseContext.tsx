@@ -5,6 +5,7 @@ import { generateTOTPSecret, getTOTPQRCode, verifyTOTP } from '../lib/totp';
 import { firmarConPasskey, explicarErrorPasskey } from '../lib/webauthn';
 import { llamarFuncion } from '../lib/edge';
 import { conCodigo2fa, conCodigoCorreo } from '../lib/codigo2fa';
+import { rutaDelPanel } from '../lib/rutaPanel';
 
 // --- TYPES ---
 
@@ -1984,9 +1985,10 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // la sesión guardada es de un admin, se ignora (la pantalla queda en el
     // ingreso normal y el cliente entra con su cuenta, que reemplaza esa
     // sesión). Si el admin escribió aquí su contraseña, se le manda al panel,
-    // que tiene su propio ingreso con el código del correo.
+    // que tiene su propio ingreso con el código del correo. Un colaborador va
+    // a SU puerta (/colaboradores), no a la del dueño.
     if (!EN_PANEL && profile?.role === 'admin') {
-      if (origen === 'login') { try { window.location.replace('/admin-empresas'); } catch { /* */ } }
+      if (origen === 'login') { try { window.location.replace(rutaDelPanel(profile)); } catch { /* */ } }
       return false;
     }
     setPendingMFAProfile(profile);

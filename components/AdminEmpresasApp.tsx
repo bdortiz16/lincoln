@@ -17,7 +17,10 @@ import { PromptCodigo2fa } from './PromptCodigo2fa';
 
 // /colaboradores entra por aquí mismo: el mismo panel, con la puerta del
 // equipo interno. Cambian los textos, no las reglas (las pone el servidor).
-const esColaboradores = typeof window !== 'undefined' && /^\/colaboradores\/?$/.test(window.location.pathname);
+// Se lee en cada render y no una vez al cargar: si un colaborador entra por
+// /admin-empresas, PuertaDePais cambia la dirección a la suya y, al salir, el
+// ingreso tiene que mostrarle "Colaboradores", no "Admin Empresas".
+const esColaboradoresAhora = () => typeof window !== 'undefined' && /^\/colaboradores\/?$/.test(window.location.pathname);
 
 // ─────────────────────────────────────────────
 // PuertaDePais — entre las verificaciones y el panel.
@@ -55,6 +58,15 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
     }, []);
 
     useEffect(() => { cargar(); }, [cargar]);
+
+    // La puerta según el rol que dice el servidor, no según por dónde entró:
+    // un colaborador que llegó a /admin-empresas (la app de clientes manda ahí
+    // a toda cuenta admin cuando todavía no sabe cuál es) queda en
+    // /colaboradores. Sin recargar: la sesión y el 2FA de este ingreso siguen.
+    useEffect(() => {
+        if (acceso?.rol !== 'colaborador' || esColaboradoresAhora()) return;
+        try { window.history.replaceState(window.history.state, '', '/colaboradores'); } catch { /* solo la dirección */ }
+    }, [acceso?.rol]);
 
     // Si la elección guardada ya no está entre los países permitidos, se
     // descarta. Pasa cuando a alguien le cambian el alcance con la sesión
@@ -136,14 +148,16 @@ const PuertaDePais: React.FC<{ onSalir: () => Promise<void> }> = ({ onSalir }) =
 // proyecto de empresas (feed fastforex-sync + tablas de
 // 2026_fx_snapshots_empresas.sql), no en LincoinANDROID.
 // Guard por ruta: este módulo vive en el mismo bundle que /admin-personas
-// y el override solo debe aplicar cuando la página ES admin-empresas.
+// y el override solo debe aplicar cuando la página ES admin-empresas (o
+// /colaboradores, que es el mismo panel).
 if (typeof window !== 'undefined' &&
-    (window.location.pathname === '/admin-empresas' || window.location.pathname === '/admin')) {
+    /^\/(admin-empresas|admin|colaboradores)\/?$/.test(window.location.pathname)) {
     setRatesDbClient(supabase);
 }
 
 const AdminEmpresasInner: React.FC = () => {
     const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, mfaPasos, mfaCuenta } = useDatabase();
+    const esColaboradores = esColaboradoresAhora();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [submitting, setSubmitting] = useState(false);

@@ -15,6 +15,7 @@ import { useDatabase } from './context/DatabaseContext';
 import { useSystemConfig } from './context/SystemConfigContext';
 import { useTheme } from './context/ThemeContext';
 import { isSupabaseConfigured } from './lib/supabaseClient';
+import { rutaDelPanel } from './lib/rutaPanel';
 import { X, WifiOff } from 'lucide-react';
 
 // Los paneles se descargan solo al abrirse: la portada y el ingreso cargan
@@ -437,8 +438,9 @@ const App: React.FC = () => {
     if (currentUser) {
       if (currentUser.role === 'admin') {
         // Los admins NO usan la app de clientes: su portal es /admin-empresas
-        // (con login propio). Cualquier sesión admin acá se redirige allá.
-        window.location.replace('/admin-empresas');
+        // (con login propio), y el de un colaborador, /colaboradores.
+        // Cualquier sesión admin acá se redirige a la suya.
+        window.location.replace(rutaDelPanel(currentUser));
         return;
       }
 
@@ -594,8 +596,10 @@ const App: React.FC = () => {
     // ningún panel; se queda en el Login con el mensaje.
     if (rechazoReciente()) { setCurrentView('login'); return; }
     if (role === 'admin') {
-      // El login de clientes no abre el panel admin: portal dedicado.
-      window.location.replace('/admin-empresas');
+      // El login de clientes no abre el panel admin: portal dedicado (el del
+      // colaborador si la cuenta es del equipo; si el perfil aún no llegó, el
+      // panel corrige la dirección con el rol que devuelve el servidor).
+      window.location.replace(rutaDelPanel(currentUser));
       return;
     }
     // Segunda barrera (la primera es la guarda del efecto de sesión): el
