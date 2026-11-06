@@ -1805,8 +1805,21 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // Siigo no contestó, el próximo intento busca la factura con esto. Se borra
   // cuando la factura queda registrada.
   if (detPrevio.intento) historia.intento = detPrevio.intento
+  // ¿Un envío anterior quedó A MEDIAS? (un 'emitiendo' de más de 3 min, lo
+  // que se encoló estando así, o la marca `a_medias` que deja este código).
+  // Revisión del 6 nov, igual que en emitir: si un intento sobre un
+  // 'emitiendo' viejo fallaba ANTES de revisar en Siigo (token, tercero,
+  // pausa…), pasaba a 'error' sin marca y el siguiente intento mandaba otra
+  // factura a la DIAN. Mientras no se haya revisado, la marca se conserva.
+  const aMediasPrevia = ((comp as any).factura_estado === 'emitiendo' && !(Date.parse(String((comp as any).factura_at ?? '')) > Date.now() - 180000))
+    || ((comp as any).factura_estado === 'en_cola' && (detPrevio as any)?.lote?.estado_previo === 'emitiendo')
+    || !!(detPrevio as any)?.a_medias
+  const marcaAMedias = aMediasPrevia ? { at: (detPrevio as any)?.a_medias?.at ?? (comp as any).factura_at ?? null } : null
   const marcar = async (patch: Record<string, unknown>) => {
-    const p = patch.factura_detalle && typeof patch.factura_detalle === 'object' ? { ...patch, factura_detalle: { ...(patch.factura_detalle as Record<string, unknown>), ...historia } } : patch
+    let p = patch.factura_detalle && typeof patch.factura_detalle === 'object' ? { ...patch, factura_detalle: { ...(patch.factura_detalle as Record<string, unknown>), ...historia } } : patch
+    // Lo que trae factura_detalle propio ya pasó por la revisión en Siigo (o
+    // la adopción): ahí la marca ya no hace falta.
+    if (marcaAMedias && p.factura_estado !== 'emitida' && !('factura_detalle' in p)) p = { ...p, factura_detalle: { ...detPrevio, a_medias: marcaAMedias } }
     await db.from('comprobantes').update({ ...p, factura_intentos: Number((comp as any).factura_intentos ?? 0) + 1 }).eq('folio', c.folio)
   }
   const falla = async (e: string, extra: Record<string, unknown> = {}) => { await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV', ...extra }); return { ok: false, error: e } }
@@ -2012,8 +2025,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // DIAN. Si no se puede preguntar, no se reenvía.
   const intentoPrevio: any = (detPrevio as any)?.intento ?? null
   // (Si se encoló estando así, la marca de la cola dice cómo estaba.)
-  const quedoAMedias = ((comp as any).factura_estado === 'emitiendo' && !(Date.parse(String((comp as any).factura_at ?? '')) > Date.now() - 180000))
-    || ((comp as any).factura_estado === 'en_cola' && (detPrevio as any)?.lote?.estado_previo === 'emitiendo')
+  const quedoAMedias = aMediasPrevia
   // Lo mismo si un intento anterior quedó sin respuesta clara (Siigo no
   // contestó, 5xx, "duplicado"): quedó en error o pendiente, pero la factura
   // pudo haberse creado. Se busca por la marca, a nombre del cliente de ese
