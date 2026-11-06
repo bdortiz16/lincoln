@@ -1174,22 +1174,36 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     if (!r?.ok) { alert(r?.error ?? 'No se pudo cambiar.'); return; }
     setFacturacionActiva(!!r?.config?.activo);
   };
+  // Documento soporte en REVISIÓN MANUAL (revisión del 6 nov): un envío
+  // anterior quedó sin respuesta de Siigo y el servidor no pudo buscar si se
+  // creó. No lo reenvía solo; solo si la persona confirma que lo buscó en
+  // Siigo Nube y NO está (revisadoEnSiigo). Sin esta pregunta quedaba trabado.
+  const confirmarRevisadoEnSiigo = (r: any) =>
+    !!r?.revision && window.confirm(`${r?.error ?? 'Este documento soporte pudo haberse creado en Siigo.'}\n\n¿Ya lo buscaste en Siigo Nube y NO está? Aceptar lo vuelve a emitir.`);
   const reintentarFactura = async (folio: number) => {
     setReintentando(folio);
-    const r = await fact({ action: 'reintentar', folio }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    let r = await fact({ action: 'reintentar', folio }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    if (!r?.ok && confirmarRevisadoEnSiigo(r)) {
+      r = await fact({ action: 'reintentar', folio, revisadoEnSiigo: true }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    }
     setReintentando(null);
     setFoliosVersion(v => v + 1);
-    if (!r?.ok) alert(r?.error ?? 'No se pudo emitir la factura.');
+    if (!r?.ok && !r?.revision) alert(r?.error ?? 'No se pudo emitir la factura.');
+    else if (!r?.ok && r?.revision) alert('No se reenvió. El documento queda en revisión manual hasta que confirmes que no está en Siigo.');
   };
   // Emitir a mano el documento de un movimiento completado que quedó sin
   // él (antes de activar, omitido por la regla, o sin comprobante).
   const [emitiendo, setEmitiendo] = useState<string | null>(null);
   const emitirMovimiento = async (txId: string) => {
     setEmitiendo(txId);
-    const r = await fact({ action: 'emitir_movimiento', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    let r = await fact({ action: 'emitir_movimiento', transactionId: txId }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    if (!r?.ok && confirmarRevisadoEnSiigo(r)) {
+      r = await fact({ action: 'emitir_movimiento', transactionId: txId, revisadoEnSiigo: true }, 130000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    }
     setEmitiendo(null);
     setFoliosVersion(v => v + 1);
-    if (!r?.ok) alert(r?.error ?? 'No se pudo emitir el documento.');
+    if (!r?.ok && !r?.revision) alert(r?.error ?? 'No se pudo emitir el documento.');
+    else if (!r?.ok && r?.revision) alert('No se reenvió. El documento queda en revisión manual hasta que confirmes que no está en Siigo.');
   };
   // Rechazada por la DIAN: se corrige (fecha de hoy) y se reenvía la MISMA
   // factura en Siigo. No se crea otra: la rechazada ya ocupa ese número.
