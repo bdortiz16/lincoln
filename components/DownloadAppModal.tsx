@@ -25,27 +25,21 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ onClose }) =
           <X size={22} />
         </button>
 
-        {/* Logo + Phone Icon */}
-        <div className="flex justify-center mb-6">
-          <div className="relative">
-            <div
-              style={{ background: 'linear-gradient(135deg, #0C0E0D, #121413)' }}
-              className="w-20 h-20 rounded-2xl flex items-center justify-center shadow-xl"
-            >
-              <Smartphone size={40} style={{ color: '#4ADE80' }} strokeWidth={1.5} />
-            </div>
-            <div
-              style={{ backgroundColor: '#4ADE80' }}
-              className="absolute -top-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center shadow-lg"
-            >
-              <Download size={16} style={{ color: '#0C0E0D' }} strokeWidth={3} />
-            </div>
-          </div>
+        {/* Acá había un "app icon": un cuadro de 80px con degradado, un
+            teléfono verde adentro y encima un círculo verde sólido de 32px.
+            Eso es un isotipo, y el logo de Lincoin es el wordmark — nada de
+            cuadros, círculos ni iconos de marca. Sobre fondo claro las letras
+            van #15181A y el punto #22A35C. */}
+        <div className="flex flex-col items-center gap-3 mb-6">
+          <span style={{ fontFamily: "'Archivo', system-ui, sans-serif", fontWeight: 800, fontSize: 30, letterSpacing: '-0.9px', color: '#15181A', lineHeight: 1 }}>
+            Lincoin<span style={{ color: '#22A35C' }}>.</span>
+          </span>
+          <Smartphone size={22} style={{ color: '#878E88' }} strokeWidth={1.5} />
         </div>
 
         {/* Title */}
         <h2 style={{ color: '#0C0E0D' }} className="text-2xl md:text-3xl font-bold text-center mb-2">
-          Descarga LINCOIN
+          Descarga Lincoin
         </h2>
         <p style={{ color: '#64748B' }} className="text-center text-sm mb-8 leading-relaxed">
           Tu cuenta personal vive en la app móvil.<br />

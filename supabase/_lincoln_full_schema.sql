@@ -396,27 +396,27 @@ CREATE TABLE IF NOT EXISTS public.document_requests (
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS users_all ON public.users;
 DROP POLICY IF EXISTS users_all ON public.users;
-CREATE POLICY users_all ON public.users FOR ALL USING (true) WITH CHECK (true);
+-- users_all (FOR ALL USING true) eliminada: abria la tabla a cualquier sesion. Las politicas reales estan en migrations/ (zz_cierre_rls_abierta y 2026_zz11_blindaje).
 
 ALTER TABLE public.beneficiaries ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS beneficiaries_all ON public.beneficiaries;
 DROP POLICY IF EXISTS beneficiaries_all ON public.beneficiaries;
-CREATE POLICY beneficiaries_all ON public.beneficiaries FOR ALL USING (true) WITH CHECK (true);
+-- beneficiaries_all (FOR ALL USING true) eliminada: abria la tabla a cualquier sesion. Las politicas reales estan en migrations/ (zz_cierre_rls_abierta y 2026_zz11_blindaje).
 
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS notifications_all ON public.notifications;
 DROP POLICY IF EXISTS notifications_all ON public.notifications;
-CREATE POLICY notifications_all ON public.notifications FOR ALL USING (true) WITH CHECK (true);
+-- notifications_all (FOR ALL USING true) eliminada: abria la tabla a cualquier sesion. Las politicas reales estan en migrations/ (zz_cierre_rls_abierta y 2026_zz11_blindaje).
 
 ALTER TABLE public.user_limits ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS user_limits_all ON public.user_limits;
 DROP POLICY IF EXISTS user_limits_all ON public.user_limits;
-CREATE POLICY user_limits_all ON public.user_limits FOR ALL USING (true) WITH CHECK (true);
+-- user_limits_all (FOR ALL USING true) eliminada: abria la tabla a cualquier sesion. Las politicas reales estan en migrations/ (zz_cierre_rls_abierta y 2026_zz11_blindaje).
 
 ALTER TABLE public.kyc_submissions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS kyc_submissions_all ON public.kyc_submissions;
 DROP POLICY IF EXISTS kyc_submissions_all ON public.kyc_submissions;
-CREATE POLICY kyc_submissions_all ON public.kyc_submissions FOR ALL USING (true) WITH CHECK (true);
+-- kyc_submissions_all (FOR ALL USING true) eliminada: abria la tabla a cualquier sesion. Las politicas reales estan en migrations/ (zz_cierre_rls_abierta y 2026_zz11_blindaje).
 
 
 

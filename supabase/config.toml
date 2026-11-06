@@ -9,9 +9,6 @@ verify_jwt = false
 [functions.notify-transaction]
 verify_jwt = false
 
-[functions.didit-kyc]
-verify_jwt = false
-
 [functions.admin-data]
 verify_jwt = false
 
@@ -37,4 +34,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.email-otp]
+verify_jwt = false
+
+[functions.sarblock]
 verify_jwt = false

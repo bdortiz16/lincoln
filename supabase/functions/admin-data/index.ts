@@ -1,8 +1,35 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { mergeRaw } from '../_shared/raw-data.ts'
+import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
+import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
+import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda, cuentaCoinsendaDe, secretoLlave, CUENTAS_COINSENDA, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
+import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
+import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
+import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '../_shared/modelo-factura.ts'
+import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
+import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
+import { leerPorPaginas } from '../_shared/paginas.ts'
+import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
+import { municipioPorNombre } from '../_shared/municipios.ts'
+import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
+import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permisosDe, permite, visibleEnPais, ROLES_VALIDOS, normalizarFunciones, FUNCIONES_VALIDAS, type Rol, type Acceso } from '../_shared/equipo.ts'
+
+// La librería de passkeys se carga SOLO cuando se usa. Con un import normal,
+// un tropiezo del CDN al arrancar tumbaría la función entera —y con ella el
+// panel y el 2FA de todos los clientes— por una funcionalidad que casi nunca
+// se toca. Así, si falla, solo falla el passkey.
+let webauthnMod: any = null
+async function webauthn(): Promise<any> {
+  if (!webauthnMod) webauthnMod = await import('https://esm.sh/@simplewebauthn/server@13.3.3')
+  return webauthnMod
+}
 
 const SUPABASE_URL  = Deno.env.get('SUPABASE_URL')              ?? ''
 const SERVICE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const ADMIN_EMAIL   = Deno.env.get('ADMIN_EMAIL')               ?? 'admin@lincoin.com'
+// Sin valor por defecto. Antes caía en 'admin@lincoin.com' (OTRO dominio):
+// si el secreto faltaba, esa dirección ajena quedaba como dueño por correo
+// (accesoDe) y le llegaban los avisos de Cumplimiento con datos de clientes.
+const ADMIN_EMAIL   = (Deno.env.get('ADMIN_EMAIL') ?? '').trim()
 
 // Service-role client: bypasses RLS on all queries
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
@@ -19,6 +46,26 @@ const json = (body: unknown, status = 200) =>
 // admin tardara/agotara el timeout. Se reemplazan por un marcador y el
 // panel los pide uno a uno con action=get_tx_proof al abrir el detalle.
 const PROOF_MARKER = '__stored__'
+const esCopMon = (m: unknown) => /^COP/i.test(String(m ?? ''))
+// Texto del cliente dentro de un correo en HTML: escapado, para que un nombre
+// no pueda meter enlaces ni etiquetas en un correo que sale de Lincoin.
+const escHtml = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>)[ch])
+
+// Lo que NUNCA viaja al navegador del panel: material de 2FA y de acceso de
+// cada cuenta. Antes la descarga general lo mandaba entero a cualquier rol
+// —también a "Solo lectura"— y el panel lo guardaba en el navegador: hashes
+// de códigos de respaldo, secretos TOTP (cifrados o, en cuentas viejas, en
+// claro), el hash del código del correo y el de la contraseña vieja. Es el
+// mismo material que permitió el ingreso de septiembre de 2026.
+// mfaEnabled sí viaja: el panel muestra si la cuenta tiene 2FA.
+const CLAVES_CREDENCIALES = ['mfaBackupHashes', 'totpSecret', 'totpSecretEnc', 'otp', 'passwordHash', 'mfaSessions', 'mfaLastCounter', 'mfaFactorId', 'trustedDevices', 'passkeys']
+function sinCredenciales(rd: unknown): unknown {
+  if (!rd || typeof rd !== 'object') return rd
+  const out = { ...(rd as Record<string, unknown>) }
+  for (const k of CLAVES_CREDENCIALES) delete out[k]
+  return out
+}
+
 function slimRawData(rd: unknown, limit = 2000): unknown {
   if (!rd || typeof rd !== 'object') return rd
   const out: Record<string, unknown> = {}
@@ -28,33 +75,455 @@ function slimRawData(rd: unknown, limit = 2000): unknown {
   return out
 }
 
-// ── Cifrado de campos sensibles a nivel de APLICACIÓN (además del AES-256
-//    en reposo de la base). AES-256-GCM con llave derivada de FIELD_ENC_KEY
-//    (secret del servidor, nunca en la base ni en el cliente). Prefijo
-//    'enc:v1:' distingue cifrado de texto plano legacy. Sin la llave, no
-//    cifra (no rompe) y descifrar plano devuelve el mismo texto.
-const FIELD_ENC_KEY = Deno.env.get('FIELD_ENC_KEY') ?? ''
-let _encKeyPromise: Promise<CryptoKey> | null = null
-function fieldKey(): Promise<CryptoKey> {
-  if (!_encKeyPromise) {
-    _encKeyPromise = crypto.subtle.digest('SHA-256', new TextEncoder().encode(FIELD_ENC_KEY))
-      .then(raw => crypto.subtle.importKey('raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']))
+// ── Quién del equipo hizo cada movimiento manual ─────────────────────────
+// raw_data.por (cargue o descuento) y raw_data.resueltoPor (aprobar/rechazar)
+// guardan el id, el correo y el nombre. El dueño los ve; cualquier otro
+// miembro solo recibe si fue él ("Tú") o no ("Equipo"): el monitoreo del
+// equipo es del dueño, y los nombres no viajan a los demás navegadores.
+function autoresParaPanel(rd: unknown, esDueno: boolean, yoId: string): unknown {
+  if (esDueno || !rd || typeof rd !== 'object') return rd
+  const out = { ...(rd as Record<string, unknown>) }
+  for (const k of ['por', 'resueltoPor']) {
+    const v = out[k] as any
+    if (v && typeof v === 'object') out[k] = { esYo: String(v.id ?? '') === yoId }
   }
-  return _encKeyPromise
+  return out
 }
-async function encField(plain: string): Promise<string> {
-  if (!FIELD_ENC_KEY || !plain) return plain
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await fieldKey(), new TextEncoder().encode(plain)))
-  const buf = new Uint8Array(iv.length + ct.length); buf.set(iv); buf.set(ct, iv.length)
-  return 'enc:v1:' + btoa(String.fromCharCode(...buf))
+
+// ── Usuarios para el panel ────────────────────────────────────────────────
+// Lo que viaja al navegador del admin: sin los hashes de clave/PIN ni el
+// secreto 2FA de columna, y sin los blobs gigantes de raw_data.
+const COLUMNAS_QUE_NO_VIAJAN = ['password_hash', 'pin_hash', 'two_factor_secret']
+// Objetos de raw_data que la lista del panel no usa y que slimRawData no
+// recorta (solo acorta textos sueltos). Con 14 clientes la carga pesaba
+// 3,9 MB (2,6 MB de fichas de antecedentes y 0,5 MB de beneficiarios), se
+// repetía cada ~30 s y en el celular con datos no alcanzaba a bajar en los
+// 20 s que espera el panel: "Estás viendo datos guardados" y "No se pudo
+// buscar" (31 oct). Cumplimiento, Cupos y TusDatos los piden por su cuenta.
+// Quitarlos no borra nada: saveUser siempre toma estos dos de la base.
+const RAW_QUE_NO_VIAJA = ['tusdatos', 'mouvContacts']
+function usuarioParaPanel(u: Record<string, unknown>): Record<string, unknown> {
+  const raw = sinCredenciales(slimRawData(u.raw_data, 20000))
+  if (raw && typeof raw === 'object') for (const k of RAW_QUE_NO_VIAJA) delete (raw as Record<string, unknown>)[k]
+  const o: Record<string, unknown> = { ...u, raw_data: raw }
+  for (const k of COLUMNAS_QUE_NO_VIAJAN) delete o[k]
+  return o
 }
-async function decField(v: string): Promise<string> {
-  if (typeof v !== 'string' || !v.startsWith('enc:v1:')) return v   // texto plano legacy
-  if (!FIELD_ENC_KEY) throw new Error('FIELD_ENC_KEY missing')
-  const bytes = Uint8Array.from(atob(v.slice(7)), c => c.charCodeAt(0))
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, await fieldKey(), bytes.slice(12))
-  return new TextDecoder().decode(pt)
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const idsValidos = (v: unknown, tope: number): string[] =>
+  Array.from(new Set((Array.isArray(v) ? v : String(v ?? '').split(',')).map(x => String(x).trim()).filter(x => UUID_RE.test(x)))).slice(0, tope)
+
+// Usuarios por id, en tandas: un .in() con cientos de ids arma una URL que
+// PostgREST rechaza.
+async function usuariosPorId(ids: string[]): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = []
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data } = await db.from('users').select('*').in('id', ids.slice(i, i + 150))
+    out.push(...((data ?? []) as Record<string, unknown>[]))
+  }
+  return out
+}
+
+// Lo que Lincoin les debe a los clientes en cada moneda (suma de saldos de
+// todos menos el equipo). Lo suma la base (admin_obligaciones); si esa
+// función todavía no existe se suma aquí por páginas, con tope, y se avisa
+// que es parcial. Sumarlo en el navegador con la lista del panel daba de
+// menos en silencio apenas había más de 1.000 cuentas.
+let obligacionesRespaldo: { at: number; valor: Record<string, number>; parcial: boolean } | null = null
+async function obligacionesTodas(): Promise<{ valor: Record<string, number>; parcial: boolean } | null> {
+  const { data, error } = await db.rpc('admin_obligaciones')
+  if (!error && data && typeof data === 'object') {
+    const valor: Record<string, number> = {}
+    for (const [k, v] of Object.entries(data as Record<string, unknown>)) valor[k] = Number(v) || 0
+    return { valor, parcial: false }
+  }
+  if (obligacionesRespaldo && Date.now() - obligacionesRespaldo.at < 120_000) return obligacionesRespaldo
+  const valor: Record<string, number> = {}
+  let parcial = false
+  for (let off = 0; ; off += 1000) {
+    if (off >= 30000) { parcial = true; break }
+    const { data: filas, error: e2 } = await db.from('users').select('id, role, balances, crypto_balances').order('id').range(off, off + 999)
+    if (e2) return null
+    for (const f of (filas ?? []) as any[]) {
+      if (f.role === 'admin') continue
+      const b = { ...(f.balances && typeof f.balances === 'object' ? f.balances : {}), ...(f.crypto_balances && typeof f.crypto_balances === 'object' ? f.crypto_balances : {}) }
+      for (const [k, v] of Object.entries(b)) { const n = Number(v); if (isFinite(n)) valor[k] = (valor[k] ?? 0) + n }
+    }
+    if (!filas || filas.length < 1000) break
+  }
+  obligacionesRespaldo = { at: Date.now(), valor, parcial }
+  return obligacionesRespaldo
+}
+
+// ── Caja de Lincoin ──────────────────────────────────────────────────────
+// bolsa del proveedor = saldos de los clientes + lo de Lincoin + (lo que se
+// mueve por fuera) ± diferencia. Ver 2026_zz20_caja_lincoin.sql.
+// Coinsenda: Lincoin tiene DOS cuentas allá, y cada una es su propia bolsa.
+//   · 'Coinsenda'   = Cuenta 3, respalda el "Saldo Cuenta 3" (COP_C3).
+//   · 'Coinsenda 2' = Cuenta 4, respalda el "Saldo Cuenta 4" (COP_C4).
+// De cada una salen su Bre-B y su ACH (decisión del 1 nov). El nombre de la
+// primera se queda como estaba porque ya puede tener caja y movimientos.
+const CAJA = [
+  { proveedor: 'Mouv', rail: 'COP_BREB' }, { proveedor: 'Finity', rail: 'COP_ACH' },
+  { proveedor: 'Coinsenda', rail: 'COP_C3' }, { proveedor: 'Coinsenda 2', rail: 'COP_C4' },
+] as const
+const PROV_COINSENDA: Record<CuentaCoinsenda, 'Coinsenda' | 'Coinsenda 2'> = { 3: 'Coinsenda', 4: 'Coinsenda 2' }
+const RAIL_COINSENDA: Record<CuentaCoinsenda, 'COP_C3' | 'COP_C4'> = { 3: 'COP_C3', 4: 'COP_C4' }
+const esBolsaCoinsenda = (p: string) => p === 'Coinsenda' || p === 'Coinsenda 2'
+const hoyBogota = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10)
+const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : x === 'COP_C4' ? 'Coinsenda 2' : null }
+
+// La utilidad de Lincoin en un cargue: la de su contabilidad, MENOS el 0,10 %
+// de Bre-B en Mouv. Ese 0,10 % es un costo de Mouv (lo confirmó
+// cumplimiento el 2026-10-29), no plata de Lincoin; la contabilidad del
+// cargue lo venía sumando como utilidad. Un cargue oculto (raw_data.oculto)
+// o sin contabilidad no suma.
+//
+// Un cargue REVERTIDO (raw_data.reverso) sigue la misma regla que
+// Contabilidad (_shared/liquidacion-lincoin.ts, conReverso): anulado no deja
+// utilidad y corregido en parte la deja en proporción. Antes aquí se ignoraba:
+// Contabilidad mostraba 0 y Tesorería, Lincoin, Reportes y la caja seguían
+// sumando la utilidad del cargue anulado; la caja quedaba con una
+// "diferencia sin explicar" (revisión del 6 nov).
+function utilidadLincoin(t: { currency?: unknown; utilidad?: unknown; feeBreb?: unknown; oculto?: unknown; reverso?: unknown; acreditado?: unknown; montoFila?: unknown }): number {
+  if (t.oculto) return 0
+  if (t.utilidad == null || t.utilidad === '') return 0
+  const u = Number(t.utilidad)
+  if (!isFinite(u)) return 0
+  const base = u - (String(t.currency ?? '').toUpperCase() === 'COP_BREB' ? (Number(t.feeBreb) || 0) : 0)
+  const rev = t.reverso && typeof t.reverso === 'object' ? t.reverso as Record<string, unknown> : null
+  const revCop = Number(rev?.montoCop) || 0
+  const acreditado = Number(t.acreditado ?? t.montoFila) || 0
+  if (revCop > 0 && acreditado > 0) {
+    if (rev?.anulado === true || revCop >= acreditado - 1) return 0
+    return base * (acreditado - revCop) / acreditado
+  }
+  return base
+}
+const SELECT_UTILIDAD = 'utilidad:raw_data->acct->>utilityCop, feeBreb:raw_data->acct->>feeCopBreb, oculto:raw_data->oculto, reverso:raw_data->reverso, acreditado:raw_data->acct->>creditedCop, montoFila:amount'
+
+async function utilidadPorProveedor(desdeIso: string): Promise<Record<string, number>> {
+  const { filas } = await leerPorPaginas(() => db.from('transactions')
+    .select(`id, currency, ${SELECT_UTILIDAD}`)
+    .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+    .gte('created_at', desdeIso), { tope: 100_000 })
+  const out: Record<string, number> = { Mouv: 0, Finity: 0, Coinsenda: 0, 'Coinsenda 2': 0 }
+  for (const t of filas as any[]) { const p = provDeRiel(t.currency); if (p) out[p] += utilidadLincoin(t) }
+  return out
+}
+
+// Saldo de cada bolsa, leído en el proveedor con la llave de servicio (igual
+// que la pantalla de Billetera: Mouv = Bre-B, Finity = COP).
+async function bolsasProveedores(): Promise<Record<string, number | null>> {
+  const h = { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` }
+  const pedir = (fn: string) => fetch(`${SUPABASE_URL}/functions/v1/${fn}`, { method: 'POST', headers: h, body: JSON.stringify({ action: 'treasury_balances' }), signal: AbortSignal.timeout(25_000) })
+    .then(r => r.json()).catch(() => null)
+  const [m, f, c, c4] = await Promise.all([pedir('mouv-proxy'), pedir('finity-proxy'), bolsaCoinsenda(3).catch(() => null), bolsaCoinsenda(4).catch(() => null)])
+  const num = (v: unknown) => { const n = Number(v); return v != null && v !== '' && isFinite(n) ? n : null }
+  return {
+    Mouv: m && !m.error && m.ok !== false ? num(m.breb ?? m.total) : null,
+    Finity: f && !f.error && f.ok !== false ? num(f.cop) : null,
+    Coinsenda: c,
+    'Coinsenda 2': c4,
+  }
+}
+
+// El tramo de una clave pública RSA 2048 que se ve en el panel de Coinsenda y
+// la distingue de otra: todas empiezan con el mismo encabezado DER.
+const ENCABEZADO_RSA2048 = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA'
+function tramoClave(pem?: string | null): string | null {
+  const cuerpo = String(pem ?? '').replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '')
+  return cuerpo.startsWith(ENCABEZADO_RSA2048) ? cuerpo.slice(ENCABEZADO_RSA2048.length, ENCABEZADO_RSA2048.length + 10) : null
+}
+
+// La bolsa de una cuenta de Coinsenda: el disponible de su billetera COP (la
+// misma de donde salen los envíos de esa cuenta). null = no configurada o no
+// respondió.
+async function bolsaCoinsenda(cuenta: CuentaCoinsenda): Promise<number | null> {
+  const b = await leerBolsaCoinsenda(cuenta)
+  return 'cop' in b ? b.cop : null
+}
+async function leerBolsaCoinsenda(cuenta: CuentaCoinsenda): Promise<{ cop: number } | { error: string; sinConfigurar?: boolean }> {
+  const cfg = await configCoinsenda(db, cuenta)
+  if (!cfg.email && !cfg.telefono) return { error: `La Cuenta ${cuenta} de Coinsenda no está configurada (Admin → Coinsenda).`, sinConfigurar: true }
+  try {
+    const b = await billeteraCop(new ClienteCoinsenda(db, cfg, 20_000))
+    if ('error' in b) return { error: b.error }
+    return Number.isFinite(b.disponible) ? { cop: b.disponible } : { error: 'Coinsenda no devolvió el disponible de la billetera COP.' }
+  } catch (e) { return { error: String((e as Error)?.message ?? e).slice(0, 200) } }
+}
+
+// Abre la caja de los proveedores que todavía no la tienen: todo lo que
+// sobra hoy en la bolsa se toma como de Lincoin. No toca una apertura que ya
+// existe (para corregirla está caja_apertura_set).
+async function abrirCaja(por: Record<string, unknown> | null): Promise<string[]> {
+  const { data: ya } = await db.from('caja_apertura').select('proveedor')
+  const tienen = new Set(((ya ?? []) as any[]).map(a => String(a.proveedor)))
+  const faltan = CAJA.filter(c => !tienen.has(c.proveedor))
+  if (!faltan.length) return []
+  const [bolsas, oblig] = await Promise.all([bolsasProveedores(), obligacionesTodas()])
+  const abiertas: string[] = []
+  for (const c of faltan) {
+    const bolsa = bolsas[c.proveedor]
+    if (bolsa == null || !oblig || oblig.parcial) continue   // sin cifra confiable no se abre
+    const clientes = Number(oblig.valor[c.rail] ?? 0)
+    const { error } = await db.from('caja_apertura').insert({ proveedor: c.proveedor, bolsa, clientes, lincoin: bolsa - clientes, editado_por: por, editado_at: new Date().toISOString() })
+    if (!error) abiertas.push(c.proveedor)
+  }
+  return abiertas
+}
+
+// Retiros, externos y aportes registrados (caja_movimientos), sin anulados.
+const SIGNO_MOV: Record<string, 1 | -1> = { retiro: -1, egreso: -1, ingreso: 1, aporte: 1 }
+async function movimientosCaja(desdeFecha: string, hastaFecha?: string): Promise<any[]> {
+  const leer = (cols: string) => {
+    let q = db.from('caja_movimientos').select(cols)
+      .gte('fecha', desdeFecha).order('fecha', { ascending: false }).order('creado_at', { ascending: false }).limit(2000)
+    if (hastaFecha) q = q.lte('fecha', hastaFecha)
+    return q
+  }
+  const base = 'id, fecha, tipo, proveedor, monto, descripcion, soporte_nombre, por, creado_at, anulado'
+  // `envio` (los envíos Bre-B a la empresa) llega con la migración
+  // 2026_zz22. Sin ella, pedirla rompe la consulta entera y la caja quedaba
+  // sin movimientos: se vuelve a leer sin esa columna.
+  let { data, error } = await leer(`${base}, envio`)
+  if (error) ({ data, error } = await leer(base))
+  if (error) return []
+  return (data ?? []) as any[]
+}
+
+// ── Enviar la utilidad a la empresa ───────────────────────────────────
+// Las llaves Bre-B de Lincoin las inscribe el dueño (con el titular que da
+// el directorio y su código 2FA) y viven en private_config, que ni el
+// navegador ni una sesión de cliente pueden leer. Solo a esas llaves puede
+// salir la utilidad: con una sesión de admin robada no se manda la plata a
+// un tercero.
+const LLAVES_LINCOIN = 'lincoin_llaves_breb'
+async function llavesLincoin(): Promise<any[]> {
+  const { data } = await db.from('private_config').select('value').eq('key', LLAVES_LINCOIN).maybeSingle()
+  try { const v = JSON.parse(String((data as any)?.value ?? '[]')); return Array.isArray(v) ? v : [] } catch { return [] }
+}
+async function guardarLlavesLincoin(llaves: any[]): Promise<string | null> {
+  const { error } = await db.from('private_config').upsert({ key: LLAVES_LINCOIN, value: JSON.stringify(llaves) })
+  return error ? error.message : null
+}
+// mouv-proxy con la llave de servicio: sus acciones lincoin_* solo atienden
+// esa llave, nunca una sesión del navegador.
+async function mouvInterno(cuerpo: Record<string, unknown>, ms = 100_000): Promise<any> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/mouv-proxy`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(ms),
+    })
+    return await r.json().catch(() => ({ ok: false, sinRespuesta: true }))
+  } catch { return { ok: false, sinRespuesta: true } }
+}
+// Lo que de verdad se puede sacar de una bolsa: lo menor entre lo que le
+// toca a Lincoin según la caja y lo que sobra HOY en la bolsa después de los
+// saldos de los clientes. Si la caja no cuadra (falta plata), manda la bolsa:
+// la utilidad nunca sale con plata de clientes. Sin cifra en vivo, no hay
+// tope confiable y no se envía.
+async function disponibleLincoin(proveedor: string): Promise<{ ok: true; disponible: number; esperado: number; real: number } | { ok: false; error: string }> {
+  const c = CAJA.find(x => x.proveedor === proveedor)
+  if (!c) return { ok: false, error: 'Bolsa inválida.' }
+  const [estado, bolsas, oblig] = await Promise.all([estadoCaja(), bolsasProveedores(), obligacionesTodas()])
+  const e = estado.find(x => x.proveedor === proveedor)
+  if (!e?.apertura || e.lincoinEsperado == null) return { ok: false, error: `La caja de ${proveedor} no está abierta todavía.` }
+  const bolsa = bolsas[proveedor]
+  if (bolsa == null || !oblig || oblig.parcial) return { ok: false, error: `No se pudo leer en vivo la bolsa de ${proveedor} y los saldos de los clientes, así que no se envía nada. Intenta de nuevo en un momento.` }
+  const real = Math.floor(bolsa - Number(oblig.valor[c.rail] ?? 0))
+  return { ok: true, disponible: Math.max(0, Math.min(Number(e.lincoinEsperado), real)), esperado: Number(e.lincoinEsperado), real }
+}
+// Margen para el costo de la transferencia, que el proveedor le cobra a la
+// misma bolsa: se deja libre para que no salga de la plata de los clientes.
+const margenCostoEnvio = (monto: number) => Math.ceil(monto * 0.002) + 2000
+const enmascararLlave = (v: string) => { const t = String(v ?? ''); return t.length > 4 ? `${'•'.repeat(Math.min(6, t.length - 4))}${t.slice(-4)}` : t }
+const fechaBogota = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 10)
+
+// LA CAJA VA POR MESES CALENDARIO. El saldo de apertura se toma como el que
+// Lincoin tenía el 1.º del mes en que se abrió la caja, y desde ese día
+// cuentan la utilidad de los cargues y los movimientos. Así cada mes —también
+// el de la apertura— suma su utilidad completa, del 1 al último día. Antes la
+// apertura (29 oct) cortaba octubre: solo contaban los 3 últimos días y la
+// tarjeta del mes mostraba una utilidad que no era la del mes.
+// Devuelve la fecha (Bogotá) y el instante UTC del 1.º de ese mes.
+const inicioCaja = (abiertaAt: unknown) => {
+  const mes = fechaBogota(String(abiertaAt)).slice(0, 7)
+  return { fecha: `${mes}-01`, iso: new Date(Date.parse(`${mes}-01T00:00:00Z`) + 5 * 3600_000).toISOString() }
+}
+
+async function estadoCaja() {
+  const { data: aps } = await db.from('caja_apertura').select('*')
+  const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
+  const { data: fotos } = await db.from('caja_cierres').select('*').order('fecha', { ascending: false }).limit(4)
+  const primera = ((aps ?? []) as any[]).map(a => inicioCaja(a.abierta_at).iso).sort()[0]
+  const utilidad = primera ? await utilidadPorProveedor(primera) : { Mouv: 0, Finity: 0 }
+  // La utilidad se cuenta desde el 1.º del mes de apertura de CADA proveedor.
+  const porProv: Record<string, number> = {}
+  for (const c of CAJA) {
+    const a = aperturas.get(c.proveedor)
+    const ini = a ? inicioCaja(a.abierta_at).iso : null
+    porProv[c.proveedor] = a ? (ini === primera ? utilidad[c.proveedor] : (await utilidadPorProveedor(ini!))[c.proveedor]) : 0
+  }
+  // Movimientos de Lincoin desde ese mismo día, en cada bolsa.
+  const primeraFecha = primera ? fechaBogota(primera) : null
+  const movs = primeraFecha ? (await movimientosCaja(primeraFecha)).filter(m => !m.anulado) : []
+  return CAJA.map(c => {
+    const a = aperturas.get(c.proveedor)
+    const ultima = ((fotos ?? []) as any[]).find(f => f.proveedor === c.proveedor) ?? null
+    const desde = a ? inicioCaja(a.abierta_at).fecha : null
+    const deEsta = desde ? movs.filter(m => m.proveedor === c.proveedor && String(m.fecha) >= desde) : []
+    const retiros = deEsta.filter(m => m.tipo === 'retiro').reduce((acc, m) => acc + Number(m.monto), 0)
+    const externos = deEsta.filter(m => m.tipo !== 'retiro').reduce((acc, m) => acc + (SIGNO_MOV[m.tipo] ?? 0) * Number(m.monto), 0)
+    return {
+      proveedor: c.proveedor, rail: c.rail,
+      apertura: a ? { at: a.abierta_at, bolsa: Number(a.bolsa), clientes: Number(a.clientes), lincoin: Number(a.lincoin), nota: a.nota ?? null, editadoPor: a.editado_por ?? null, editadoAt: a.editado_at ?? null } : null,
+      utilidadDesdeApertura: Math.round(porProv[c.proveedor] ?? 0),
+      retirosDesdeApertura: Math.round(retiros), externosDesdeApertura: Math.round(externos),
+      lincoinEsperado: a ? Math.round(Number(a.lincoin) + (porProv[c.proveedor] ?? 0) - retiros + externos) : null,
+      ultimaFoto: ultima ? { fecha: ultima.fecha, bolsa: ultima.bolsa == null ? null : Number(ultima.bolsa), clientes: Number(ultima.clientes), lincoinEsperado: Number(ultima.lincoin_esperado), diferencia: ultima.diferencia == null ? null : Number(ultima.diferencia) } : null,
+    }
+  })
+}
+
+// La caja de UN mes, por bolsa. La de estadoCaja() suma todo desde el
+// arranque y no vuelve a empezar; el tablero se mira por mes: con qué
+// arrancó Lincoin en cada bolsa el día 1, cuánto dejaron los cargues ESE mes
+// (del 1 al último día), qué se retiró o se movió por fuera, y con cuánto
+// cerró. El mes en que se abrió la caja arranca con el saldo de apertura.
+async function cajaDelMes(desde: string, hasta: string, inicioIso: string, finIso: string) {
+  const { data: aps } = await db.from('caja_apertura').select('*')
+  const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
+  const tsAp = (a: any) => Date.parse(inicioCaja(a.abierta_at).iso)
+  const primera = ((aps ?? []) as any[]).map(tsAp).filter(Number.isFinite).sort((x, y) => x - y)[0]
+  if (!Number.isFinite(primera)) return CAJA.map(c => ({ proveedor: c.proveedor, abierta: false }))
+  const tInicio = Date.parse(inicioIso), tFin = Math.min(Date.parse(finIso), Date.now())
+  // Utilidad de los cargues: antes del mes (para el saldo con que arranca) y
+  // dentro del mes, cada bolsa desde SU apertura.
+  const antes: Record<string, number> = {}, mes: Record<string, number> = {}
+  if (tFin > primera) {
+    const { filas } = await leerPorPaginas(() => db.from('transactions')
+      .select(`id, created_at, currency, ${SELECT_UTILIDAD}`)
+      .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+      .gte('created_at', new Date(primera).toISOString()).lt('created_at', new Date(tFin).toISOString()), { tope: 100_000 })
+    for (const t of filas as any[]) {
+      const p = provDeRiel(t.currency)
+      const a = p ? aperturas.get(p) : null
+      const ts = Date.parse(String(t.created_at))
+      if (!p || !a || !(ts >= tsAp(a))) continue
+      const u = utilidadLincoin(t)
+      if (ts < tInicio) antes[p] = (antes[p] ?? 0) + u
+      else mes[p] = (mes[p] ?? 0) + u
+    }
+  }
+  const movs = (await movimientosCaja(fechaBogota(new Date(primera).toISOString()), hasta)).filter(m => !m.anulado)
+  return CAJA.map(c => {
+    const a = aperturas.get(c.proveedor)
+    if (!a) return { proveedor: c.proveedor, abierta: false }
+    const desdeAp = inicioCaja(a.abierta_at).fecha
+    if (Date.parse(finIso) <= tsAp(a)) return { proveedor: c.proveedor, abierta: false, abreDespues: true, aperturaAt: a.abierta_at }
+    const deEsta = movs.filter(m => m.proveedor === c.proveedor && String(m.fecha) >= desdeAp)
+    const suma = (lista: any[], tipo: 'retiro' | 'otros') => lista
+      .filter(m => tipo === 'retiro' ? m.tipo === 'retiro' : m.tipo !== 'retiro')
+      .reduce((acc, m) => acc + (tipo === 'retiro' ? 1 : (SIGNO_MOV[m.tipo] ?? 0)) * Number(m.monto), 0)
+    const previos = deEsta.filter(m => String(m.fecha) < desde)
+    const delMes = deEsta.filter(m => String(m.fecha) >= desde && String(m.fecha) <= hasta)
+    const abreEnElMes = tsAp(a) >= tInicio
+    const inicio = Number(a.lincoin) + (antes[c.proveedor] ?? 0) - suma(previos, 'retiro') + suma(previos, 'otros')
+    const utilidad = mes[c.proveedor] ?? 0
+    const retiros = suma(delMes, 'retiro'), externos = suma(delMes, 'otros')
+    return {
+      proveedor: c.proveedor, abierta: true, abreEnElMes, aperturaAt: a.abierta_at,
+      inicio: Math.round(inicio), utilidad: Math.round(utilidad), retiros: Math.round(retiros), externos: Math.round(externos),
+      cierre: Math.round(inicio + utilidad - retiros + externos),
+    }
+  })
+}
+
+// Foto diaria (23:59 de Colombia). Si la caja no se ha abierto, se abre
+// ahora: "la caja empieza hoy".
+async function cajaFoto() {
+  const abiertas = await abrirCaja({ sistema: 'foto diaria' })
+  const [bolsas, oblig, estado] = await Promise.all([bolsasProveedores(), obligacionesTodas(), estadoCaja()])
+  const fecha = hoyBogota()
+  const filas = estado.filter(e => e.apertura).map(e => {
+    const clientes = Number(oblig?.valor?.[e.rail] ?? 0)
+    const bolsa = bolsas[e.proveedor]
+    const esperado = Number(e.lincoinEsperado ?? 0)
+    return { fecha, proveedor: e.proveedor, bolsa, clientes, lincoin_esperado: esperado, diferencia: bolsa == null ? null : Math.round(bolsa - clientes - esperado) }
+  })
+  if (filas.length) await db.from('caja_cierres').upsert(filas, { onConflict: 'fecha,proveedor' })
+  return { ok: true, fecha, abiertas, fotos: filas.length }
+}
+
+// Cifrado de campos sensibles: la implementación vive en _shared para que
+// NO pueda volver a haber tres copias que se desincronicen.
+
+// ── Códigos de respaldo ───────────────────────────────────────────────────
+// Se guardan HASHEADOS, no cifrados. Un hash no depende de ninguna llave, así
+// que aunque FIELD_ENC_KEY cambie o se pierda, estos códigos SIEMPRE siguen
+// sirviendo para entrar.
+//
+// INCIDENTE DE SEPTIEMBRE 2026 — por qué ya no es un SHA-256 a secas:
+// mientras public.users fue legible para cualquier sesión, alguien copió los
+// hashes de respaldo de la cuenta admin. Eran SHA-256 sin sal de un código de
+// 8 símbolos sobre 32 posibles (2^40): una tarjeta gráfica los rompe en
+// minutos. El 5 de septiembre entraron al panel con dos de esos códigos.
+//
+// Ahora: el código tiene 10 símbolos (2^50) y el hash es PBKDF2-SHA256 con
+// sal propia y 150.000 vueltas. Romper UN código por fuerza bruta pasa de
+// minutos a siglos. Los hashes viejos (64 hex) se siguen reconociendo para
+// no dejar a nadie afuera, pero el tablero de seguridad pide regenerarlos.
+const BACKUP_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'   // sin O/0/I/1
+const BACKUP_LEN = 10
+const BACKUP_ITER = 150_000
+function normalizeBackup(c: string): string {
+  return String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+}
+const hex = (b: ArrayBuffer | Uint8Array) => Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join('')
+const unhex = (s: string) => new Uint8Array((s.match(/../g) ?? []).map(h => parseInt(h, 16)))
+async function pbkdf2Backup(code: string, salt: Uint8Array, iter: number): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('lincoin-backup:' + normalizeBackup(code)), 'PBKDF2', false, ['deriveBits'])
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, key, 256)
+  return hex(bits)
+}
+async function hashBackup(code: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  return `pbkdf2$${BACKUP_ITER}$${hex(salt)}$${await pbkdf2Backup(code, salt, BACKUP_ITER)}`
+}
+// Hash del formato viejo (SHA-256 sin sal). Solo para RECONOCER los que ya
+// existen; nunca se vuelve a generar uno así.
+async function hashBackupLegacy(code: string): Promise<string> {
+  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('lincoin-backup:' + normalizeBackup(code)))
+  return hex(raw)
+}
+const esHashLegacy = (h: string) => /^[0-9a-f]{64}$/i.test(String(h ?? ''))
+// Devuelve la posición del hash que corresponde al código, o -1.
+async function matchBackup(code: string, hashes: string[]): Promise<number> {
+  let legacy: string | null = null
+  for (let i = 0; i < hashes.length; i++) {
+    const h = String(hashes[i] ?? '')
+    if (esHashLegacy(h)) {
+      legacy ??= await hashBackupLegacy(code)
+      if (h.toLowerCase() === legacy) return i
+      continue
+    }
+    const partes = h.split('$')
+    if (partes.length !== 4 || partes[0] !== 'pbkdf2') continue
+    const iter = parseInt(partes[1], 10)
+    if (!(iter > 0) || !/^[0-9a-f]{32}$/i.test(partes[2])) continue
+    if ((await pbkdf2Backup(code, unhex(partes[2]), iter)) === partes[3].toLowerCase()) return i
+  }
+  return -1
+}
+function newBackupCodes(n = 8): string[] {
+  const out: string[] = []
+  for (let i = 0; i < n; i++) {
+    const bytes = crypto.getRandomValues(new Uint8Array(BACKUP_LEN))
+    const s = Array.from(bytes).map(b => BACKUP_ALPHABET[b % BACKUP_ALPHABET.length]).join('')
+    out.push(s.slice(0, BACKUP_LEN / 2) + '-' + s.slice(BACKUP_LEN / 2))
+  }
+  return out
 }
 
 // TOTP nativo (SHA1/6/30, ventana ±2) — para verificar el 2FA en el servidor.
@@ -69,10 +538,14 @@ function base32Decode(s: string): Uint8Array {
   }
   return new Uint8Array(out)
 }
-async function verifyTOTPServer(secret: string, token: string): Promise<boolean> {
+// Devuelve el CONTADOR de la ventana que acertó, o -1 si ninguna. Se
+// necesita el número (no un booleano) para rechazar el mismo código usado
+// dos veces: un código sigue siendo válido ~2,5 min, y en ese rato alguien
+// que lo vio por encima del hombro o lo capturó podía reutilizarlo.
+async function verifyTOTPServer(secret: string, token: string): Promise<number> {
   const code = String(token ?? '').replace(/\D/g, '')
-  if (code.length !== 6) return false
-  const key = base32Decode(secret); if (!key.length) return false
+  if (code.length !== 6) return -1
+  const key = base32Decode(secret); if (!key.length) return -1
   const ck = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
   const now = Math.floor(Date.now() / 1000)
   for (let w = -2; w <= 2; w++) {
@@ -82,19 +555,1181 @@ async function verifyTOTPServer(secret: string, token: string): Promise<boolean>
     const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', ck, b))
     const off = hmac[hmac.length - 1] & 0x0f
     const bin = ((hmac[off] & 0x7f) << 24) | (hmac[off + 1] << 16) | (hmac[off + 2] << 8) | hmac[off + 3]
-    if ((bin % 1000000).toString().padStart(6, '0') === code) return true
+    if ((bin % 1000000).toString().padStart(6, '0') === code) return counter
   }
-  return false
+  return -1
 }
 
-async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string }> {
+// ── 2FA REAL: verificada en el SERVIDOR, no solo en la pantalla ───────────
+// El 2FA se pedía únicamente en la interfaz. El servidor solo miraba
+// "¿JWT válido + role='admin'?", así que quien tuviera la CONTRASEÑA podía
+// pedir un token con signInWithPassword y llamar a las acciones sensibles
+// directamente, sin pasar jamás por el código de 6 dígitos.
+//
+// Ahora, al verificar el 2FA se anota la SESIÓN que lo hizo, y las acciones
+// sensibles exigen que la sesión que llama sea una de esas. El id de sesión
+// viaja dentro del JWT firmado por Supabase: no se puede inventar ni quitar
+// sin invalidar la firma, que getUser() ya comprobó.
+const MFA_SESSION_TTL_MS = 24 * 3600 * 1000
+
+function sessionIdOf(req: Request): string | null {
+  try {
+    const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+    const part = jwt.split('.')[1]
+    if (!part) return null
+    const pad = part.replace(/-/g, '+').replace(/_/g, '/')
+    const payload = JSON.parse(atob(pad + '='.repeat((4 - pad.length % 4) % 4)))
+    return payload?.session_id ?? null
+  } catch { return null }
+}
+
+// Escalones del ingreso, en orden:
+//   'email' = pasó el código del correo
+//   'app'   = pasó además el código de la app, pero le falta la llave
+//   'full'  = pasó TODO lo que su cuenta exige
+// Solo 'full' habilita la sesión, así el orden no se puede saltar mandando
+// directamente el último paso.
+async function rememberMfaSession(req: Request, userId: string, stage: 'email' | 'app' | 'full' = 'full') {
+  const sid = sessionIdOf(req)
+  if (!sid) return
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const raw = { ...((u as any)?.raw_data ?? {}) }
+    const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const rest = list.filter((x: any) => x?.sid !== sid)
+    raw.mfaSessions = [{ sid, at: new Date().toISOString(), stage }, ...rest].slice(0, 5)
+    await mergeRaw(db, userId, { mfaSessions: raw.mfaSessions })
+  } catch { /* si no se puede anotar, la acción sensible pedirá 2FA de nuevo */ }
+}
+
+// En qué etapa del ingreso está ESTA sesión ('email', 'app', 'full'), o null.
+async function etapaDeSesion(req: Request, userId: string): Promise<string | null> {
+  const sid = sessionIdOf(req)
+  if (!sid) return null
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid)
+    if (!hit) return null
+    if ((hit.stage ?? 'full') === 'full' && Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) return null
+    return String(hit.stage ?? 'full')
+  } catch { return null }
+}
+
+// ¿Esta sesión ya superó el código del CORREO (primer paso)? Vale 15 minutos.
+async function emailStagePassed(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req)
+  if (!sid) return true   // token sin claim de sesión: no se puede distinguir
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid && ['email', 'app', 'full'].includes(String(x?.stage)))
+    return !!hit && (Date.now() - new Date(hit.at).getTime() < 15 * 60_000)
+  } catch { return false }
+}
+
+// ¿Esta sesión ya pasó el código de la APP? Es lo que la llave exige tener
+// atrás: sin esto, quien tuviera la llave entraría saltándose el 2FA.
+async function appStagePassed(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req)
+  if (!sid) return true   // token sin claim de sesión: no se puede distinguir
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const list: any[] = Array.isArray((u as any)?.raw_data?.mfaSessions) ? (u as any).raw_data.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid && ['app', 'full'].includes(String(x?.stage)))
+    return !!hit && (Date.now() - new Date(hit.at).getTime() < 15 * 60_000)
+  } catch { return false }
+}
+
+// El colaborador no opera sin 2FA. A los demás roles el 2FA se les exige
+// en lo sensible, y "cuenta sin 2FA activo → pasa" (ver requireMfaSession).
+// El colaborador nace de una invitación y su 2FA es obligatorio desde el
+// primer día, para TODO: sin esto, con solo la contraseña vería clientes y
+// saldos. Solo se le deja saber quién es (mi_acceso) para que el panel le
+// muestre la pantalla de activar el 2FA.
+async function falta2faColaborador(req: Request, userId: string): Promise<string | null> {
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    if (!(u as any)?.raw_data?.mfaEnabled) return 'Activa la verificación en dos pasos para usar el panel.'
+  } catch { return 'No pudimos comprobar tu verificación en dos pasos. Intenta de nuevo.' }
+  return await requireMfaSession(req, userId)
+}
+
+// Devuelve un mensaje de error si la sesión que llama NO pasó por el 2FA.
+// null = puede continuar.
+async function requireMfaSession(req: Request, userId: string | undefined): Promise<string | null> {
+  if (!userId) return null
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).single()
+    const raw = (u as any)?.raw_data ?? {}
+    // Cuenta sin 2FA activo → nada cambia respecto a antes. El 2FA se activa
+    // desde el panel; no se le puede exigir a quien todavía no lo tiene.
+    if (!raw.mfaEnabled) return null
+    const sid = sessionIdOf(req)
+    // Token sin claim de sesión (GoTrue antiguo): no se puede distinguir, y
+    // bloquear aquí dejaría al admin sin panel. No es forjable de todos modos.
+    if (!sid) return null
+    const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const hit = list.find((x: any) => x?.sid === sid && (x?.stage ?? 'full') === 'full')
+    if (!hit) return 'Esta sesión no verificó el segundo factor. Vuelve a iniciar sesión e ingresa tu código.'
+    if (Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) {
+      return 'La verificación en dos pasos de esta sesión venció. Vuelve a iniciar sesión.'
+    }
+    return null
+  } catch {
+    // Si no se pudo comprobar, NO se deja pasar: una acción sensible con el
+    // 2FA sin verificar es peor que pedir que se reintente.
+    return 'No pudimos comprobar la verificación en dos pasos. Intenta de nuevo.'
+  }
+}
+
+// Plata que SALE de la cuenta de un cliente (por su propia mano). Para el
+// panel, "cuenta sin 2FA → pasa" (requireMfaSession); para enviar dinero, la
+// regla de producto es otra y la app ya la mostraba: "para enviar dinero
+// primero activa la verificación en dos pasos". Solo la pantalla la aplicaba,
+// así que con la contraseña de una cuenta sin 2FA se pedía un retiro llamando
+// directo. Acá: 2FA activo y ESTA sesión verificada con él (en las últimas
+// 24 h, como el resto del sistema). null = puede seguir.
+async function faltaSegundoFactorCliente(req: Request, userId: string): Promise<string | null> {
+  try {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+    const raw = (u as any)?.raw_data ?? {}
+    if (raw.mfaEnabled !== true && raw.mfaEnabled !== 'true') {
+      return 'Para enviar dinero activa primero la verificación en dos pasos (2FA) en Seguridad.'
+    }
+    const sid = sessionIdOf(req)
+    const list: any[] = Array.isArray(raw.mfaSessions) ? raw.mfaSessions : []
+    const hit = sid ? list.find((x: any) => x?.sid === sid && (x?.stage ?? 'full') === 'full') : null
+    if (!hit || Date.now() - new Date(hit.at).getTime() > MFA_SESSION_TTL_MS) {
+      return 'Confirma la operación con el código de tu app de verificación en dos pasos y vuelve a intentarlo.'
+    }
+    return null
+  } catch {
+    return 'No pudimos comprobar tu verificación en dos pasos. Intenta de nuevo.'
+  }
+}
+
+// Exige el código 2FA del admin para ESTA operación concreta (no basta con
+// que la sesión lo haya pasado al entrar). Se usa en el cargue: mueve dinero
+// real y queda con contabilidad, así que se confirma una por una.
+async function requireAdminOtp(adminUserId: string | undefined, code: unknown): Promise<string | null> {
+  if (!adminUserId) return 'No se pudo identificar al administrador.'
+  const otp = String(code ?? '').replace(/\D/g, '')
+  const { data: u } = await db.from('users').select('raw_data').eq('id', adminUserId).single()
+  const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
+  if (!raw.mfaEnabled) return 'Activa tu 2FA en Seguridad: sin segundo factor no se autoriza esta operación.'
+  if (otp.length !== 6) return 'Falta tu código de 6 dígitos.'
+  // ── Tope de intentos ────────────────────────────────────────────────────
+  // Este código no tenía tope: con solo la contraseña de una cuenta se podían
+  // probar códigos sin fin (p. ej. en correo_cambio_iniciar) y, con uno
+  // acertado, salir a enviar plata dentro de su ventana. Los fallos de aquí
+  // se cuentan aparte de los del ingreso (no suman al bloqueo de la cuenta del
+  // panel, que es a los 2): equivocarse en una operación no debe dejar al
+  // dueño afuera, pero tampoco se puede adivinar.
+  const desdeOtp = new Date(Date.now() - 15 * 60_000).toISOString()
+  try {
+    const { data: fallosOtp } = await db.from('audit_log').select('created_at')
+      .eq('action', 'auth.otp_operacion_fallido').contains('metadata', { userId: adminUserId }).gte('created_at', desdeOtp).limit(10)
+    if ((fallosOtp ?? []).length >= 5) return 'Demasiados códigos incorrectos. Espera 15 minutos e intenta de nuevo.'
+  } catch { /* sin poder contar, se sigue: el código igual se verifica */ }
+  const fallo = async (motivo: string) => {
+    try { await db.from('audit_log').insert({ user_id: adminUserId, action: 'auth.otp_operacion_fallido', metadata: { userId: adminUserId, motivo, at: new Date().toISOString() } }) } catch { /* */ }
+    // Un solo mensaje para "incorrecto" y "ya usado": distinguirlos le decía a
+    // quien adivina cuál de sus intentos fue un código válido.
+    return 'Código incorrecto o ya usado. Espera al siguiente que muestre tu app.'
+  }
+  let secret = ''
+  try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
+  if (!secret) return 'No se pudo leer tu segundo factor. Reactiva el 2FA en Seguridad.'
+  const counter = await verifyTOTPServer(secret, otp)
+  if (counter < 0) return await fallo('incorrecto')
+  const last = Number(raw.mfaLastCounter ?? -1)
+  if (Number.isFinite(last) && counter <= last) return await fallo('ya usado')
+  // Dos operaciones con el MISMO código a la vez leían el contador viejo y
+  // pasaban las dos: el candado deja una sola.
+  if ((await reclamarCandado(db, `totp:${adminUserId}:${counter}`, 600, adminUserId, 'admin_otp')) === 'ocupado') return 'Ese código ya se usó. Espera al siguiente que muestre tu app.'
+  await mergeRaw(db, adminUserId, { mfaLastCounter: counter })
+  return null
+}
+
+// ── Contabilidad de un cargue ─────────────────────────────────────────────
+// El COP que se le acredita al cliente NO se escribe a mano: se DERIVA de la
+// operación real, y el servidor rehace la cuenta (nunca confía en los números
+// que llegan de la pantalla).
+//
+//   usdtGross  → lo que envió el cliente
+//   usdtNet    → lo que llegó de verdad al proveedor
+//   feeUsdt    → la diferencia: el costo de red/proveedor
+//   sellRate   → a cómo se vendieron esos USDT (COP por USDT)
+//   clientRate → a cómo se le paga al cliente (COP por USDT)
+//   feeBearer  → quién asume el fee: 'lincoin' (se le paga al cliente sobre
+//                lo que envió) o 'cliente' (se le paga sobre lo que llegó)
+type Acct = {
+  usdtGross: number; usdtNet: number; feeUsdt: number
+  sellRate: number; clientRate: number; feeBearer: 'lincoin' | 'cliente'
+  revenueCop: number; copToClient: number; feeCostCop: number
+}
+// ── Reverso de un cargue con un ajuste ─────────────────────────────────
+// Un cargue hecho por error se corrige con un DÉBITO (ajuste). Sin vincularlos,
+// el cargue seguía sumando en "cargado" y su utilidad en la de Lincoin (y se
+// facturaba), y el débito quedaba suelto: descuadre. Vinculado, el cargue
+// guarda raw_data.reverso = { ajustes, montoCop, anulado } y el ajuste
+// raw_data.reversaDe = id del cargue. Si el débito cubre todo lo acreditado
+// el cargue queda ANULADO; si cubre una parte, se corrige en proporción
+// (liquidacionDe en _shared/liquidacion-lincoin.ts).
+async function idsMismaPersona(userId: string): Promise<string[]> {
+  const { data: u } = await db.from('users').select('email').eq('id', userId).maybeSingle()
+  if (!(u as any)?.email) return [userId]
+  const { data: h } = await db.from('users').select('id').eq('email', (u as any).email)
+  return Array.from(new Set([userId, ...((h ?? []) as any[]).map(x => String(x.id))]))
+}
+async function vincularAjuste(ajusteId: string, cargueId: string | null, adminId: string | null, auto = false): Promise<{ ok: true; aviso?: string; anulado?: boolean } | { ok: false; error: string; status: number }> {
+  const { data: aj } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data').eq('id', ajusteId).maybeSingle()
+  if (!aj || (aj as any).type !== 'adjustment') return { ok: false, error: 'No se encontró ese ajuste.', status: 404 }
+  const a = aj as any
+  const rdA = (a.raw_data ?? {}) as Record<string, any>
+  if (String(rdA.direction ?? 'debit') !== 'debit') return { ok: false, error: 'Solo un débito revierte un cargue.', status: 400 }
+  const ahora = new Date().toISOString()
+  const OTRO_CAMBIO = { ok: false as const, error: 'Otro cambio se hizo al mismo tiempo sobre este cargue. Recarga e intenta de nuevo.', status: 409 }
+  // Escritura CONDICIONADA del cargue: solo si su reverso sigue como lo
+  // leímos (vinculadoAt cambia en cada escritura y hace de versión). Antes se
+  // leía y se reescribía sin condición: dos vínculos a la vez se pisaban, uno
+  // de los ajustes se perdía o el total pasaba de lo acreditado.
+  const escribirCargue = async (cId: string, rdPrevio: Record<string, any>, rdNuevo: Record<string, any>): Promise<boolean> => {
+    const version = rdPrevio?.reverso?.vinculadoAt
+    let q = db.from('transactions').update({ raw_data: rdNuevo }).eq('id', cId)
+    q = version ? q.filter('raw_data->reverso->>vinculadoAt', 'eq', String(version)) : q.filter('raw_data->>reverso', 'is', null)
+    const { data } = await q.select('id')
+    return Array.isArray(data) && data.length > 0
+  }
+  const quitarDe = async (cId: string): Promise<boolean> => {
+    const { data: c } = await db.from('transactions').select('id, amount, raw_data').eq('id', cId).maybeSingle()
+    if (!c) return true
+    const rdC = ((c as any).raw_data ?? {}) as Record<string, any>
+    const lista: any[] = Array.isArray(rdC.reverso?.ajustes) ? rdC.reverso.ajustes.filter((x: any) => String(x?.id) !== String(a.id)) : []
+    const { reverso: _r, ...resto } = rdC
+    const credit = Number(rdC.acct?.creditedCop ?? (c as any).amount) || 0
+    const monto = lista.reduce((s, x) => s + (Number(x?.montoCop) || 0), 0)
+    return await escribirCargue(cId, rdC, lista.length ? { ...resto, reverso: { ...rdC.reverso, ajustes: lista, montoCop: monto, anulado: credit > 0 ? monto >= credit - 1 : false, vinculadoAt: ahora } } : resto)
+  }
+  if (!cargueId) {
+    // Desvincular a mano = "este débito NO revierte ese cargue". Queda
+    // anotado (noRevierte) para que el vínculo automático no lo vuelva a
+    // pegar en la próxima recarga de Contabilidad.
+    if (rdA.reversaDe && !(await quitarDe(String(rdA.reversaDe)))) return OTRO_CAMBIO
+    const { reversaDe: _x, reversaAuto: _y, ...restoA } = rdA
+    await db.from('transactions').update({ raw_data: { ...restoA, noRevierte: true, noRevierteAt: ahora, noRevierteBy: adminId } }).eq('id', a.id)
+    return { ok: true }
+  }
+  if (rdA.reversaDe && String(rdA.reversaDe) !== cargueId) return { ok: false, error: 'Este ajuste ya está vinculado a otro cargue. Desvincúlalo primero.', status: 409 }
+  const { data: cg } = await db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, raw_data').eq('id', cargueId).maybeSingle()
+  const c = cg as any
+  const rdC = (c?.raw_data ?? {}) as Record<string, any>
+  if (!c || c.type !== 'load' || !['admin_cargue', 'admin_backfill'].includes(String(rdC.source ?? ''))) return { ok: false, error: 'No se encontró ese cargue.', status: 404 }
+  if (String(c.currency) !== String(a.currency)) return { ok: false, error: `El cargue es en ${c.currency} y el ajuste en ${a.currency}: un débito solo revierte un cargue del mismo saldo.`, status: 400 }
+  const misIds = await idsMismaPersona(String(c.user_id))
+  if (!misIds.includes(String(a.user_id))) return { ok: false, error: 'El ajuste y el cargue son de clientes distintos.', status: 400 }
+  const credit = Number(rdC.acct?.creditedCop ?? c.amount) || 0
+  const otros: any[] = Array.isArray(rdC.reverso?.ajustes) ? rdC.reverso.ajustes.filter((x: any) => String(x?.id) !== String(a.id)) : []
+  const monto = otros.reduce((s, x) => s + (Number(x?.montoCop) || 0), 0) + (Number(a.amount) || 0)
+  if (monto > credit + 1) return { ok: false, error: `Con este ajuste se revertirían $${Math.round(monto).toLocaleString('es-CO')} de un cargue de $${Math.round(credit).toLocaleString('es-CO')}. Elegí otro cargue.`, status: 400 }
+  const anulado = monto >= credit - 1
+  // Primero se RESERVA el ajuste (solo si sigue suelto o ya era de este
+  // cargue): el mismo débito no puede quedar en dos cargues a la vez.
+  const { noRevierte: _n, noRevierteAt: _na, noRevierteBy: _nb, ...rdALimpio } = rdA
+  // Sin `or` en el UPDATE: PostgREST (antes de la 14.x, issue #3707) falla con
+  // «column … does not exist» en un UPDATE con or=(…) que devuelve filas, y
+  // la reserva no se lograba nunca. Se prueba suelto y, si no, ya de este
+  // cargue; cada UPDATE es atómico.
+  const patchA = { raw_data: { ...rdALimpio, reversaDe: String(c.id), reversaAuto: auto } }
+  let { data: reservado, error: eRes } = await db.from('transactions').update(patchA).eq('id', a.id).is('raw_data->>reversaDe', null).select('id')
+  if (!eRes && (!Array.isArray(reservado) || !reservado.length)) {
+    ({ data: reservado, error: eRes } = await db.from('transactions').update(patchA).eq('id', a.id).eq('raw_data->>reversaDe', String(c.id)).select('id'))
+  }
+  if (!Array.isArray(reservado) || !reservado.length) return OTRO_CAMBIO
+  const okC = await escribirCargue(String(c.id), rdC, { ...rdC, reverso: { ajustes: [...otros, { id: a.id, montoCop: Number(a.amount) || 0, at: a.created_at, ...(auto ? { auto: true } : {}) }], montoCop: monto, anulado, vinculadoPor: adminId, vinculadoAt: ahora } })
+  if (!okC) {
+    // El cargue cambió en el medio: se suelta el ajuste como estaba.
+    await db.from('transactions').update({ raw_data: rdA }).eq('id', a.id)
+    return OTRO_CAMBIO
+  }
+  // ¿Ya tenía factura de Lincoin? Eso no se deshace solo: hay que anularla o
+  // emitir una nota crédito en Siigo.
+  let aviso: string | undefined
+  try {
+    const { data: f } = await db.from('facturas_lincoin').select('estado, numero').eq('transaction_id', String(c.id)).maybeSingle()
+    if ((f as any)?.estado === 'emitida') aviso = `Este cargue ya tenía la factura ${(f as any).numero ?? ''}. ${anulado ? 'Anúlala' : 'Corrígela con una nota crédito'} en Siigo.`
+  } catch { /* sin tabla de facturas */ }
+  return { ok: true, anulado, ...(aviso ? { aviso } : {}) }
+}
+
+// ── Vincular SOLO el débito que revierte un cargue ─────────────────────
+// Cuando el operador se equivoca, acredita un cargue y después descuenta.
+// Ese débito se vincula SOLO cuando no hay duda: un único cargue del mismo
+// cliente y saldo, anterior al débito (hasta 60 días), al que le queda por
+// revertir EXACTAMENTE el monto del débito (±1 peso) → el cargue se anula.
+//
+// Todo lo demás se SUGIERE y lo decide el operador: dos cargues que cuadran
+// exacto (¿cuál de los dos?) o un débito menor a un cargue de las últimas 72
+// horas (puede ser una corrección… o una comisión, un retiro manual). Antes
+// esto último se vinculaba solo como "corrección", y un débito ajeno de 2 M
+// cambiaba la utilidad y la factura de un cargue de 50 M.
+async function autoVincularAjuste(aj: { id: string; user_id: string; amount: number | string; currency: string; created_at: string; noRevierte?: unknown }, adminId: string | null): Promise<{ cargueId?: string; anulado?: boolean; aviso?: string; motivo?: string }> {
+  if (aj.noRevierte === true || aj.noRevierte === 'true') return { motivo: 'Marcado como un ajuste que no revierte ningún cargue.' }
+  const monto = Number(aj.amount) || 0
+  if (!(monto > 0)) return { motivo: 'El débito no tiene monto.' }
+  const ids = await idsMismaPersona(String(aj.user_id))
+  const tDebito = Date.parse(aj.created_at)
+  const desde = new Date(tDebito - 60 * 86400_000).toISOString()
+  const { data } = await db.from('transactions')
+    .select('id, amount, created_at, acct:raw_data->acct, reverso:raw_data->reverso, source:raw_data->>source')
+    .in('user_id', ids).eq('type', 'load').eq('status', 'Completado').eq('currency', aj.currency)
+    .lte('created_at', aj.created_at).gte('created_at', desde)
+    .order('created_at', { ascending: false }).limit(200)
+  const cargues = ((data ?? []) as any[])
+    .filter(c => c.source === 'admin_cargue' || c.source === 'admin_backfill')
+    .map(c => { const credit = Number(c.acct?.creditedCop ?? c.amount) || 0; return { id: String(c.id), at: String(c.created_at), credit, resta: credit - (Number(c.reverso?.montoCop ?? 0) || 0) } })
+    .filter(c => c.resta > 0)
+  const fmt = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`
+  const dia = (iso: string) => new Date(iso).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', timeZone: 'America/Bogota' })
+  if (!cargues.length) return { motivo: `No hay cargues de ${aj.currency} de este cliente en los 60 días anteriores al débito.` }
+  const exactos = cargues.filter(c => Math.abs(c.resta - monto) <= 1)
+  if (exactos.length > 1) {
+    return { motivo: `Hay ${exactos.length} cargues con ${fmt(monto)} exactos por revertir (${exactos.slice(0, 3).map(c => dia(c.at)).join(', ')}): elige a mano cuál corrige.` }
+  }
+  if (!exactos.length) {
+    const cercanos = cargues.filter(c => tDebito - Date.parse(c.at) <= 72 * 3600_000 && c.resta >= monto - 1)
+    const lista = cargues.slice(0, 4).map(c => `${dia(c.at)} por ${fmt(c.resta)}`).join(', ')
+    return { motivo: cercanos.length === 1
+      ? `Ningún cargue tiene ${fmt(monto)} exactos. Puede ser una corrección parcial del cargue del ${dia(cercanos[0].at)} (${fmt(cercanos[0].resta)}): si lo es, vincúlalo a mano.`
+      : cercanos.length > 1
+        ? `Ningún cargue tiene ${fmt(monto)} exactos y hay ${cercanos.length} cargues en las 72 horas anteriores que podrían ser: elígelo a mano.`
+        : `Ningún cargue de los 60 días anteriores tiene ${fmt(monto)} por revertir. Los más cercanos: ${lista}.` }
+  }
+  const r = await vincularAjuste(String(aj.id), exactos[0].id, adminId, true)
+  if ('error' in r) return { motivo: r.error }
+  return { cargueId: exactos[0].id, anulado: r.anulado, ...(r.aviso ? { aviso: r.aviso } : {}) }
+}
+
+// Los débitos sueltos (de antes de que existiera el vínculo), de un cliente o
+// de todos, por páginas: antes se tomaban los 300 ajustes más nuevos ANTES de
+// descartar los ya vinculados, y los débitos viejos nunca se revisaban.
+async function autoVincularPendientes(userIds: string[] | null, adminId: string | null): Promise<{ revisados: number; vinculados: number; avisos: string[]; sinVincular: { id: string; monto: number; motivo: string }[] }> {
+  const filas: any[] = []
+  for (let off = 0; off < 20000; off += 1000) {
+    let q = db.from('transactions')
+      .select('id, user_id, amount, currency, created_at, reversaDe:raw_data->>reversaDe, direction:raw_data->>direction, noRevierte:raw_data->noRevierte')
+      .eq('type', 'adjustment').eq('status', 'Completado')
+      .filter('raw_data->>reversaDe', 'is', null)
+    if (userIds) q = q.in('user_id', userIds)
+    const { data, error } = await q.order('created_at', { ascending: true }).order('id', { ascending: true }).range(off, off + 999)
+    if (error) break
+    filas.push(...((data ?? []) as any[]))
+    if (!data || data.length < 1000) break
+  }
+  // Del más viejo al más nuevo: un cargue con dos débitos se revierte en orden.
+  const sueltos = filas.filter(a => !a.reversaDe && String(a.direction ?? 'debit') === 'debit' && a.noRevierte !== true)
+  const out = { revisados: sueltos.length, vinculados: 0, avisos: [] as string[], sinVincular: [] as { id: string; monto: number; motivo: string }[] }
+  for (const a of sueltos) {
+    const r = await autoVincularAjuste(a, adminId)
+    if (r.cargueId) { out.vinculados++; if (r.aviso) out.avisos.push(r.aviso) }
+    else out.sinVincular.push({ id: String(a.id), monto: Number(a.amount) || 0, motivo: r.motivo ?? '' })
+  }
+  return out
+}
+
+// ── Cupo mensual por beneficiario: el estado de cada contacto ─────────────
+// La misma cuenta que aplica mouv-proxy al enviar (_shared/cupos.ts).
+type EstadoCupo = { clave: string; claves: string[]; tipo: 'persona' | 'empresa'; cupo: number; usado: number; disponible: number; origen: 'general' | 'aprobado'; nombre: string; doc: string; destinos: string[] }
+function estadoCupoContacto(c: any, contactos: any[], envios: EnvioMes[], general: { persona: number; empresa: number }, aprobados: Map<string, number>): EstadoCupo {
+  const doc = normDoc(c?.docNumber)
+  const mismos = doc ? contactos.filter(x => normDoc(x?.docNumber) === doc) : [c]
+  const destinos = mismos.flatMap(x => [x?.brebKey, x?.accountNumber]).filter(Boolean).map(String)
+  const clave = claveBeneficiario(doc, c?.brebKey ?? c?.accountNumber)
+  // Todas las claves con que se pudo pedir o aprobar el cupo (documento y
+  // cada destino): las mismas que busca mouv-proxy al enviar.
+  const claves = clavesBeneficiario(doc, destinos)
+  // "Empresa" solo si además el documento tiene forma de NIT de empresa: la
+  // ficha la escribe el cliente (misma regla que aplica el envío).
+  const declarado = (String(c?.kind ?? '') === 'empresa' || /^NIT$/i.test(String(c?.docType ?? ''))) ? 'empresa' : 'persona'
+  const tipo = tipoCupo(declarado, doc)
+  let aprobado: number | null = null
+  for (const k of claves) { const n = aprobados.get(k); if (n != null && (aprobado == null || n > aprobado)) aprobado = n }
+  const cupo = cupoVigente(aprobado, general[tipo])
+  const usado = usadoPara(envios, doc, destinos)
+  return { clave, claves, tipo, cupo, usado, disponible: Math.max(0, cupo - usado), origen: cupo > general[tipo] ? 'aprobado' : 'general', nombre: String(c?.name ?? c?.holderName ?? '').trim(), doc, destinos }
+}
+// Los cupos aprobados de la PERSONA (todas sus cuentas del mismo correo): el
+// uso se suma por persona, la aprobación también vale por persona.
+async function cuposAprobadosDe(userId: string): Promise<Map<string, number>> {
+  const m = new Map<string, number>()
+  try {
+    const ids = await idsMismaPersona(userId)
+    const { data } = await db.from('cupos_beneficiario').select('beneficiario_clave, cupo_mensual').in('user_id', ids)
+    for (const r of (data ?? []) as any[]) {
+      const n = Number(r.cupo_mensual), k = String(r.beneficiario_clave)
+      if (n > 0 && (!m.has(k) || n > (m.get(k) as number))) m.set(k, n)
+    }
+  } catch { /* sin tabla: rige el general */ }
+  return m
+}
+const esTipoDocCupo = (t: string) => Object.prototype.hasOwnProperty.call(TIPOS_DOC_CUPO, t)
+const BUCKET_CUPOS = 'cupo-documentos'
+const MIME_CUPOS = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/heic']
+
+function computeAcct(input: any): { acct: Acct } | { error: string } {
+  const n = (v: any) => { const x = Number(v); return Number.isFinite(x) ? x : NaN }
+  const usdtGross = n(input?.usdtGross)
+  const usdtNet = n(input?.usdtNet)
+  const sellRate = n(input?.sellRate)
+  const clientRate = n(input?.clientRate)
+  const feeBearer: 'lincoin' | 'cliente' = input?.feeBearer === 'cliente' ? 'cliente' : 'lincoin'
+  if (!(usdtGross > 0)) return { error: 'Falta cuántos USDT envió el cliente.' }
+  if (!(usdtNet > 0)) return { error: 'Falta cuántos USDT llegaron al proveedor.' }
+  if (usdtNet > usdtGross + 0.000001) return { error: 'Al proveedor no pueden llegar más USDT de los que envió el cliente.' }
+  if (!(sellRate > 0)) return { error: 'Falta la tasa a la que vendiste los USDT.' }
+  if (!(clientRate > 0)) return { error: 'Falta la tasa a la que le pagas al cliente.' }
+  const feeUsdt = Number((usdtGross - usdtNet).toFixed(6))
+  const baseCliente = feeBearer === 'lincoin' ? usdtGross : usdtNet
+  return {
+    acct: {
+      usdtGross, usdtNet, feeUsdt, sellRate, clientRate, feeBearer,
+      // Lo que ENTRA: solo se vendió lo que de verdad llegó.
+      revenueCop: Math.round(usdtNet * sellRate),
+      // Lo que se le paga al cliente, antes de la comisión del riel.
+      copToClient: Math.round(baseCliente * clientRate),
+      // El fee de red valorado a la tasa de venta: lo que costó en pesos.
+      feeCostCop: Math.round(feeUsdt * sellRate),
+    },
+  }
+}
+
+// ── Passkey (WebAuthn) ───────────────────────────────────────────────────
+// La llave vive dentro del dispositivo (Face ID, huella, o una llave USB) y
+// NUNCA sale de él: el navegador solo devuelve una firma. Por eso no se puede
+// fotografiar, ni copiar del portapapeles, ni escribir en una página falsa —
+// la firma está atada al dominio real, así que una copia de lincoin.me no
+// sirve. Es la única defensa que aguanta que el atacante tenga la contraseña,
+// el 2FA y los códigos de respaldo.
+//
+// Las credenciales se guardan en system_config (solo service_role), no en el
+// perfil: ni un admin autenticado las toca desde el navegador.
+const RP_ID = Deno.env.get('PASSKEY_RP_ID') ?? 'lincoin.me'
+const RP_NAME = 'Lincoin'
+const ORIGENES = (Deno.env.get('PASSKEY_ORIGINS') ?? 'https://lincoin.me,https://www.lincoin.me')
+  .split(',').map(o => o.trim()).filter(Boolean)
+
+function passkeyKey(userId: string) { return `passkeys_${userId}` }
+function challengeKey(userId: string) { return `passkey_challenge_${userId}` }
+
+type Passkey = { id: string; publicKey: string; counter: number; nombre: string; at: string }
+
+async function passkeysDe(userId: string): Promise<Passkey[]> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', passkeyKey(userId)).single()
+    return data?.value ? JSON.parse(data.value) : []
+  } catch { return [] }
+}
+async function guardarPasskeys(userId: string, list: Passkey[]) {
+  await db.from('system_config').upsert({ key: passkeyKey(userId), value: JSON.stringify(list.slice(0, 10)) }, { onConflict: 'key' })
+}
+
+// El desafío se guarda en la base porque las edge functions no comparten
+// memoria entre invocaciones: lo que se genera en una petición tiene que
+// poder comprobarse en la siguiente. Vive 5 minutos y es de un solo uso.
+async function guardarChallenge(userId: string, challenge: string) {
+  await db.from('system_config').upsert({
+    key: challengeKey(userId),
+    value: JSON.stringify({ challenge, exp: Date.now() + 5 * 60_000 }),
+  }, { onConflict: 'key' })
+}
+async function tomarChallenge(userId: string): Promise<string | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', challengeKey(userId)).single()
+    if (!data?.value) return null
+    const c = JSON.parse(data.value)
+    await db.from('system_config').delete().eq('key', challengeKey(userId))   // un solo uso
+    if (!c?.challenge || Date.now() > Number(c.exp ?? 0)) return null
+    return String(c.challenge)
+  } catch { return null }
+}
+
+// ── Verificación reforzada ───────────────────────────────────────────────
+// Que la sesión haya pasado el 2FA AL ENTRAR no alcanza para lo que mueve
+// dinero. Una sesión abierta hace horas —o robada— sigue siendo válida. Esto
+// exige volver a probar los factores AHORA, con vencimiento corto:
+//
+//   · el código del correo   (siempre)
+//   · el código de la app    (siempre)
+//   · la llave del dispositivo (solo si la cuenta tiene alguna registrada)
+//
+// Se anota por SESIÓN, no por cuenta: verificar en el computador no habilita
+// el teléfono. Vive en system_config y no en el perfil, para no pelear con
+// las escrituras de raw_data.
+const STEP_UP_TTL_MS = 30 * 60_000
+function stepUpKey(userId: string) { return `stepup_${userId}` }
+type StepUpSesion = { email?: number; app?: number; passkey?: number }
+
+async function leerStepUp(userId: string): Promise<Record<string, StepUpSesion>> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', stepUpKey(userId)).single()
+    return data?.value ? JSON.parse(data.value) : {}
+  } catch { return {} }
+}
+
+// Si el token no trae id de sesión (GoTrue antiguo), se anota bajo una clave
+// común en vez de descartar la marca. Queda más flojo —no distingue
+// dispositivos— pero no deja al titular dando vueltas verificando algo que
+// nunca se guarda, que es la única falla peor que la anterior.
+const SIN_SESION = '__sin_sesion__'
+
+async function marcarFactor(req: Request, userId: string, factor: 'email' | 'app' | 'passkey') {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  try {
+    const todo = await leerStepUp(userId)
+    const vivas: Record<string, StepUpSesion> = {}
+    // Se descartan las sesiones cuyos factores ya vencieron: sin esta poda la
+    // fila crecería sola con cada dispositivo que alguna vez entró.
+    for (const [s, v] of Object.entries(todo)) {
+      const ult = Math.max(Number(v?.email ?? 0), Number(v?.app ?? 0), Number(v?.passkey ?? 0))
+      if (Date.now() - ult < STEP_UP_TTL_MS) vivas[s] = v
+    }
+    vivas[sid] = { ...(vivas[sid] ?? {}), [factor]: Date.now() }
+    await db.from('system_config').upsert({ key: stepUpKey(userId), value: JSON.stringify(vivas) }, { onConflict: 'key' })
+  } catch { /* si no se puede anotar, la acción sensible vuelve a pedirlo */ }
+}
+
+// ── Cierre por inactividad ───────────────────────────────────────────────
+// El panel se cierra solo a la media hora sin uso. El navegador lo hace por
+// su cuenta, pero eso es solo la pantalla: quien tenga el token guardado
+// podría seguir llamando la API con la sesión "cerrada". Por eso el corte
+// vive TAMBIÉN aquí, que es donde de verdad importa.
+//
+// Para no escribir en la base en cada petición, la marca de "visto" se
+// refresca cada 5 minutos como mucho. El navegador manda una señal cuando
+// hay actividad pero no llamadas —alguien leyendo una pantalla quieta— para
+// que estar trabajando no cuente como estar ausente.
+const IDLE_MAX_MS = 30 * 60_000
+const IDLE_WRITE_MS = 5 * 60_000
+function actividadKey(userId: string) { return `actividad_${userId}` }
+
+async function sesionInactiva(req: Request, userId: string): Promise<boolean> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  const ahora = Date.now()
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', actividadKey(userId)).single()
+    const todo: Record<string, number> = data?.value ? JSON.parse(data.value) : {}
+    const visto = Number(todo[sid] ?? 0)
+    if (visto && ahora - visto > IDLE_MAX_MS) return true
+    if (!visto || ahora - visto > IDLE_WRITE_MS) {
+      const vivas: Record<string, number> = {}
+      for (const [s, t] of Object.entries(todo)) if (ahora - Number(t) < IDLE_MAX_MS) vivas[s] = Number(t)
+      vivas[sid] = ahora
+      await db.from('system_config').upsert({ key: actividadKey(userId), value: JSON.stringify(vivas) }, { onConflict: 'key' })
+    }
+    return false
+  } catch {
+    // Si no se puede leer la marca, NO se echa a nadie: dejar al titular sin
+    // panel por un fallo de la base es peor que media hora de más.
+    return false
+  }
+}
+
+// Qué factores le FALTAN a esta sesión para operar. Vacío = puede seguir.
+async function stepUpFalta(req: Request, userId: string): Promise<string[]> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  const vigente = (t: unknown) => !!t && (Date.now() - Number(t) < STEP_UP_TTL_MS)
+  const tienePasskey = (await passkeysDe(userId)).length > 0
+  // El código de la app solo se puede exigir si la cuenta TIENE 2FA activo.
+  // Pedirlo cuando no lo hay dejaba un candado imposible de abrir: la pantalla
+  // pedía un código que ninguna app estaba generando.
+  let tiene2fa = false
+  try {
+    const { data } = await db.from('users').select('raw_data').eq('id', userId).single()
+    tiene2fa = !!(data as any)?.raw_data?.mfaEnabled
+  } catch { /* si no se puede saber, no se exige */ }
+  const est: StepUpSesion = (await leerStepUp(userId))[sid] ?? {}
+  const falta: string[] = []
+  // El del correo es el piso: se pide siempre, haya o no 2FA y haya o no llave.
+  if (!vigente(est.email)) falta.push('email')
+  if (tiene2fa && !vigente(est.app)) falta.push('app')
+  if (tienePasskey && !vigente(est.passkey)) falta.push('passkey')
+  return falta
+}
+
+// La llave pública es binaria; se guarda en base64url para que quepa en el
+// JSON de system_config y vuelva a salir idéntica.
+function bytesAB64u(b: Uint8Array): string {
+  let s = ''
+  for (const x of b) s += String.fromCharCode(x)
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+function b64uABytes(s: string): Uint8Array {
+  const t = s.replace(/-/g, '+').replace(/_/g, '/')
+  const bin = atob(t + '='.repeat((4 - (t.length % 4)) % 4))
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+// ── Bloqueo de la cuenta de admin tras intentos fallidos ─────────────────
+// A los 2 fallos la cuenta queda bloqueada y se avisa al titular por correo
+// con quién lo intentó (IP, ubicación aproximada, dispositivo, hora) y un
+// enlace para desbloquearla. El estado vive en system_config, no en el perfil:
+// así ni siquiera un admin autenticado puede quitárselo desde el navegador.
+const RESEND_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
+const FROM_EMAIL = Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
+const MAX_FALLOS_ADMIN = 2
+
+function lockKey(userId: string) { return `admin_lock_${userId}` }
+
+// ── ¿Esta cuenta es la del panel? ────────────────────────────────────────
+// TODO lo que sigue —lista blanca de país/IP, bloqueo a los 2 fallos, foto,
+// correo de alerta— es blindaje del PANEL DE ADMINISTRACIÓN. Los clientes
+// comparten los mismos endpoints de 2FA, así que sin esta pregunta el
+// blindaje les caía encima a ellos: un cliente en México quedaba fuera por
+// la lista blanca, y a los dos códigos errados le salía "la cuenta se
+// bloqueó" aunque nada se hubiera bloqueado. Se pregunta una sola vez por
+// invocación y se recuerda.
+const cacheRol = new Map<string, boolean>()
+async function esAdminUid(userId: string): Promise<boolean> {
+  if (!userId) return false
+  const y = cacheRol.get(userId)
+  if (y !== undefined) return y
+  try {
+    const { data } = await db.from('users').select('role').eq('id', userId).single()
+    const r = (data as any)?.role === 'admin'
+    cacheRol.set(userId, r)
+    return r
+  } catch { return false }
+}
+
+// La lista blanca solo se aplica a la cuenta del panel. Para un cliente
+// siempre devuelve null: su 2FA no depende de desde qué país se conecte.
+async function accessDeniedAdmin(req: Request, userId: string): Promise<string | null> {
+  if (!(await esAdminUid(userId))) return null
+  return await accessDenied(req)
+}
+
+// Registra un fallo de verificación y BLOQUEA al llegar al tope. Es el único
+// sitio que cuenta: antes el conteo estaba repartido entre el paso del correo,
+// el de la app y el de respaldo, cada uno con su propia cuenta, y solo uno
+// disparaba el bloqueo — fallar cuatro veces el primero no bloqueaba nada.
+//
+// Devuelve si la cuenta QUEDÓ bloqueada de verdad, no si se llegó al número.
+// Antes devolvía solo el conteo y quien llamaba concluía "bloqueada" con
+// n >= 2 — para un cliente eso era mentira: nunca se escribía el bloqueo,
+// pero se le mostraba la pantalla de cuenta bloqueada.
+// Los fallos de verificación de UNA cuenta desde `desdeIso`, contando solo
+// los posteriores a su último acierto. Se filtra EN LA CONSULTA (por usuario)
+// y del más nuevo al más viejo: antes se traían 200-300 fallos de TODAS las
+// cuentas, sin orden, y se filtraba después — con volumen, los de esta cuenta
+// quedaban fuera de la muestra y el límite de intentos no frenaba nada.
+//
+// Un acierto ya no BORRA los fallos (se perdía la evidencia en la auditoría):
+// deja una marca 'auth.mfa_reset' y se cuenta desde ahí.
+async function fallosRecientes(userId: string, desdeIso: string): Promise<{ created_at: string; metadata: any }[]> {
+  let desde = desdeIso
+  try {
+    const { data: ok } = await db.from('audit_log').select('created_at')
+      .eq('action', 'auth.mfa_reset').contains('metadata', { userId }).gte('created_at', desdeIso)
+      .order('created_at', { ascending: false }).limit(1)
+    const ult = String(((ok ?? []) as any[])[0]?.created_at ?? '')
+    if (ult && ult > desde) desde = ult
+  } catch { /* sin marca: se cuenta desde el inicio de la ventana */ }
+  const { data } = await db.from('audit_log').select('metadata, created_at')
+    .eq('action', 'auth.mfa_failed').contains('metadata', { userId }).gt('created_at', desde)
+    .order('created_at', { ascending: false }).limit(100)
+  return (data ?? []) as any[]
+}
+async function reiniciarFallos(req: Request, userId: string) {
+  await auditAdmin(req, 'auth.mfa_reset', { userId })
+}
+
+const PASO_DEL_FALLO: Record<string, string> = {
+  correo: 'código del correo', app: 'código de la app', respaldo: 'código de respaldo', passkey: 'llave del dispositivo',
+}
+
+async function registerAdminFailure(
+  req: Request, userId: string, motivo: string, tipo: string, foto?: string | null,
+): Promise<{ fallos: number; bloqueada: boolean }> {
+  await auditAdmin(req, 'auth.mfa_failed', { userId, motivo, tipo })
+  try {
+    if (!(await esAdminUid(userId))) return { fallos: 0, bloqueada: false }
+    const desde = new Date(Date.now() - 30 * 60_000).toISOString()
+    const n = (await fallosRecientes(userId, desde)).length
+    if (n >= MAX_FALLOS_ADMIN) {
+      const { data: uu } = await db.from('users').select('email').eq('id', userId).single()
+      // El correo decía solo "código incorrecto" y no se sabía de cuál paso
+      // (el del correo, el de la app...). Con eso se distingue al que se
+      // equivocó de correo de quien está probando códigos de la app.
+      const paso = PASO_DEL_FALLO[tipo] ?? tipo
+      await lockAdminAndAlert(req, userId, String((uu as any)?.email ?? ''), paso ? `${motivo} (${paso})` : motivo, foto ?? null)
+      return { fallos: n, bloqueada: !!(await adminLock(userId)) }
+    }
+    return { fallos: n, bloqueada: false }
+  } catch { return { fallos: 0, bloqueada: false } }
+}
+
+async function adminLock(userId: string): Promise<any | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', lockKey(userId)).single()
+    return data?.value ? JSON.parse(data.value) : null
+  } catch { return null }
+}
+
+async function clearAdminLock(userId: string) {
+  try { await db.from('system_config').delete().eq('key', lockKey(userId)) } catch { /* */ }
+}
+
+async function sha256Hex(v: string): Promise<string> {
+  const raw = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v))
+  return Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// Bloquea y avisa. 'foto' es opcional: base64 sin cabecera (JPEG).
+async function lockAdminAndAlert(req: Request, userId: string, email: string, motivo: string, foto?: string | null) {
+  // La foto la manda el navegador de quien intenta entrar: solo se adjunta
+  // si de verdad es un JPEG (en base64 empieza por "/9j/") y de tamaño
+  // razonable. Si no, se descarta en vez de mandar cualquier archivo desde el
+  // correo de Lincoin.
+  if (foto && !(foto.length < 1_500_000 && /^\/9j\/[A-Za-z0-9+/=]+$/.test(foto))) foto = null
+  const yaBloqueada = await adminLock(userId)
+  if (yaBloqueada) return
+  const token = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, '')
+  const ip = ipOf(req)
+  const geo = await geoOf(ip)
+  const ua = req.headers.get('user-agent') ?? 'desconocido'
+  const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })
+  const hora = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+  const ref = crypto.randomUUID().slice(0, 8).toUpperCase()
+
+  await db.from('system_config').upsert({
+    key: lockKey(userId),
+    value: JSON.stringify({ at: new Date().toISOString(), motivo, ip, geo, userAgent: ua, tokenHash: await sha256Hex(token) }),
+  }, { onConflict: 'key' })
+  await auditAdmin(req, 'security.admin_locked', { userId, motivo, ip })
+
+  // La IP desde donde se intentó queda bloqueada también: sin esto, quien
+  // esté probando sigue pudiendo operar contra el resto del sistema aunque la
+  // cuenta esté cerrada. Se desbloquea desde Monitoreo cuando haga falta.
+  if (ip) {
+    try {
+      const list = await blockedIps()
+      if (!list.some(b => b.ip === ip)) {
+        list.unshift({ ip, at: new Date().toISOString(), reason: `bloqueo de la cuenta de admin (${motivo})`, attempts: MAX_FALLOS_ADMIN, geo, soloPanel: true })
+        await saveBlockedIps(list)
+        await auditAdmin(req, 'auth.ip_blocked', { ip, porBloqueoDeCuenta: true })
+      }
+    } catch { /* el bloqueo de la cuenta no depende de esto */ }
+  }
+
+  if (!RESEND_KEY) return
+  // El enlace abre una página de Lincoin con un BOTÓN: solo el botón
+  // desbloquea. Antes desbloqueaba con solo abrir el enlace, y los filtros
+  // de correo (Outlook, Gmail, antivirus) abren los enlaces solos para
+  // revisarlos: la cuenta se desbloqueaba sin que nadie lo decidiera.
+  const url = `${ORIGEN_APP}/desbloquear?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`
+  // Todo valor va escapado: el motivo, el navegador (user-agent, lo escribe
+  // quien intenta entrar) y la ubicación vienen de afuera. Sin escapar, quien
+  // tuviera la contraseña fallaba a propósito con un user-agent con HTML y
+  // al titular le llegaba, desde el correo real de Lincoin, un botón falso.
+  const fila = (k: string, v: string) =>
+    `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${escHtml(k)}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${escHtml(v)}</td></tr>`
+  const html = `
+    <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+      <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+      <p style="color:#F87171;font-weight:800;font-size:16px;margin:18px 0 6px">Se bloqueó el acceso al panel</p>
+      <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0 0 16px">
+        Hubo ${MAX_FALLOS_ADMIN} intentos fallidos de ingreso. La cuenta quedó bloqueada por seguridad.
+        Si fuiste tú, desbloquéala con el botón. Si no, <b style="color:#F4F4F2">no la desbloquees</b> y cambia la contraseña.
+      </p>
+      <a href="${url}" style="display:inline-block;background:#4ADE80;color:#0C0E0D;font-weight:800;font-size:14px;text-decoration:none;padding:13px 22px;border-radius:10px;margin:0 0 20px">Desbloquear mi cuenta</a>
+      <table style="width:100%;background:#121413;border-radius:10px;border-collapse:collapse;margin-bottom:18px">
+        ${fila('Cuándo', cuando)}
+        ${fila('Motivo', motivo)}
+        ${fila('IP', ip ?? 'no registrada')}
+        ${fila('Ubicación aproximada', geo?.approx ?? 'no disponible')}
+        ${fila('Operador', geo?.org ?? '—')}
+        ${fila('Dispositivo', ua.slice(0, 90))}
+        ${fila('Imagen de cámara', foto ? 'adjunta a este correo' : 'no disponible')}
+      </table>
+      <p style="color:rgba(244,244,242,0.45);font-size:11px;margin:0">
+        El enlace sirve una sola vez. La ubicación se deduce de la IP: llega a ciudad o región, no es una dirección exacta.
+        Referencia del bloqueo: ${escHtml(ref)}.
+      </p>
+    </div>`
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM_EMAIL}>`, to: [email],
+        subject: `⚠️ Se bloqueó el acceso a tu panel de Lincoin · ${hora}`,
+        // Gmail juntaba todos los avisos de bloqueo en una conversación (mismo
+        // asunto) y escondía lo que se repetía —el botón para desbloquear—
+        // detrás de los "…": la colaboradora no lo encontraba (2026-11-05).
+        // Asunto con la hora, botón arriba y esta cabecera única hacen que
+        // cada aviso llegue como un correo aparte, completo.
+        headers: { 'X-Entity-Ref-ID': ref },
+        html,
+        ...(foto ? { attachments: [{ filename: 'intento-de-acceso.jpg', content: foto }] } : {}),
+      }),
+    })
+  } catch { /* el aviso nunca rompe el bloqueo */ }
+}
+
+// ── Aviso de ingreso ─────────────────────────────────────────────────────
+// Cada vez que alguien entra —titular de una cuenta de cliente o el admin—
+// le llega un correo con desde dónde se abrió. No impide nada por sí solo;
+// lo que hace es que un ingreso ajeno se note EL MISMO DÍA en vez de
+// descubrirse semanas después revisando movimientos. Es la diferencia entre
+// enterarse y no enterarse.
+//
+// Se manda UNA VEZ POR SESIÓN: un refresco de la página no vuelve a avisar,
+// pero entrar desde otro dispositivo sí.
+const AVISO_LOGIN_KEY = 'aviso_login'
+const AVISO_TTL_MS = 12 * 3600 * 1000
+
+// Traduce el user-agent a algo legible. No es exacto ni pretende serlo: el
+// titular necesita reconocer "mi iPhone" o "no es mío", no una ficha técnica.
+function dispositivoDe(ua: string): string {
+  const s = ua || ''
+  const so = /iPhone/i.test(s) ? 'iPhone'
+    : /iPad/i.test(s) ? 'iPad'
+    : /Android/i.test(s) ? 'Android'
+    : /Mac OS X|Macintosh/i.test(s) ? 'Mac'
+    : /Windows/i.test(s) ? 'Windows'
+    : /Linux/i.test(s) ? 'Linux' : 'dispositivo desconocido'
+  const nav = /Edg\//i.test(s) ? 'Edge'
+    : /OPR\/|Opera/i.test(s) ? 'Opera'
+    : /Chrome\//i.test(s) ? 'Chrome'
+    : /Firefox\//i.test(s) ? 'Firefox'
+    : /Safari\//i.test(s) ? 'Safari' : ''
+  return nav ? `${so} · ${nav}` : so
+}
+
+type ResultadoAviso = { ok: boolean; motivo: string; destino?: string }
+
+async function avisarIngreso(req: Request, userId: string, forzar = false): Promise<ResultadoAviso> {
+  const sid = sessionIdOf(req) ?? SIN_SESION
+  try {
+    // Dedupe por sesión: recargar la página no puede llenarle el buzón a nadie.
+    const { data: prev } = await db.from('system_config').select('value').eq('key', AVISO_LOGIN_KEY).single()
+    const todo: Record<string, number> = prev?.value ? JSON.parse(prev.value) : {}
+    const clave = `${userId}:${sid}`
+    if (!forzar && todo[clave] && Date.now() - Number(todo[clave]) < AVISO_TTL_MS) {
+      return { ok: false, motivo: 'ya se avisó de esta sesión' }
+    }
+    const vivas: Record<string, number> = {}
+    for (const [k, t] of Object.entries(todo)) if (Date.now() - Number(t) < AVISO_TTL_MS) vivas[k] = Number(t)
+    vivas[clave] = Date.now()
+    await db.from('system_config').upsert({ key: AVISO_LOGIN_KEY, value: JSON.stringify(vivas) }, { onConflict: 'key' })
+
+    const { data: u } = await db.from('users').select('email, name, role, raw_data').eq('id', userId).single()
+    const correo = String((u as any)?.email ?? '')
+    if (!correo) return { ok: false, motivo: 'la cuenta no tiene correo registrado' }
+
+    const ip = ipOf(req)
+    const geo = await geoOf(ip)
+    const ua = req.headers.get('user-agent') ?? ''
+    const esAdmin = (u as any)?.role === 'admin'
+    const cuando = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })
+    await auditAdmin(req, 'auth.aviso_ingreso', { userId, ip, pais: geo?.countryCode ?? null })
+
+    if (!RESEND_KEY) return { ok: false, motivo: 'falta la llave de envío de correo en la Bóveda', destino: correo }
+    const fila = (k: string, v: string) =>
+      `<tr><td style="padding:7px 12px;color:#878E88;font-size:13px">${escHtml(k)}</td><td style="padding:7px 12px;color:#F4F4F2;font-size:13px;font-weight:600">${escHtml(v)}</td></tr>`
+    const nombre = String((u as any)?.name ?? '').split(' ')[0] || '';
+    const html = `
+      <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+        <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+        <p style="color:#F4F4F2;font-weight:800;font-size:16px;margin:18px 0 6px">
+          Se abrió tu cuenta${esAdmin ? ' de administración' : ''}
+        </p>
+        <p style="color:#878E88;font-size:13px;line-height:1.6;margin:0 0 16px">
+          ${nombre ? `Hola ${escHtml(nombre)}. ` : ''}Alguien acaba de entrar a tu cuenta de Lincoin.
+          Si fuiste tú, no tienes que hacer nada.
+        </p>
+        <table style="width:100%;background:#121413;border-radius:10px;border-collapse:collapse;margin-bottom:18px">
+          ${fila('Cuándo', cuando)}
+          ${fila('IP', ip ?? 'no registrada')}
+          ${fila('Ubicación aproximada', geo?.approx ?? 'no disponible')}
+          ${fila('Operador', geo?.org ?? '—')}
+          ${fila('Dispositivo', dispositivoDe(ua))}
+        </table>
+        <p style="color:#F87171;font-size:13px;line-height:1.6;margin:0">
+          <b>¿No fuiste tú?</b> Cambia tu contraseña ahora mismo${esAdmin ? '' : ' y escríbenos'}.
+          ${esAdmin ? 'Revisa las llaves y la lista de acceso en Seguridad.' : ''}
+        </p>
+        <p style="color:rgba(244,244,242,0.45);font-size:11px;margin:18px 0 0">
+          La ubicación se deduce de la IP: llega a ciudad o región, no es una dirección exacta.
+          Este aviso se manda una vez por dispositivo — recargar la página no vuelve a enviarlo.
+        </p>
+      </div>`
+    // La respuesta del proveedor SE MIRA. Antes se ignoraba, así que un
+    // rechazo —dominio sin verificar, destinatario no permitido, llave
+    // vencida— se veía exactamente igual que un envío correcto: nada.
+    const envio = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: `Lincoin <${FROM_EMAIL}>`, to: [correo],
+        subject: esAdmin ? 'Ingreso al panel de administración' : 'Nuevo ingreso a tu cuenta Lincoin',
+        html,
+      }),
+    })
+    if (!envio.ok) {
+      const detalle = (await envio.text().catch(() => '')).slice(0, 300)
+      await auditAdmin(req, 'auth.aviso_ingreso_fallido', { userId, status: envio.status, detalle })
+      return { ok: false, motivo: `el proveedor rechazó el envío (${envio.status}): ${detalle}`, destino: correo }
+    }
+    return { ok: true, motivo: 'enviado', destino: correo }
+  } catch (e) {
+    // El aviso NUNCA puede impedir un ingreso, pero el motivo sí queda.
+    try { await auditAdmin(req, 'auth.aviso_ingreso_fallido', { userId, error: (e as Error)?.message }) } catch { /* */ }
+    return { ok: false, motivo: `error interno: ${(e as Error)?.message ?? 'desconocido'}` }
+  }
+}
+
+// ── Invitación de colaboradores ──────────────────────────────────────────
+// El dueño da acceso escribiendo un correo y marcando funciones. Si la
+// persona no tiene cuenta, se le crea una SIN contraseña y se le manda un
+// enlace para crearla en lincoin.me/colaboradores. El enlace es el de
+// recuperación de Supabase: abre una sesión que SOLO sirve para fijar la
+// contraseña (DatabaseContext corta esa sesión antes del panel), y después
+// entra con correo, contraseña y 2FA como cualquiera del equipo.
+const ORIGEN_APP = (Deno.env.get('APP_ORIGIN') ?? 'https://lincoin.me').replace(/\/$/, '')
+
+// Claves de app_config.settings que escribe SOLO el servidor, cada una con su
+// acción: rieles de Coinsenda (coinsenda_cuenta_set) y saldos de las cuentas
+// de tesorería (tesoreria_movimiento). save_config las conserva de la base.
+const CLAVES_CONFIG_DEL_SERVIDOR = ['cuenta3', 'cuenta4', 'treasuryAccounts']
+const NOMBRE_FUNCION: Record<string, string> = {
+  dashboard: 'Dashboard', clientes: 'Clientes', billetera: 'Billetera (cargues)',
+  tesoreria: 'Tesorería', lincoin: 'Lincoin (utilidades)', otc: 'Cierres OTC',
+  coinsenda: 'Coinsenda', fallos: 'Fallos', reportes: 'Reportes',
+  contabilidad: 'Contabilidad', cumplimiento: 'Cumplimiento',
+}
+
+async function enviarInvitacionColaborador(
+  req: Request, email: string, nombre: string | null, funciones: string[], conEnlace: boolean,
+): Promise<{ ok: boolean; motivo: string }> {
+  if (!RESEND_KEY) return { ok: false, motivo: 'falta la llave de envío de correo (RESEND_API_KEY)' }
+  let enlace = `${ORIGEN_APP}/colaboradores`
+  if (conEnlace) {
+    // Enlace de un solo uso para CREAR la contraseña. Vence según la
+    // configuración de Auth (por defecto, 1 hora): por eso el panel tiene
+    // "Reenviar invitación".
+    const { data, error } = await db.auth.admin.generateLink({
+      type: 'recovery', email, options: { redirectTo: `${ORIGEN_APP}/colaboradores` },
+    })
+    const link = (data as any)?.properties?.action_link
+    const hashed = (data as any)?.properties?.hashed_token
+    if (error || (!link && !hashed)) return { ok: false, motivo: `no se pudo generar el enlace: ${error?.message ?? 'sin enlace'}` }
+    // El enlace de Supabase (action_link) se GASTA con solo abrirlo, y los
+    // filtros de correo (Gmail, Outlook, antivirus) abren los enlaces para
+    // revisarlos: la colaboradora llegaba a "el enlace ya se usó o venció".
+    // Ahora el correo lleva a lincoin.me/colaboradores con el token, y el
+    // token solo se usa cuando ella toca "Crear mi contraseña" (regla del
+    // proyecto: un enlace de correo no actúa al abrirse).
+    enlace = hashed
+      ? `${ORIGEN_APP}/colaboradores?invitacion=${encodeURIComponent(String(hashed))}`
+      : String(link)
+  }
+  const lista = funciones.map(f => `<li style="margin:2px 0">${escHtml(NOMBRE_FUNCION[f] ?? f)}</li>`).join('')
+  const saludo = nombre ? `Hola, ${escHtml(nombre)}:` : 'Hola:'
+  const html = `<div style="font-family:Archivo,Arial,sans-serif;background:#070808;padding:28px 16px">
+    <div style="max-width:480px;margin:0 auto;background:#0C0E0D;border:1px solid rgba(255,255,255,0.10);border-radius:16px;padding:26px">
+      <p style="margin:0 0 18px;font-size:22px;font-weight:800;letter-spacing:-0.6px;color:#F4F4F2">Lincoin<span style="color:#4ADE80">.</span></p>
+      <p style="margin:0 0 10px;font-size:15px;color:#F4F4F2">${saludo}</p>
+      <p style="margin:0 0 14px;font-size:14px;line-height:1.55;color:#C9CDC9">Te dieron acceso al panel de colaboradores de Lincoin. Podrás usar:</p>
+      <ul style="margin:0 0 18px;padding-left:18px;font-size:14px;color:#F4F4F2">${lista}</ul>
+      <a href="${escHtml(enlace)}" style="display:inline-block;background:#4ADE80;color:#0A0B0A;text-decoration:none;font-weight:800;font-size:14px;padding:12px 20px;border-radius:10px">${conEnlace ? 'Crear mi contraseña' : 'Entrar al panel'}</a>
+      <p style="margin:18px 0 0;font-size:12.5px;line-height:1.55;color:#878E88">${conEnlace
+        ? 'Por seguridad, el enlace vence pronto y sirve una sola vez. Si se venció, pide que te reenvíen la invitación.'
+        : 'Entra con tu correo y tu contraseña de siempre.'} Al entrar por primera vez vas a activar la verificación en dos pasos con una app como Google Authenticator.</p>
+      <p style="margin:14px 0 0;font-size:12px;color:rgba(244,244,242,0.45)">Si no esperabas este correo, ignóralo.</p>
+    </div></div>`
+  try {
+    const envio = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      // Cabecera única: una invitación REENVIADA no se junta en Gmail con la
+      // anterior (mismo asunto), donde el botón con el enlace nuevo quedaba
+      // escondido entre lo repetido y se abría el del correo viejo, ya vencido.
+      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [email], subject: 'Tu acceso al panel de colaboradores de Lincoin', headers: { 'X-Entity-Ref-ID': crypto.randomUUID() }, html }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!envio.ok) {
+      const detalle = (await envio.text().catch(() => '')).slice(0, 300)
+      await auditAdmin(req, 'equipo.invitacion_fallida', { email, status: envio.status, detalle })
+      return { ok: false, motivo: `el proveedor de correo rechazó el envío (${envio.status})` }
+    }
+    return { ok: true, motivo: 'enviado' }
+  } catch (e) {
+    return { ok: false, motivo: `no se pudo enviar: ${(e as Error)?.message ?? 'error'}` }
+  }
+}
+
+// Una cuenta de Auth por correo (cuando createUser dice que ya existe y no
+// hay fila en users: una invitación anterior que quedó a medias).
+async function authPorCorreo(email: string): Promise<string | null> {
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await db.auth.admin.listUsers({ page, perPage: 200 })
+    if (error) return null
+    const u = (data?.users ?? []).find((x: any) => String(x.email ?? '').toLowerCase() === email)
+    if (u) return String(u.id)
+    if ((data?.users ?? []).length < 200) return null
+  }
+  return null
+}
+
+// ── Seguridad de acceso: IP, geolocalización y bloqueo ────────────────────
+// La IP de quien llama. Primero la que pone Cloudflare (cf-connecting-ip):
+// el cliente no la puede escribir, porque Cloudflare la reemplaza. El primer
+// valor de X-Forwarded-For sí lo puede inventar el navegador, y de esa IP
+// dependen la lista blanca del panel, los bloqueos y la auditoría. Sin la de
+// Cloudflare se sigue con lo de antes.
+function ipOf(req: Request): string | null {
+  const cf = (req.headers.get('cf-connecting-ip') ?? '').trim()
+  if (cf) return cf
+  const fwd = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
+  return fwd || req.headers.get('x-real-ip') || null
+}
+
+// La CADENA COMPLETA de reenvío, no solo el primer salto. Hace falta para
+// distinguir la IP de quien realmente se conectó de la de un nodo de
+// infraestructura en medio: si entre el navegador y la función hay un proxy,
+// aquí se ve, y una IP europea en un acceso desde Colombia deja de ser un
+// misterio. Se guarda como texto plano, sin interpretar.
+function ipChainOf(req: Request): Record<string, string | null> {
+  return {
+    xForwardedFor: req.headers.get('x-forwarded-for'),
+    cfConnectingIp: req.headers.get('cf-connecting-ip'),
+    xRealIp: req.headers.get('x-real-ip'),
+    cfIpCountry: req.headers.get('cf-ipcountry'),
+    xVercelForwardedFor: req.headers.get('x-vercel-forwarded-for'),
+    forwarded: req.headers.get('forwarded'),
+  }
+}
+
+// Geolocalización aproximada por IP. IMPORTANTE: una IP da CIUDAD/REGIÓN como
+// mucho — normalmente la del nodo del operador, no la del edificio. No es una
+// dirección exacta y no debe presentarse como tal.
+type Geo = { city?: string; region?: string; country?: string; countryCode?: string; org?: string; approx?: string; lat?: number; lon?: number }
+const GEO_CACHE_KEY = 'ip_geo_cache'
+async function geoOf(ip: string | null): Promise<Geo | null> {
+  if (!ip || /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) return null
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', GEO_CACHE_KEY).single()
+    const cache = data?.value ? JSON.parse(data.value) : {}
+    // Se reconsulta si la entrada guardada NO trae el código de país: la caché
+    // se llenó antes de que ese campo existiera, y devolverla tal cual dejaba
+    // el país vacío — con la lista blanca encendida, eso dejaba a todos fuera.
+    // También se reconsulta si falta la coordenada: la caché vieja se llenó
+    // antes de que el mapa existiera, y sin lat/lon el punto no se puede
+    // dibujar en ninguna parte.
+    if (cache[ip]?.countryCode && typeof cache[ip]?.lat === 'number') return cache[ip]
+    const ctl = new AbortController()
+    const t = setTimeout(() => ctl.abort(), 2500)
+    const r = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, { signal: ctl.signal }).then(x => x.json()).catch(() => null)
+    clearTimeout(t)
+    if (!r?.success) return null
+    const geo: Geo = {
+      city: r.city ?? undefined, region: r.region ?? undefined, country: r.country ?? undefined,
+      countryCode: r.country_code ?? undefined,
+      org: r.connection?.isp ?? undefined,
+      approx: [r.city, r.region, r.country].filter(Boolean).join(', ') || undefined,
+      lat: typeof r.latitude === 'number' ? r.latitude : undefined,
+      lon: typeof r.longitude === 'number' ? r.longitude : undefined,
+    }
+    // Caché acotada: evita pegarle al servicio por cada evento repetido.
+    const keys = Object.keys(cache)
+    if (keys.length > 250) for (const k of keys.slice(0, 100)) delete cache[k]
+    cache[ip] = geo
+    await db.from('system_config').upsert({ key: GEO_CACHE_KEY, value: JSON.stringify(cache) }, { onConflict: 'key' })
+    return geo
+  } catch { return null }
+}
+
+// ── Lista blanca de acceso al panel ──────────────────────────────────────
+// Solo deja entrar al panel desde los países o las IPs autorizadas. Es la
+// defensa que funciona AUNQUE el atacante tenga contraseña, 2FA y códigos de
+// respaldo: si no está en el sitio permitido, no llega ni a la pantalla del
+// código. Arranca DESACTIVADA a propósito — se enciende desde el panel, ya
+// viendo cuál es tu IP, para no encerrar a nadie por sorpresa.
+const ACCESS_POLICY_KEY = 'admin_access_policy'
+type AccessPolicy = { enabled: boolean; countries: string[]; ips: string[] }
+const DEFAULT_POLICY: AccessPolicy = { enabled: false, countries: ['CO'], ips: [] }
+
+async function accessPolicy(): Promise<AccessPolicy> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', ACCESS_POLICY_KEY).single()
+    if (!data?.value) return DEFAULT_POLICY
+    const p = JSON.parse(data.value)
+    return {
+      enabled: !!p.enabled,
+      countries: Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase()) : [],
+      ips: Array.isArray(p.ips) ? p.ips.map((i: any) => String(i)) : [],
+    }
+  } catch { return DEFAULT_POLICY }
+}
+
+// Devuelve un mensaje si esta conexión NO puede entrar al panel; null si sí.
+async function accessDenied(req: Request): Promise<string | null> {
+  const pol = await accessPolicy()
+  if (!pol.enabled) return null
+  const ip = ipOf(req)
+  if (!ip) return null                       // sin IP no se castiga a nadie
+  if (pol.ips.includes(ip)) return null      // IP autorizada explícitamente
+  const geo = await geoOf(ip)
+  const cc = String(geo?.countryCode ?? '').toUpperCase()
+  if (cc && pol.countries.includes(cc)) return null
+  if (!cc) {
+    // No se pudo averiguar el país (el servicio de geolocalización no
+    // respondió, o la IP no está en su base). Se DEJA PASAR y se anota: una
+    // caída de un servicio ajeno no puede dejar al titular sin panel. El
+    // resto de candados —contraseña, los dos códigos, el bloqueo por
+    // intentos— siguen en pie.
+    await auditAdmin(req, 'security.acceso_sin_geo', { ip })
+    return null
+  }
+  await auditAdmin(req, 'security.acceso_fuera_de_zona', { ip, pais: cc, geo })
+  // Mensaje deliberadamente parco: no se le dice desde dónde sí se podría.
+  return 'Este acceso no está autorizado desde esta conexión.'
+}
+
+const BLOCKED_IPS_KEY = 'blocked_ips'
+// soloPanel: la IP se bloqueó por fallos contra una cuenta de ADMIN. Frena
+// el panel y las cuentas de admin, no a los clientes: una oficina comparte
+// IP, y un admin que se equivocó dos veces con su código dejaba sin poder
+// entrar a todas las empresas de esa red.
+type BlockedIp = { ip: string; at: string; reason: string; attempts: number; geo?: Geo | null; soloPanel?: boolean }
+async function blockedIps(): Promise<BlockedIp[]> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', BLOCKED_IPS_KEY).single()
+    return data?.value ? JSON.parse(data.value) : []
+  } catch { return [] }
+}
+async function saveBlockedIps(list: BlockedIp[]) {
+  await db.from('system_config').upsert({ key: BLOCKED_IPS_KEY, value: JSON.stringify(list.slice(0, 500)) }, { onConflict: 'key' })
+}
+async function isIpBlocked(req: Request): Promise<boolean> {
+  const ip = ipOf(req)
+  if (!ip) return false
+  // Sin identidad no se sabe si es un admin: los bloqueos solo del panel no cuentan.
+  return (await blockedIps()).some(b => b.ip === ip && !b.soloPanel)
+}
+
+async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string; userId?: string; email?: string; acceso?: Acceso }> {
   const authHeader = req.headers.get('Authorization') ?? ''
 
   // Identidad de admin SOLO por JWT real de Supabase (role='admin'). Se eliminó
   // el esquema "AdminBypass <password>": esa contraseña compartida viajaba en el
   // bundle público del frontend (VITE_ADMIN_PASSWORD) y cualquiera podía
   // extraerla y tomar control total. El admin entra con su cuenta real.
-  const jwt = authHeader.replace('Bearer ', '').trim()
+  const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
   if (!jwt) return { ok: false, error: 'No authorization token' }
 
   try {
@@ -104,14 +1739,194 @@ async function verifyAdmin(req: Request): Promise<{ ok: boolean; error?: string 
     ])
     const { data: { user }, error: authErr } = authResult as any
     if (authErr || !user) return { ok: false, error: 'Invalid or expired token' }
-    const isAdminEmail = user.email === ADMIN_EMAIL
+    // El rol SOLO sale de la tabla. Antes bastaba con que el correo del token
+    // fuera ADMIN_EMAIL para conceder admin AUNQUE la fila no tuviera
+    // role='admin' — es decir, quitarle el rol a esa cuenta en la base no le
+    // quitaba nada. La identidad y el permiso deben venir de la misma fuente.
     const { data: profile } = await db.from('users').select('role').eq('id', user.id).single()
-    if (!profile?.role && !isAdminEmail) return { ok: false, error: 'Forbidden: admin only' }
-    if (profile?.role !== 'admin' && !isAdminEmail) return { ok: false, error: 'Forbidden: admin only' }
-    return { ok: true }
+    if (profile?.role !== 'admin') return { ok: false, error: 'Forbidden: admin only' }
+
+    const acceso = await accesoDe(user.id, String(user.email ?? ''))
+    return { ok: true, userId: user.id, email: String(user.email ?? ''), acceso }
   } catch {
     return { ok: false, error: 'Auth check failed' }
   }
+}
+
+// Qué rol y qué países tiene esta cuenta. La regla vive en _shared/equipo.ts
+// (la usan también gasfree, mouv-proxy, finity-proxy y las de cumplimiento).
+function accesoDe(userId: string, email: string): Promise<Acceso> {
+  return accesoEquipo(db, userId, email, ADMIN_EMAIL)
+}
+
+// El autor que se guarda con un movimiento manual.
+async function autorDe(auth: { userId?: string; email?: string; acceso?: Acceso }): Promise<Record<string, unknown>> {
+  let nombre: string | null = null
+  try {
+    const { data } = await db.from('admin_miembros').select('nombre').eq('id', auth.userId ?? '').maybeSingle()
+    nombre = (data as any)?.nombre ?? null
+    if (!nombre) {
+      const { data: u } = await db.from('users').select('full_name, name').eq('id', auth.userId ?? '').maybeSingle()
+      nombre = (u as any)?.full_name || (u as any)?.name || null
+    }
+  } catch { /* sin nombre: queda el correo */ }
+  return { id: auth.userId ?? null, email: auth.email ?? null, nombre, rol: auth.acceso?.rol ?? null, at: new Date().toISOString() }
+}
+
+// ════════════════════════════════════════════════════════
+//  EQUIPO: QUÉ PUEDE HACER CADA UNO Y SOBRE QUÉ PAÍSES
+//
+//  Esto vive en el servidor a propósito. Un filtro que vive en el navegador
+//  no es una frontera: es una sugerencia que cualquiera desactiva con la
+//  consola abierta. Si "este miembro solo ve Colombia" va a significar algo,
+//  tiene que significarlo acá.
+// ════════════════════════════════════════════════════════
+
+// Qué permiso exige cada acción.
+//
+// LO QUE NO ESTÁ EN ESTA TABLA SE NIEGA a todo el que no sea dueño. Es
+// deliberado: cuando se agregue una acción nueva y alguien se olvide de
+// anotarla acá, lo que pasa es que no funciona para el equipo — no que quede
+// abierta. Entre romperse y filtrarse, que se rompa.
+const PERMISO_DE_ACCION: Record<string, string | string[]> = {
+  // ── Colaboradores ──
+  // Cada acción que usa una sección del panel acepta también el permiso de
+  // esa casilla ('fn.<seccion>', ver PERMISOS_POR_FUNCION en _shared/
+  // equipo.ts). Los roles fijos no cambian: lo de 'fn.*' solo lo tiene el
+  // colaborador que tiene marcada la sección.
+  // Saber quién soy: lo tienen los cuatro roles. Sin esto, un miembro no
+  // podría ni enterarse de qué países le tocan, y el panel quedaría en blanco
+  // sin decir por qué.
+  mi_acceso: 'clientes.ver',
+  // Dejar constancia del propio ingreso: lo hacen los cuatro roles. Sin esto
+  // el ingreso de cualquiera que no fuera el dueño se anotaba como permiso
+  // denegado.
+  log_login: 'clientes.ver',
+  // Salud del 2FA de las cuentas (correos y estado, ningún secreto).
+  mfa_health: 'cumplimiento',
+
+  // Consultar
+  admin_logins: 'plata.ver',
+  command_map: 'plata.ver',
+  get_tx_proof: ['plata.ver', 'tesoreria', 'fn.tesoreria'],
+  conciliar_movimientos: 'plata.mover',
+  otc_ajuste_get: ['plata.ver', 'fn.contabilidad'],
+  limites_envio_get: ['plata.ver', 'fn.cumplimiento'],
+  movimientos_cliente: 'clientes.ver',
+  // Clientes por páginas: el panel ya no baja la base entera.
+  usuarios_buscar: 'clientes.ver',
+  usuarios_por_id: 'clientes.ver',
+  // Contabilidad: el tablero y la facturación de Lincoin. Configurar Siigo
+  // (credenciales) queda para el dueño: fact_lincoin_set no figura acá.
+  contabilidad_resumen: ['plata.ver', 'fn.contabilidad'],
+  contabilidad_cliente: ['plata.ver', 'fn.contabilidad'],
+  contabilidad_rechazados: ['plata.ver', 'fn.contabilidad'],
+  contabilidad_vincular_ajuste: ['plata.mover', 'fn.contabilidad'],
+  contabilidad_corregir_venta: ['plata.mover', 'fn.contabilidad'],
+  // Cómo se le factura a un cliente (Colombia diaria / exterior por movimiento).
+  cliente_modelo_factura: ['plata.ver', 'clientes.editar', 'fn.contabilidad', 'fn.clientes'],
+  cliente_modelo_factura_set: ['plata.mover', 'clientes.editar', 'fn.contabilidad', 'fn.clientes'],
+  contabilidad_autovincular: ['plata.mover', 'fn.contabilidad'],
+  // Cupos por beneficiario: los decide Cumplimiento.
+  cupos_admin_get: 'cumplimiento',
+  cupos_pendientes: 'cumplimiento',
+  cupos_config_set: 'cumplimiento',
+  cupo_resolver: 'cumplimiento',
+  cupo_quitar: 'cumplimiento',
+  // SIREL (UIAF): arma los reportes de clientes y operaciones con activos virtuales.
+  sirel_periodo: ['cumplimiento', 'fn.cumplimiento'],
+  sirel_registrar_envio: ['cumplimiento', 'fn.cumplimiento'],
+  fact_lincoin_get: ['plata.ver', 'fn.contabilidad'],
+  fact_lincoin_lista: ['plata.ver', 'fn.contabilidad'],
+  fact_lincoin_probar: ['plata.mover', 'fn.contabilidad'],
+  fact_lincoin_emitir: ['plata.mover', 'fn.contabilidad'],
+  fact_lincoin_al_dia: ['plata.mover', 'fn.contabilidad'],
+  email_incidencias: 'clientes.ver',
+  email_incidencia_resuelta: 'clientes.editar',
+
+  // Mover plata — Tesorería: cargue manual en las billeteras COP y los
+  // traslados Saldo Lincoin → ACH. El cargue cripto (USDT) queda en
+  // 'plata.mover': no es parte de lo que se le delega a Tesorería.
+  admin_credit_balance: ['tesoreria', 'fn.billetera'],
+  admin_credit_crypto: 'plata.mover',
+  approve_rail_move: ['tesoreria', 'fn.tesoreria'],
+  // "Registrar movimiento" en una cuenta de tesorería (no la config entera).
+  tesoreria_movimiento: ['tesoreria', 'fn.tesoreria'],
+  // El tablero de Tesorería (solo lectura, cifras de toda la base).
+  tesoreria_resumen: ['plata.ver', 'tesoreria', 'fn.tesoreria'],
+  // La caja de Lincoin: verla. Abrirla, corregir la apertura y ocultar un
+  // movimiento son del dueño (no figuran acá).
+  caja_estado: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
+  // movimiento es del dueño (no figura acá).
+  lincoin_resumen: ['plata.ver', 'tesoreria', 'fn.lincoin'],
+  // Reportes → Resumen financiero (solo lectura: utilidad, gastos, volumen).
+  reporte_financiero: ['plata.ver', 'tesoreria', 'fn.reportes'],
+  // Enviar la utilidad a la empresa por Bre-B: dueño y Tesorería, con su
+  // código 2FA en cada envío. Inscribir o quitar las llaves de Lincoin es
+  // solo del dueño (no figuran acá).
+  caja_llaves_get: ['plata.ver', 'tesoreria', 'fn.lincoin'],
+  coinsenda_bolsa: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin', 'fn.coinsenda'],
+  coinsenda_dashboard: ['plata.ver', 'tesoreria', 'fn.coinsenda'],
+  caja_enviar_empresa: ['tesoreria', 'fn.lincoin'],
+  caja_envio_estado: ['tesoreria', 'fn.lincoin'],
+  tesoreria_detalle: ['plata.ver', 'tesoreria', 'fn.tesoreria'],
+  caja_movimiento_soporte: ['plata.ver', 'tesoreria', 'fn.lincoin'],
+  caja_movimiento_crear: ['tesoreria', 'fn.lincoin'],
+  reject_rail_move: ['tesoreria', 'fn.tesoreria'],
+  otc_ajuste_set: ['plata.mover', 'fn.contabilidad'],
+  // Los topes de envío son un control de cumplimiento: los ajusta Compliance
+  // (el dueño también, como todo).
+  limites_envio_set: 'cumplimiento',
+  limite_cliente_set: 'cumplimiento',
+
+  // Clientes
+  set_kyc_status: 'cumplimiento',
+
+  // Cumplimiento y auditoría
+  list_audit: ['cumplimiento', 'fn.dashboard'],
+  security_audit: 'cumplimiento',
+  security_series: 'cumplimiento',
+  security_stats: ['cumplimiento', 'fn.dashboard'],
+  log_incident: ['cumplimiento', 'fn.dashboard'],
+
+  // Solo el dueño (no figuran con permiso propio: caen en la negación por
+  // defecto). delete_user, force_delete_by_email, save_config, block_ip,
+  // unblock_ip, log_key_rotation, access_policy_get/set, equipo_*.
+}
+
+const PAIS_POR_MONEDA: Record<string, string> = {
+  COP: 'CO', COP_BREB: 'CO', COP_ACH: 'CO', COP_C3: 'CO', COP_C4: 'CO',
+  BRL: 'BR', MXN: 'MX',
+  USD: 'US', USDT: 'US', USDT_TRON: 'US', USDC: 'US', EURC: 'US',
+}
+
+// Normaliza lo que haya en raw_data.country — viene escrito a mano y llega
+// como "Colombia", "colombia", "CO", "COL"…
+//
+// NO se usa para esconder clientes: la lista de clientes no se filtra por
+// país. Queda para etiquetar y para agrupar en el panel.
+function paisAcodigo(v: unknown): string | null {
+  const s = String(v ?? '').trim().toLowerCase()
+  if (!s) return null
+  if (s.startsWith('col') || s === 'co') return 'CO'
+  if (s.startsWith('bra') || s === 'br') return 'BR'
+  if (s.startsWith('mex') || s.startsWith('méx') || s === 'mx') return 'MX'
+  if (s.startsWith('est') || s.startsWith('usa') || s.startsWith('united') || s === 'us') return 'US'
+  return null
+}
+
+// Los movimientos no tienen columna de país: se deduce de la moneda y del
+// riel, que es de donde realmente sale. Si no se puede deducir, devuelve null
+// y ESO NO SIGNIFICA "no mostrar" — ver el comentario de `visibleEnPais`.
+function paisDeMovimiento(tx: Record<string, unknown>): string | null {
+  const m = String(tx.currency ?? '').toUpperCase()
+  if (PAIS_POR_MONEDA[m]) return PAIS_POR_MONEDA[m]
+  const rd = (tx.raw_data ?? {}) as Record<string, unknown>
+  const riel = String(rd.rail ?? rd.riel ?? rd.wallet ?? '').toUpperCase()
+  if (riel.includes('BREB') || riel.includes('ACH') || riel.includes('COP')) return 'CO'
+  if (riel.includes('PIX') || riel.includes('BRL')) return 'BR'
+  return null
 }
 
 // Auditoría DURABLE de acciones sensibles del admin (borrado de cuentas, etc.).
@@ -124,26 +1939,138 @@ async function auditAdmin(req: Request, action: string, metadata: Record<string,
       const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
       if (jwt) { const { data } = await db.auth.getUser(jwt); byEmail = data?.user?.email ?? null; byId = data?.user?.id ?? null }
     } catch { /* sin identidad */ }
-    const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || null
+    const ip = ipOf(req)
     const userAgent = req.headers.get('user-agent') ?? null
-    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
+    // Ubicación aproximada por IP (ciudad/región), cacheada. Nunca bloquea:
+    // si el servicio no responde, el evento se guarda igual sin geo.
+    const geo = await geoOf(ip)
+    await db.from('audit_log').insert({ user_id: byId, action, metadata: { ...metadata, byEmail, ip, ipChain: ipChainOf(req), geo, userAgent, hadSession: !!byEmail, at: new Date().toISOString() } })
   } catch { /* best-effort — nunca romper la operación */ }
 }
 
-// true si quien llama es admin, O si su JWT resuelve al MISMO userId que
-// pide la acción (para insert_transaction: cualquier cliente puede
-// insertar SU PROPIA transacción, nunca la de otro).
-async function verifySelfOrAdmin(req: Request, userId: string): Promise<boolean> {
-  if ((await verifyAdmin(req)).ok) return true
-  const authHeader = req.headers.get('Authorization') ?? ''
-  const jwt = authHeader.replace(/^Bearer\s+/i, '').trim()
-  if (!jwt) return false
+// El usuario del JWT, si es válido.
+async function usuarioDelToken(req: Request): Promise<{ id: string; email: string } | null> {
+  const jwt = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+  if (!jwt) return null
   try {
     const { data: { user } } = await db.auth.getUser(jwt)
-    return user?.id === userId
-  } catch {
-    return false
+    return user?.id ? { id: String(user.id), email: String(user.email ?? '') } : null
+  } catch { return null }
+}
+
+// true SOLO si el JWT de quien llama es el de ESE userId. Las acciones de
+// autoservicio (2FA, perfil, conversiones, cupos) son de la propia cuenta.
+//
+// Antes esto era "propio O admin", y como corre ANTES del control del panel,
+// cualquier cuenta admin —un miembro de "Solo lectura", uno dado de baja, una
+// cuenta bloqueada o una sesión fuera de la lista blanca— podía mover saldo,
+// cambiar el 2FA o bloquear el ingreso de cualquier usuario. Lo que un admin
+// hace sobre la cuenta de OTRO pasa ahora por adminSobreOtro.
+async function verifySelfOrAdmin(req: Request, userId: string): Promise<boolean> {
+  const u = await usuarioDelToken(req)
+  return !!u && u.id === String(userId)
+}
+
+// Un admin actuando sobre la cuenta de OTRO desde las acciones de autoservicio
+// pasa por los mismos candados que el resto del panel: miembro activo, el
+// permiso de su rol, sesión con 2FA, cuenta sin bloqueo y lista blanca de
+// acceso. Devuelve la respuesta de rechazo lista para devolver, o null.
+async function adminSobreOtro(req: Request, permisos: string[], accion: string): Promise<{ ok: true; admin: { userId: string; acceso: Acceso } } | { ok: false; res: Response }> {
+  const v = await verifyAdmin(req)
+  if (!v.ok || !v.userId) return { ok: false, res: json({ error: 'No autorizado' }, 401) }
+  const acceso = v.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+  if (acceso.desactivado) return { ok: false, res: json({ error: 'Tu acceso al panel fue desactivado.', permisoDenegado: true }, 403) }
+  const tiene = permisosDe(acceso)
+  if (!(tiene.has('*') || permisos.some(p => tiene.has(p)))) {
+    await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: v.userId })
+    return { ok: false, res: json({ error: 'Tu rol no permite esta operación.', permisoDenegado: true }, 403) }
   }
+  { const den = await accessDenied(req); if (den) return { ok: false, res: json({ error: den, accessDenied: true }, 403) } }
+  if (await adminLock(v.userId)) return { ok: false, res: json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423) }
+  const mfaErr = acceso.rol === 'colaborador' ? await falta2faColaborador(req, v.userId) : await requireMfaSession(req, v.userId)
+  if (mfaErr) return { ok: false, res: json({ error: mfaErr, needs2fa: true }, 403) }
+  return { ok: true, admin: { userId: v.userId, acceso } }
+}
+
+// ── Cambio del correo de ACCESO (común a admin y cliente) ───────────────
+// El correo es con lo que se entra y adonde llegan los códigos, los avisos de
+// ingreso y la recuperación de contraseña. Se cambia en los DOS lados —cuenta
+// de acceso (Auth) y perfil (users)— o en ninguno: si quedaban distintos, la
+// persona entraba con uno y recibía los códigos en otro.
+const CORREO_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+// null = el correo está libre; si no, por qué no.
+async function correoOcupado(nuevo: string, uid: string): Promise<string | null> {
+  const { data: otraFila } = await db.from('users').select('id, full_name').eq('email', nuevo).neq('id', uid).limit(1).maybeSingle()
+  // Sin el nombre del titular: un cliente que cambiaba su correo podía probar
+  // direcciones y ver de quién es cada una.
+  if (otraFila) return 'Ese correo ya es de otra cuenta.'
+  for (let page = 1; page <= 20; page++) {
+    const { data: lst, error } = await db.auth.admin.listUsers({ page, perPage: 200 })
+    if (error) return `No se pudo revisar si el correo está libre: ${error.message}`
+    if ((lst?.users ?? []).some((u: any) => String(u.email ?? '').toLowerCase() === nuevo && u.id !== uid)) {
+      return 'Ese correo todavía tiene una cuenta de acceso suelta (sin perfil). Hay que liberarlo antes.'
+    }
+    if (!lst?.users || lst.users.length < 200) break
+  }
+  return null
+}
+async function cambiarCorreoAcceso(uid: string, anterior: string, nuevo: string): Promise<string | null> {
+  const { error: eAuth } = await db.auth.admin.updateUserById(uid, { email: nuevo, email_confirm: true })
+  if (eAuth) return /not.?found/i.test(eAuth.message) ? 'Esta cuenta no tiene cuenta de acceso para cambiarle el correo.' : `No se pudo cambiar el correo de acceso: ${eAuth.message}`
+  const { error: ePerfil } = await db.from('users').update({ email: nuevo }).eq('id', uid)
+  if (ePerfil) {
+    try { await db.auth.admin.updateUserById(uid, { email: anterior, email_confirm: true }) } catch { /* */ }
+    return `No se pudo guardar el correo en el perfil: ${ePerfil.message}. No se cambió nada.`
+  }
+  return null
+}
+// Suelta los ingresos de OTRO proveedor (Google…) atados al correo anterior.
+// Sin esto el correo viejo no quedaba libre: entrar con Google como ese
+// correo abría la cuenta que ya lo había cambiado (Google identifica por su
+// cuenta, no por el correo). Lo hace la base (2026_zz29), porque esas
+// identidades viven en auth.identities. Devuelve un aviso si no se pudo.
+async function soltarIdentidades(uid: string, anterior: string, nuevo: string): Promise<string | null> {
+  try {
+    const { data, error } = await db.rpc('lincoin_soltar_identidades', { p_user: uid, p_anterior: anterior, p_nuevo: nuevo })
+    if (error) {
+      return /lincoin_soltar_identidades|schema cache|does not exist|Could not find/i.test(error.message)
+        ? `El correo cambió, pero falta correr la migración 2026_zz29 para soltar el ingreso con Google de ${anterior}: hasta entonces ese Google sigue abriendo esta cuenta.`
+        : `El correo cambió, pero no se pudo soltar el ingreso con Google de ${anterior}: ${error.message}`
+    }
+    if ((data as any)?.ok === false) return `El correo cambió, pero no se pudo soltar el ingreso con Google de ${anterior}.`
+    return null
+  } catch (e) {
+    return `El correo cambió, pero no se pudo soltar el ingreso con Google de ${anterior}: ${(e as Error).message}`
+  }
+}
+async function enviarCorreoLincoin(para: string, asunto: string, titulo: string, cuerpoHtml: string) {
+  if (!RESEND_KEY || !para) return
+  const html = `
+    <div style="background:#0C0E0D;padding:28px;font-family:Archivo,system-ui,sans-serif">
+      <p style="font-size:20px;font-weight:800;color:#F4F4F2;margin:0 0 4px">Lincoin<span style="color:#4ADE80">.</span></p>
+      <p style="color:#F4F4F2;font-weight:800;font-size:16px;margin:18px 0 6px">${escHtml(titulo)}</p>
+      <div style="color:#878E88;font-size:13px;line-height:1.6;margin:0">${cuerpoHtml}</div>
+    </div>`
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [para], subject: asunto, html }),
+    })
+  } catch { /* un aviso que no sale nunca deshace el cambio */ }
+}
+// Aviso al correo ANTERIOR: si el cambio no lo pidió el titular, es por
+// donde se entera.
+async function avisarCambioCorreo(anterior: string, nuevo: string, nombre: string) {
+  await enviarCorreoLincoin(anterior, 'Cambió el correo de acceso de tu cuenta Lincoin', 'Cambió el correo de acceso de tu cuenta',
+    `Desde ahora la cuenta ${escHtml(nombre)} entra con <b style="color:#F4F4F2">${escHtml(nuevo)}</b>. Este correo ya no sirve para iniciar sesión. Si no lo pediste, respóndenos de inmediato.`)
+}
+
+// Error para quien NO es del equipo: el detalle (mensajes de la base, nombres
+// de tablas) queda en el log del servidor, no en la pantalla del cliente.
+function errorGenerico(contexto: string, detalle: unknown, status = 500): Response {
+  console.error(`[admin-data] ${contexto}:`, String((detalle as any)?.message ?? detalle ?? '').slice(0, 300))
+  return json({ error: 'No se pudo completar la operación. Intenta de nuevo en un momento.' }, status)
 }
 
 Deno.serve(async (req: Request) => {
@@ -155,6 +2082,16 @@ Deno.serve(async (req: Request) => {
     const pingUrl = new URL(req.url)
     if (pingUrl.searchParams.get('action') === 'ping') {
       return json({ ok: true, version: 'admin-data v4 (slim + ping)' })
+    }
+
+    // Enlaces de desbloqueo ya enviados (apuntaban acá): abrirlos ya NO
+    // desbloquea. Se redirige a la página con el botón, que es la que
+    // desbloquea con un POST (ver 'unlock_cuenta'). Un GET que cambia algo lo
+    // dispara cualquier filtro de correo que revise los enlaces.
+    if (pingUrl.searchParams.get('action') === 'unlock') {
+      const uid = pingUrl.searchParams.get('u') ?? ''
+      const tok = pingUrl.searchParams.get('t') ?? ''
+      return new Response(null, { status: 302, headers: { Location: `${ORIGEN_APP}/desbloquear?u=${encodeURIComponent(uid)}&t=${encodeURIComponent(tok)}`, ...CORS } })
     }
 
     // ⚠️ El body se parsea ANTES del gate de admin — 'delete_self' e
@@ -169,29 +2106,297 @@ Deno.serve(async (req: Request) => {
     if (req.method === 'POST') {
       selfServiceBody = await req.json().catch(() => ({}))
 
+      // Foto diaria de la caja: la pide pg_cron (caja_foto) con el secreto
+      // interno, sin sesión. Solo lee saldos y escribe caja_* .
+      if (selfServiceBody.action === 'caja_foto') {
+        if (!(await traeSecretoDeLaBase(req, db))) return json({ error: 'No autorizado' }, 401)
+        return json(await cajaFoto())
+      }
+
+      // ── Desbloqueo desde el correo ────────────────────────────────────
+      // No lleva sesión a propósito: el titular está bloqueado justamente
+      // porque no puede entrar. La credencial es el token de un solo uso que
+      // se le envió, comparado por hash. Llega por POST desde la página
+      // lincoin.me/desbloquear, al tocar el botón.
+      if (selfServiceBody.action === 'unlock_cuenta') {
+        const uid = String(selfServiceBody.u ?? '').slice(0, 64)
+        const tok = String(selfServiceBody.t ?? '').slice(0, 200)
+        if (!uid || !tok) return json({ ok: false, titulo: 'Enlace incompleto', texto: 'Vuelve a abrir el enlace del correo.' })
+        const lock = await adminLock(uid)
+        if (!lock) return json({ ok: true, titulo: 'La cuenta ya está activa', texto: 'No hay ningún bloqueo pendiente. Puedes iniciar sesión.' })
+        if (lock.tokenHash !== await sha256Hex(tok)) {
+          await auditAdmin(req, 'security.unlock_token_invalido', { userId: uid })
+          return json({ ok: false, titulo: 'Enlace inválido o ya usado', texto: 'Cada enlace sirve una sola vez. Si necesitas otro, intenta iniciar sesión para generar uno nuevo.' })
+        }
+        await clearAdminLock(uid)
+        // La IP que se bloqueó junto con la cuenta también se libera: quien
+        // usa este enlace probó que es el titular (el correo). Antes la cuenta
+        // quedaba activa pero la IP seguía bloqueada, y nadie de esa red —ni
+        // el titular— podía entrar hasta que alguien la quitara desde
+        // Monitoreo.
+        let ipLiberada: string | null = null
+        if (lock.ip) {
+          try {
+            const list = await blockedIps()
+            const resto = list.filter(b => !(b.ip === lock.ip && (b.soloPanel || String(b.reason ?? '').startsWith('bloqueo de la cuenta de admin'))))
+            if (resto.length !== list.length) { await saveBlockedIps(resto); ipLiberada = String(lock.ip) }
+          } catch { /* la cuenta ya quedó desbloqueada; la IP se puede quitar desde Monitoreo */ }
+        }
+        await auditAdmin(req, 'security.admin_unlocked', { userId: uid, ipLiberada })
+        return json({ ok: true, titulo: 'Cuenta desbloqueada', texto: 'Ya puedes iniciar sesión. Si no fuiste tú quien pidió esto, cambia la contraseña de inmediato.' })
+      }
+
+      // ── Intento de ingreso FALLIDO ────────────────────────────────────
+      // Va SIN autenticación a propósito: quien falla el login justamente no
+      // tiene sesión. Solo escribe en auditoría; no devuelve ningún dato.
+      // Al 3.er fallo desde la misma IP en una hora, la IP queda bloqueada.
+      if (selfServiceBody.action === 'log_failed_login') {
+        const ip = ipOf(req)
+        const email = String(selfServiceBody.email ?? '').slice(0, 120)
+        const reason = String(selfServiceBody.reason ?? 'credenciales').slice(0, 60)
+        let blocked = false
+        if (!ip) await auditAdmin(req, 'auth.failed_login', { email, reason })
+        if (ip) {
+          const sinceH = new Date(Date.now() - 3600_000).toISOString()
+          const { data: recent } = await db.from('audit_log').select('created_at')
+            .eq('action', 'auth.failed_login').contains('metadata', { ip }).gte('created_at', sinceH)
+            .order('created_at', { ascending: false }).limit(100)
+          const fails = (recent ?? []).length
+          // El bloqueo automático de IP es SOLO para intentos contra la cuenta
+          // del panel. En Colombia media ciudad sale por la misma IP del
+          // operador: bloquearla porque un cliente escribió mal su código tres
+          // veces dejaba afuera a todos los demás detrás de esa IP.
+          let contraAdmin = false
+          try {
+            const { data: ue } = await db.from('users').select('role').eq('email', email.trim().toLowerCase()).maybeSingle()
+            contraAdmin = (ue as any)?.role === 'admin'
+          } catch { /* si no se puede saber, no se bloquea */ }
+          // Tope de escritura: este endpoint es público, así que sin un límite
+          // se le podía inundar la auditoría a punta de peticiones. Pasado el
+          // tope la IP ya está bloqueada y no hace falta seguir anotando.
+          if (fails < 40) await auditAdmin(req, 'auth.failed_login', { email, reason, ...(contraAdmin ? { contraAdmin: true } : {}) })
+          // Y se cuentan SOLO los fallos contra cuentas del panel. Antes se
+          // contaban todos los de la IP: un cliente que se equivocó varias
+          // veces con SU contraseña desde la misma red que el admin dejaba el
+          // contador lleno, y el primer error del admin bloqueaba la conexión
+          // del panel (3 nov). Lo de cada cliente lo frena user-login por
+          // cuenta, sin tocar al panel.
+          let failsPanel = 0
+          if (contraAdmin) {
+            const { data: rp } = await db.from('audit_log').select('created_at')
+              .eq('action', 'auth.failed_login').contains('metadata', { ip, contraAdmin: true }).gte('created_at', sinceH)
+              .limit(100)
+            failsPanel = Math.max((rp ?? []).length, fails >= 40 ? 3 : 0)
+          }
+          if (contraAdmin && failsPanel >= 3) {
+            const list = await blockedIps()
+            if (!list.some(b => b.ip === ip)) {
+              list.unshift({ ip, at: new Date().toISOString(), reason: `${failsPanel} intentos fallidos contra el panel en 1 h`, attempts: failsPanel, geo: await geoOf(ip), soloPanel: true })
+              await saveBlockedIps(list)
+              await auditAdmin(req, 'auth.ip_blocked', { ip, attempts: failsPanel, email })
+            }
+            blocked = true
+          }
+        }
+        // Respuesta igual siempre: con `blocked` un tercero sabía, al tercer
+        // intento, si un correo es una cuenta del panel (solo esas bloquean).
+        void blocked
+        return json({ ok: true })
+      }
+
+      // Segundo paso del ingreso: el código que llegó al correo. Solo aquí se
+      // marca la sesión como verificada — ni el código de la app por sí solo
+      // la abre.
+      if (selfServiceBody.action === 'mfa_verify_email' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+        }
+        const uidE = String(selfServiceBody.userId)
+        const codeE = String(selfServiceBody.code ?? '').replace(/\D/g, '')
+
+        const sinceE = new Date(Date.now() - 15 * 60_000).toISOString()
+        const fallosE = (await fallosRecientes(uidE, sinceE)).filter((r: any) => r?.metadata?.tipo === 'correo')
+        if (fallosE.length >= 5) {
+          const viejo = fallosE.map((r: any) => new Date(r.created_at).getTime()).sort((a, b) => a - b)[0]
+          const faltan = Math.max(1, Math.ceil((viejo + 15 * 60_000 - Date.now()) / 60_000))
+          return json({ ok: false, error: 'too_many_attempts', message: `Demasiados intentos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.` }, 429)
+        }
+
+        if (!/^\d{6}$/.test(codeE)) return json({ ok: false, message: 'El código son 6 dígitos.' })
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'verify', userId: uidE, code: codeE }),
+        }).then(x => x.json()).catch(() => null)
+        if (!r?.ok) {
+          // Un código YA USADO, VENCIDO o inexistente NO es un código
+          // equivocado: es el mismo dueño tocando dos veces, o volviendo tarde.
+          // Contarlo como fallo llevaría a bloquear la cuenta del titular por
+          // un doble toque — el bloqueo existe para quien ADIVINA, no para
+          // quien acierta dos veces seguidas.
+          // Tampoco uno REEMPLAZADO por un envío más nuevo (llegó a su correo:
+          // es del titular) ni el que no se alcanzó a evaluar porque el mismo
+          // código ya se estaba verificando ('busy').
+          const inocente = ['used', 'no_code', 'expired', 'superseded', 'busy'].includes(String(r?.error ?? ''))
+          if (inocente) return json({ ok: false, message: r?.message ?? 'Solicita un código nuevo.' })
+          const f = await registerAdminFailure(req, uidE, 'código incorrecto', 'correo', selfServiceBody.foto ?? null)
+          if (f.bloqueada) {
+            return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          }
+          return json({ ok: false, message: r?.message ?? 'Código incorrecto o vencido.' })
+        }
+        // Primer paso superado. NO abre la sesión: falta el código de la app.
+        // Si esta sesión YA estaba completa (es el código del correo que se
+        // vuelve a pedir a mitad de sesión, AdminStepUp), no se le baja la
+        // etapa: antes quedaba en 'correo', el código de la app siguiente
+        // respondía "inicia sesión completa" y desde ahí el panel entero
+        // decía que la sesión no había verificado el segundo factor.
+        if ((await etapaDeSesion(req, uidE)) !== 'full') await rememberMfaSession(req, uidE, 'email')
+        await marcarFactor(req, uidE, 'email')
+        return json({ ok: true, needsAppCode: true })
+      }
+
+      // Arranca el ingreso: manda el código al correo del titular. NO devuelve
+      // a qué dirección se envió — quien está entrando ya debería saberlo, y
+      // mostrarlo le confirmaría el correo a quien no es el dueño.
+      if (selfServiceBody.action === 'mfa_start_login' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+        }
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
+        }).then(x => x.json()).catch(() => null)
+        // Cuántos pasos tiene este ingreso: 2 normalmente, 3 si la cuenta
+        // tiene llave. La pantalla lo necesita para no mentirle al titular
+        // diciendo "2 de 2" cuando todavía le falta uno.
+        if (r?.ok) {
+          const pasos = (await passkeysDe(String(selfServiceBody.userId))).length ? 3 : 2
+          return json({ ok: true, throttled: !!r.throttled, pasos })
+        }
+        await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta' })
+        return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo iniciar la verificación. Intenta de nuevo.' })
+      }
+
+      // Reenviar el código del correo si no llegó.
+      if (selfServiceBody.action === 'mfa_resend_email' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad.' }, 423)
+        }
+        const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
+        }).then(x => x.json()).catch(() => null)
+        return json({ ok: !!r?.ok, throttled: !!r?.throttled, message: r?.message ?? null })
+      }
+
+      // ¿Esta SESIÓN ya superó el 2FA? Lo decide el servidor, no una marca
+      // del navegador. La app guardaba 'mfa_ok' en sessionStorage y confiaba
+      // en ella al restaurar: escribirla a mano en la consola abría el panel
+      // sin código. Ahora esa marca solo sirve de pista y la respuesta buena
+      // sale de aquí — el id de sesión viaja firmado dentro del JWT.
+      if (selfServiceBody.action === 'mfa_session_ok' && selfServiceBody.userId) {
+        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        const err = await requireMfaSession(req, String(selfServiceBody.userId))
+        // El motivo viaja para que la pantalla diga POR QUÉ vuelve a pedir el
+        // código (sesión distinta, vencida, no se pudo comprobar). Son los
+        // mismos textos que ya ve el usuario en las acciones sensibles.
+        return json({ ok: true, verified: !err, motivo: err })
+      }
+
+      // Consulta previa al login: dice si esta IP está bloqueada. Sirve para
+      // frenar el intento en la pantalla; el bloqueo DURO vive en las acciones
+      // que mueven dinero, que es donde importa.
+      if (selfServiceBody.action === 'login_gate') {
+        return json({ ok: true, blocked: await isIpBlocked(req) })
+      }
+
       // Insertar la PROPIA transacción — la RLS de public.transactions solo
       // deja insertar a admins (tx_insert_admin), así que un cliente normal
       // nunca podía crear su registro de envío/depósito/conversión: el
       // insert fallaba en silencio y la fila optimista se quedaba en
       // memoria del navegador para siempre, sin existir de verdad en la DB.
       if (selfServiceBody.action === 'insert_transaction' && selfServiceBody.tx?.user_id) {
-        if (!(await verifySelfOrAdmin(req, selfServiceBody.tx.user_id))) return json({ error: 'No autorizado' }, 401)
+        const txUid = String(selfServiceBody.tx.user_id)
+        const propio = await verifySelfOrAdmin(req, txUid)
         let txRow = selfServiceBody.tx
-        // Un no-admin NO puede forjar filas que OTROS procesos leen para mover
-        // saldo: dispersion+providerRef dispara un reembolso vía reconcile, y
-        // rail_move Pendiente lo aprueba el admin acreditando el riel. Se
-        // BLOQUEAN esos tipos server-authored y se neutralizan los campos
-        // sensibles del raw_data. Los tipos informativos del cliente (load,
-        // send, convert, pay_*) siguen permitidos — la app los inserta así.
-        if (!(await verifyAdmin(req)).ok) {
-          const BLOCKED_TYPES = new Set(['dispersion', 'rail_move', 'breb_move', 'adjustment', 'referral_payout', 'admin_hot_withdrawal', 'fee_income', 'internal'])
-          if (BLOCKED_TYPES.has(String(txRow.type))) return json({ error: 'Tipo de movimiento no permitido' }, 403)
-          const rd = { ...(txRow.raw_data ?? {}) }
-          for (const k of ['providerRef', 'refunded', 'fromRail', 'toRail', 'gasfreeCredited', 'convertPhase', 'needsReview']) delete (rd as any)[k]
-          txRow = { ...txRow, raw_data: rd }
+        if (!propio) {
+          // Un admin registrando un movimiento a nombre de otro: con los
+          // candados del panel y el permiso de mover plata.
+          const g = await adminSobreOtro(req, ['plata.mover'], 'insert_transaction')
+          if ('res' in g) return g.res
+          // Y en su país: corre antes del filtro central (COP_DE_COLOMBIA), y
+          // sin esto un miembro sin Colombia asignada registraba movimientos
+          // de clientes de Colombia que entran a Contabilidad y facturación.
+          if (!visibleEnPais(paisDeMovimiento(txRow), g.admin.acceso)) {
+            return json({ error: 'Ese movimiento es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+          }
+        } else if (!(await verifyAdmin(req)).ok) {
+          // El CLIENTE solo registra sus SOLICITUDES (depósito con
+          // comprobante, retiro, conversión vieja), y quedan en Pendiente:
+          // lo que pasa a Completado lo decide el servidor o Tesorería. Antes
+          // se aceptaba cualquier tipo no bloqueado, con cualquier estado y
+          // cualquier raw_data: un 'load' Completado con source:'admin_cargue'
+          // y un `acct` inventado entraba a Contabilidad como cargue de
+          // Lincoin, se facturaba y se podía vincular a débitos reales.
+          const TIPOS_CLIENTE = new Set(['load', 'send', 'convert'])
+          if (!TIPOS_CLIENTE.has(String(txRow.type))) return json({ error: 'Tipo de movimiento no permitido' }, 403)
+          const monto = Number(txRow.amount)
+          if (!Number.isFinite(monto) || monto <= 0) return json({ error: 'Monto inválido' }, 400)
+          if (!/^[A-Z0-9_]{2,20}$/i.test(String(txRow.currency ?? ''))) return json({ error: 'Moneda inválida' }, 400)
+          // Solo los datos que la pantalla de verdad manda para mostrar la
+          // solicitud. Nada que lean los procesos que mueven saldo o la
+          // contabilidad (source, acct, lincoin, reverso, firmas, fases…).
+          const CLAVES_CLIENTE = new Set([
+            'initials', 'title', 'date', 'createdAt', 'userName', 'userRole', 'method', 'proofUrl',
+            'bank', 'account', 'beneficiary', 'reason', 'documentType', 'documentNumber', 'cashReference',
+            'fee', 'couponCode', 'targetAmount', 'targetCurrency', 'destCurrency', 'note', 'country', 'network',
+          ])
+          const rdIn = (txRow.raw_data && typeof txRow.raw_data === 'object') ? txRow.raw_data as Record<string, unknown> : {}
+          const rd: Record<string, unknown> = {}
+          for (const [k, v] of Object.entries(rdIn)) {
+            if (!CLAVES_CLIENTE.has(k)) continue
+            // Textos acotados: el comprobante (proofUrl) puede ser una imagen
+            // en base64 y se deja pasar entera; lo demás es texto corto.
+            rd[k] = typeof v === 'string' && k !== 'proofUrl' ? v.slice(0, 500) : v
+          }
+          // Marca de que esta fila la pidió el cliente, SIN débito. La base la
+          // pone sola cuando el cliente inserta directo, pero por aquí la fila
+          // entra con la llave de servicio y no quedaba marcada. Sin la marca,
+          // Tesorería al RECHAZAR un 'send' le devolvía el monto
+          // (admin_reject_withdrawal): un retiro pedido por 50 millones que
+          // nunca se descontó terminaba abonándole 50 millones.
+          rd.insertadoPorCliente = true
+          txRow = { user_id: txUid, type: String(txRow.type), amount: monto, currency: String(txRow.currency), status: 'Pendiente', raw_data: rd }
+        } else {
+          // Admin con su propia cuenta: igual pasa por los candados del panel.
+          const g = await adminSobreOtro(req, ['plata.mover'], 'insert_transaction')
+          if ('res' in g) return g.res
+        }
+        // Un movimiento registrado desde el panel tampoco puede decir que ya se
+        // descontó: 'debitado' lo escriben solo los flujos que de verdad
+        // descuentan. Con esa marca, rechazarlo en Tesorería abonaba el monto
+        // a quien fuera: plata creada con solo el permiso de mover plata.
+        if (txRow && typeof txRow === 'object') {
+          const rdx = (txRow.raw_data && typeof txRow.raw_data === 'object') ? { ...(txRow.raw_data as Record<string, unknown>) } : {}
+          delete rdx.debitado
+          delete rdx.debitadoCol
+          if (String(txRow.type) === 'send') rdx.insertadoPorCliente = true
+          txRow = { ...txRow, raw_data: rdx }
         }
         const { data: inserted, error: insErr } = await db.from('transactions').insert(txRow).select('id').single()
-        if (insErr) return json({ error: insErr.message }, 500)
+        if (insErr) return errorGenerico('insert_transaction', insErr)
+        if (!propio || (await verifyAdmin(req)).ok) {
+          await auditAdmin(req, 'tx.registrada_desde_panel', { txId: inserted?.id ?? null, userId: txUid, type: txRow?.type ?? null, amount: txRow?.amount ?? null, currency: txRow?.currency ?? null })
+        }
         return json({ success: true, id: inserted?.id })
       }
 
@@ -204,7 +2409,10 @@ Deno.serve(async (req: Request) => {
       // puede escribir su propia fila de todas formas vía RLS
       // (auth.uid()=id) — esto solo la deja llegar cuando ese camino falla.
       if (selfServiceBody.action === 'save_user' && selfServiceBody.user?.id) {
-        if (!(await verifySelfOrAdmin(req, selfServiceBody.user.id))) return json({ error: 'No autorizado' }, 401)
+        const objetivo = String(selfServiceBody.user.id)
+        const yo = await usuarioDelToken(req)
+        if (!yo) return json({ error: 'No autorizado' }, 401)
+        const esPropia = yo.id === objetivo
         // El upsert corre con service-role (la RLS no aplica). Si el caller NO
         // es admin se SANEAN los valores de escalación: role solo puede ser
         // personal/business (nunca 'admin'), kyc_status nunca puede quedar
@@ -214,10 +2422,84 @@ Deno.serve(async (req: Request) => {
         // in_review, así que esos SÍ pasan. Balances no se tocan: el flujo
         // legacy de retiro del cliente aún los persiste por esta vía.
         const userRow = { ...selfServiceBody.user }
-        if (!(await verifyAdmin(req)).ok) {
-          if (userRow.role != null && !['personal', 'business'].includes(String(userRow.role))) delete (userRow as any).role
+        const { data: filaActual } = await db.from('users').select('id, role, email, company_country').eq('id', objetivo).maybeSingle()
+        // ADMIN EDITANDO A OTRO: esta acción corre antes del control de roles y
+        // con service role, así que cualquier cuenta admin —también "Solo
+        // lectura"— podía escribir el saldo de un cliente sin permiso, sin 2FA
+        // y sin auditoría. El saldo de otro se mueve SOLO por las acciones de
+        // tesorería; acá se exige el permiso de editar clientes (o el de
+        // cumplimiento para el KYC) y los candados del panel.
+        if (!esPropia) {
+          const g = await adminSobreOtro(req, ['clientes.editar', 'cumplimiento'], 'save_user')
+          if ('res' in g) return g.res
+          const permisos = permisosDe(g.admin.acceso)
+          const puede = (p: string) => permisos.has('*') || permisos.has(p)
+          // La fila de otro ADMIN solo la toca el dueño: un miembro de
+          // Operaciones podía cambiarle el correo (a donde llegan sus códigos)
+          // o el rol al dueño y dejarlo afuera del panel.
+          if ((filaActual as any)?.role === 'admin' && !permisos.has('*')) {
+            await auditAdmin(req, 'auth.permiso_denegado', { accion: 'save_user_admin', rol: g.admin.acceso.rol, userId: g.admin.userId, objetivo })
+            return json({ error: 'Solo el dueño puede editar la cuenta de otro administrador.', permisoDenegado: true }, 403)
+          }
+          delete (userRow as any).balances
+          delete (userRow as any).crypto_balances
+          if (userRow.kyc_status != null && !puede('cumplimiento')) delete (userRow as any).kyc_status
+          // El rol de administrador NO se da por acá, nunca: lo da el
+          // servidor o la base. Entre Persona y Empresa sí puede moverse a un
+          // cliente (no a otro admin, ver arriba).
+          if (userRow.role != null && (!puede('clientes.editar') || !['personal', 'business'].includes(String(userRow.role)))) delete (userRow as any).role
+          for (const k of ['is_admin', 'admin_role']) delete (userRow as any)[k]
+          // El bloqueo de CUMPLIMIENTO (documentos pendientes) lo levanta
+          // Cumplimiento, no cualquiera con permiso de editar clientes.
+          if ((userRow as any).compliance_hold !== undefined && !puede('cumplimiento')) delete (userRow as any).compliance_hold
+          // El CORREO de otro no se cambia por aquí: solo cambiaba el perfil y
+          // no la cuenta de acceso (el cliente entraba con un correo y recibía
+          // los códigos en otro), y sin código 2FA. Va por
+          // cliente_cambiar_correo. Un guardado con el correo de siempre pasa.
+          if (filaActual && (userRow as any).email !== undefined
+            && String((userRow as any).email ?? '').trim().toLowerCase() !== String((filaActual as any).email ?? '').trim().toLowerCase()) {
+            delete (userRow as any).email
+          }
+        } else {
+          // LA PROPIA CUENTA — también la de un admin. Antes un admin que se
+          // editaba a sí mismo no pasaba por ningún saneamiento: con service
+          // role podía escribirse saldos, KYC o cualquier columna, sin 2FA y
+          // sin auditoría. El propio perfil se guarda igual para todos.
+          //
+          // El ROL no lo cambia el propio usuario, nunca. Antes se aceptaba
+          // personal/business "para el onboarding", pero la fila ya existe
+          // desde el registro con su rol: lo único que hacía era dejar que
+          // una sesión con el rol mal en memoria convirtiera una empresa en
+          // Persona en la base (este upsert corre con service-role y el
+          // guardia de la base no lo frena). Solo se acepta si la fila NO
+          // existe todavía (alta), y aun ahí solo personal/business.
+          if (userRow.role != null) {
+            if (filaActual || !['personal', 'business'].includes(String(userRow.role))) delete (userRow as any).role
+          }
+          // El CORREO tampoco: a esa dirección llegan los códigos de ingreso,
+          // los avisos de bloqueo y el enlace de desbloqueo. Cambiarlo acá
+          // (con solo la contraseña) dejaba el paso del correo tan protegido
+          // como la contraseña. En el alta se toma el de la cuenta de acceso.
+          if (filaActual) delete (userRow as any).email
+          else (userRow as any).email = yo.email || (userRow as any).email
+          // El PAÍS DE LA EMPRESA tampoco, una vez puesto: decide cómo se le
+          // factura (Colombia → factura diaria; exterior → por movimiento) y
+          // eso lo define el admin en Editar cliente. El cliente lo escribe
+          // UNA vez, al registrarse o en el onboarding; después ya no.
+          {
+            const paisDb = String((filaActual as any)?.company_country ?? '').trim()
+            if (paisDb && (userRow as any).company_country !== undefined
+              && String((userRow as any).company_country ?? '').trim() !== paisDb) delete (userRow as any).company_country
+          }
           if (userRow.kyc_status != null && !['pending', 'in_review', 'not_started', 'incomplete', 'rejected'].includes(String(userRow.kyc_status))) delete (userRow as any).kyc_status
-          for (const k of ['is_blocked', 'is_admin', 'limits', 'status']) delete (userRow as any)[k]
+          // Las mismas columnas que protege la base (guard_users_sensitive_cols,
+          // 2026_zz11): este guardado corre con la llave de servicio y el
+          // guardia no lo frena, así que la lista tiene que estar acá también.
+          // Faltaban compliance_hold, el bloqueo y los límites propios: una
+          // empresa con documentos pendientes se quitaba el bloqueo de
+          // cumplimiento mandando compliance_hold:false.
+          for (const k of ['is_blocked', 'is_admin', 'admin_role', 'limits', 'status', 'kyc_verified_at', 'assigned_currency', 'didit_session_id',
+            'block_type', 'block_reason', 'compliance_hold', 'custom_daily_limit', 'custom_monthly_limit', 'is_custom_daily', 'is_custom_monthly', 'limits_currency']) delete (userRow as any)[k]
 
           // ── CANDADO ANTI AUTO-CRÉDITO (CRÍTICO 2) ──────────────────────────
           // Un usuario NO puede SUBIRSE el saldo por esta vía (sería inflar
@@ -227,7 +2509,7 @@ Deno.serve(async (req: Request) => {
           // reconstruye cada columna de saldo tomando el valor de la base y
           // aplicando SOLO las bajadas del cliente; cualquier subida se ignora.
           if (userRow.balances != null || userRow.crypto_balances != null) {
-            const { data: cur } = await db.from('users').select('balances, crypto_balances').eq('id', selfServiceBody.user.id).maybeSingle()
+            const { data: cur } = await db.from('users').select('balances, crypto_balances').eq('id', objetivo).maybeSingle()
             const clampNoIncrease = (incoming: Record<string, any> | null | undefined, current: Record<string, any> | null | undefined) => {
               const base: Record<string, number> = { ...((current && typeof current === 'object') ? current : {}) }
               if (incoming && typeof incoming === 'object') {
@@ -235,7 +2517,9 @@ Deno.serve(async (req: Request) => {
                   const nv = Number(v), cv = Number(base[k] ?? 0)
                   // Solo se acepta si NO aumenta (baja o igual). Subidas → se
                   // conserva el valor real de la base.
-                  if (isFinite(nv) && nv <= cv + 1e-9) base[k] = nv
+                  // Nunca negativo: un saldo bajo cero resta en "comprometido
+                  // con clientes" y hace ver más disponible en las bolsas.
+                  if (isFinite(nv) && nv >= 0 && nv <= cv + 1e-9) base[k] = nv
                 }
               }
               return base
@@ -251,12 +2535,33 @@ Deno.serve(async (req: Request) => {
         // sesión sin JWT) puede deshabilitar el 2FA ni mover la wallet. El 2FA
         // solo cambia por las acciones dedicadas (mfa_set / mfa_disable).
         if (userRow.raw_data !== undefined) {
-          const { data: curRaw } = await db.from('users').select('raw_data').eq('id', selfServiceBody.user.id).maybeSingle()
+          const { data: curRaw } = await db.from('users').select('raw_data').eq('id', objetivo).maybeSingle()
           const dbRaw = (((curRaw as any)?.raw_data) ?? {}) as Record<string, any>
           const incoming = ((userRow as any).raw_data ?? {}) as Record<string, any>
-          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'otp', 'subWallets']
+          // Claves que SOLO escribe el servidor. Faltaban 'tusdatos' y
+          // 'kumplo', que son el veredicto AML: como este upsert corre con
+          // service role, rodeaba el candado que las protege en la base
+          // (ese trigger deja pasar al service role a propósito). Un cliente
+          // podía mandarse a sí mismo un 'operable: true' y el gate de
+          // dispersión, que lee justo ese objeto, lo dejaba pasar.
+          // Igual con los límites y las banderas de bloqueo: quien está
+          // bloqueado no puede desbloquearse guardando su propio perfil.
+          // Tiene que cubrir TODO lo que protege la base (guard_raw_data_server_keys
+          // de 2026_zz11), porque este guardado no pasa por ese guardia.
+          // Faltaban las autorizaciones de operadores y contadores: una empresa
+          // se escribía `personasAutorizadas` y aprobaba sola a sus operadores
+          // —sin Cumplimiento y sin tope mensual—, que es lo que miran la carga
+          // de saldo, las transferencias entre cuentas y el tope de envíos.
+          // Más 'sarblock' (la ficha de riesgo de la empresa) y 'colaborador'
+          // (la marca del equipo interno), que también escribe solo el servidor.
+          const SERVER_OWNED = ['gasfreeIndex', 'gasfreeHdIndex', 'gasfreeAddress', 'gasfreeEoa', 'gasfreeAddresses', 'gasfreeCredited', 'gasfreeCreditedTxs', 'gasfreeCreditedCount', 'mfaEnabled', 'mfaFactorId', 'totpSecret', 'totpSecretEnc', 'mfaBackupHashes', 'mfaSessions', 'mfaLastCounter', 'otp', 'subWallets', 'tusdatos', 'kumplo', 'blacklisted', 'isBlocked', 'complianceHold', 'limits', 'otcConfig', 'passwordHash', 'trustedDevices', '__role',
+            'passkeys', 'blacklistedAt', 'blockReason', 'blockType', 'personasSolicitudes', 'personasAutorizadas', 'empresaAutorizante', 'autorizacion', 'contadores', 'contadoresSolicitudes', 'contadorDe',
+            'sarblock', 'colaborador']
           const merged: Record<string, any> = { ...dbRaw, ...incoming }
           for (const k of SERVER_OWNED) { if (k in dbRaw) merged[k] = dbRaw[k]; else delete merged[k] }
+          // La copia del país en raw_data, igual que la columna: el titular no
+          // la cambia una vez puesta (ver company_country arriba).
+          if (esPropia && String(dbRaw.companyCountry ?? '').trim()) merged.companyCountry = dbRaw.companyCountry
           // COLECCIONES del cliente (contactos, wallets, notificaciones): tienen
           // su propio escritor DIRIGIDO (updateUserRawData manda solo esa clave).
           // Un guardado de PERFIL COMPLETO no debe reescribirlas desde una copia
@@ -272,7 +2577,7 @@ Deno.serve(async (req: Request) => {
           ;(userRow as any).raw_data = merged
         }
         const { error: saveErr } = await db.from('users').upsert(userRow)
-        if (saveErr) return json({ error: saveErr.message }, 500)
+        if (saveErr) return esPropia ? errorGenerico('save_user', saveErr) : json({ error: saveErr.message }, 500)
         return json({ success: true })
       }
 
@@ -302,6 +2607,14 @@ Deno.serve(async (req: Request) => {
         const bal = (k: string) => Number((CRYPTO.has(k) ? cry[k] : fiat[k]) ?? 0)
         const setBal = (k: string, v: number) => { if (CRYPTO.has(k)) cry[k] = v; else fiat[k] = v }
         if (bal(src) + 1e-9 < amtS) return json({ error: 'Saldo insuficiente' }, 400)
+        // Los rieles de envío en pesos (COP_ACH, COP_BREB, COP_C3, COP_C4…) no
+        // entran ni salen por conversión. El bloqueo de abajo solo miraba
+        // COP→COP, así que dando la vuelta por USD (COP → USD → COP_ACH) se
+        // pasaba plata del Saldo Lincoin a un riel desde el que se envía, sin
+        // la aprobación de Tesorería de "Mover saldo".
+        if (/^COP_/i.test(src) || /^COP_/i.test(tgt)) {
+          return json({ error: 'Para mover saldo entre rieles de pesos usa la opción "Mover saldo", no la conversión.' }, 400)
+        }
 
         // Plausibilidad del monto recibido según la tasa real.
         const baseOf = (k: string) => (/^USD/.test(k) || k === 'USD') ? 'USD' : /^COP/.test(k) ? 'COP' : /^EUR/.test(k) ? 'EUR' : k
@@ -339,7 +2652,12 @@ Deno.serve(async (req: Request) => {
         // y acuñaba dinero. Ahora el tope es `expected` con un epsilon ABSOLUTO
         // mínimo (por redondeo de floats), así una conversión nunca deja más de
         // lo enviado a la tasa. El piso 0.60 permite comisiones de hasta ~40%.
-        const absEps = Math.max(1, expected * 1e-6)
+        // El margen era max(1, …): UNA UNIDAD ENTERA de más por conversión, sin
+        // importar el monto. En el camino 1:1 (USDT ↔ USD) eso era recibir 1
+        // dólar más de lo enviado, y en ida y vuelta se repetía cuantas veces
+        // se quisiera. Ahora: en 1:1 nunca más de lo enviado; con tasa, un
+        // margen relativo (redondeo) con piso de un centavo.
+        const absEps = bS === bT ? 1e-9 : Math.max(0.01, expected * 1e-6)
         if (!(amtT >= expected * 0.60 && amtT <= expected + absEps)) {
           return json({ error: 'El monto de la conversión no coincide con la tasa vigente.' }, 400)
         }
@@ -362,11 +2680,23 @@ Deno.serve(async (req: Request) => {
           if (upErr) return json({ error: upErr.message }, 500)
         }
 
+        // La parte de Lincoin, en pesos, calculada acá con la misma tasa que
+        // validó la conversión: lo que el cliente dejó de recibir frente al
+        // monto justo. Queda guardada para Contabilidad y la factura (el
+        // `fee` lo manda el navegador y no sirve como dato contable).
+        let lincoin: Record<string, number> | null = null
+        if (bS !== bT && (bS === 'COP' || bT === 'COP') && expected > 0) {
+          const dif = Math.max(0, expected - amtT)
+          const r2 = (n: number) => Math.round(n * 100) / 100
+          lincoin = bT === 'COP'
+            ? { totalCop: r2(expected), utilidadCop: r2(dif), usd: amtS }
+            : { totalCop: r2(amtS), utilidadCop: r2(dif * amtS / expected), usd: amtT }
+        }
         let txId: number | null = null
         try {
           const { data: ins } = await db.from('transactions').insert({
             user_id: userId, type: 'convert', amount: amtS, currency: src, status: 'Completado',
-            raw_data: { initials: 'CV', title: `${src} a ${tgt}`, targetAmount: amtT, targetCurrency: tgt, destCurrency: tgt, fee, couponCode: selfServiceBody.coupon ?? null, createdAt: new Date().toISOString() },
+            raw_data: { initials: 'CV', title: `${src} a ${tgt}`, targetAmount: amtT, targetCurrency: tgt, destCurrency: tgt, fee, couponCode: selfServiceBody.coupon ?? null, createdAt: new Date().toISOString(), ...(lincoin ? { lincoin } : {}) },
           }).select('id').single()
           txId = (ins as any)?.id ?? null
         } catch { /* best-effort */ }
@@ -400,6 +2730,524 @@ Deno.serve(async (req: Request) => {
       // El cliente verifica el primer código localmente (prueba que configuró
       // bien su app) y aquí solo se almacena el secreto cifrado con la llave
       // del servidor. Se borra cualquier totpSecret plano previo.
+      // ── Mover saldo entre rieles del propio cliente (atómico) ────────────
+      // Antes el navegador calculaba los saldos nuevos y los guardaba con
+      // save_user, que solo acepta BAJADAS: al mover COP → Bre-B se aplicaba
+      // la resta y se perdía la suma, y un saldo viejo en memoria podía borrar
+      // un crédito reciente. Ahora es un solo ajuste en la base, con deltas.
+      // ── Solicitud "Saldo Lincoin → ACH" (la aprueba Tesorería) ───────────
+      // El DÉBITO y la SOLICITUD en un solo paso del servidor. Antes el
+      // navegador insertaba la fila y después se descontaba él mismo, con un
+      // guardado cuyo error se tragaba: Tesorería aprobaba (o "devolvía" al
+      // rechazar) sin saber si el descuento se había hecho. La fila queda
+      // marcada `debitado` y aprobar/rechazar lo exigen.
+      // ── CUPO MENSUAL POR BENEFICIARIO (lo que ve y pide el cliente) ──────
+      // Estado del cupo de cada beneficiario inscrito: cuánto lleva en el mes,
+      // cuánto le queda y si tiene una solicitud de aumento.
+      if (selfServiceBody.action === 'cupos_estado' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) {
+          const g = await adminSobreOtro(req, ['clientes.ver'], 'cupos_estado')
+          if ('res' in g) return g.res
+        }
+        const { data: u } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+        const contactos: any[] = Array.isArray((u as any)?.raw_data?.mouvContacts) ? (u as any).raw_data.mouvContacts : []
+        const general = await cupoGeneral(db)
+        const idsP = await idsMismaPersona(uid)
+        let envios: EnvioMes[] = []
+        try { envios = await enviosDelMes(db, idsP) } catch (e) { return errorGenerico('cupos_estado', e) }
+        const aprobados = await cuposAprobadosDe(uid)
+        let sols: any[] = []
+        try {
+          const { data } = await db.from('cupo_solicitudes').select('id, beneficiario_clave, estado, created_at, cupo_aprobado, nota_revision, monto_solicitado').in('user_id', idsP).order('created_at', { ascending: false }).limit(300)
+          sols = (data ?? []) as any[]
+        } catch { sols = [] }
+        const porContacto: Record<string, any> = {}
+        for (const c of contactos) {
+          if (!c?.id) continue
+          const e = estadoCupoContacto(c, contactos, envios, general, aprobados)
+          const sol = sols.find(x => e.claves.includes(String(x.beneficiario_clave))) ?? null
+          const { claves: _c, destinos: _d, ...publico } = e
+          porContacto[String(c.id)] = { ...publico, solicitud: sol ? { estado: sol.estado, at: sol.created_at, cupoAprobado: sol.cupo_aprobado ?? null, nota: sol.nota_revision ?? null, montoSolicitado: sol.monto_solicitado ?? null } : null }
+        }
+        return json({ ok: true, general, porContacto, documentos: TIPOS_DOC_CUPO })
+      }
+
+      // ── SIREL de la EMPRESA: sus transacciones hechas por Lincoin ────────
+      // Para la empresa que también reporta a la UIAF: lo que movió en el mes
+      // o el día con sus contrapartes (sirel.ts movimientoEmpresa). Lincoin no
+      // envía ese reporte por ella; se lo deja listo para descargar.
+      if (selfServiceBody.action === 'sirel_mis_transacciones' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        // Desde el panel, sobre otra empresa: es el mismo dato que SIREL
+        // (contrapartes con documento, banco y cuenta), así que pide lo mismo
+        // que sirel_periodo —Cumplimiento— y respeta los países del miembro.
+        // Antes bastaba 'clientes.ver', que tienen todos los roles, y sin
+        // filtro de país.
+        let accesoPanel: any = null
+        if (!(await verifySelfOrAdmin(req, uid))) {
+          const g = await adminSobreOtro(req, ['cumplimiento', 'fn.cumplimiento'], 'sirel_mis_transacciones')
+          if ('res' in g) return g.res
+          accesoPanel = g.admin.acceso
+        }
+        const TZ = 5 * 3600_000
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const periodo = selfServiceBody.periodo === 'dia' ? 'dia' : 'mes'
+        const ancla = esYmd(selfServiceBody.fecha) ? String(selfServiceBody.fecha) : hoy
+        if (ancla > hoy) return json({ ok: false, error: 'Esa fecha todavía no llega.' }, 400)
+        const yS = Number(ancla.slice(0, 4)), mS = Number(ancla.slice(5, 7)) - 1
+        const desde = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-01`
+        const hasta = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-${String(new Date(Date.UTC(yS, mS + 1, 0)).getUTCDate()).padStart(2, '0')}`
+        const ids = await idsMismaPersona(uid)
+        const { filas, truncado } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, created_at, type, currency, amount, user_id, raw_data')
+          .in('user_id', ids).eq('status', 'Completado')
+          .in('type', ['load', 'dispersion', 'send', 'convert', 'otc_deposit'])
+          .gte('created_at', new Date(Date.parse(`${desde}T00:00:00Z`) + TZ).toISOString())
+          .lt('created_at', new Date(Date.parse(`${hasta}T00:00:00Z`) + TZ + 86_400_000).toISOString()), { tope: 50_000 })
+        const filasVisibles = accesoPanel ? filas.filter((t: any) => visibleEnPais(paisDeMovimiento(t), accesoPanel)) : filas
+        const movimientos = (filasVisibles.map(movimientoEmpresa).filter(Boolean) as MovEmpresa[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
+        // Una fila por contraparte: por documento, o por nombre si no lo hay.
+        const porContra = new Map<string, any>()
+        for (const m of movimientos) {
+          if (m.tipo === 'recarga') continue
+          const clave = m.contraparteDoc ? `doc:${m.contraparteDoc.replace(/\W/g, '')}` : m.contraparteNombre ? `nom:${m.contraparteNombre.toUpperCase()}` : m.contraparteCuenta ? `cta:${m.contraparteCuenta}` : null
+          if (!clave) continue
+          const c = porContra.get(clave) ?? { nombre: m.contraparteNombre, tipoDoc: m.contraparteTipoDoc, documento: m.contraparteDoc, banco: m.contraparteBanco, cuenta: m.contraparteCuenta, recibidoCop: 0, enviadoCop: 0, operaciones: 0, primera: m.fecha, ultima: m.fecha }
+          c.operaciones++
+          if (m.tipo === 'cobro') c.recibidoCop += m.montoCop ?? 0
+          if (m.tipo === 'pago') c.enviadoCop += m.montoCop ?? 0
+          c.nombre = c.nombre ?? m.contraparteNombre; c.documento = c.documento ?? m.contraparteDoc; c.tipoDoc = c.tipoDoc ?? m.contraparteTipoDoc
+          c.ultima = m.fecha
+          porContra.set(clave, c)
+        }
+        const contrapartes = Array.from(porContra.values()).sort((a, b) => (b.recibidoCop + b.enviadoCop) - (a.recibidoCop + a.enviadoCop))
+        const { data: yoU } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+        const envios = (Array.isArray((yoU as any)?.raw_data?.sirelEnvios) ? (yoU as any).raw_data.sirelEnvios : []) as any[]
+        const sumar = (t: string) => movimientos.filter(m => m.tipo === t).reduce((s, m) => s + (m.montoCop ?? 0), 0)
+        return json({
+          ok: true, periodo, desde, hasta, clavePeriodo: periodo === 'dia' ? desde : desde.slice(0, 7), truncado,
+          movimientos, contrapartes,
+          resumen: {
+            movimientos: movimientos.length,
+            cobros: movimientos.filter(m => m.tipo === 'cobro').length, cobrosCop: Math.round(sumar('cobro')),
+            pagos: movimientos.filter(m => m.tipo === 'pago').length, pagosCop: Math.round(sumar('pago')),
+            activosVirtuales: movimientos.filter(m => m.tipo.startsWith('av_')).length,
+            contrapartes: contrapartes.length,
+            conFaltantes: movimientos.filter(m => m.faltan.length > 0).length,
+          },
+          envios: envios.slice(-40).reverse(),
+        })
+      }
+      // La empresa anota lo que subió a SIREL (su radicado). Es su registro:
+      // queda en su raw_data, escrito por el servidor.
+      if (selfServiceBody.action === 'sirel_mis_envios' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado.' }, 403)
+        const tipo = String(selfServiceBody.tipo ?? '')
+        if (!['transacciones', 'ausencia_transacciones', 'clientes', 'ros', 'ausencia_ros'].includes(tipo)) return json({ ok: false, error: 'Tipo de reporte inválido.' }, 400)
+        const periodoEnv = String(selfServiceBody.periodo ?? '').trim()
+        if (!/^\d{4}-\d{2}(-\d{2})?$/.test(periodoEnv)) return json({ ok: false, error: 'Período inválido.' }, 400)
+        const radicado = String(selfServiceBody.radicado ?? '').trim().slice(0, 80)
+        if (radicado.length < 3) return json({ ok: false, error: 'Escribe el número de radicado que te dio SIREL.' }, 400)
+        const { data: yoU } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+        const lista = (Array.isArray((yoU as any)?.raw_data?.sirelEnvios) ? (yoU as any).raw_data.sirelEnvios : []) as any[]
+        const registro = {
+          id: crypto.randomUUID(), tipo, periodo: periodoEnv, radicado,
+          filas: Number.isFinite(Number(selfServiceBody.filas)) ? Math.max(0, Math.round(Number(selfServiceBody.filas))) : null,
+          nota: String(selfServiceBody.nota ?? '').trim().slice(0, 300) || null, at: new Date().toISOString(),
+        }
+        const err = await mergeRaw(db, uid, { sirelEnvios: [...lista, registro].slice(-200) })
+        if (err) return errorGenerico('sirel_mis_envios', err)
+        return json({ ok: true, registro })
+      }
+
+      // Un documento para la solicitud (se sube uno por uno: un PDF de 5 MB
+      // por pedido, no tres juntos). Queda en un bucket PRIVADO; Cumplimiento
+      // lo abre con una URL firmada que vence.
+      if (selfServiceBody.action === 'cupo_subir_doc' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const tipo = String(selfServiceBody.tipo ?? '')
+        if (!esTipoDocCupo(tipo)) return json({ ok: false, error: 'Tipo de documento no válido.' }, 400)
+        const mime = String(selfServiceBody.mime ?? '').toLowerCase()
+        if (!MIME_CUPOS.includes(mime)) return json({ ok: false, error: 'El documento tiene que ser un PDF o una imagen (JPG, PNG, WEBP).' }, 400)
+        let bytes: Uint8Array
+        try {
+          const b64 = String(selfServiceBody.base64 ?? '').includes(',') ? String(selfServiceBody.base64).split(',')[1] : String(selfServiceBody.base64 ?? '')
+          const bin = atob(b64)
+          bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0))
+        } catch { return json({ ok: false, error: 'No se pudo leer el archivo.' }, 400) }
+        if (!bytes.byteLength) return json({ ok: false, error: 'El archivo llegó vacío.' }, 400)
+        if (bytes.byteLength > 5 * 1024 * 1024) return json({ ok: false, error: 'Cada documento puede pesar hasta 5 MB.' }, 400)
+        const limpio = String(selfServiceBody.nombre ?? tipo).replace(/[^\w.\-]/g, '_').slice(-60)
+        const path = `${uid}/pendientes/${crypto.randomUUID()}-${tipo}-${limpio}`
+        const { error } = await db.storage.from(BUCKET_CUPOS).upload(path, bytes, { contentType: mime, upsert: false })
+        if (error) {
+          console.error('[admin-data] cupo_subir_doc:', error.message)
+          return json({ ok: false, error: 'No se pudo guardar el documento. Intenta de nuevo en un momento.' }, 500)
+        }
+        return json({ ok: true, path, tipo, nombre: String(selfServiceBody.nombre ?? limpio).slice(0, 120) })
+      }
+
+      // La solicitud de aumento: queda EN PROCESO hasta que Cumplimiento la
+      // revise. El RUT es obligatorio; cámara de comercio y origen de fondos,
+      // opcionales.
+      if (selfServiceBody.action === 'cupo_solicitar' && selfServiceBody.userId) {
+        const uid = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uid))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const { data: u } = await db.from('users').select('raw_data, full_name, company_name, email').eq('id', uid).maybeSingle()
+        const contactos: any[] = Array.isArray((u as any)?.raw_data?.mouvContacts) ? (u as any).raw_data.mouvContacts : []
+        const c = contactos.find(x => String(x?.id) === String(selfServiceBody.contactoId ?? ''))
+        if (!c) return json({ ok: false, error: 'No encontramos ese beneficiario en tu lista.' }, 404)
+        const docs: any[] = (Array.isArray(selfServiceBody.documentos) ? selfServiceBody.documentos : [])
+          .filter((d: any) => d && typeof d.path === 'string' && d.path.startsWith(`${uid}/pendientes/`) && !d.path.includes('..') && esTipoDocCupo(String(d.tipo)))
+          .map((d: any) => ({ tipo: String(d.tipo), path: String(d.path), nombre: String(d.nombre ?? '').slice(0, 120) }))
+        // Cada documento tiene que EXISTIR en el bucket y ser del tipo que dice
+        // (el tipo va en el nombre que le puso el servidor al subirlo). Antes
+        // bastaba con mandar una ruta inventada para cumplir "adjuntó el RUT".
+        const validos: any[] = []
+        for (const d of docs) {
+          const corte = d.path.lastIndexOf('/')
+          const carpeta = d.path.slice(0, corte), archivo = d.path.slice(corte + 1)
+          if (!archivo.slice(37).startsWith(`${d.tipo}-`)) continue
+          try {
+            const { data: hay } = await db.storage.from(BUCKET_CUPOS).list(carpeta, { search: archivo, limit: 5 })
+            if (Array.isArray(hay) && hay.some((x: any) => x?.name === archivo)) validos.push(d)
+          } catch { /* sin poder comprobarlo, no cuenta */ }
+        }
+        if (!validos.some(d => d.tipo === 'rut')) return json({ ok: false, error: 'Adjunta el RUT: es obligatorio para pedir el aumento.' }, 400)
+        const monto = selfServiceBody.montoSolicitado != null && String(selfServiceBody.montoSolicitado).trim() !== '' ? Math.round(Number(String(selfServiceBody.montoSolicitado).replace(/[^\d]/g, ''))) : null
+        if (monto != null && !(monto > 0)) return json({ ok: false, error: 'El cupo que pides tiene que ser un monto en pesos.' }, 400)
+        const general = await cupoGeneral(db)
+        const idsP = await idsMismaPersona(uid)
+        let envios: EnvioMes[] = []
+        try { envios = await enviosDelMes(db, idsP) } catch { envios = [] }
+        const e = estadoCupoContacto(c, contactos, envios, general, await cuposAprobadosDe(uid))
+        const { data: abierta, error: eAb } = await db.from('cupo_solicitudes').select('id').in('user_id', idsP).in('beneficiario_clave', e.claves.length ? e.claves : [e.clave]).eq('estado', 'en_proceso').limit(1)
+        if (eAb) return errorGenerico('cupo_solicitar', eAb)
+        const yaEnProceso = { ok: false, error: 'Ya tienes una solicitud de aumento en proceso para este beneficiario. Cumplimiento la está revisando.' }
+        if (Array.isArray(abierta) && abierta.length) return json(yaEnProceso, 409)
+        const { data: ins, error } = await db.from('cupo_solicitudes').insert({
+          user_id: uid, beneficiario_clave: e.clave, contacto_id: String(c.id), beneficiario_nombre: e.nombre || null, beneficiario_doc: e.doc || null,
+          beneficiario_tipo: e.tipo, cupo_actual: e.cupo, usado_mes: e.usado, monto_solicitado: monto,
+          motivo: String(selfServiceBody.motivo ?? '').trim().slice(0, 1000) || null, documentos: validos, estado: 'en_proceso',
+        }).select('id').single()
+        // Dos envíos del formulario a la vez: el índice único de solicitudes
+        // en proceso deja pasar solo una.
+        if (error && (String((error as any).code) === '23505' || /duplicate key/i.test(error.message))) return json(yaEnProceso, 409)
+        if (error) return errorGenerico('cupo_solicitar', error)
+        await db.from('audit_log').insert({ user_id: uid, action: 'cupo.solicitud', metadata: { id: (ins as any)?.id, clave: e.clave, cupoActual: e.cupo, montoSolicitado: monto, documentos: validos.map(d => d.tipo) } }).then(() => {}, () => {})
+        // Aviso a Cumplimiento por correo (si está configurado).
+        if (RESEND_KEY && ADMIN_EMAIL) {
+          const cliente = escHtml((u as any)?.company_name || (u as any)?.full_name || (u as any)?.email || uid)
+          fetch('https://api.resend.com/emails', {
+            method: 'POST', headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [ADMIN_EMAIL], subject: `Solicitud de aumento de cupo · ${cliente}`,
+              html: `<p style="font-family:Arial,sans-serif;font-size:14px;color:#15181A">${cliente} pidió aumentar el cupo mensual de <b>${escHtml(e.nombre) || 'un beneficiario'}</b> (${e.tipo}, cupo actual ${e.cupo.toLocaleString('es-CO')} COP${monto ? `, pide ${monto.toLocaleString('es-CO')} COP` : ''}). Adjuntó: ${validos.map(d => TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo).join(', ')}.</p><p style="font-family:Arial,sans-serif;font-size:13px;color:#5C625E">Se revisa en Admin → Cumplimiento → Cupos por beneficiario.</p>` }),
+            signal: AbortSignal.timeout(8000),
+          }).catch(() => {})
+        }
+        return json({ ok: true, id: (ins as any)?.id, estado: 'en_proceso' })
+      }
+
+      // ── Solicitud de RETIRO / envío manual (la aprueba Tesorería) ────────
+      // El DÉBITO y la SOLICITUD en un solo paso del servidor. Antes el
+      // navegador se descontaba el saldo con un guardado "dispara y olvida" y
+      // después insertaba él mismo la fila 'send' Pendiente: un cliente podía
+      // insertar la fila SIN descontarse nada, y al rechazarla Tesorería le
+      // "devolvía" plata que nunca salió (o al aprobarla se le pagaba). La
+      // fila queda marcada `debitado` y la base solo devuelve o paga esas.
+      if (selfServiceBody.action === 'solicitar_retiro' && selfServiceBody.userId) {
+        const uidR = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidR))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const monto = Number(selfServiceBody.amount)
+        if (!Number.isFinite(monto) || monto <= 0) return json({ ok: false, error: 'Monto inválido.' }, 400)
+        const moneda = String(selfServiceBody.currency ?? '').toUpperCase()
+        const col = String(selfServiceBody.debitKey ?? moneda).toUpperCase()
+        if (!/^[A-Z0-9_]{2,20}$/.test(moneda) || !/^[A-Z0-9_]{2,20}$/.test(col)) return json({ ok: false, error: 'Moneda inválida.' }, 400)
+        // Lo que se descuenta y lo que se pide son la MISMA moneda (COP con
+        // COP o COP_*, USDT con USDT o USDT_*). Las elegía el navegador por
+        // separado: se descontaban 1.000 COP y Tesorería veía "Envío USDT
+        // 1.000" (revisión del 6 nov).
+        if (!(col === moneda || col.startsWith(`${moneda}_`))) return json({ ok: false, error: 'La moneda del retiro no corresponde con el saldo del que sale.' }, 400)
+        // Una cuenta bloqueada o en lista negra no retira, aunque llame directo.
+        const { data: uR } = await db.from('users').select('is_blocked, raw_data, full_name, role').eq('id', uidR).maybeSingle()
+        if (!uR) return json({ ok: false, error: 'Usuario no encontrado.' }, 404)
+        const rawR = ((uR as any).raw_data ?? {}) as Record<string, any>
+        if ((uR as any).is_blocked === true || rawR.blacklisted === true || rawR.isBlocked === true) {
+          return json({ ok: false, error: 'Esta cuenta está bloqueada y no puede realizar operaciones. Contacta a soporte.' }, 403)
+        }
+        // Enviar dinero exige el 2FA (y que esta sesión lo haya pasado).
+        { const f2 = await faltaSegundoFactorCliente(req, uidR); if (f2) return json({ ok: false, error: f2, needs2fa: true }, 403) }
+        // El mismo botón apretado dos veces (o un reintento tras perder la
+        // respuesta) no descuenta dos veces.
+        const idem = String(selfServiceBody.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claveR = idem ? `retiro:${uidR}:${idem}` : ''
+        if (claveR) {
+          const c = await reclamarCandado(db, claveR, 86_400, uidR, 'solicitar_retiro')
+          if (c === 'ocupado') return json({ ok: false, duplicado: true, error: 'Ya hay una solicitud igual en curso. Revisa tus movimientos antes de repetirla.' }, 409)
+          if (c === 'error') return json({ ok: false, error: 'No pudimos registrar la solicitud en este momento. No se descontó nada; intenta de nuevo.' }, 503)
+        }
+        const soltarR = async () => { if (claveR) await soltarCandado(db, claveR) }
+        const { data: adjR, error: eAdjR } = await db.rpc('adjust_balances', { p_user_id: uidR, p_fiat: { [col]: -monto } })
+        if (eAdjR) { await soltarR(); return errorGenerico('solicitar_retiro debito', eAdjR) }
+        if ((adjR as any)?.error) {
+          await soltarR()
+          return json({ ok: false, error: (adjR as any).error === 'insufficient' ? 'Saldo insuficiente en la cuenta de la que sale el retiro.' : 'No se pudo descontar el saldo. No se cambió nada.' }, 400)
+        }
+        const t = (v: unknown, n = 200) => v == null ? undefined : String(v).slice(0, n)
+        const extraIn = (selfServiceBody.extra && typeof selfServiceBody.extra === 'object') ? selfServiceBody.extra as Record<string, unknown> : {}
+        const extra: Record<string, unknown> = {}
+        for (const k of ['cashReference', 'method', 'country', 'network', 'destCurrency', 'note']) if (extraIn[k] != null) extra[k] = t(extraIn[k])
+        const ahoraR = new Date().toISOString()
+        const { data: insR, error: insErrR } = await db.from('transactions').insert({
+          user_id: uidR, type: 'send', amount: monto, currency: moneda, status: 'Pendiente',
+          raw_data: {
+            initials: 'EN', title: `Envío ${moneda}`, date: new Date().toLocaleDateString('es-CO'), createdAt: ahoraR,
+            userName: (uR as any).full_name ?? null, userRole: (uR as any).role ?? null,
+            bank: t(selfServiceBody.bank), account: t(selfServiceBody.account), beneficiary: t(selfServiceBody.beneficiary), reason: t(selfServiceBody.reason, 500),
+            ...(selfServiceBody.documentType ? { documentType: t(selfServiceBody.documentType, 20) } : {}),
+            ...(selfServiceBody.documentNumber ? { documentNumber: t(selfServiceBody.documentNumber, 30) } : {}),
+            ...extra,
+            debitado: true, debitadoCol: col, debitadoAt: ahoraR, servidor: true,
+          },
+        }).select('id').single()
+        if (insErrR) {
+          // Sin solicitud no puede quedar descontado: se devuelve.
+          const { data: devR, error: eDevR } = await db.rpc('adjust_balances', { p_user_id: uidR, p_fiat: { [col]: monto } })
+          if (eDevR || (devR as any)?.error) await auditAdmin(req, 'retiro.devolucion_fallida', { userId: uidR, col, monto, error: eDevR?.message ?? (devR as any)?.error ?? null })
+          await soltarR()
+          console.error('[admin-data] solicitar_retiro insert:', insErrR.message)
+          return json({ ok: false, error: 'No pudimos registrar la solicitud y no se descontó tu saldo. Intenta de nuevo.' }, 500)
+        }
+        return json({ ok: true, id: (insR as any)?.id ?? null, balances: (adjR as any)?.balances ?? null })
+      }
+
+      if (selfServiceBody.action === 'solicitar_mover_ach' && selfServiceBody.userId) {
+        const uidS = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidS))) return json({ ok: false, error: 'No autorizado' }, 401)
+        const monto = Math.round(Number(selfServiceBody.amount))
+        if (!(monto > 0)) return json({ ok: false, error: 'Monto inválido.' }, 400)
+        // La misma solicitud no descuenta dos veces (doble toque o reintento
+        // tras perder la respuesta), igual que solicitar_retiro: sin esto
+        // quedaban dos débitos y dos solicitudes Pendiente (revisión del 6 nov).
+        const idemS = String(selfServiceBody.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claveS = idemS ? `mover_ach:${uidS}:${idemS}` : ''
+        if (claveS) {
+          const c = await reclamarCandado(db, claveS, 86_400, uidS, 'solicitar_mover_ach')
+          if (c === 'ocupado') return json({ ok: false, duplicado: true, error: 'Ya hay una solicitud igual en curso. Revisa tus movimientos antes de repetirla.' }, 409)
+          if (c === 'error') return json({ ok: false, error: 'No pudimos registrar la solicitud en este momento. No se descontó nada; intenta de nuevo.' }, 503)
+        }
+        const soltarS = async () => { if (claveS) await soltarCandado(db, claveS) }
+        const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidS, p_fiat: { COP: -monto } })
+        // Error de red: el débito PUDO aplicarse. El candado queda puesto para
+        // que un reintento con la misma clave no descuente otra vez.
+        if (eAdj) return json({ ok: false, error: 'No se pudo confirmar el descuento. Revisa tus movimientos antes de repetir la solicitud.' }, 500)
+        if ((adj as any)?.error) { await soltarS(); return json({ ok: false, error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente en tu Saldo Lincoin.' : String((adj as any).error) }, 400) }
+        const { data: uS } = await db.from('users').select('full_name').eq('id', uidS).maybeSingle()
+        const ahoraS = new Date().toISOString()
+        const { data: insS, error: insErrS } = await db.from('transactions').insert({
+          user_id: uidS, type: 'rail_move', amount: monto, currency: 'COP', status: 'Pendiente',
+          raw_data: {
+            initials: 'AC', fromRail: 'COP', toRail: 'COP_ACH',
+            title: 'Saldo Lincoin → ACH · en aprobación',
+            date: new Date().toLocaleDateString('es-CO'), createdAt: ahoraS,
+            userName: (uS as any)?.full_name ?? null,
+            debitado: true, debitadoAt: ahoraS, servidor: true,
+          },
+        }).select('id').single()
+        if (insErrS) {
+          // Sin solicitud no puede quedar descontado: se devuelve.
+          await db.rpc('adjust_balances', { p_user_id: uidS, p_fiat: { COP: monto } })
+          await soltarS()
+          return json({ ok: false, error: 'No pudimos registrar la solicitud y no se descontó tu saldo. Intenta de nuevo.' }, 500)
+        }
+        return json({ ok: true, id: (insS as any)?.id ?? null, balances: (adj as any)?.balances ?? null })
+      }
+
+      if (selfServiceBody.action === 'mover_saldo' && selfServiceBody.userId) {
+        const uidM = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidM))) return json({ error: 'No autorizado' }, 401)
+        const op = String(selfServiceBody.op ?? '')
+        const ahora = new Date().toISOString()
+        // Mover entre Saldo Lincoin y Bre-B ya NO es autoservicio (revisión del
+        // 6 nov). Llenaba el riel desde el que se envía (COP_BREB, respaldado
+        // por la bolsa de Mouv) sin 2FA ni aprobación de Tesorería, justo lo
+        // que apply_conversion prohíbe para los rieles de envío; la pantalla
+        // ni lo usaba (dice "escríbenos a soporte"), pero se podía llamar
+        // directo. Lo hace el equipo desde la Billetera.
+        if (op === 'breb') {
+          return json({ ok: false, error: 'Mover saldo entre tu Saldo Lincoin y Bre-B lo hace nuestro equipo. Escríbenos a soporte@lincoin.me.' }, 410)
+        }
+        if (op === 'consolidar_usdt') {
+          // Los montos salen de la BASE, no del navegador.
+          const { data: u } = await db.from('users').select('balances, full_name').eq('id', uidM).maybeSingle()
+          const bal = ((u as any)?.balances ?? {}) as Record<string, any>
+          const claves = ['USDT_TRON', 'USDT_BSC', 'USDT']
+          const delta: Record<string, number> = {}
+          let total = 0
+          for (const k of claves) { const v = Number(bal[k] ?? 0); if (v > 0) { delta[k] = -v; total += v } }
+          if (!(total > 0.000001)) return json({ ok: true, total: 0 })
+          delta.USD = Number(total.toFixed(8))
+          const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidM, p_fiat: delta })
+          if (eAdj || (adj as any)?.error) return json({ ok: false, error: 'No se pudo consolidar. No se movió nada.' }, 500)
+          await db.from('transactions').insert({
+            user_id: uidM, type: 'load', amount: total, currency: 'USD', status: 'Completado',
+            raw_data: { initials: '₮', title: 'USDT acreditados al Dólar digital', date: new Date().toLocaleDateString('es-CO'), createdAt: ahora, userName: (u as any)?.full_name ?? null, source: 'USDT_CONSOLIDATION', servidor: true },
+          })
+          return json({ ok: true, total, balances: (adj as any)?.balances ?? null })
+        }
+        if (op === 'debitar_solicitud') {
+          // Débito de una solicitud que ya quedó registrada (p. ej. paso de
+          // saldo a ACH en aprobación): se exige la fila y que sea del cliente.
+          const txId = String(selfServiceBody.txId ?? '')
+          const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
+          // Solo una solicitud de paso de saldo (rail_move) PROPIA y Pendiente.
+          // Antes servía cualquier fila propia: si el débito fallaba se le ponía
+          // 'Rechazado' a la que fuera (un envío, por ejemplo), y lo rechazado
+          // deja de contar en el cupo mensual del beneficiario.
+          if (!tx || String((tx as any).user_id) !== uidM || (tx as any).type !== 'rail_move' || (tx as any).status !== 'Pendiente') return json({ ok: false, error: 'Solicitud no encontrada.' }, 404)
+          if ((tx as any).raw_data?.debitado) return json({ ok: true, ya: true })
+          // Se debita la moneda de la SOLICITUD, no la que diga el navegador.
+          const col = String((tx as any).currency ?? 'COP')
+          if (!/^COP(_[A-Z]+)?$/.test(col)) return json({ ok: false, error: 'Solicitud no válida.' }, 400)
+          const monto = Number((tx as any).amount ?? 0)
+          if (!(monto > 0)) return json({ ok: false, error: 'Monto inválido.' }, 400)
+          // Marca primero (CAS) para no debitar dos veces la misma solicitud.
+          const { data: marcada } = await db.from('transactions')
+            .update({ raw_data: { ...((tx as any).raw_data ?? {}), debitado: true, debitadoCol: col, debitadoAt: ahora } })
+            .eq('id', txId).filter('raw_data->>debitado', 'is', null).select('id')
+          if (!marcada?.length) return json({ ok: true, ya: true })
+          const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidM, p_fiat: { [col]: -monto } })
+          if (eAdj || (adj as any)?.error) {
+            await db.from('transactions').update({ raw_data: { ...((tx as any).raw_data ?? {}) }, status: 'Rechazado' }).eq('id', txId).eq('type', 'rail_move').eq('status', 'Pendiente')
+            return json({ ok: false, error: (adj as any)?.error === 'insufficient' ? 'Saldo insuficiente.' : 'No se pudo descontar el saldo.' }, 400)
+          }
+          return json({ ok: true, balances: (adj as any)?.balances ?? null })
+        }
+        return json({ ok: false, error: 'Operación inválida.' }, 400)
+      }
+
+      // ── Tipo de cuenta de una cuenta RECIÉN creada (Google) ─────────────
+      // Con Google la cuenta nace en la base por un trigger que no sabe por qué
+      // portal se entró, y quedaba como Operador aunque se registrara por
+      // Empresas ("Esta cuenta es de Operadores" al primer ingreso, 3 nov). La
+      // app le pide al servidor el tipo del portal por el que entró, y solo se
+      // acepta para una cuenta recién nacida: menos de 30 minutos, sin
+      // movimientos y sin verificación. Una cuenta con historia no cambia de
+      // tipo por entrar por otra puerta (eso es del admin, Editar cliente).
+      if (selfServiceBody.action === 'rol_inicial') {
+        const yo = await usuarioDelToken(req)
+        if (!yo) return json({ ok: false, error: 'Vuelve a iniciar sesión.' }, 401)
+        const rolPedido = String(selfServiceBody.role ?? '')
+        if (!['personal', 'business'].includes(rolPedido)) return json({ ok: false, error: 'Tipo de cuenta inválido.' }, 400)
+        const { data: fR } = await db.from('users').select('role, created_at, kyc_status').eq('id', yo.id).maybeSingle()
+        if (!fR) return json({ ok: false, error: 'No se encontró la cuenta.' }, 404)
+        if ((fR as any).role === rolPedido) return json({ ok: true, role: rolPedido })
+        if (!['personal', 'business'].includes(String((fR as any).role ?? ''))) return json({ ok: false, error: 'Este tipo de cuenta no se cambia aquí.' }, 403)
+        // La edad sale de la cuenta de ACCESO: users.created_at no tiene valor
+        // por defecto y en las filas que crea el trigger queda vacío.
+        let nacio = Date.parse(String((fR as any).created_at ?? ''))
+        try {
+          const { data: au } = await db.auth.admin.getUserById(yo.id)
+          const t = Date.parse(String(au?.user?.created_at ?? ''))
+          if (Number.isFinite(t)) nacio = t
+        } catch { /* sin cuenta de acceso legible: se usa la del perfil */ }
+        const edad = Date.now() - nacio
+        if (!(edad >= 0 && edad <= 30 * 60_000)) return json({ ok: false, error: 'Solo una cuenta recién creada elige su tipo.' }, 403)
+        if (['verified', 'approved', 'in_review'].includes(String((fR as any).kyc_status ?? ''))) return json({ ok: false, error: 'Esta cuenta ya está en verificación.' }, 403)
+        const { count: movs } = await db.from('transactions').select('id', { count: 'exact', head: true }).eq('user_id', yo.id)
+        if ((movs ?? 0) > 0) return json({ ok: false, error: 'Esta cuenta ya tiene movimientos.' }, 403)
+        const { error: eR } = await db.from('users').update({ role: rolPedido }).eq('id', yo.id)
+        if (eR) return json({ ok: false, error: 'No se pudo fijar el tipo de cuenta.' }, 500)
+        await auditAdmin(req, 'cliente.rol_inicial', { userId: yo.id, antes: (fR as any).role, ahora: rolPedido })
+        return json({ ok: true, role: rolPedido })
+      }
+
+      // ── El CLIENTE cambia su propio correo de acceso ────────────────────
+      // Desde Ajustes. Dos pasos, porque el correo es la llave de la cuenta:
+      //   1) correo_cambio_iniciar: el código de su app (2FA, en ESTA
+      //      operación) y el correo nuevo. Se manda un código a ese correo.
+      //   2) correo_cambio_confirmar: el código que llegó. Solo ahí se cambia.
+      // Así quien tenga solo la contraseña no se queda con la cuenta, y nadie
+      // pone un correo que no es suyo (o mal escrito: perdería el acceso). Al
+      // correo anterior le llega el aviso. Las cuentas del panel no pasan por
+      // aquí. El código pendiente vive en private_config (sin acceso desde el
+      // navegador), con vencimiento, intentos y envíos limitados.
+      if (selfServiceBody.action === 'correo_cambio_iniciar' || selfServiceBody.action === 'correo_cambio_confirmar') {
+        const yo = await usuarioDelToken(req)
+        if (!yo) return json({ ok: false, error: 'Vuelve a iniciar sesión.' }, 401)
+        const uidY = yo.id
+        if (await esAdminUid(uidY)) return json({ ok: false, error: 'Las cuentas del panel no cambian su correo desde aquí.' }, 403)
+        const { data: filaY } = await db.from('users')
+          .select('email, full_name, is_blocked, bl:raw_data->blacklisted, ib:raw_data->isBlocked').eq('id', uidY).maybeSingle()
+        if (!filaY) return json({ ok: false, error: 'No se encontró tu cuenta.' }, 404)
+        if ((filaY as any).is_blocked === true || (filaY as any).bl === true || (filaY as any).ib === true) {
+          return json({ ok: false, error: 'Tu cuenta está bloqueada. Escríbenos a soporte.' }, 403)
+        }
+        const anteriorY = String((filaY as any).email ?? '').trim().toLowerCase()
+        const claveY = `correo_cambio_${uidY}`
+        const leerPend = async (): Promise<any | null> => {
+          const { data } = await db.from('private_config').select('value').eq('key', claveY).maybeSingle()
+          try { return (data as any)?.value ? JSON.parse((data as any).value) : null } catch { return null }
+        }
+        const guardarPend = (v: unknown) => db.from('private_config').upsert({ key: claveY, value: JSON.stringify(v) }, { onConflict: 'key' })
+        const borrarPend = () => db.from('private_config').delete().eq('key', claveY)
+
+        if (selfServiceBody.action === 'correo_cambio_iniciar') {
+          const nuevo = String(selfServiceBody.email ?? '').trim().toLowerCase()
+          if (nuevo.length > 120 || !CORREO_RE.test(nuevo)) return json({ ok: false, error: 'Escribe un correo válido.' }, 400)
+          if (nuevo === anteriorY) return json({ ok: false, error: 'Ese ya es tu correo.' }, 400)
+          const prev = await leerPend()
+          const ventanaViva = prev && Date.now() - Number(prev.desde ?? 0) < 3600_000
+          if (ventanaViva && Number(prev.envios ?? 0) >= 5) {
+            return json({ ok: false, error: 'Pediste demasiados códigos. Espera una hora e intenta de nuevo.' }, 429)
+          }
+          // El 2FA de la app, para ESTA operación (un código sirve una vez).
+          const otpErr = await requireAdminOtp(uidY, selfServiceBody.otp)
+          if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+          const ocupado = await correoOcupado(nuevo, uidY)
+          if (ocupado) return json({ ok: false, error: `${ocupado} Usa otro.` }, 409)
+          const codigo = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0')
+          const { error: eG } = await guardarPend({
+            email: nuevo, hash: await sha256Hex(`${uidY}:${codigo}`), exp: Date.now() + 15 * 60_000, intentos: 0,
+            envios: ventanaViva ? Number(prev.envios ?? 0) + 1 : 1, desde: ventanaViva ? Number(prev.desde) : Date.now(),
+          })
+          if (eG) return json({ ok: false, error: 'No se pudo iniciar el cambio. Intenta de nuevo.' }, 500)
+          await enviarCorreoLincoin(nuevo, `Tu código para cambiar el correo en Lincoin: ${codigo}`, 'Confirma tu correo nuevo',
+            `Escribe este código en Lincoin para que <b style="color:#F4F4F2">${escHtml(nuevo)}</b> quede como el correo de acceso de tu cuenta:
+             <p style="font-size:28px;font-weight:800;letter-spacing:6px;color:#F4F4F2;margin:14px 0">${codigo}</p>
+             Vence en 15 minutos. Si no fuiste tú, ignora este correo: no se cambia nada.`)
+          await auditAdmin(req, 'cliente.correo_cambio_iniciado', { userId: uidY, nuevo })
+          return json({ ok: true, enviadoA: nuevo })
+        }
+
+        // correo_cambio_confirmar
+        const pend = await leerPend()
+        if (!pend?.email || !pend?.hash) return json({ ok: false, error: 'No hay un cambio de correo en curso. Empieza de nuevo.' }, 400)
+        if (Date.now() > Number(pend.exp ?? 0)) { await borrarPend(); return json({ ok: false, error: 'El código venció. Empieza de nuevo.' }, 400) }
+        if (Number(pend.intentos ?? 0) >= 5) { await borrarPend(); return json({ ok: false, error: 'Demasiados intentos. Empieza de nuevo.' }, 429) }
+        const codigoY = String(selfServiceBody.codigo ?? '').replace(/\D/g, '')
+        if (codigoY.length !== 6 || await sha256Hex(`${uidY}:${codigoY}`) !== pend.hash) {
+          await guardarPend({ ...pend, intentos: Number(pend.intentos ?? 0) + 1 })
+          return json({ ok: false, error: 'Ese código no es el que te enviamos.' }, 400)
+        }
+        const nuevoY = String(pend.email)
+        const ocupadoY = await correoOcupado(nuevoY, uidY)
+        if (ocupadoY) { await borrarPend(); return json({ ok: false, error: `${ocupadoY} Empieza de nuevo con otro.` }, 409) }
+        const falloY = await cambiarCorreoAcceso(uidY, anteriorY, nuevoY)
+        if (falloY) return json({ ok: false, error: falloY }, 500)
+        await borrarPend()
+        // El aviso (si no se pudo soltar el Google del correo anterior) va a
+        // la auditoría para el equipo; al cliente no se le habla de eso.
+        const avisoY = await soltarIdentidades(uidY, anteriorY, nuevoY)
+        await auditAdmin(req, 'cliente.correo_cambiado', { userId: uidY, anterior: anteriorY, nuevo: nuevoY, aviso: avisoY })
+        await avisarCambioCorreo(anteriorY, nuevoY, String((filaY as any).full_name ?? ''))
+        return json({ ok: true, email: nuevoY })
+      }
+
       if (selfServiceBody.action === 'mfa_set' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
         const secret = String(selfServiceBody.secret ?? '')
@@ -407,13 +3255,92 @@ Deno.serve(async (req: Request) => {
         const factorId = String(selfServiceBody.factorId ?? 'local')
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = { ...((u as any)?.raw_data ?? {}) }
-        raw.totpSecretEnc = await encField(secret)
+        // Si YA tiene 2FA, reemplazarlo exige una sesión que lo haya pasado.
+        // Antes bastaba la contraseña: con ella se ponía un secreto propio,
+        // se "verificaba" y quedaba la sesión completa — el 2FA no protegía.
+        if (raw.mfaEnabled) {
+          const falta = await requireMfaSession(req, String(selfServiceBody.userId))
+          if (falta) return json({ error: 'Para cambiar tu verificación en dos pasos, primero ingresa con tu código actual.' }, 403)
+          // Y el código ACTUAL de la app, en esta misma operación. La sesión
+          // verificada vale 24 h: con un token robado o un equipo que quedó
+          // abierto se ponía un secreto propio, se reemplazaban los códigos de
+          // respaldo del titular y desde ahí se enviaba plata. Cambiar el
+          // segundo factor exige demostrar que se tiene el que hay hoy.
+          const otpActual = String(selfServiceBody.otpActual ?? '').replace(/\D/g, '')
+          if (!otpActual) return json({ success: false, pideCodigo: true, error: 'Escribe el código que muestra hoy tu app para poder reemplazarla.' })
+          const errActual = await requireAdminOtp(String(selfServiceBody.userId), otpActual)
+          if (errActual) return json({ success: false, pideCodigo: true, error: errActual })
+          await auditAdmin(req, 'security.mfa_reemplazado', { userId: String(selfServiceBody.userId) })
+        } else {
+          // ── ACTIVARLO POR PRIMERA VEZ PIDE EL CORREO ─────────────────────
+          // Bastaba la sesión, o sea la contraseña. Y como enviar dinero exige
+          // el 2FA, quien tuviera solo la contraseña de una cuenta SIN 2FA le
+          // ponía uno con SU celular y desde ahí enviaba. La puerta del código
+          // por correo del ingreso vive en la pantalla y no lo impedía: el
+          // servidor no sabe si se pasó. Ahora el servidor manda un código al
+          // correo del titular (el correo dice "están activando tu 2FA") y no
+          // activa nada hasta recibirlo. Quien robó la contraseña no tiene el
+          // correo. La pantalla lo pide sola con `pideCodigoCorreo`.
+          const uidS = String(selfServiceBody.userId)
+          const codigoCorreo = String(selfServiceBody.codigoCorreo ?? '').replace(/\D/g, '')
+          // Freno: 10 códigos de correo errados en una hora y se corta. El
+          // servidor de códigos ya limita 5 intentos por código; esto limita
+          // pedir códigos nuevos para seguir probando.
+          try {
+            const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+              .eq('user_id', uidS).eq('action', 'security.mfa_alta_codigo_correo_invalido')
+              .gte('created_at', new Date(Date.now() - 3600_000).toISOString())
+            if ((count ?? 0) >= 10) return json({ success: false, error: 'Demasiados códigos incorrectos. Espera una hora antes de volver a intentar activar la verificación en dos pasos.' }, 429)
+          } catch { /* si no se puede contar, sigue con el límite por código */ }
+          if (!codigoCorreo) {
+            const env = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+              body: JSON.stringify({ action: 'send', userId: uidS, proposito: 'activar_2fa' }),
+            }).then(x => x.json()).catch(() => null)
+            return json({
+              success: false, pideCodigoCorreo: true, enviado: !!env?.ok,
+              error: env?.ok
+                ? 'Para activar la verificación en dos pasos, escribe el código que te enviamos al correo.'
+                : 'No pudimos enviarte el código al correo. Intenta de nuevo en un momento.',
+            })
+          }
+          if (!/^\d{6}$/.test(codigoCorreo)) return json({ success: false, pideCodigoCorreo: true, error: 'El código del correo son 6 dígitos.' })
+          const ver = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            // El código tiene que ser uno pedido PARA activar el 2FA (email-otp lo
+            // guarda con su propósito): uno de ingreso ya no sirve aquí.
+            body: JSON.stringify({ action: 'verify', userId: uidS, code: codigoCorreo, proposito: 'activar_2fa' }),
+          }).then(x => x.json()).catch(() => null)
+          if (!ver?.ok) {
+            // Un código ya usado, vencido o sin pedir no es adivinar: no cuenta.
+            if (!['used', 'no_code', 'expired', 'superseded', 'busy', 'wrong_purpose'].includes(String(ver?.error ?? ''))) {
+              await auditAdmin(req, 'security.mfa_alta_codigo_correo_invalido', { userId: uidS, motivo: ver?.error ?? 'sin respuesta' })
+            }
+            return json({ success: false, pideCodigoCorreo: true, error: ver?.message ?? 'El código del correo no es válido o ya venció.' })
+          }
+          // Se relee: verificar el código escribió en raw_data (lo marca usado)
+          // y guardar sobre la copia vieja lo desharía.
+          const { data: u2 } = await db.from('users').select('raw_data').eq('id', uidS).single()
+          for (const k of Object.keys(raw)) delete (raw as any)[k]
+          Object.assign(raw, (u2 as any)?.raw_data ?? {})
+          if (raw.mfaEnabled) return json({ success: false, error: 'Tu cuenta ya tiene la verificación en dos pasos activa. Recarga la página.' })
+        }
+        try { raw.totpSecretEnc = await encField(secret) }
+        catch { return json({ error: 'La Bóveda no está disponible para guardar el secreto. No se activó el 2FA.' }, 503) }
         raw.mfaEnabled = true
         raw.mfaFactorId = factorId
         delete raw.totpSecret   // nunca dejar el secreto en claro
+        // Códigos de respaldo: se entregan UNA sola vez al activar y solo se
+        // guarda su hash. Son la vía de entrada que NO depende de la llave de
+        // cifrado, así que una rotación de llave ya no deja a nadie afuera.
+        const codes = newBackupCodes()
+        raw.mfaBackupHashes = await Promise.all(codes.map(hashBackup))
         const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
         if (error) return json({ error: error.message }, 500)
-        return json({ success: true })
+        await auditAdmin(req, 'security.mfa_enabled', { userId: String(selfServiceBody.userId) })
+        return json({ success: true, backupCodes: codes })
       }
 
       // ── 2FA: verificar un código contra el secreto CIFRADO (server-side).
@@ -421,14 +3348,529 @@ Deno.serve(async (req: Request) => {
       // secreto en claro). Acepta legacy en texto plano.
       if (selfServiceBody.action === 'mfa_verify' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+        if (await adminLock(String(selfServiceBody.userId))) {
+          return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+        }
         const code = String(selfServiceBody.code ?? '')
+        const uidV = String(selfServiceBody.userId)
+
+        // ── Límite de intentos ────────────────────────────────────────────
+        // Sin esto, el código de 6 dígitos se podía probar sin freno. Con la
+        // ventana de ±2 hay 5 códigos válidos a la vez sobre un millón: unos
+        // 200.000 intentos de media, cuestión de horas para un script. El
+        // 2FA existe precisamente para el caso en que YA te robaron la
+        // contraseña, así que dejarlo sin freno le quitaba casi todo el valor.
+        //
+        // El conteo del CÓDIGO DE LA APP y el del CÓDIGO DE RESPALDO son
+        // SEPARADOS a propósito: el de respaldo es la vía de recuperación, y
+        // si quedara bloqueado por los fallos del otro dejaría de servir para
+        // lo único que existe. Su espacio es 32^8, así que aguanta un límite
+        // más holgado sin volverse adivinable.
+        const VENTANA_MIN = 15
+        const esRespaldo = !/^\d{6}$/.test(String(code ?? '').trim())
+        const sinceMfa = new Date(Date.now() - VENTANA_MIN * 60_000).toISOString()
+        const mios = (await fallosRecientes(uidV, sinceMfa)).filter((r: any) => (r?.metadata?.tipo === 'respaldo') === esRespaldo)
+        const tope = esRespaldo ? 10 : 5
+        if (mios.length >= tope) {
+          // Cuánto falta de verdad, contado desde el fallo más viejo que
+          // todavía pesa — decir "espera 15 minutos" cuando faltan 2 es
+          // hacerle perder el tiempo a quien sí es el dueño de la cuenta.
+          const masViejo = mios.map((r: any) => new Date(r.created_at).getTime()).sort((a, b) => a - b)[0]
+          const faltan = Math.max(1, Math.ceil((masViejo + VENTANA_MIN * 60_000 - Date.now()) / 60_000))
+          return json({
+            ok: false, error: 'too_many_attempts', minutosRestantes: faltan,
+            message: esRespaldo
+              ? `Demasiados códigos de respaldo incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}.`
+              : `Demasiados códigos incorrectos. Vuelve a intentar en ${faltan} minuto${faltan === 1 ? '' : 's'}, o entra con uno de tus códigos de respaldo.`,
+          }, 429)
+        }
+        let bloqueada = false
+        const noteMfaFail = async (motivo: string) => {
+          const f = await registerAdminFailure(req, uidV, motivo, esRespaldo ? 'respaldo' : 'app', selfServiceBody.foto ?? null)
+          bloqueada = f.bloqueada
+        }
+
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = ((u as any)?.raw_data ?? {}) as Record<string, any>
+        // ¿Es la cuenta del panel? Sale SOLO de la tabla (users.role). Antes
+        // también se miraba raw_data.__role, que escribe el propio usuario.
+        const esAdmin = await esAdminUid(uidV)
+        const etapaLogin = String(selfServiceBody.stage ?? '') === 'login'
+
+        // ── Código de RESPALDO ────────────────────────────────────────────
+        // Se prueba primero porque no es de 6 dígitos y porque tiene que
+        // funcionar aunque el secreto TOTP esté ilegible — ese es justo el
+        // caso para el que existe. Es de un solo uso: al acertar se consume.
+        const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
+        const normalized = normalizeBackup(code)
+        // 8 símbolos: códigos emitidos antes de septiembre 2026. 10: los nuevos.
+        if (hashes.length && (normalized.length === 8 || normalized.length === BACKUP_LEN) && !/^\d{6}$/.test(code.trim())) {
+          // El ORDEN se comprueba ANTES de gastar el código. Para un admin:
+          //   · en el ingreso, el código del correo tiene que estar pasado;
+          //   · sin etapa (re-verificación dentro del panel), solo se refresca
+          //     una sesión que ya era completa — igual que con el código de la
+          //     app. Antes un código de respaldo sin 'login' abría la sesión
+          //     completa saltándose el correo y la llave.
+          if (esAdmin && etapaLogin && !(await emailStagePassed(req, uidV))) {
+            return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+          }
+          if (esAdmin && !etapaLogin && (await requireMfaSession(req, uidV)) !== null) {
+            return json({ ok: false, error: 'login_incompleto', message: 'Inicia sesión completa (correo, app y llave) antes de esta verificación.' })
+          }
+          const idx = await matchBackup(code, hashes)
+          if (idx >= 0) {
+            // Un código de respaldo vale UNA vez, también si llegan dos pedidos
+            // con el mismo código al mismo tiempo (los dos lo leían vigente).
+            const unaVez = await reclamarCandado(db, `respaldo:${uidV}:${String(hashes[idx]).slice(-32)}`, 3600, uidV, 'mfa_respaldo')
+            if (unaVez === 'ocupado') return json({ ok: false, error: 'code_reused', message: 'Ese código de respaldo ya se usó.' })
+            if (unaVez === 'error') return json({ ok: false, message: 'No pudimos verificar el código. Intenta de nuevo.' })
+            const rest = hashes.filter((_, i) => i !== idx)
+            await mergeRaw(db, selfServiceBody.userId, { mfaBackupHashes: rest })
+            await auditAdmin(req, 'mfa_backup_code_used', { userId: selfServiceBody.userId, remaining: rest.length })
+            await reiniciarFallos(req, uidV)
+            await marcarFactor(req, uidV, 'app')
+            // Si la cuenta tiene llave, el código de respaldo tampoco la
+            // reemplaza: la sesión queda a medio abrir hasta que firme.
+            // Solo para el panel: ver el comentario del mismo paso abajo.
+            if (esAdmin && (await passkeysDe(uidV)).length) {
+              await rememberMfaSession(req, uidV, 'app')
+              return json({ ok: true, usedBackup: true, remaining: rest.length, needsPasskey: true })
+            }
+            await rememberMfaSession(req, String(selfServiceBody.userId), 'full')
+            return json({ ok: true, usedBackup: true, remaining: rest.length })
+          }
+          await noteMfaFail('código de respaldo inválido')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          return json({ ok: false, error: 'backup_invalid' })
+        }
+
         let secret = ''
-        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') } catch { secret = '' }
-        if (!secret) return json({ ok: false, error: 'no_secret' })
-        const ok = await verifyTOTPServer(secret, code)
-        return json({ ok })
+        // Se distinguen los fallos que antes se veían IGUAL que "código
+        // incorrecto": que no haya secreto guardado, y que sí lo haya pero el
+        // servidor no lo pueda descifrar (llave de cifrado distinta a la que
+        // se usó al activar el 2FA). Solo se informa el TIPO de fallo, nunca
+        // el secreto ni nada de la Bóveda.
+        let decErr: 'none' | 'key' | 'other' = 'none'
+        try { secret = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : String(raw.totpSecret ?? '') }
+        catch (e) { decErr = (e instanceof KeyMismatchError) ? 'key' : 'other'; secret = '' }
+        if (!secret) {
+          return json({
+            ok: false,
+            error: decErr === 'none' ? 'no_secret' : 'secret_unreadable',
+            keyMismatch: decErr === 'key',
+            hasBackupCodes: hashes.length > 0,
+          })
+        }
+        // El orden se comprueba ANTES de mirar el código (como con el de
+        // respaldo). Antes se comprobaba después de aceptarlo, y un código de
+        // la app correcto reiniciaba el contador de fallos: quien tenía la
+        // contraseña y el celular, pero no el correo, alternaba un código de
+        // correo errado con uno de la app bueno y nunca llegaba al bloqueo.
+        if (etapaLogin && esAdmin && !(await emailStagePassed(req, uidV))) {
+          await auditAdmin(req, 'security.orden_ingreso_saltado', { userId: uidV })
+          return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+        }
+        const counter = await verifyTOTPServer(secret, code)
+        if (counter < 0) {
+          await noteMfaFail('código incorrecto')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          return json({ ok: false })
+        }
+        // Un código ya usado NO vale una segunda vez, aunque su ventana siga
+        // abierta. Es lo que cierra la reutilización del código capturado.
+        // Un código ya usado por la MISMA sesión que ya quedó verificada es un
+        // reenvío del pedido, no un intento: se responde igual que el
+        // original. Contarlo como fallo bloqueaba la cuenta del admin y la IP
+        // de la oficina. Desde OTRA sesión sí cuenta como fallo.
+        // ── El MISMO pedido, repetido ─────────────────────────────────────
+        // Caso real: cada ingreso quedaba "login_2fa_completo" y, medio
+        // segundo después (o a la vez), el mismo código otra vez → "ya
+        // utilizado". La red reintenta el POST (conexión cortada antes de la
+        // respuesta) y el navegador se queda con la respuesta del REINTENTO:
+        // la persona ve un rechazo de un código que sí entró.
+        // Si ESTA MISMA sesión ya quedó verificada con ESTE código, el
+        // repetido responde lo mismo que el original. Un código capturado y
+        // usado desde OTRA sesión sigue rechazado: su sesión no está
+        // verificada.
+        //
+        // Lo mismo vale para la confirmación de un ENVÍO en la misma sesión:
+        // quien acaba de entrar con un código y enseguida envía ve el MISMO
+        // código en su app, y se le rechazaba como "ya usado" (se mostraba
+        // "Código incorrecto"). Desde la misma sesión ya verificada se acepta;
+        // desde otra, sigue rechazado.
+        const sidV = sessionIdOf(req)
+        const mismaSesionYaVerificada = async (): Promise<boolean> => {
+          if (!sidV) return false
+          // El original puede estar terminando en paralelo: se espera un poco
+          // (hasta ~2 s) a que anote la sesión antes de decidir. Solo se
+          // llega acá con el MISMO contador del último código aceptado.
+          for (let i = 0; i < 8; i++) {
+            const { data: f } = await db.from('users').select('raw_data').eq('id', uidV).single()
+            const rd = ((f as any)?.raw_data ?? {}) as Record<string, any>
+            const ses: any[] = Array.isArray(rd.mfaSessions) ? rd.mfaSessions : []
+            const hit = ses.find((x: any) => x?.sid === sidV && (x?.stage ?? 'full') === 'full')
+            if (hit && Number(rd.mfaLastCounter ?? -1) === counter && Date.now() - new Date(hit.at).getTime() < 5 * 60_000) return true
+            await new Promise(r => setTimeout(r, 250))
+          }
+          return false
+        }
+        const lastCounter = Number(raw.mfaLastCounter ?? -1)
+        if (Number.isFinite(lastCounter) && counter <= lastCounter) {
+          if (counter === lastCounter && await mismaSesionYaVerificada()) {
+            await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV, operacion: !etapaLogin })
+            return json({ ok: true, repetido: true })
+          }
+          // No es un repetido de la misma sesión: es un código ya gastado
+          // usado desde OTRA sesión (p. ej. uno capturado). Ese sí cuenta
+          // como fallo, para que reenviarlo una y otra vez llegue al bloqueo.
+          await noteMfaFail('código ya utilizado desde otra sesión')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
+        }
+        // Dos pedidos con el MISMO código a la vez leían el contador viejo y
+        // pasaban los dos. El candado (llave primaria en la base) deja uno.
+        if ((await reclamarCandado(db, `totp:${uidV}:${counter}`, 600, uidV, 'mfa_totp')) === 'ocupado') {
+          if (await mismaSesionYaVerificada()) {
+            await auditAdmin(req, 'auth.mfa_repetido_aceptado', { userId: uidV, simultaneo: true })
+            return json({ ok: true, repetido: true })
+          }
+          await noteMfaFail('código ya utilizado desde otra sesión (simultáneo)')
+          if (bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          return json({ ok: false, error: 'code_reused', message: 'Ese código ya se usó. Espera al siguiente que muestre tu app.' })
+        }
+        await mergeRaw(db, uidV, { mfaLastCounter: counter })
+        // Un acierto reinicia la cuenta de fallos: quien acaba de demostrar que
+        // es el dueño no debe arrastrar un contador que lo bloquee después.
+        // (Se marca; ya no se borran los fallos de la auditoría.)
+        await reiniciarFallos(req, uidV)
+
+        // ── Orden del ingreso: PRIMERO el correo, DESPUÉS la app ──────────
+        // El código del correo es el paso indispensable. Este es el segundo:
+        // solo se acepta si el del correo ya se superó en esta misma sesión,
+        // así el orden no se puede saltar llamando directo a este paso.
+        // ⚠️ La verificación doble (correo + app) es SOLO para el panel de
+        // administración. Un cliente con 2FA entra con el código de su app,
+        // como siempre: exigirle un paso que su pantalla no tiene lo dejaba
+        // encerrado sin manera de avanzar.
+        if (etapaLogin) {
+          if (esAdmin && !(await emailStagePassed(req, uidV))) {
+            return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+          }
+          await marcarFactor(req, uidV, 'app')
+          // ── Tercer paso: la llave ────────────────────────────────────────
+          // Si la cuenta tiene una llave registrada, el código de la app NO
+          // termina el ingreso. La sesión queda en 'app' —que no habilita
+          // nada— hasta que el dispositivo firme.
+          // SOLO PARA EL PANEL. Las llaves son del administrador: firmar con
+          // ellas (passkey_auth_*) exige rol admin. Una cuenta que fue admin
+          // y pasó a cliente conservaba su llave guardada, y aquí se le
+          // pedía igual: el código correcto la dejaba a medio entrar,
+          // esperando una llave que el servidor no la deja usar, y la
+          // pantalla decía "código incorrecto" con el código bueno.
+          if (esAdmin && (await passkeysDe(uidV)).length) {
+            await rememberMfaSession(req, uidV, 'app')
+            return json({ ok: true, needsPasskey: true })
+          }
+          await rememberMfaSession(req, uidV, 'full')
+          await auditAdmin(req, 'auth.login_2fa_completo', { userId: uidV })
+          return json({ ok: true })
+        }
+
+        // Queda constancia de QUÉ sesión superó el 2FA: es lo que después
+        // exigen las acciones sensibles. Un ADMIN sin stage (re-verificación
+        // dentro del panel) solo REFRESCA una sesión que ya era completa: si
+        // no, llamar sin 'login' dejaba la sesión completa saltándose el
+        // correo y la llave.
+        if (esAdmin && (await requireMfaSession(req, uidV)) !== null) {
+          await marcarFactor(req, uidV, 'app')
+          return json({ ok: false, error: 'login_incompleto', message: 'Inicia sesión completa (correo, app y llave) antes de esta verificación.' })
+        }
+        await rememberMfaSession(req, uidV)
+        await marcarFactor(req, uidV, 'app')
+        return json({ ok: true })
+      }
+
+      // ── Aviso de ingreso ─────────────────────────────────────────────────
+      // Lo llama el navegador apenas la sesión queda abierta de verdad, tanto
+      // para un cliente como para el admin. El servidor decide si manda el
+      // correo (uno por sesión) y saca la IP y el dispositivo de ESTA
+      // petición — no de lo que diga la pantalla, que se puede falsear.
+      if (selfServiceBody.action === 'notify_login' && selfServiceBody.userId) {
+        const uidN = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidN))) return json({ error: 'No autorizado' }, 401)
+        // 'forzar' lo usa el botón de prueba del panel: salta el dedupe para
+        // poder comprobar el envío sin tener que volver a entrar.
+        const forzar = !!selfServiceBody.forzar && (await esAdminUid(uidN))
+        const r = await avisarIngreso(req, uidN, forzar)
+        return json({ ok: true, enviado: r.ok, motivo: r.motivo, destino: r.destino ?? null })
+      }
+
+      // ── Señal de vida ────────────────────────────────────────────────────
+      // La manda el panel cuando hay actividad real pero no llamadas a la API
+      // —alguien leyendo una pantalla quieta—. Sin esto, estar trabajando en
+      // una pantalla que no consulta nada contaría como estar ausente.
+      if (selfServiceBody.action === 'touch_session' && selfServiceBody.userId) {
+        const uidT = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidT))) return json({ error: 'No autorizado' }, 401)
+        if (!(await esAdminUid(uidT))) return json({ ok: true })   // el corte es solo del panel
+        const fuera = await sesionInactiva(req, uidT)
+        return json({ ok: !fuera, sesionInactiva: fuera })
+      }
+
+      // ── ¿Qué le falta a esta sesión para operar? ─────────────────────────
+      // Lo consulta la pantalla antes de abrir Tesorería o de administrar las
+      // llaves. La respuesta la decide el servidor: la pantalla no puede
+      // darse por verificada sola.
+      if (selfServiceBody.action === 'step_up_status' && selfServiceBody.userId) {
+        const uidS = String(selfServiceBody.userId)
+        if (!(await verifySelfOrAdmin(req, uidS))) return json({ error: 'No autorizado' }, 401)
+        if (!(await esAdminUid(uidS))) return json({ error: 'No autorizado' }, 401)
+        return json({
+          ok: true,
+          falta: await stepUpFalta(req, uidS),
+          tienePasskey: (await passkeysDe(uidS)).length > 0,
+          minutos: Math.round(STEP_UP_TTL_MS / 60_000),
+        })
+      }
+
+      // ── PASSKEY ─────────────────────────────────────────────────────────
+      // Una llave que vive DENTRO del dispositivo (Face ID, huella, o una
+      // llave USB) y nunca sale de él: el navegador solo devuelve una firma,
+      // atada al dominio real. No se puede fotografiar, ni copiar del
+      // portapapeles, ni robar con una página falsa — que es exactamente
+      // como se pierden una contraseña, un código de 6 dígitos y unos
+      // códigos de respaldo. Es la única capa que aguanta que el atacante
+      // tenga las tres cosas.
+      //
+      // Solo para la cuenta del panel, y solo desde una sesión que ya superó
+      // el 2FA: dar de alta una llave desde una sesión a medio verificar
+      // sería regalarle al intruso la puerta definitiva.
+      if (String(selfServiceBody.action ?? '').startsWith('passkey_') && selfServiceBody.userId) {
+        const uidP = String(selfServiceBody.userId)
+        const accion = String(selfServiceBody.action)
+        if (!(await verifySelfOrAdmin(req, uidP))) return json({ error: 'No autorizado' }, 401)
+        if (!(await esAdminUid(uidP))) return json({ error: 'No autorizado' }, 401)
+
+        let W: any
+        try { W = await webauthn() }
+        catch { return json({ ok: false, error: 'passkey_no_disponible', message: 'El servicio de llaves no está disponible en este momento. Entra con tu código.' }, 503) }
+
+        const publico = (l: Passkey[]) => l.map(p => ({ id: p.id, nombre: p.nombre, at: p.at }))
+
+        // ── Alta y administración: exigen sesión con 2FA superado ─────────
+        if (accion === 'passkey_list' || accion === 'passkey_register_options'
+          || accion === 'passkey_register_verify' || accion === 'passkey_delete') {
+          const mfaErr = await requireMfaSession(req, uidP)
+          if (mfaErr) return json({ ok: false, error: 'needs_2fa', message: mfaErr }, 403)
+
+          // Dar de alta o quitar una llave exige volver a probar el correo Y
+          // el código de la app, aquí y ahora. Una sesión abierta hace horas
+          // —o robada— no basta para cambiar la puerta de entrada.
+          //
+          // La LLAVE no se exige a propósito, aunque ya haya una registrada:
+          // esta pantalla es justo donde se sale de un dispositivo perdido.
+          // Exigirla convertiría perder el teléfono en perder el panel.
+          if (accion !== 'passkey_list') {
+            const falta = (await stepUpFalta(req, uidP)).filter(f => f !== 'passkey')
+            if (falta.length) {
+              return json({ ok: false, error: 'step_up', falta, message: 'Verifica tu identidad para administrar tus llaves.' }, 403)
+            }
+          }
+
+          if (accion === 'passkey_list') {
+            return json({ ok: true, passkeys: publico(await passkeysDe(uidP)), rpId: RP_ID })
+          }
+
+          if (accion === 'passkey_delete') {
+            const id = String(selfServiceBody.passkeyId ?? '')
+            const list = (await passkeysDe(uidP)).filter(p => p.id !== id)
+            await guardarPasskeys(uidP, list)
+            await auditAdmin(req, 'security.passkey_eliminada', { userId: uidP, id: id.slice(0, 12) })
+            return json({ ok: true, passkeys: publico(list) })
+          }
+
+          if (accion === 'passkey_register_options') {
+            const { data: uu } = await db.from('users').select('email, name').eq('id', uidP).single()
+            const yaTiene = await passkeysDe(uidP)
+            const options = await W.generateRegistrationOptions({
+              rpName: RP_NAME,
+              rpID: RP_ID,
+              userID: new TextEncoder().encode(uidP),
+              userName: String((uu as any)?.email ?? 'admin'),
+              userDisplayName: String((uu as any)?.name ?? 'Lincoin'),
+              attestationType: 'none',
+              // Sin esto, registrar dos veces desde el mismo teléfono creaba
+              // una llave duplicada en vez de avisar que ya estaba.
+              excludeCredentials: yaTiene.map(p => ({ id: p.id })),
+              authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
+            })
+            await guardarChallenge(uidP, options.challenge)
+            return json({ ok: true, options })
+          }
+
+          // passkey_register_verify
+          const challenge = await tomarChallenge(uidP)
+          if (!challenge) return json({ ok: false, message: 'La solicitud venció. Vuelve a intentarlo.' })
+          let v: any
+          try {
+            v = await W.verifyRegistrationResponse({
+              response: selfServiceBody.credential,
+              expectedChallenge: challenge,
+              expectedOrigin: ORIGENES,
+              expectedRPID: RP_ID,
+              requireUserVerification: true,
+            })
+          } catch (e) {
+            return json({ ok: false, message: `La llave no se pudo registrar: ${(e as Error).message}` })
+          }
+          const info: any = v?.registrationInfo
+          if (!v?.verified || !info) return json({ ok: false, message: 'La llave no se pudo verificar.' })
+          const c: any = info.credential ?? {}
+          const idNueva = String(c.id ?? (info.credentialID ? bytesAB64u(new Uint8Array(info.credentialID)) : ''))
+          const pubRaw = c.publicKey ?? info.credentialPublicKey
+          if (!idNueva || !pubRaw) return json({ ok: false, message: 'La llave no se pudo leer.' })
+          const nombre = String(selfServiceBody.nombre ?? '').trim().slice(0, 40) || 'Este dispositivo'
+          const lista = (await passkeysDe(uidP)).filter(p => p.id !== idNueva)
+          lista.unshift({
+            id: idNueva,
+            publicKey: bytesAB64u(new Uint8Array(pubRaw)),
+            counter: Number(c.counter ?? info.counter ?? 0),
+            nombre,
+            at: new Date().toISOString(),
+          })
+          await guardarPasskeys(uidP, lista)
+          await auditAdmin(req, 'security.passkey_registrada', { userId: uidP, nombre })
+          return json({ ok: true, passkeys: publico(lista) })
+        }
+
+        // ── Ingreso con la llave ──────────────────────────────────────────
+        if (accion === 'passkey_auth_options' || accion === 'passkey_auth_verify') {
+          { const den = await accessDeniedAdmin(req, uidP); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
+          if (await adminLock(uidP)) {
+            return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+          }
+          const lista = await passkeysDe(uidP)
+          if (!lista.length) return json({ ok: false, error: 'sin_passkey' })
+
+          if (accion === 'passkey_auth_options') {
+            const options = await W.generateAuthenticationOptions({
+              rpID: RP_ID,
+              allowCredentials: lista.map(p => ({ id: p.id })),
+              userVerification: 'required',
+            })
+            await guardarChallenge(uidP, options.challenge)
+            return json({ ok: true, options })
+          }
+
+          // passkey_auth_verify
+          const challenge = await tomarChallenge(uidP)
+          if (!challenge) return json({ ok: false, message: 'La solicitud venció. Vuelve a intentarlo.' })
+          const cred: any = selfServiceBody.credential
+          const guardada = lista.find(p => p.id === String(cred?.id ?? ''))
+          if (!guardada) {
+            const f = await registerAdminFailure(req, uidP, 'llave no registrada', 'passkey', null)
+            if (f.bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+            return json({ ok: false, message: 'Esa llave no está registrada en esta cuenta.' })
+          }
+          let a: any
+          try {
+            a = await W.verifyAuthenticationResponse({
+              response: cred,
+              expectedChallenge: challenge,
+              expectedOrigin: ORIGENES,
+              expectedRPID: RP_ID,
+              credential: { id: guardada.id, publicKey: b64uABytes(guardada.publicKey), counter: guardada.counter },
+              requireUserVerification: true,
+            })
+          } catch (e) {
+            const f = await registerAdminFailure(req, uidP, `firma rechazada: ${(e as Error).message}`, 'passkey', selfServiceBody.foto ?? null)
+            if (f.bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+            return json({ ok: false, message: 'La llave no se pudo verificar.' })
+          }
+          if (!a?.verified) {
+            const f = await registerAdminFailure(req, uidP, 'firma inválida', 'passkey', selfServiceBody.foto ?? null)
+            if (f.bloqueada) return json({ ok: false, error: 'account_locked', message: 'La cuenta se bloqueó por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
+            return json({ ok: false, message: 'La llave no se pudo verificar.' })
+          }
+          // El contador que lleva el propio dispositivo: si vuelve más bajo que
+          // el guardado, la librería lo rechaza. Es lo que delata una copia.
+          guardada.counter = Number(a.authenticationInfo?.newCounter ?? guardada.counter)
+          await guardarPasskeys(uidP, lista)
+
+          // La llave es el ÚLTIMO paso, no un atajo: exige que esta misma
+          // sesión ya haya pasado el código del correo Y el de la app. Sin
+          // esto, quien tuviera la llave entraría saltándose los otros dos.
+          if (String(selfServiceBody.stage ?? '') === 'login') {
+            if (!(await emailStagePassed(req, uidP)) || !(await appStagePassed(req, uidP))) {
+              return json({ ok: false, error: 'email_step_missing', message: 'Completa la verificación anterior.' })
+            }
+          } else if ((await requireMfaSession(req, uidP)) !== null) {
+            // Sin etapa (re-verificación dentro del panel) la llave solo
+            // REFRESCA una sesión que ya era completa. Antes abría la sesión
+            // completa sin el correo ni el código de la app.
+            return json({ ok: false, error: 'login_incompleto', message: 'Inicia sesión completa (correo, app y llave) antes de esta verificación.' })
+          }
+          await reiniciarFallos(req, uidP)
+          await rememberMfaSession(req, uidP, 'full')
+          await marcarFactor(req, uidP, 'passkey')
+          await auditAdmin(req, 'auth.login_passkey', { userId: uidP, llave: guardada.nombre })
+          return json({ ok: true })
+        }
+
+        return json({ error: 'Acción desconocida' }, 400)
+      }
+
+      // ── 2FA: SALUD — ¿algún secreto quedó ilegible? ──────────────────────
+      // Revisa todas las cuentas con 2FA activo e informa cuántas tienen el
+      // secreto ilegible (llave distinta) y cuántas se quedaron sin códigos de
+      // respaldo. Es lo que convierte "me quedé afuera" en un aviso ANTES de
+      // que pase. No devuelve ningún secreto: solo correos y conteos.
+      if (selfServiceBody.action === 'mfa_health') {
+        // Lista correos de todas las cuentas con 2FA: con el permiso de
+        // cumplimiento y los candados del panel, no con solo role='admin'.
+        { const g = await adminSobreOtro(req, ['cumplimiento'], 'mfa_health'); if ('res' in g) return g.res }
+        // Solo las cuentas con 2FA, por páginas: con la base entera de una vez
+        // PostgREST devolvía las primeras 1.000 y el resto no se revisaba.
+        // Solo las claves que se miran: raw_data entero (contactos, avisos…)
+        // de miles de cuentas no entra en la memoria de la función.
+        const { filas: rows } = await leerPorPaginas(() => db.from('users')
+          .select('id, email, enc:raw_data->>totpSecretEnc, plano:raw_data->>totpSecret, resp:raw_data->mfaBackupHashes')
+          .eq('raw_data->>mfaEnabled', 'true'))
+        for (const r of rows) r.raw_data = { mfaEnabled: true, totpSecretEnc: r.enc ?? undefined, totpSecret: r.plano ?? undefined, mfaBackupHashes: r.resp ?? undefined }
+        let total = 0, unreadable = 0, keyMismatch = 0, noBackup = 0, legacyPlain = 0
+        const affected: Array<{ email: string; motivo: string }> = []
+        for (const r of (rows ?? []) as any[]) {
+          const raw = r.raw_data ?? {}
+          if (!raw.mfaEnabled) continue
+          total++
+          const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
+          if (!hashes.length) noBackup++
+          if (!raw.totpSecretEnc && raw.totpSecret) { legacyPlain++; continue }
+          try {
+            const s = raw.totpSecretEnc ? await decField(String(raw.totpSecretEnc)) : ''
+            if (!s) { unreadable++; affected.push({ email: r.email, motivo: 'sin secreto' }) }
+          } catch (e) {
+            unreadable++
+            if (e instanceof KeyMismatchError) keyMismatch++
+            affected.push({ email: r.email, motivo: e instanceof KeyMismatchError ? 'cifrado con otra llave' : 'ilegible' })
+          }
+        }
+        // Lista por cuenta para el tablero: no basta con el conteo, hay que
+        // poder ver CUÁL le falta el respaldo. Solo correo y estado — ningún
+        // secreto sale de acá.
+        const cuentas: Array<{ email: string; conRespaldo: boolean; problema: string | null }> = []
+        for (const r of (rows ?? []) as any[]) {
+          const raw = r.raw_data ?? {}
+          if (!raw.mfaEnabled) continue
+          const hashes: string[] = Array.isArray(raw.mfaBackupHashes) ? raw.mfaBackupHashes : []
+          const malo = affected.find(a => a.email === r.email)
+          // Códigos del formato viejo (SHA-256 sin sal): rompibles por fuerza
+          // bruta si alguien copió la fila. Hay que regenerarlos.
+          const debil = hashes.some(esHashLegacy)
+          cuentas.push({ email: String(r.email ?? ''), conRespaldo: hashes.length > 0, problema: malo ? malo.motivo : (debil ? 'respaldo débil: regenerar' : null) })
+        }
+        return json({ ok: true, total, unreadable, keyMismatch, noBackup, legacyPlain, affected: affected.slice(0, 25), cuentas: cuentas.slice(0, 200) })
       }
 
       // ── 2FA: DESACTIVAR — la ÚNICA vía para apagar el 2FA. Exige un CÓDIGO
@@ -437,36 +3879,66 @@ Deno.serve(async (req: Request) => {
       // en la lista SERVER_OWNED), así que esta es la única puerta.
       if (selfServiceBody.action === 'mfa_disable' && selfServiceBody.userId) {
         if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
-        const isAdmin = (await verifyAdmin(req)).ok
-        if (!isAdmin) {
-          const code = String(selfServiceBody.emailCode ?? '')
-          if (!/^\d{6}$/.test(code)) return json({ error: 'Falta el código de correo (6 dígitos).' }, 400)
-          const otpRes = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-            body: JSON.stringify({ action: 'verify', userId: selfServiceBody.userId, code }),
-          }).then(r => r.json()).catch(() => null)
-          if (!otpRes?.ok) return json({ error: 'Código de correo incorrecto o vencido.' }, 403)
-        }
+
+        // ⚠️ Apagar el 2FA es la operación que deja la cuenta con SOLO la
+        // contraseña. Antes el admin estaba EXENTO del código de correo, así
+        // que cualquier sesión suya —en cualquier dispositivo, con solo la
+        // contraseña— podía desactivarlo. Ahora se exigen las dos cosas, sin
+        // excepción por rol:
+        //
+        //   1) que ESTA sesión haya superado el 2FA (con el código de la app
+        //      o uno de respaldo). Un dispositivo nuevo que solo tiene la
+        //      contraseña no puede.
+        //   2) un código enviado al correo del titular.
+        //
+        // Quien roba la contraseña no tiene ni el teléfono ni el correo.
+        const mfaSessErr = await requireMfaSession(req, String(selfServiceBody.userId))
+        if (mfaSessErr) return json({ error: `Para desactivar el 2FA primero verifícalo en este dispositivo. ${mfaSessErr}`, needs2fa: true }, 403)
+
+        const code = String(selfServiceBody.emailCode ?? '')
+        if (!/^\d{6}$/.test(code)) return json({ error: 'Falta el código de correo (6 dígitos).' }, 400)
+        const otpRes = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'verify', userId: selfServiceBody.userId, code }),
+        }).then(r => r.json()).catch(() => null)
+        // Se prefiere el mensaje del servidor de códigos: "ese código ya se
+        // usó" es una instrucción; "incorrecto o vencido" deja adivinando.
+        if (!otpRes?.ok) return json({ error: otpRes?.message ?? 'Código de correo incorrecto o vencido.' }, 403)
         const { data: u } = await db.from('users').select('raw_data').eq('id', selfServiceBody.userId).single()
         const raw = { ...((u as any)?.raw_data ?? {}) }
         raw.mfaEnabled = false
         delete raw.mfaFactorId
         delete raw.totpSecret
         delete raw.totpSecretEnc
+        delete raw.mfaBackupHashes   // los códigos viejos no sirven para el 2FA nuevo
         const { error } = await db.from('users').update({ raw_data: raw }).eq('id', selfServiceBody.userId)
         if (error) return json({ error: error.message }, 500)
+        await auditAdmin(req, 'security.mfa_disabled', { userId: selfServiceBody.userId })
         return json({ success: true })
       }
 
-      // Self-delete: any authenticated user can delete their own account
+      // Borrar la PROPIA cuenta. Solo con la cuenta en cero y sin envíos en
+      // curso, y SIN borrar los movimientos: son el historial contable y de
+      // cumplimiento de lo que pasó por Lincoin, y no dependen de que la
+      // persona siga siendo cliente. Antes se borraba todo, con plata adentro
+      // o con envíos saliendo, y bastaba la sesión.
       if (selfServiceBody.action === 'delete_self') {
-        const jwt = req.headers.get('Authorization')?.replace('Bearer ', '').trim()
-        const { data: { user: selfUser } } = await db.auth.getUser(jwt ?? '')
+        const selfUser = await usuarioDelToken(req)
         if (!selfUser) return json({ error: 'Unauthorized' }, 401)
-        const { data: selfProfile } = await db.from('users').select('raw_data').eq('id', selfUser.id).single()
-        const selfIndex: number | undefined = selfProfile?.raw_data?.gasfreeHdIndex
-        await db.from('transactions').delete().eq('user_id', selfUser.id)
+        const { data: selfProfile } = await db.from('users').select('role, balances, crypto_balances, raw_data').eq('id', selfUser.id).maybeSingle()
+        if ((selfProfile as any)?.role === 'admin') return json({ error: 'Una cuenta de administración no se borra desde aquí. Pídeselo al dueño del panel.' }, 403)
+        // Con 2FA activo, la sesión tiene que haberlo pasado: la contraseña
+        // sola no alcanza para borrar una cuenta.
+        { const mfaErr = await requireMfaSession(req, selfUser.id); if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403) }
+        const conSaldo = [ (selfProfile as any)?.balances, (selfProfile as any)?.crypto_balances ]
+          .some(b => b && typeof b === 'object' && Object.values(b).some(v => Math.abs(Number(v) || 0) > 0.009))
+        if (conSaldo) return json({ error: 'Tu cuenta todavía tiene saldo. Retíralo o conviértelo antes de cerrarla.' }, 409)
+        const { data: enCurso } = await db.from('transactions').select('id').eq('user_id', selfUser.id)
+          .in('status', ['Pendiente', 'Procesando']).limit(1)
+        if (Array.isArray(enCurso) && enCurso.length) return json({ error: 'Tienes movimientos en curso. Espera a que terminen antes de cerrar la cuenta.' }, 409)
+        const selfIndex: number | undefined = (selfProfile as any)?.raw_data?.gasfreeHdIndex
+        await auditAdmin(req, 'cuenta.cerrada_por_titular', { userId: selfUser.id })
         await db.from('users').delete().eq('id', selfUser.id)
         const { error: selfDelErr } = await db.auth.admin.deleteUser(selfUser.id)
         // ⚠️ Antes este error solo se logueaba y la función igual devolvía
@@ -479,7 +3951,7 @@ Deno.serve(async (req: Request) => {
         // force_delete_by_email).
         if (selfDelErr) {
           console.warn('[admin-data] delete_self auth error:', selfDelErr.message)
-          return json({ error: `Perfil eliminado, pero la cuenta de acceso no se pudo borrar: ${selfDelErr.message}. Contacta soporte para liberar el correo.` }, 500)
+          return json({ error: 'Tu perfil se cerró, pero la cuenta de acceso no se pudo borrar. Contacta soporte para liberar el correo.' }, 500)
         }
         if (typeof selfIndex === 'number') {
           const { data: blCfg } = await db.from('system_config').select('value').eq('key', 'gasfree_used_indices').single()
@@ -501,9 +3973,201 @@ Deno.serve(async (req: Request) => {
     // el gate ahora que las acciones self-service ya tuvieron su chance.
     const auth = await verifyAdmin(req)
     if (!auth.ok) return json({ error: auth.error }, 401)
+    // Un miembro dado de baja no opera ni consulta, tampoco por GET.
+    if (auth.acceso?.desactivado) {
+      await auditAdmin(req, 'auth.permiso_denegado', { accion: String(selfServiceBody?.action ?? req.method), motivo: 'miembro desactivado', userId: auth.userId })
+      return json({ error: 'Tu acceso al panel fue desactivado.', permisoDenegado: true }, 403)
+    }
+    // La política de acceso también corta una sesión ya abierta: si la sesión
+    // se mueve a una conexión no autorizada, deja de servir.
+    { const den = await accessDenied(req); if (den) return json({ error: den, accessDenied: true }, 403) }
+    // Media hora sin usar el panel y la sesión deja de servir, aunque el token
+    // siga vigente. Un computador que quedó abierto no es una sesión válida.
+    if (await sesionInactiva(req, String(auth.userId ?? ''))) {
+      await auditAdmin(req, 'auth.sesion_cerrada_por_inactividad', { userId: auth.userId })
+      return json({ error: 'La sesión se cerró por inactividad. Vuelve a iniciar sesión.', sesionInactiva: true }, 403)
+    }
+    // Una cuenta bloqueada no opera ni con la sesión ya abierta.
+    if (auth.userId && await adminLock(auth.userId)) {
+      return json({ error: 'La cuenta está bloqueada por seguridad. Revisa tu correo para desbloquearla.', locked: true }, 423)
+    }
+    // El 2FA de la SESIÓN para todo lo del panel, también para consultar.
+    // Antes solo lo pedían las acciones de SENSITIVE_ADMIN_ACTIONS: con la
+    // contraseña del dueño (o de cualquier miembro), sin el código, se
+    // descargaban todos los clientes con sus datos de KYB y sus movimientos
+    // por la API, sin pasar por la pantalla. La regla del proyecto es que toda
+    // función que acepte a un admin exige el 2FA de la sesión. Quedan fuera
+    // solo las dos que la pantalla usa para saber quién eres y anotar el
+    // ingreso. (Una cuenta del equipo sin 2FA activo sigue igual: eso lo
+    // exige aparte falta2faColaborador.)
+    {
+      const accionPedida = String(selfServiceBody?.action ?? '')
+      const sinSesion2fa = req.method === 'POST' && (accionPedida === 'mi_acceso' || accionPedida === 'log_login')
+      if (!sinSesion2fa) {
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+      }
+    }
 
     if (req.method === 'POST') {
       const body = selfServiceBody ?? {}
+
+      // ── PERMISO DEL MIEMBRO ───────────────────────────────────────────
+      // Acá se decide si esta persona puede pedir esto, antes que cualquier
+      // otra cosa. Lo que no está en PERMISO_DE_ACCION se niega a todo el
+      // que no sea dueño: una acción nueva sin anotar falla, no filtra.
+      {
+        const acceso = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        const accion = String(body.action ?? '')
+        const permisos = permisosDe(acceso)
+        const necesita = PERMISO_DE_ACCION[accion]
+        const puede = permite(permisos, necesita)
+        if (!puede) {
+          await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: auth.userId })
+          return json({
+            error: 'Tu rol no permite esta operación.',
+            permisoDenegado: true, rol: acceso.rol,
+          }, 403)
+        }
+        if (acceso.rol === 'colaborador' && accion !== 'mi_acceso' && accion !== 'log_login') {
+          const falta = await falta2faColaborador(req, String(auth.userId ?? ''))
+          if (falta) return json({ error: falta, needs2fa: true, activar2fa: falta.startsWith('Activa') }, 403)
+        }
+        // Los cargues COP y los traslados a ACH son plata de Colombia: quien
+        // no tiene Colombia asignado no los opera, aunque su rol sí lo permita.
+        // Sin esto, el país solo filtraba lo que se VE, no lo que se MUEVE.
+        const COP_DE_COLOMBIA = new Set(['admin_credit_balance', 'approve_rail_move', 'reject_rail_move'])
+        if (COP_DE_COLOMBIA.has(accion) && !visibleEnPais('CO', acceso)) {
+          await auditAdmin(req, 'auth.permiso_denegado', { accion, rol: acceso.rol, userId: auth.userId, motivo: 'pais' })
+          return json({ error: 'Colombia no está entre tus países asignados.', permisoDenegado: true, rol: acceso.rol }, 403)
+        }
+      }
+
+      // Acciones que cambian dinero, cuentas o la propia seguridad: exigen
+      // que ESTA sesión haya pasado el 2FA, no solo la contraseña. Las de
+      // consulta se dejan fuera a propósito, para no dejar al admin sin panel
+      // si algo del 2FA falla — lo que se protege es lo que hace daño.
+      const SENSITIVE_ADMIN_ACTIONS = new Set([
+        // Mueven dinero
+        'admin_credit_balance', 'admin_credit_crypto',
+        'approve_rail_move', 'reject_rail_move', 'tesoreria_movimiento',
+        // La caja: abrirla, corregir la apertura, ocultar un movimiento
+        'caja_abrir', 'caja_apertura_set', 'mov_ocultar',
+        'caja_movimiento_crear', 'caja_movimiento_anular',
+        'caja_enviar_empresa', 'caja_llave_inscribir', 'caja_llave_quitar',
+        // La llave con la que Lincoin firma ante Coinsenda
+        'coinsenda_llave_generar', 'coinsenda_config_guardar', 'coinsenda_cuenta3_set', 'coinsenda_cuenta_set',
+        // Cambian cuentas o el estado de cumplimiento
+        // ('save_user' NO va aquí: se resuelve antes, en la zona self-service
+        //  que también usan los clientes con su propia cuenta. Ahí lo que
+        //  protege es SERVER_OWNED + el trigger de columnas sensibles.)
+        'delete_user', 'force_delete_by_email', 'set_kyc_status',
+        // Cambian la configuración o la propia seguridad
+        'save_config', 'block_ip', 'unblock_ip', 'log_key_rotation',
+        // Facturan ante la DIAN o cambian las credenciales de Siigo
+        'fact_lincoin_set', 'fact_lincoin_emitir',
+        // Quién entra al panel y con qué rol
+        'equipo_guardar', 'equipo_desactivar', 'equipo_invitar', 'equipo_reenviar',
+        // Cumplimiento: cupos por beneficiario
+        'cupo_resolver', 'cupos_config_set', 'cupo_quitar',
+        // Contabilidad: vincular un débito cambia la utilidad y la factura
+        'contabilidad_vincular_ajuste', 'contabilidad_autovincular', 'contabilidad_corregir_venta',
+        // Cambia si a un cliente se le factura por día o por movimiento
+        'cliente_modelo_factura_set',
+        // Lo que se le cobra a TODOS los clientes por cada envío
+        'tarifas_envio_set',
+        // SIREL: datos de todos los clientes y sus operaciones (datos personales)
+        'sirel_periodo', 'sirel_registrar_envio',
+      ])
+      // Reconstruir movimientos escribe en la base; solo consultar, no.
+      const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
+      if (SENSITIVE_ADMIN_ACTIONS.has(String(body.action)) || sensiblePorParametro) {
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+      }
+
+      // CÓDIGO 2FA EN CADA OPERACIÓN. El 2FA de la sesión (arriba) dice que
+      // quien entró pasó el segundo factor; no que quien está frente a la
+      // pantalla AHORA sea esa persona. Para lo que cambia a dónde va la plata
+      // o quién entra al panel, eso no alcanza: una sesión abierta en un
+      // computador ajeno, o robada, bastaba para quitar la llave de la empresa
+      // e inscribir otra, darse acceso a sí mismo o abrir la lista de IPs.
+      // Estas exigen el código de la app en cada operación (requireAdminOtp:
+      // un código sirve una sola vez). Si falta o está mal, se responde
+      // pideCodigo y el panel lo pide y reintenta (lib/codigo2fa.ts).
+      //
+      // No están acá las que ya piden su código adentro (cargues, inscribir
+      // llave, enviar utilidad, generar llave de Coinsenda): validarlo dos
+      // veces gastaría el código en la primera y fallaría la segunda.
+      const ACCIONES_CON_CODIGO = new Set([
+        // A dónde sale la utilidad de Lincoin
+        'caja_llave_quitar',
+        // Quién entra al panel y con qué permisos
+        'equipo_guardar', 'equipo_desactivar', 'equipo_invitar', 'equipo_reenviar',
+        // Desde dónde se puede entrar
+        'access_policy_set', 'unblock_ip',
+        // Con qué cuenta firma Lincoin ante Coinsenda y qué rieles están abiertos
+        'coinsenda_config_guardar', 'coinsenda_cuenta_set', 'coinsenda_cuenta3_set',
+        // Credenciales de facturación
+        'fact_lincoin_set',
+        // Lo que se le cobra a todos los clientes por cada envío
+        'tarifas_envio_set',
+        // La caja: abrirla, corregir la apertura, ocultar o anular movimientos
+        // (con eso se maquillan las cifras de utilidad)
+        'caja_abrir', 'caja_apertura_set', 'mov_ocultar', 'caja_movimiento_anular',
+        // Borrar cuentas, y cambiar con qué correo entra un cliente (es
+        // cambiar quién controla la cuenta)
+        'delete_user', 'force_delete_by_email', 'cliente_cambiar_correo',
+        // Corregir la venta de un cargue cambia la utilidad de Lincoin, que
+        // es lo que después se puede retirar de las bolsas y lo que se factura
+        'contabilidad_corregir_venta',
+      ])
+      // save_config guarda el objeto entero y se llama también solo (tasas,
+      // paleta): el código se pide únicamente si cambia una clave sensible.
+      // (cuenta3, cuenta4 y treasuryAccounts no están: save_config ya no los
+      // escribe, ver CLAVES_CONFIG_DEL_SERVIDOR.)
+      const CLAVES_CONFIG_SENSIBLES = [
+        'countryStatus', 'maintenanceMode', 'allowNewRegistrations',
+        'globalFee', 'minWithdrawal', 'volumeLimit', 'referralCommission', 'coupons',
+        'otcUsdtAddress', 'otcUsdcAddress', 'collectionWalletTron',
+        'otcUsdtRate', 'otcUsdcRate', 'otcFiatPairs', 'recaptchaSiteKey', 'kycProvider', 'adminTeam',
+        // Las cuentas bancarias donde se le dice al cliente que consigne:
+        // cambiarlas es cambiar a dónde llega la plata.
+        'bankingOptions',
+      ]
+      let pideCodigoConfig = false
+      if (body.action === 'save_config' && body.settings && typeof body.settings === 'object') {
+        try {
+          const { data: actual } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          const antes = ((actual as any)?.settings ?? {}) as Record<string, unknown>
+          const despues = body.settings as Record<string, unknown>
+          pideCodigoConfig = CLAVES_CONFIG_SENSIBLES.some(k => JSON.stringify(antes[k] ?? null) !== JSON.stringify(despues[k] ?? null))
+        } catch { pideCodigoConfig = true }   // sin poder comparar, se pide
+      }
+      if (ACCIONES_CON_CODIGO.has(String(body.action)) || pideCodigoConfig) {
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) {
+          await auditAdmin(req, 'auth.codigo_2fa_requerido', { accion: String(body.action), motivo: otpErr, userId: auth.userId })
+          // Sin 2FA activo no tiene sentido pedir un código: se dice qué hacer.
+          return json({ ok: false, error: otpErr, needs2fa: true, pideCodigo: !otpErr.startsWith('Activa') }, 403)
+        }
+      }
+
+      // TESORERÍA: además del 2FA de la sesión, exige la verificación
+      // reforzada —correo + código de la app, y la llave si la cuenta tiene
+      // alguna— hecha hace menos de media hora. Es lo que impide que una
+      // sesión robada, ya abierta, mueva plata: el atacante tendría que
+      // volver a tener el correo, el teléfono y la llave física en el momento.
+      const TESORERIA_ACTIONS = new Set([
+        'admin_credit_balance', 'admin_credit_crypto',
+        'approve_rail_move', 'reject_rail_move',
+      ])
+      if (TESORERIA_ACTIONS.has(String(body.action))) {
+        const falta = await stepUpFalta(req, String(auth.userId ?? ''))
+        if (falta.length) {
+          return json({ error: 'Verifica tu identidad para operar en Tesorería.', stepUp: true, falta }, 403)
+        }
+      }
 
       // ── Registro de AUDITORÍA (admin-only) — quién cambió qué y cuándo ──
       // Lee audit_log (cambios de proveedor de tesorería, payouts, etc.). Sirve
@@ -529,9 +4193,1645 @@ Deno.serve(async (req: Request) => {
         } catch (e) { /* si Auth admin falla, seguimos con lo de public.users */ }
         // Actividad reciente con IP (logins + acciones sensibles).
         const { data: acts } = await db.from('audit_log').select('*').order('created_at', { ascending: false }).limit(100)
-        const withIp = (acts ?? []).filter((a: any) => a?.metadata?.ip || a?.action === 'auth.admin_login')
+        // "Ingresos de administrador": solo los ingresos de admin verificados
+        // y las acciones del panel. Un login de cliente con IP no va acá.
+        const withIp = (acts ?? []).filter((a: any) => a?.action === 'auth.admin_login' || (typeof a?.action === 'string' && a.action.startsWith('admin.') && a?.metadata?.ip))
           .map((a: any) => ({ action: a.action, at: a.metadata?.at ?? a.created_at, byEmail: a.metadata?.byEmail ?? null, ip: a.metadata?.ip ?? null, userAgent: a.metadata?.userAgent ?? null, hadSession: a.metadata?.hadSession }))
         return json({ ok: true, admins, activity: withIp })
+      }
+
+      // ── Quién soy y qué puedo ver ─────────────────────────────────────
+      // Lo pide el panel al entrar, para saber qué países ofrecer y qué
+      // secciones dibujar. Es un REFLEJO de lo que ya decidió el servidor,
+      // no la decisión: mentirle a esta respuesta no abre ninguna puerta,
+      // porque cada acción se vuelve a verificar de todos modos.
+      if (body.action === 'mi_acceso') {
+        const a = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        // Los países salen de la misma configuración que ya usa el panel, para
+        // que no queden dos listas que se desincronizan.
+        let estados: Record<string, string> = {}
+        try {
+          const { data: cfg } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          estados = ((cfg as any)?.settings?.countryStatus ?? {}) as Record<string, string>
+        } catch { /* sin config, se usa el valor por defecto de abajo */ }
+        const CATALOGO = [
+          { code: 'CO', nombre: 'Colombia' },
+          { code: 'US', nombre: 'Estados Unidos' },
+          { code: 'MX', nombre: 'México' },
+          { code: 'BR', nombre: 'Brasil' },
+        ]
+        const paises = CATALOGO
+          .map((c) => ({ ...c, estado: estados[c.nombre] ?? (c.code === 'CO' ? 'on' : 'soon') }))
+          .filter((c) => a.todosLosPaises || a.paises.includes(c.code))
+
+        try {
+          await db.from('admin_miembros')
+            .update({ ultimo_acceso_at: new Date().toISOString() }).eq('id', auth.userId)
+        } catch { /* el último acceso es informativo, no bloquea entrar */ }
+
+        return json({
+          ok: true, rol: a.rol, todosLosPaises: a.todosLosPaises,
+          permisos: [...permisosDe(a)],
+          // Las secciones del colaborador: el panel dibuja solo esas.
+          funciones: a.rol === 'colaborador' ? (a.funciones ?? []) : null,
+          paises,
+        })
+      }
+
+      // ── El equipo (solo el dueño) ─────────────────────────────────────
+      if (body.action === 'equipo_listar') {
+        const { data, error } = await db.from('admin_miembros')
+          .select('*').order('creado_at', { ascending: true })
+        if (error) return json({ ok: false, error: error.message }, 500)
+        return json({ ok: true, miembros: data ?? [] })
+      }
+
+      if (body.action === 'equipo_guardar') {
+        const email = String(body.email ?? '').toLowerCase().trim()
+        const rol = String(body.rol ?? '') as Rol
+        if (!email) return json({ ok: false, error: 'falta_email' }, 400)
+        if (!ROLES_VALIDOS.includes(rol)) {
+          return json({ ok: false, error: 'rol_invalido' }, 400)
+        }
+        const paises = Array.isArray(body.paises) ? body.paises.map((p: unknown) => String(p).toUpperCase()) : []
+        // El colaborador sin ninguna casilla entraría a un panel vacío: se
+        // pide al menos una, igual que al invitar.
+        const funciones = normalizarFunciones(body.funciones)
+        if (rol === 'colaborador' && !funciones.length) {
+          return json({ ok: false, error: 'sin_funciones', message: 'Marca al menos una función.' }, 400)
+        }
+
+        // El permiso se le da a una CUENTA QUE YA EXISTE. Esto no crea
+        // accesos: la persona tiene que tener su cuenta en Lincoin con rol
+        // admin. Si no existe, se dice claro en vez de guardar una fila
+        // huérfana que no sirve para nada y que nadie entiende después.
+        const { data: cuenta } = await db.from('users')
+          .select('id, role, name').ilike('email', email.replace(/[\\%_]/g, ch => `\\${ch}`)).maybeSingle()
+        if (!cuenta) {
+          return json({ ok: false, error: 'sin_cuenta', message: 'Esa persona todavía no tiene cuenta en Lincoin. Que se registre primero.' }, 400)
+        }
+        // Antes pedía "cambiale el rol primero en Clientes", pero Clientes solo
+        // deja elegir persona o empresa: no había forma de hacer a alguien
+        // administrador desde el panel. Ahora lo hace el dueño acá, a
+        // propósito (hacerAdmin), con su 2FA, y queda en la auditoría.
+        if ((cuenta as any).role !== 'admin') {
+          if (body.hacerAdmin !== true) {
+            return json({ ok: false, error: 'sin_rol_admin', message: 'Esa cuenta es de cliente. Para darle acceso al panel hay que convertirla en administrador.' }, 400)
+          }
+          // Una cuenta con plata es de un cliente que opera: convertirla le
+          // quitaría su app y dejaría saldos de clientes en una cuenta del equipo.
+          const { data: saldos } = await db.from('users').select('balances, crypto_balances').eq('id', (cuenta as any).id).maybeSingle()
+          const hayPlata = [...Object.values(((saldos as any)?.balances ?? {}) as Record<string, unknown>), ...Object.values(((saldos as any)?.crypto_balances ?? {}) as Record<string, unknown>)]
+            .some(v => Math.abs(Number(v) || 0) > 0)
+          if (hayPlata) {
+            return json({ ok: false, error: 'cuenta_con_saldo', message: 'Esa cuenta tiene saldo de cliente. Usa una cuenta sin saldo para el equipo.' }, 400)
+          }
+          const rolAnterior = (cuenta as any).role ?? null
+          const { error: eRol } = await db.from('users').update({ role: 'admin' }).eq('id', (cuenta as any).id)
+          if (eRol) return json({ ok: false, error: eRol.message }, 500)
+          await auditAdmin(req, 'equipo.cuenta_hecha_admin', { email, rolAnterior })
+        }
+
+        // Quien guarda es el dueño (equipo_* no figura en PERMISO_DE_ACCION).
+        // Si todavía no tiene su propia fila, se le crea como dueño ANTES de
+        // agregar a nadie: en cuanto la tabla deja de estar vacía, una cuenta
+        // sin fila deja de ser dueña en la base (admin_equipo_permite) y el
+        // dueño se quedaría sin poder aprobar en Tesorería.
+        if (auth.userId && String(auth.userId) !== String((cuenta as any).id)) {
+          const { data: yo } = await db.from('admin_miembros').select('id').eq('id', auth.userId).maybeSingle()
+          if (!yo) {
+            const { error: eYo } = await db.from('admin_miembros').insert({
+              id: auth.userId, email: String(auth.email ?? '').toLowerCase(), rol: 'dueno', paises: [],
+              activo: true, creado_por: auth.userId,
+            })
+            if (eYo) return json({ ok: false, error: eYo.message }, 500)
+            await auditAdmin(req, 'equipo.dueno_registrado', { email: auth.email })
+          }
+        }
+
+        // Sin `activo` en el pedido se CONSERVA el que tiene. Antes cualquier
+        // guardado sin ese campo lo dejaba activo: corregirle el nombre a un
+        // miembro dado de baja (el modal de Editar no manda `activo`) le
+        // devolvía el acceso al panel sin aviso (revisión del 6 nov).
+        const { data: filaPrevia } = await db.from('admin_miembros').select('activo').eq('id', (cuenta as any).id).maybeSingle()
+        const activoFinal = typeof body.activo === 'boolean' ? body.activo
+          : filaPrevia ? (filaPrevia as any).activo !== false : true
+        const fila = {
+          id: (cuenta as any).id,
+          email,
+          nombre: String(body.nombre ?? (cuenta as any).name ?? '').slice(0, 120) || null,
+          rol,
+          paises: rol === 'dueno' ? [] : paises,   // al dueño no se le miran
+          activo: activoFinal,
+          actualizado_at: new Date().toISOString(),
+          creado_por: auth.userId,
+          // Solo se escribe para el colaborador: así guardar un rol fijo sigue
+          // funcionando aunque la migración de colaboradores no haya corrido.
+          ...(rol === 'colaborador' ? { funciones } : {}),
+        }
+        const { error } = await db.from('admin_miembros').upsert(fila, { onConflict: 'id' })
+        if (error) return json({ ok: false, error: /funciones|invitado_at/.test(error.message) ? 'Falta correr la migración 2026_zz24_colaboradores.sql en Supabase.' : error.message }, 500)
+
+        await auditAdmin(req, 'equipo.guardado', { email, rol, paises: fila.paises, activo: fila.activo, ...(rol === 'colaborador' ? { funciones } : {}) })
+        return json({ ok: true })
+      }
+
+      // ── Invitar a un colaborador (solo el dueño, con 2FA) ─────────────
+      // A diferencia de equipo_guardar, ESTO SÍ CREA LA CUENTA cuando no
+      // existe: lo pidió el dueño ("el colaborador entra con el correo que yo
+      // le asigne"). Lo que lo hace seguro: solo el dueño la pide (equipo_*
+      // no figura en PERMISO_DE_ACCION), exige el 2FA de su sesión, la cuenta
+      // nace SIN contraseña (la crea la persona desde su correo) y el panel le
+      // exige activar su propio 2FA antes de mostrarle nada.
+      if (body.action === 'equipo_invitar') {
+        const email = String(body.email ?? '').toLowerCase().trim()
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'falta_email', message: 'Escribe un correo válido.' }, 400)
+        const funciones = normalizarFunciones(body.funciones)
+        if (!funciones.length) return json({ ok: false, error: 'sin_funciones', message: 'Marca al menos una función.' }, 400)
+        const paises = (Array.isArray(body.paises) ? body.paises : ['CO']).map((p: unknown) => String(p).toUpperCase()).filter((p: string) => ['CO', 'US', 'MX', 'BR'].includes(p))
+        if (!paises.length) return json({ ok: false, error: 'sin_paises', message: 'Elige al menos un país.' }, 400)
+        const nombre = String(body.nombre ?? '').trim().slice(0, 120) || null
+
+        // Sin comodines: en ilike '_' y '%' son patrones, y "a_b@x.co"
+        // encontraba (y volvía admin) la cuenta de "axb@x.co".
+        const { data: cuenta } = await db.from('users')
+          .select('id, role, name, full_name, balances, crypto_balances').ilike('email', email.replace(/[\\%_]/g, ch => `\\${ch}`)).maybeSingle()
+        let id: string
+        let cuentaNueva = false
+        if (cuenta) {
+          if ((cuenta as any).role !== 'admin') {
+            const hayPlata = [...Object.values(((cuenta as any).balances ?? {}) as Record<string, unknown>), ...Object.values(((cuenta as any).crypto_balances ?? {}) as Record<string, unknown>)]
+              .some(v => Math.abs(Number(v) || 0) > 0)
+            if (hayPlata) return json({ ok: false, error: 'cuenta_con_saldo', message: 'Ese correo es de un cliente con saldo. Usa otro correo para el colaborador.' }, 400)
+            if (body.hacerAdmin !== true) {
+              return json({ ok: false, error: 'sin_rol_admin', message: 'Ese correo ya es de una cuenta de cliente (sin saldo). Para usarla como colaborador hay que convertirla.' }, 400)
+            }
+            const { error: eRol } = await db.from('users').update({ role: 'admin' }).eq('id', (cuenta as any).id)
+            if (eRol) return json({ ok: false, error: eRol.message }, 500)
+            await auditAdmin(req, 'equipo.cuenta_hecha_admin', { email, rolAnterior: (cuenta as any).role ?? null })
+          }
+          id = String((cuenta as any).id)
+        } else {
+          // Cuenta nueva, sin contraseña. email_confirm: el correo lo eligió el
+          // dueño y la persona lo prueba al abrir el enlace.
+          const { data: creado, error: eCrear } = await db.auth.admin.createUser({ email, email_confirm: true })
+          let nuevoId = (creado as any)?.user?.id ? String((creado as any).user.id) : null
+          if (!nuevoId && eCrear && /already|registered|exists/i.test(eCrear.message ?? '')) nuevoId = await authPorCorreo(email)
+          if (!nuevoId) return json({ ok: false, error: 'no_se_creo', message: `No se pudo crear la cuenta: ${eCrear?.message ?? 'sin respuesta'}` }, 500)
+          const { error: eFila } = await db.from('users').insert({
+            id: nuevoId, email, full_name: nombre ?? email.split('@')[0], name: nombre ?? null,
+            role: 'admin', balances: {}, crypto_balances: {}, kyc_status: 'approved',
+            created_at: new Date().toISOString(), raw_data: { colaborador: true },
+          })
+          if (eFila && !/duplicate|unique/i.test(eFila.message)) return json({ ok: false, error: 'no_se_creo', message: `No se pudo crear el perfil: ${eFila.message}` }, 500)
+          // La fila ya existía: la crea sola la base al crear la cuenta de
+          // acceso (trigger on_auth_user_created, con role 'personal' y KYC
+          // 'pending'), y el insert de arriba chocaba con ella. Antes ese
+          // choque se ignoraba y el colaborador quedaba como cliente: al
+          // abrir el enlace el panel decía "tu sesión no es de administrador"
+          // (visto el 2026-11-04 con la primera invitación). Se ajusta aquí.
+          if (eFila) {
+            const { error: eAj } = await db.from('users').update({
+              role: 'admin', kyc_status: 'approved', full_name: nombre ?? email.split('@')[0], ...(nombre ? { name: nombre } : {}),
+            }).eq('id', nuevoId)
+            if (eAj) return json({ ok: false, error: 'no_se_creo', message: `No se pudo dejar la cuenta como colaborador: ${eAj.message}` }, 500)
+            await mergeRaw(db, nuevoId, { colaborador: true })
+          }
+          id = nuevoId
+          cuentaNueva = true
+          await auditAdmin(req, 'equipo.colaborador_cuenta_creada', { email, id })
+        }
+
+        // La fila del dueño antes de la primera de otro (ver equipo_guardar).
+        if (auth.userId && String(auth.userId) !== id) {
+          const { data: yo } = await db.from('admin_miembros').select('id').eq('id', auth.userId).maybeSingle()
+          if (!yo) {
+            const { error: eYo } = await db.from('admin_miembros').insert({
+              id: auth.userId, email: String(auth.email ?? '').toLowerCase(), rol: 'dueno', paises: [],
+              activo: true, creado_por: auth.userId,
+            })
+            if (eYo) return json({ ok: false, error: eYo.message }, 500)
+            await auditAdmin(req, 'equipo.dueno_registrado', { email: auth.email })
+          }
+        }
+
+        const ahora = new Date().toISOString()
+        const { error: eMiembro } = await db.from('admin_miembros').upsert({
+          id, email, nombre, rol: 'colaborador', funciones, paises, activo: true,
+          actualizado_at: ahora, creado_por: auth.userId, invitado_at: ahora,
+        }, { onConflict: 'id' })
+        if (eMiembro) return json({ ok: false, error: /funciones|invitado_at|rol_check/.test(eMiembro.message) ? 'Falta correr la migración 2026_zz24_colaboradores.sql en Supabase.' : eMiembro.message }, 500)
+
+        // Cuenta nueva: enlace para crear la contraseña. Cuenta que ya existía
+        // (ya tiene contraseña): solo el aviso con el enlace al panel.
+        const correo = await enviarInvitacionColaborador(req, email, nombre, funciones, cuentaNueva)
+        await auditAdmin(req, 'equipo.colaborador_invitado', { email, funciones, paises, cuentaNueva, correo: correo.ok ? 'enviado' : correo.motivo })
+        return json({ ok: true, cuentaNueva, correo })
+      }
+
+      // Reenviar la invitación (el enlace vence). Solo el dueño, con 2FA.
+      if (body.action === 'equipo_reenviar') {
+        const id = String(body.id ?? '')
+        const { data: m } = await db.from('admin_miembros').select('*').eq('id', id).maybeSingle()
+        if (!m) return json({ ok: false, error: 'no_existe', message: 'Ese colaborador no existe.' }, 404)
+        if (!(m as any).activo) return json({ ok: false, error: 'inactivo', message: 'Ese acceso está desactivado. Vuelve a invitarlo.' }, 400)
+        const funciones = normalizarFunciones((m as any).funciones)
+        // Las invitaciones hechas antes del arreglo de arriba dejaron la
+        // cuenta como cliente ('personal', sin KYC, recién creada por la
+        // invitación). Si es ese caso —colaborador activo, cuenta sin plata—,
+        // se deja como colaborador antes de mandar el enlace nuevo; si la
+        // cuenta tiene saldo es de un cliente y no se toca.
+        if ((m as any).rol === 'colaborador') {
+          const { data: cu } = await db.from('users').select('id, role, balances, crypto_balances').eq('id', id).maybeSingle()
+          if (cu && (cu as any).role !== 'admin') {
+            const hayPlata = [...Object.values(((cu as any).balances ?? {}) as Record<string, unknown>), ...Object.values(((cu as any).crypto_balances ?? {}) as Record<string, unknown>)]
+              .some(v => Math.abs(Number(v) || 0) > 0)
+            if (hayPlata) return json({ ok: false, error: 'cuenta_con_saldo', message: 'Ese correo es de un cliente con saldo: no se puede usar como colaborador. Invita otro correo.' }, 400)
+            const { error: eAj } = await db.from('users').update({ role: 'admin', kyc_status: 'approved' }).eq('id', id)
+            if (eAj) return json({ ok: false, error: eAj.message }, 500)
+            await mergeRaw(db, id, { colaborador: true })
+            await auditAdmin(req, 'equipo.cuenta_colaborador_reparada', { id, email: (m as any).email, rolAnterior: (cu as any).role ?? null })
+          }
+        }
+        const correo = await enviarInvitacionColaborador(req, String((m as any).email), (m as any).nombre ?? null, funciones, true)
+        if (correo.ok) { try { await db.from('admin_miembros').update({ invitado_at: new Date().toISOString() }).eq('id', id) } catch { /* informativo */ } }
+        await auditAdmin(req, 'equipo.invitacion_reenviada', { id, email: (m as any).email, correo: correo.ok ? 'enviado' : correo.motivo })
+        return json({ ok: correo.ok, correo, ...(correo.ok ? {} : { message: correo.motivo }) })
+      }
+
+      if (body.action === 'equipo_desactivar') {
+        const id = String(body.id ?? '')
+        if (!id) return json({ ok: false, error: 'falta_id' }, 400)
+        // Nadie se quita el acceso a sí mismo por accidente: quedaría un panel
+        // sin dueño y sin forma de volver a entrar salvo tocando la base.
+        if (id === auth.userId) {
+          return json({ ok: false, error: 'no_a_vos_mismo', message: 'No podés quitarte el acceso a vos mismo.' }, 400)
+        }
+        const { error } = await db.from('admin_miembros')
+          .update({ activo: false, actualizado_at: new Date().toISOString() }).eq('id', id)
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await auditAdmin(req, 'equipo.desactivado', { id })
+        return json({ ok: true })
+      }
+
+      // ── Correos que NO están llegando ─────────────────────────────────
+      // Cuando una dirección rebota en duro o alguien marca un correo como
+      // spam, Resend la suprime y deja de mandarle -- pero a nosotros nos
+      // sigue contestando que aceptó el envío. La app le dice a esa persona
+      // "revisá tu correo" para un correo que nunca va a salir, y ella no
+      // puede avisarnos: el correo es justo el canal que se rompió.
+      //
+      // Esta lista es la única forma de enterarse. Sale de resend-webhook.
+      if (body.action === 'email_incidencias') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data, error } = await db.from('email_incidencias')
+          .select('*').eq('resuelto', false)
+          .order('creado_at', { ascending: false }).limit(100)
+        if (error) return json({ ok: false, error: error.message }, 500)
+
+        // Una misma dirección puede rebotar muchas veces. Interesa la
+        // dirección, no cada rebote: 40 filas del mismo correo no son 40
+        // problemas, y ver la lista así hace que nadie la mire.
+        const porEmail = new Map<string, any>()
+        for (const r of (data ?? [])) {
+          const k = String((r as any).email ?? '').toLowerCase()
+          const ya = porEmail.get(k)
+          if (!ya) porEmail.set(k, { ...(r as any), veces: 1 })
+          else {
+            ya.veces++
+            // Un rebote duro manda sobre uno blando aunque sea más viejo: es
+            // el que dice que esa dirección no va a funcionar nunca más.
+            if ((r as any).dureza === 'hard' && ya.dureza !== 'hard') {
+              ya.dureza = 'hard'; ya.tipo = (r as any).tipo; ya.motivo = (r as any).motivo
+            }
+          }
+        }
+        return json({ ok: true, incidencias: [...porEmail.values()] })
+      }
+
+      // Marcar resuelto = "ya la saqué de la lista de supresión de Resend y
+      // confirmé que le llega". No lo arregla solo: sacarla de la supresión
+      // es un paso a mano en Resend, y esto solo deja constancia.
+      if (body.action === 'email_incidencia_resuelta') {
+        const v = await verifyAdmin(req)
+        if (!v.ok) return json({ error: 'No autorizado' }, 401)
+        const email = String(body.email ?? '').toLowerCase().trim()
+        if (!email) return json({ ok: false, error: 'falta_email' }, 400)
+        const { error } = await db.from('email_incidencias')
+          .update({ resuelto: true, resuelto_at: new Date().toISOString(), resuelto_por: v.userId ?? null })
+          // Comodines escapados: un '%' marcaba resueltas TODAS las incidencias.
+          .eq('resuelto', false).ilike('email', email.replace(/[\\%_]/g, ch => `\\${ch}`))
+        if (error) return json({ ok: false, error: error.message }, 500)
+        return json({ ok: true })
+      }
+
+      // ── Panel de seguridad: datos REALES de acceso ────────────────────
+      // Reemplaza los tres recuadros que estaban en "demo": rotación de
+      // llaves, intentos fallidos / IPs bloqueadas, e historial de accesos
+      // (con IP y ubicación aproximada).
+      if (body.action === 'security_stats') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+        const { data: rows } = await db.from('audit_log').select('*')
+          .order('created_at', { ascending: false }).limit(500)
+        const all = rows ?? []
+        const at = (r: any) => r?.metadata?.at ?? r?.created_at
+        const failed = all.filter((r: any) => r.action === 'auth.failed_login')
+        const failedToday = failed.filter((r: any) => new Date(at(r)) >= startOfDay)
+        // Fallidos agrupados por IP (para ver de dónde vienen).
+        const byIpMap: Record<string, any> = {}
+        for (const f of failedToday) {
+          const ip = f?.metadata?.ip ?? 'desconocida'
+          byIpMap[ip] ??= { ip, count: 0, geo: f?.metadata?.geo ?? null, lastAt: at(f), emails: [] as string[] }
+          byIpMap[ip].count++
+          const em = f?.metadata?.email
+          if (em && !byIpMap[ip].emails.includes(em)) byIpMap[ip].emails.push(em)
+        }
+        // Historial de accesos: cada ingreso al panel, con IP y ubicación.
+        const access = all.filter((r: any) => r.action === 'auth.admin_login').slice(0, 40).map((r: any) => ({
+          at: at(r), email: r?.metadata?.byEmail ?? null, ip: r?.metadata?.ip ?? null,
+          geo: r?.metadata?.geo ?? null, userAgent: r?.metadata?.userAgent ?? null,
+        }))
+        // Incidentes de servicio: caídas y recuperaciones que registró el
+        // monitoreo. Se emparejan aquí para poder mostrar la duración.
+        const incRows = all.filter((r: any) => r.action === 'ops.incident')
+        const incidents: any[] = []
+        for (const r of incRows) {
+          const m = r.metadata ?? {}
+          if (m.kind !== 'down') continue
+          const up = incRows.find((u: any) => u.metadata?.kind === 'up' && u.metadata?.service === m.service && new Date(at(u)) > new Date(at(r)))
+          incidents.push({
+            service: m.service, at: at(r),
+            resolvedAt: up ? at(up) : null,
+            minutes: up ? Math.max(1, Math.round((new Date(at(up)).getTime() - new Date(at(r)).getTime()) / 60000)) : null,
+          })
+          if (incidents.length >= 20) break
+        }
+        // Historial de cambios del 2FA: lo escribe el trigger trg_audit_mfa_change
+        // (migración 2026_lock_mfa_credentials.sql). Responde "¿cuándo se
+        // apagó y quién lo apagó?" sin tener que entrar a la base.
+        const mfaChanges = all.filter((r: any) => r.action === 'security.mfa_changed' || r.action === 'security.mfa_disabled')
+          .slice(0, 15).map((r: any) => ({
+            at: at(r),
+            cuenta: r?.metadata?.cuenta ?? r?.metadata?.byEmail ?? null,
+            antes: r?.metadata?.antes ?? null,
+            despues: r?.metadata?.despues ?? (r.action === 'security.mfa_disabled' ? 'false' : null),
+            porRol: r?.metadata?.rolDeLaSesion ?? null,
+            ip: r?.metadata?.ip ?? null,
+          }))
+        const rot = all.find((r: any) => r.action === 'security.key_rotation')
+        // Con la sección "Dashboard", un colaborador recibía las IPs, el
+        // historial de ingresos, la política de acceso y los cambios de 2FA del
+        // equipo. Eso es del dueño (y de Cumplimiento): a los demás, solo el
+        // conteo.
+        const rolSeg = String(auth.acceso?.rol ?? '')
+        if (rolSeg !== 'dueno' && rolSeg !== 'cumplimiento') {
+          return json({ ok: true, failedToday: failedToday.length, failedByIp: [], blockedIps: [], access: [], incidents: [], mfaChanges: [], keyRotation: null, restringido: true })
+        }
+        return json({
+          ok: true,
+          failedToday: failedToday.length,
+          failedByIp: Object.values(byIpMap).sort((a: any, b: any) => b.count - a.count),
+          blockedIps: await blockedIps(),
+          access,
+          incidents,
+          mfaChanges,
+          keyRotation: rot ? { at: at(rot), byEmail: rot?.metadata?.byEmail ?? null, note: rot?.metadata?.note ?? null } : null,
+        })
+      }
+
+      // El monitoreo avisa cuando un servicio se cae o se recupera. Queda en
+      // auditoria para poder armar el historial de incidentes.
+      if (body.action === 'log_incident' && body.service && body.kind) {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        await auditAdmin(req, 'ops.incident', { service: String(body.service).slice(0, 60), kind: String(body.kind) === 'up' ? 'up' : 'down' })
+        return json({ ok: true })
+      }
+
+      // ── Mapa de conexiones ───────────────────────────────────────────────
+      // Cada punto es una IP REAL sacada de la auditoría y de la lista de
+      // bloqueos, ubicada con la geolocalización que ya se venía usando.
+      // No hay puntos de ejemplo: un mapa de seguridad con conexiones
+      // inventadas enseña a ignorarlo, y el día que aparezca una de verdad
+      // se va a ver igual que el relleno.
+      if (body.action === 'command_map') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const dias = Math.min(Math.max(Number(body.dias ?? 30) || 30, 1), 90)
+        const desde = new Date(Date.now() - dias * 86400_000).toISOString()
+
+        // Un ingreso "de admin" es SOLO auth.admin_login: se escribe después
+        // de verifyAdmin, o sea con el rol admin comprobado en public.users.
+        // Los otros dos eventos (2FA completo, passkey) los genera cualquier
+        // cliente que entra con su código; contarlos como admin hacía que el
+        // mapa mostrara a empresas y personas como "Admins", y eso se leía
+        // como una escalada de privilegios que no existía.
+        const ADMIN = ['auth.admin_login']
+        const CLIENTE = ['auth.aviso_ingreso', 'auth.login_2fa_completo', 'auth.login_passkey']
+        const FALLO = ['auth.failed_login', 'auth.mfa_failed']
+        const { data: ev } = await db.from('audit_log')
+          .select('action, metadata, created_at, user_id')
+          .in('action', [...ADMIN, ...CLIENTE, ...FALLO])
+          .gte('created_at', desde).order('created_at', { ascending: false }).limit(1500)
+
+        type Punto = {
+          ip: string; tipo: 'admin' | 'usuario' | 'fallido' | 'bloqueada'
+          sesiones: number; primera: string; ultima: string
+          userId?: string | null; nombre?: string | null; correo?: string | null
+          rol?: 'admin' | 'empresa' | 'personal' | null
+          ciudad?: string | null; pais?: string | null; isp?: string | null
+          lat?: number | null; lon?: number | null; motivo?: string | null
+          adminReal?: boolean
+        }
+        const porIp = new Map<string, Punto>()
+        const orden = { bloqueada: 3, admin: 2, usuario: 1, fallido: 0 } as const
+
+        for (const r of (ev ?? []) as any[]) {
+          const ip = String(r?.metadata?.ip ?? '')
+          if (!ip) continue
+          const tipo: Punto['tipo'] = ADMIN.includes(r.action) ? 'admin'
+            : CLIENTE.includes(r.action) ? 'usuario' : 'fallido'
+          const y = porIp.get(ip)
+          if (!y) {
+            porIp.set(ip, {
+              ip, tipo, sesiones: 1, primera: r.created_at, ultima: r.created_at,
+              userId: r.user_id ?? r?.metadata?.userId ?? null,
+              // El correo del evento. Es el respaldo cuando el registro no
+              // quedó con user_id (una sesión que no se pudo resolver, un
+              // intento fallido): sin esto el punto se queda sin nombre y el
+              // mapa muestra "Admins" para todo, que es lo que no deja saber
+              // si la IP es del equipo o de una empresa.
+              correo: r?.metadata?.byEmail ?? r?.metadata?.email ?? null,
+              adminReal: tipo === 'admin',
+            })
+          } else {
+            if (!y.correo) y.correo = r?.metadata?.byEmail ?? r?.metadata?.email ?? null
+            if (!y.userId) y.userId = r.user_id ?? r?.metadata?.userId ?? null
+            y.sesiones++
+            if (r.created_at < y.primera) y.primera = r.created_at
+            if (r.created_at > y.ultima) y.ultima = r.created_at
+            if (tipo === 'admin') y.adminReal = true
+            // Manda el tipo más relevante: una IP con ingresos de admin es de
+            // admin aunque también tenga fallos.
+            if (orden[tipo] > orden[y.tipo]) y.tipo = tipo
+          }
+        }
+
+        // Los bloqueos mandan sobre cualquier otro tipo.
+        for (const b of await blockedIps()) {
+          const y = porIp.get(b.ip)
+          if (y) { y.tipo = 'bloqueada'; y.motivo = b.reason ?? null }
+          else porIp.set(b.ip, { ip: b.ip, tipo: 'bloqueada', sesiones: b.attempts ?? 0, primera: b.at, ultima: b.at, motivo: b.reason ?? null })
+        }
+
+        // Nombre del titular, para que el punto diga QUIÉN y no solo un id.
+        const ids = [...new Set([...porIp.values()].map(p => p.userId).filter(Boolean))] as string[]
+        if (ids.length) {
+          // Se trae también el ROL y la razón social: en el mapa, "Admins" a
+          // secas no deja saber si esa IP es del equipo o de una empresa
+          // cliente, que es justo lo que hay que distinguir de un vistazo.
+          const { data: us } = await db.from('users').select('id, name, email, company_name, role').in('id', ids.slice(0, 200))
+          const mapa = new Map((us ?? []).map((u: any) => [u.id, u]))
+          for (const p of porIp.values()) {
+            const u = p.userId ? mapa.get(p.userId) : null
+            if (u) {
+              const x = u as any
+              p.nombre = x.company_name ?? x.name ?? null
+              p.correo = x.email ?? p.correo ?? null
+              p.rol = x.role === 'admin' ? 'admin' : x.role === 'business' ? 'empresa' : 'personal'
+            }
+          }
+        }
+        // Los que quedaron sin id pero con correo: se resuelven por correo.
+        // Es el caso de los ingresos que no alcanzaron a asociar la sesión.
+        {
+          const correos = [...new Set([...porIp.values()].filter(p => !p.nombre && p.correo).map(p => String(p.correo)))]
+          if (correos.length) {
+            const { data: us2 } = await db.from('users').select('id, name, email, company_name, role').in('email', correos.slice(0, 200))
+            const porCorreo = new Map((us2 ?? []).map((u: any) => [String(u.email).toLowerCase(), u]))
+            for (const p of porIp.values()) {
+              if (p.nombre || !p.correo) continue
+              const x = porCorreo.get(String(p.correo).toLowerCase()) as any
+              if (x) {
+                p.nombre = x.company_name ?? x.name ?? null
+                p.userId = p.userId ?? x.id
+                p.rol = x.role === 'admin' ? 'admin' : x.role === 'business' ? 'empresa' : 'personal'
+              }
+            }
+          }
+        }
+
+        // El tipo final lo decide el ROL REAL del titular en public.users, no
+        // el evento: un punto es "admin" solo si la cuenta es admin o si hubo
+        // un auth.admin_login (que ya pasó por verifyAdmin). Una cuenta
+        // empresa o personal que entró con su código es "usuario", siempre.
+        for (const p of porIp.values()) {
+          if (p.tipo === 'bloqueada' || p.tipo === 'fallido') continue
+          p.tipo = (p.rol === 'admin' || p.adminReal) ? 'admin' : 'usuario'
+        }
+        for (const p of porIp.values()) delete p.adminReal
+
+        // Geolocalización: se limita a las más recientes para no encadenar
+        // cientos de consultas externas en una sola petición.
+        const lista = [...porIp.values()].sort((a, b) => String(b.ultima).localeCompare(String(a.ultima))).slice(0, 80)
+        for (const p of lista) {
+          const g = await geoOf(p.ip)
+          p.ciudad = g?.city ?? null; p.pais = g?.country ?? null
+          p.isp = g?.org ?? null
+          p.lat = typeof g?.lat === 'number' ? g.lat : null
+          p.lon = typeof g?.lon === 'number' ? g.lon : null
+        }
+        return json({ ok: true, puntos: lista, dias })
+      }
+
+      // ── Intentos de ingreso, día por día (14 días) ──────────────────────
+      // Lo que hace útil a esta gráfica no es el total: es ver el DÍA que se
+      // sale de la fila. Un pico de fallidos sobre una base plana es un
+      // intento de entrar; el mismo número repartido en dos semanas es gente
+      // que escribe mal su contraseña.
+      if (body.action === 'security_series') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const desde = new Date(Date.now() - 13 * 86400_000)
+        desde.setHours(0, 0, 0, 0)
+        const FALLOS = ['auth.failed_login', 'auth.mfa_failed']
+        // Solo el ingreso de admin verificado cuenta como acceso de admin.
+        const EXITOS = ['auth.admin_login']
+        const { data } = await db.from('audit_log').select('action, created_at')
+          .in('action', [...FALLOS, ...EXITOS])
+          .gte('created_at', desde.toISOString()).limit(5000)
+        const dias: Record<string, { ok: number; fail: number }> = {}
+        for (let i = 0; i < 14; i++) {
+          dias[new Date(desde.getTime() + i * 86400_000).toISOString().slice(0, 10)] = { ok: 0, fail: 0 }
+        }
+        for (const r of (data ?? []) as any[]) {
+          const k = String(r.created_at ?? '').slice(0, 10)
+          if (!dias[k]) continue
+          if (FALLOS.includes(r.action)) dias[k].fail++
+          else dias[k].ok++
+        }
+        return json({ ok: true, serie: Object.entries(dias).map(([dia, v]) => ({ dia, ...v })) })
+      }
+
+      // ── AGENTE DE SEGURIDAD ───────────────────────────────────────────
+      // Corre chequeos REALES contra el estado vivo del sistema y devuelve
+      // hallazgos concretos, cada uno con severidad y cómo arreglarlo.
+      //
+      // No "protege" nada por sí mismo: encuentra lo que está flojo. La
+      // diferencia con una lista de buenas prácticas es que cada punto se
+      // verifica contra los datos, no se asume.
+      if (body.action === 'security_audit') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        type Sev = 'critica' | 'alta' | 'media' | 'baja'
+        const f: Array<{ id: string; sev: Sev; title: string; detail: string; fix: string; count?: number }> = []
+        const add = (id: string, sev: Sev, title: string, detail: string, fix: string, count?: number) =>
+          f.push({ id, sev, title, detail, fix, count })
+
+        // 1) Defensas que viven en la base: ¿están PUESTAS o solo escritas?
+        let posture: any = null
+        try {
+          const { data } = await db.rpc('security_posture')
+          posture = data ?? null
+        } catch { /* la función aún no está instalada */ }
+        if (!posture) {
+          add('posture_missing', 'media', 'No se puede verificar el blindaje de la base',
+            'Falta instalar la función security_posture(), así que no hay forma de comprobar desde aquí si los triggers y la RLS están realmente aplicados.',
+            'Ejecuta supabase/migrations/2026_security_posture.sql en el SQL Editor.')
+        } else {
+          if (!posture.rawDataGuard) add('raw_guard', 'critica', 'El blindaje de raw_data NO está instalado',
+            'Sin ese trigger, un cliente puede escribir desde su navegador los campos que solo el servidor debería tocar: el contador de depósitos acreditados (acreditarse dinero que nunca entró), su propio 2FA y los códigos de respaldo.',
+            'Ejecuta supabase/migrations/2026_guard_raw_data_server_keys.sql en el SQL Editor.')
+          if (!posture.sensitiveColsGuard) add('cols_guard', 'critica', 'El candado de columnas sensibles NO está instalado',
+            'Sin él, un cliente podría cambiar su propio rol, su saldo o su estado de KYC con una escritura directa.',
+            'Ejecuta la sección guard_users_sensitive_cols del esquema en el SQL Editor.')
+          if (!posture.adjustBalancesRpc) add('adjust_rpc', 'alta', 'Falta la RPC atómica de saldos',
+            'Sin adjust_balances, los débitos caen al camino de respaldo leer-y-escribir, donde dos operaciones a la vez pueden duplicar fondos.',
+            'Instala la función adjust_balances del esquema.')
+          if (!posture.rlsUsers) add('rls_users', 'critica', 'La tabla de usuarios está SIN RLS',
+            'Cualquiera con la llave pública podría leer o escribir filas de otros clientes.',
+            'ALTER TABLE public.users ENABLE ROW LEVEL SECURITY, y revisa que existan sus políticas.')
+          if (!posture.rlsTransactions) add('rls_tx', 'critica', 'La tabla de movimientos está SIN RLS',
+            'Los movimientos de todos los clientes quedarían legibles por cualquiera con la llave pública.',
+            'ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY.')
+          if (posture.rlsSystemConfig === false) add('rls_syscfg', 'alta', 'system_config está SIN RLS',
+            'Ahí viven la wallet del proveedor, las IPs bloqueadas y los contadores de la Bóveda.',
+            'ALTER TABLE public.system_config ENABLE ROW LEVEL SECURITY (solo service_role debe leer/escribir).')
+        }
+
+        // 2) Llave de cifrado de campos: sin ella el 2FA no se puede guardar.
+        if (!FIELD_ENC_KEY) add('enc_key', 'alta', 'Falta la llave de cifrado de campos',
+          'Sin FIELD_ENC_KEY no se puede activar el 2FA de nadie (se rechaza antes que guardar un secreto en claro).',
+          'Define FIELD_ENC_KEY en la Bóveda. Una vez definida NO se cambia: rotarla deja ilegibles los 2FA existentes.')
+
+        // 3) Cuentas: admins sin 2FA, secretos ilegibles, correos duplicados,
+        //    filas de admin sin cuenta de acceso real.
+        // Solo lo que se revisa (el equipo, las cuentas con 2FA y los secretos
+        // viejos en claro), por páginas y con las claves justas de raw_data.
+        const { filas: rows } = await leerPorPaginas(() => db.from('users')
+          .select('id, email, role, raw_data:raw_data->>mfaEnabled, enc:raw_data->>totpSecretEnc, plano:raw_data->>totpSecret, resp:raw_data->mfaBackupHashes')
+          .or('role.eq.admin,raw_data->>mfaEnabled.eq.true,raw_data->>totpSecret.not.is.null'))
+        for (const u of rows) u.raw_data = { mfaEnabled: u.raw_data === 'true', totpSecretEnc: u.enc ?? undefined, totpSecret: u.plano ?? undefined, mfaBackupHashes: u.resp ?? undefined }
+        const admins = rows.filter(u => u.role === 'admin')
+        const adminsNo2fa = admins.filter(u => !u?.raw_data?.mfaEnabled)
+        if (adminsNo2fa.length) add('admin_no_2fa', 'critica', `${adminsNo2fa.length} admin(s) sin 2FA`,
+          `Con solo la contraseña se entra al panel: ${adminsNo2fa.map(a => a.email).join(', ')}.`,
+          'Cada admin lo activa en Seguridad → Activar 2FA, y guarda sus códigos de respaldo.', adminsNo2fa.length)
+
+        const con2fa = rows.filter(u => u?.raw_data?.mfaEnabled)
+        let ilegibles = 0
+        for (const u of con2fa) {
+          const enc = u?.raw_data?.totpSecretEnc
+          if (!enc) { if (!u?.raw_data?.totpSecret) ilegibles++; continue }
+          try { if (!(await decField(String(enc)))) ilegibles++ } catch { ilegibles++ }
+        }
+        if (ilegibles) add('mfa_unreadable', 'critica', `${ilegibles} cuenta(s) con 2FA ilegible`,
+          'Tienen el 2FA activo pero el servidor no puede leer su secreto: por más que el código sea correcto, no van a poder entrar.',
+          'Desactiva y reactiva su 2FA. Revisa el detalle en el botón de salud del 2FA.', ilegibles)
+
+        const sinRespaldo = con2fa.filter(u => !Array.isArray(u?.raw_data?.mfaBackupHashes) || !u.raw_data.mfaBackupHashes.length)
+        if (sinRespaldo.length) add('no_backup_codes', 'media', `${sinRespaldo.length} cuenta(s) con 2FA y sin códigos de respaldo`,
+          'Si pierden el teléfono o el secreto queda ilegible, no tienen forma de entrar sin tocar la base a mano.',
+          'Que desactiven y reactiven el 2FA: al activarlo se entregan 8 códigos.', sinRespaldo.length)
+
+        // Correos repetidos: los cuenta la base (admin_correos_duplicados); sin
+        // esa función, se leen solo los correos, por páginas.
+        let dupes: [string, number][] = []
+        {
+          const { data: dup, error: eDup } = await db.rpc('admin_correos_duplicados')
+          if (!eDup && Array.isArray(dup)) dupes = (dup as any[]).map(d => [String(d.email), Number(d.n)] as [string, number])
+          else {
+            const { filas: correos } = await leerPorPaginas(() => db.from('users').select('id, email'))
+            const porCorreo: Record<string, number> = {}
+            for (const u of correos) { const e = String(u.email ?? '').toLowerCase(); if (e) porCorreo[e] = (porCorreo[e] ?? 0) + 1 }
+            dupes = Object.entries(porCorreo).filter(([, n]) => n > 1)
+          }
+        }
+        if (dupes.length) add('dup_emails', 'alta', `${dupes.length} correo(s) con más de una cuenta`,
+          `Filas duplicadas hacen que el login lea una y el panel otra: ${dupes.map(([e, n]) => `${e} (${n})`).join(', ')}.`,
+          'Deja solo la fila que tiene cuenta de acceso real y borra la sobrante.', dupes.length)
+
+        // Filas con rol admin que NO tienen usuario de Auth: no pueden iniciar
+        // sesión, pero cuentan como admin en cualquier consulta por rol.
+        // Se pregunta por cada admin (son pocos): la primera página de 200
+        // cuentas de acceso dejaba fuera a casi todos cuando hay miles, y los
+        // marcaba huérfanos sin serlo.
+        try {
+          const huerfanos: any[] = []
+          for (const a of admins) {
+            const { data: au, error: eAu } = await db.auth.admin.getUserById(String(a.id))
+            if (eAu && !/not.?found|no.*encontr/i.test(String(eAu.message ?? ''))) throw eAu
+            if (!au?.user) huerfanos.push(a)
+          }
+          if (huerfanos.length) add('admin_orphan', 'alta', `${huerfanos.length} fila(s) de admin sin cuenta de acceso`,
+            `No pueden iniciar sesión pero pesan como admin en la base: ${huerfanos.map(a => a.email).join(', ')}. Suelen ser semillas de instalación que quedaron olvidadas.`,
+            'Bórralas si no operan, después de comprobar que no tienen movimientos.', huerfanos.length)
+        } catch { /* Auth admin no disponible */ }
+
+        const planos = rows.filter(u => u?.raw_data?.totpSecret)
+        if (planos.length) add('totp_plain', 'alta', `${planos.length} secreto(s) de 2FA en texto plano`,
+          'Quedaron de un esquema anterior. Quien lea esa fila puede generar sus códigos.',
+          'Que esas cuentas desactiven y reactiven el 2FA: al hacerlo se guarda cifrado.', planos.length)
+
+        // 4) Presión sobre el acceso: fallos e IPs bloqueadas.
+        const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
+        const { data: fails } = await db.from('audit_log').select('metadata, created_at')
+          .eq('action', 'auth.failed_login').gte('created_at', startOfDay.toISOString()).limit(400)
+        const nFails = (fails ?? []).length
+        if (nFails >= 20) add('login_pressure', 'media', `${nFails} intentos de ingreso fallidos hoy`,
+          'Un volumen así suele ser alguien probando contraseñas, no un despiste.',
+          'Revisa las IPs en Monitoreo y bloquea las que no reconozcas.', nFails)
+        const blocked = await blockedIps()
+        if (blocked.length) add('blocked_now', 'baja', `${blocked.length} IP(s) bloqueadas ahora`,
+          `Bloqueos activos: ${blocked.slice(0, 5).map(b => b.ip).join(', ')}.`,
+          'Si alguna es tuya (o de tu oficina), desbloquéala en Monitoreo.', blocked.length)
+
+        // 5) La wallet del proveedor debe estar fijada en la Bóveda.
+        const provFinity = (Deno.env.get('PROVIDER_WALLET_FINITY') ?? '').trim()
+        const provMouv = (Deno.env.get('PROVIDER_WALLET_MOUV') ?? '').trim()
+        if (!provFinity && !provMouv) add('provider_unlocked', 'critica', 'La wallet del proveedor NO está fijada en la Bóveda',
+          'Mientras no esté fijada, la dirección de destino se puede cambiar desde el panel — que es exactamente por donde se desvía el dinero.',
+          'Define PROVIDER_WALLET_FINITY (y PROVIDER_WALLET_MOUV) en la Bóveda. Quedan bloqueadas y solo se cambian desde ahí.')
+
+        const peso: Record<Sev, number> = { critica: 30, alta: 15, media: 6, baja: 2 }
+        const score = Math.max(0, 100 - f.reduce((s, x) => s + peso[x.sev], 0))
+        const orden: Sev[] = ['critica', 'alta', 'media', 'baja']
+        f.sort((a, b) => orden.indexOf(a.sev) - orden.indexOf(b.sev))
+        await auditAdmin(req, 'security.audit_run', { findings: f.length, score })
+        return json({ ok: true, score, findings: f, posture, checkedAt: new Date().toISOString() })
+      }
+
+      // Política de acceso: leer. Incluye la IP y el país DESDE DONDE se está
+      // consultando, para poder encenderla sin quedar afuera por sorpresa.
+      // ── Ajuste de la tasa OTC: los "puntos" que se le bajan al proveedor ──
+      // Se guarda en pesos por dólar. Si Finity da 3.097,75 y el ajuste es 5,
+      // la tasa que se muestra Y con la que se abona es 3.092,75; esos 5 pesos
+      // por dólar son el margen de Lincoin.
+      if (body.action === 'otc_ajuste_get') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data } = await db.from('system_config').select('value').eq('key', 'otc_rate_ajuste').maybeSingle()
+        let v: any = null
+        try { v = (data as any)?.value ? JSON.parse((data as any).value) : null } catch { v = null }
+        const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k >= 0 ? k : 0 }
+        return json({ ok: true, ajuste: { finityCop: n(v?.finityCop), mouvCop: n(v?.mouvCop), at: v?.at ?? null, por: v?.por ?? null } })
+      }
+
+      // Guardar el ajuste. Cambia cuánto recibe cada cliente por cada dólar
+      // que convierte, así que es una acción sensible: exige el segundo factor
+      // de la sesión, igual que el resto de lo que toca dinero.
+      if (body.action === 'otc_ajuste_set') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+        // Tope duro. Un dedazo acá —500 en vez de 5— le quitaría a cada
+        // cliente 500 pesos por dólar sin que nadie lo note hasta el reclamo.
+        const TOPE = 200
+        const lee = (x: any) => {
+          const n = Number(String(x ?? '').replace(',', '.'))
+          if (!Number.isFinite(n) || n < 0) return 0
+          return Math.min(n, TOPE)
+        }
+        const finityCop = lee(body.finityCop)
+        const mouvCop = lee(body.mouvCop)
+        if (Number(body.finityCop) > TOPE || Number(body.mouvCop) > TOPE) {
+          return json({ error: `El ajuste no puede pasar de ${TOPE} pesos por dólar.` }, 400)
+        }
+        const valor = { finityCop, mouvCop, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+        const { error } = await db.from('system_config').upsert({ key: 'otc_rate_ajuste', value: JSON.stringify(valor) }, { onConflict: 'key' })
+        if (error) return json({ error: error.message }, 500)
+        await auditAdmin(req, 'otc.ajuste_tasa', { finityCop, mouvCop })
+        return json({ ok: true, ajuste: valor })
+      }
+
+      // ── TODOS los movimientos de UN cliente ───────────────────────────
+      // La carga general del panel trae solo los 200 movimientos más
+      // recientes de TODA la plataforma (más los pendientes). Con eso, al
+      // abrir un cliente se veía apenas lo que cayera en esa ventana: los
+      // cargues y movimientos más viejos "no existían". Esto trae el
+      // historial completo de esa cuenta, con el mismo filtro por país que
+      // la carga general.
+      // ── CUPOS POR BENEFICIARIO (Cumplimiento) ─────────────────────────
+      // El oficial de cumplimiento ve las solicitudes con sus documentos y
+      // decide el cupo. También fija los cupos generales.
+      // Solo el número de solicitudes por revisar, para el aviso del menú.
+      // Sin documentos ni URLs firmadas: se pregunta cada minuto.
+      if (body.action === 'cupos_pendientes') {
+        const { count, error } = await db.from('cupo_solicitudes').select('id', { count: 'exact', head: true }).eq('estado', 'en_proceso')
+        if (error) return json({ ok: true, pendientes: 0, falta: /does not exist|42P01|schema cache/i.test(error.message) })
+        return json({ ok: true, pendientes: count ?? 0 })
+      }
+      if (body.action === 'cupos_admin_get') {
+        const general = await cupoGeneral(db)
+        const leerTabla = async (q: any) => { const { data, error } = await q; if (error) throw new Error(error.message); return (data ?? []) as any[] }
+        let enProceso: any[] = [], resueltas: any[] = [], aprobados: any[] = []
+        try {
+          enProceso = await leerTabla(db.from('cupo_solicitudes').select('*').eq('estado', 'en_proceso').order('created_at', { ascending: true }).limit(300))
+          resueltas = await leerTabla(db.from('cupo_solicitudes').select('*').neq('estado', 'en_proceso').order('revisado_at', { ascending: false }).limit(100))
+          aprobados = await leerTabla(db.from('cupos_beneficiario').select('*').order('aprobado_at', { ascending: false }).limit(500))
+        } catch (e) {
+          return json({ ok: true, general, falta: /does not exist|42P01|schema cache/i.test((e as Error).message), error: (e as Error).message, solicitudes: [], aprobados: [] })
+        }
+        const ids = Array.from(new Set([...enProceso, ...resueltas, ...aprobados].map(x => String(x.user_id))))
+        const nombres = new Map<string, any>()
+        for (let i = 0; i < ids.length; i += 200) {
+          const { data } = await db.from('users').select('id, email, full_name, company_name').in('id', ids.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) nombres.set(String(u.id), u)
+        }
+        const quien = (id: string) => { const u = nombres.get(id); return u ? (u.company_name || u.full_name || u.email) : id }
+        // Lo usado HOY en el mes, para decidir con el dato fresco. Con la misma
+        // cuenta que corta el envío: el documento Y todos los destinos de ese
+        // beneficiario en la ficha del cliente (antes, para las claves por
+        // documento no se miraban los destinos y salía menos de lo real).
+        const usoActual = new Map<string, EnvioMes[]>()
+        const contactosDe = new Map<string, any[]>()
+        for (const uid of Array.from(new Set(enProceso.map(x => String(x.user_id))))) {
+          try { usoActual.set(uid, await enviosDelMes(db, await idsMismaPersona(uid))) } catch { usoActual.set(uid, []) }
+          try {
+            const { data: uc } = await db.from('users').select('raw_data').eq('id', uid).maybeSingle()
+            contactosDe.set(uid, Array.isArray((uc as any)?.raw_data?.mouvContacts) ? (uc as any).raw_data.mouvContacts : [])
+          } catch { contactosDe.set(uid, []) }
+        }
+        const firmar = async (docs: any[]) => {
+          const out: any[] = []
+          for (const d of Array.isArray(docs) ? docs : []) {
+            try { const { data } = await db.storage.from(BUCKET_CUPOS).createSignedUrl(String(d.path), 3600); out.push({ ...d, url: data?.signedUrl ?? null, nombreTipo: TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo }) }
+            catch { out.push({ ...d, url: null, nombreTipo: TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo }) }
+          }
+          return out
+        }
+        const solicitudes: any[] = []
+        for (const sx of [...enProceso, ...resueltas]) {
+          const envios = usoActual.get(String(sx.user_id))
+          let usadoHoy: number | null = null
+          if (envios) {
+            const cts = contactosDe.get(String(sx.user_id)) ?? []
+            const ct = cts.find(x => String(x?.id) === String(sx.contacto_id ?? ''))
+            usadoHoy = ct
+              ? estadoCupoContacto(ct, cts, envios, { persona: 0, empresa: 0 }, new Map()).usado
+              : usadoPara(envios, sx.beneficiario_doc, String(sx.beneficiario_clave).startsWith('dest:') ? [String(sx.beneficiario_clave).slice(5)] : [])
+          }
+          solicitudes.push({ ...sx, cliente: quien(String(sx.user_id)), usadoHoy, documentos: await firmar(sx.documentos) })
+        }
+        return json({ ok: true, general, solicitudes, aprobados: aprobados.map(a => ({ ...a, cliente: quien(String(a.user_id)) })) })
+      }
+
+      if (body.action === 'cupos_config_set') {
+        const lee = (x: any) => { const k = Number(String(x ?? '').replace(/[^\d]/g, '')); return Number.isFinite(k) && k >= 1_000_000 && k <= 100_000_000_000 ? k : null }
+        const persona = lee(body.persona), empresa = lee(body.empresa)
+        if (!persona || !empresa) return json({ ok: false, error: 'Escribe los cupos en pesos (mínimo 1.000.000).' }, 400)
+        const antes = await cupoGeneral(db)
+        const valor = { persona, empresa, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+        const { error } = await db.from('system_config').upsert({ key: 'cupos_beneficiario', value: JSON.stringify(valor) }, { onConflict: 'key' })
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await auditAdmin(req, 'cupos.general', { antes, despues: valor })
+        return json({ ok: true, general: { persona, empresa } })
+      }
+
+      if (body.action === 'cupo_resolver') {
+        const id = Number(body.id)
+        const { data: sol } = await db.from('cupo_solicitudes').select('*').eq('id', id).maybeSingle()
+        if (!sol) return json({ ok: false, error: 'No se encontró la solicitud.' }, 404)
+        if ((sol as any).estado !== 'en_proceso') return json({ ok: false, error: 'Esa solicitud ya fue revisada.' }, 409)
+        const aprobar = body.aprobar === true
+        const nota = String(body.nota ?? '').trim().slice(0, 1000) || null
+        const ahora = new Date().toISOString()
+        const sx = sol as any
+        let cupo: number | null = null
+        if (aprobar) {
+          cupo = Math.round(Number(String(body.cupo ?? '').replace(/[^\d]/g, '')))
+          if (!(cupo > 0) || cupo > 100_000_000_000) return json({ ok: false, error: 'Escribe el cupo mensual aprobado en pesos.' }, 400)
+          // Un "aumento" tiene que AUMENTAR: el cupo que rige nunca baja del
+          // general (cupoVigente), así que aprobar uno menor no haría nada y
+          // confundiría al cliente.
+          const gen = await cupoGeneral(db)
+          const base = String(sx.beneficiario_tipo) === 'empresa' ? gen.empresa : gen.persona
+          if (cupo <= base) return json({ ok: false, error: `El cupo aprobado tiene que ser mayor al general (${base.toLocaleString('es-CO')} COP).` }, 400)
+        } else if (!nota) {
+          return json({ ok: false, error: 'Escribe el motivo del rechazo: es lo que verá el cliente.' }, 400)
+        }
+        // PRIMERO se cierra la solicitud (solo si sigue en proceso) y DESPUÉS
+        // se escribe el cupo. Al revés, dos oficiales a la vez (uno aprueba,
+        // otro rechaza) dejaban la solicitud "rechazada" con el cupo aprobado
+        // vigente.
+        const { data: hecho } = await db.from('cupo_solicitudes').update({
+          estado: aprobar ? 'aprobada' : 'rechazada', cupo_aprobado: cupo, nota_revision: nota, revisado_por: String(auth.userId ?? ''), revisado_at: ahora,
+        }).eq('id', sx.id).eq('estado', 'en_proceso').select('id')
+        if (!hecho || !(hecho as any[]).length) return json({ ok: false, error: 'Otra persona la revisó al mismo tiempo. Recarga.' }, 409)
+        if (aprobar) {
+          const { error: eUp } = await db.from('cupos_beneficiario').upsert({
+            user_id: sx.user_id, beneficiario_clave: sx.beneficiario_clave, beneficiario_nombre: sx.beneficiario_nombre, beneficiario_doc: sx.beneficiario_doc,
+            beneficiario_tipo: sx.beneficiario_tipo, cupo_mensual: cupo, solicitud_id: sx.id, aprobado_por: String(auth.userId ?? ''), aprobado_at: ahora,
+          }, { onConflict: 'user_id,beneficiario_clave' })
+          if (eUp) {
+            // Sin cupo escrito, la solicitud vuelve a quedar por revisar.
+            await db.from('cupo_solicitudes').update({ estado: 'en_proceso', cupo_aprobado: null, revisado_por: null, revisado_at: null }).eq('id', sx.id)
+            return json({ ok: false, error: `No se pudo guardar el cupo (${eUp.message}). La solicitud sigue en proceso.` }, 500)
+          }
+        }
+        await auditAdmin(req, aprobar ? 'cupos.aprobado' : 'cupos.rechazado', { id: sx.id, userId: sx.user_id, clave: sx.beneficiario_clave, cupo, cupoAnterior: sx.cupo_actual, nota })
+        // Aviso al cliente en su teléfono (si tiene notificaciones).
+        try {
+          await fetch(`${SUPABASE_URL}/functions/v1/push`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify({ action: 'enviar', user_ids: [sx.user_id], titulo: aprobar ? 'Cupo aprobado' : 'Solicitud de cupo revisada',
+              cuerpo: aprobar ? `Aprobamos un cupo mensual de ${cupo!.toLocaleString('es-CO')} COP para ${sx.beneficiario_nombre || 'tu beneficiario'}.` : `Tu solicitud de aumento de cupo para ${sx.beneficiario_nombre || 'tu beneficiario'} no fue aprobada: ${nota}`,
+              tag: `cupo-${sx.id}`, url: '/beneficiarios' }),
+            signal: AbortSignal.timeout(8000),
+          })
+        } catch { /* el aviso es un extra */ }
+        return json({ ok: true })
+      }
+
+      if (body.action === 'cupo_quitar') {
+        const uid = String(body.userId ?? ''), clave = String(body.clave ?? '')
+        if (!uid || !clave) return json({ ok: false, error: 'Falta el cupo a quitar.' }, 400)
+        const { error } = await db.from('cupos_beneficiario').delete().eq('user_id', uid).eq('beneficiario_clave', clave)
+        if (error) return json({ ok: false, error: error.message }, 500)
+        await auditAdmin(req, 'cupos.quitado', { userId: uid, clave })
+        return json({ ok: true })
+      }
+
+      // ── CONTABILIDAD: cargues y conversiones, por cliente y por mes ─────
+      // Lo que se le cargó a cada cliente, lo que convirtió, lo que ganó
+      // Lincoin en cada operación y si ya tiene factura. Se lee TODO (por
+      // páginas), no la ventana de 200 de la carga general: un total que solo
+      // suma lo reciente no sirve para contabilidad. La utilidad la calcula
+      // liquidacionDe, la misma que usa la factura.
+      if (body.action === 'contabilidad_resumen' || body.action === 'contabilidad_cliente') {
+        const accC: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const fecha = (v: unknown) => typeof v === 'string' && v && !isNaN(Date.parse(v)) ? new Date(v).toISOString() : null
+        const desde = fecha(body.desde), hasta = fecha(body.hasta)
+        const delCliente = body.action === 'contabilidad_cliente'
+        let ids: string[] | null = null
+        if (delCliente) {
+          const uid = String(body.userId ?? '')
+          if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ error: 'userId inválido' }, 400)
+          ids = [uid]
+          // Mismo criterio que movimientos_cliente: filas duplicadas del mismo correo.
+          const { data: yo } = await db.from('users').select('email').eq('id', uid).maybeSingle()
+          if ((yo as any)?.email) {
+            const { data: hermanos } = await db.from('users').select('id').eq('email', (yo as any).email)
+            if (Array.isArray(hermanos) && hermanos.length) ids = Array.from(new Set([uid, ...hermanos.map((h: any) => String(h.id))]))
+          }
+        }
+        const TOPE = 40000
+        const leer = async (tipos: string[], columnas: string): Promise<{ filas: any[]; truncado: boolean }> => {
+          const filas: any[] = []
+          for (let off = 0; off < TOPE; off += 1000) {
+            let q = db.from('transactions').select(columnas).in('type', tipos).eq('status', 'Completado')
+            if (ids) q = q.in('user_id', ids)
+            if (desde) q = q.gte('created_at', desde)
+            if (hasta) q = q.lt('created_at', hasta)
+            const { data, error } = await q.order('created_at', { ascending: false }).order('id', { ascending: true }).range(off, off + 999)
+            if (error) throw new Error(error.message)
+            filas.push(...((data ?? []) as any[]))
+            if (!data || data.length < 1000) return { filas, truncado: false }
+          }
+          return { filas, truncado: true }
+        }
+        // Solo lo que factura Lincoin: cargues, conversiones y los ajustes que
+        // corrigen un cargue. Los envíos y pagos del cliente no son
+        // contabilidad de Lincoin: viven en Clientes → ficha → Envíos y pagos.
+        let ops: { filas: any[]; truncado: boolean }
+        try {
+          ops = await leer(['load', 'convert', 'adjustment'],
+            'id, user_id, type, amount, currency, status, created_at, source:raw_data->>source, recordOnly:raw_data->recordOnly, acct:raw_data->acct, feeCop:raw_data->feeCop, grossCop:raw_data->grossCop, utilityCop:raw_data->utilityCop, gasfree:raw_data->gasfree, fromAmount:raw_data->fromAmount, fromCurrency:raw_data->>fromCurrency, destAmount:raw_data->destAmount, mouvRate:raw_data->mouvRate, otcCloseId:raw_data->>otcCloseId, otcRef:raw_data->>otcRef, lincoin:raw_data->lincoin, rail:raw_data->>rail, note:raw_data->>note, reverso:raw_data->reverso, reversaDe:raw_data->>reversaDe, reversaAuto:raw_data->reversaAuto, direction:raw_data->>direction, noRevierte:raw_data->noRevierte, targetCurrency:raw_data->>targetCurrency, destCurrency:raw_data->>destCurrency')
+        } catch (e) {
+          return json({ error: `No se pudieron leer los movimientos: ${(e as Error).message}` }, 500)
+        }
+        const visible = (t: any) => accC.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accC)
+        const filasOps = ops.filas.filter(visible)
+
+        // Los cierres de la mesa, para estimar la utilidad de sus conversiones.
+        const idsCierre = Array.from(new Set(filasOps.map(t => String(t.otcCloseId ?? '')).filter(Boolean)))
+        const cierres = new Map<string, CierreOtc>()
+        for (let i = 0; i < idsCierre.length; i += 200) {
+          const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').in('id', idsCierre.slice(i, i + 200))
+          for (const c of (data ?? []) as any[]) cierres.set(String(c.id), c)
+        }
+        // Las facturas de Lincoin ya emitidas o intentadas, por operación.
+        const facturas = new Map<string, any>()
+        let conFacturas = true
+        for (let off = 0; off < TOPE; off += 1000) {
+          let q = db.from('facturas_lincoin').select('transaction_id, tipo, estado, numero, total, utilidad, error, emitida_at, txs:detalle->txs')
+          if (ids) q = q.in('user_id', ids)
+          const { data, error } = await q.order('id', { ascending: true }).range(off, off + 999)
+          if (error) { conFacturas = false; break }
+          for (const f of (data ?? []) as any[]) facturas.set(String(f.transaction_id), f)
+          if (!data || data.length < 1000) break
+        }
+
+        // Las FACTURAS DIARIAS (clientes de Colombia) cubren varias
+        // operaciones: cada operación apunta a la diaria que la incluye. Si
+        // hay una enviada y otra abierta, manda la enviada. La diaria se
+        // cuenta UNA vez como factura (en su primera operación del período),
+        // y lo facturado de cada operación es su propio total.
+        const ENVIADAS = ['emitida', 'emitiendo', 'incierta']
+        const enDiaria = new Map<string, any>()
+        const idsOps = new Set(filasOps.map((t: any) => String(t.id)))
+        const representante = new Map<string, string>()   // primera operación del período → clave de la diaria
+        for (const [clave, f] of facturas.entries()) {
+          const k = leerClaveDiaria(clave)
+          if (!k || !Array.isArray(f.txs)) continue
+          const fd = { ...f, diaria: k.dia, clave }
+          for (const x of f.txs.map(String)) {
+            const ya = enDiaria.get(x)
+            if (!ya || (!ENVIADAS.includes(String(ya.estado)) && ENVIADAS.includes(String(f.estado)))) enDiaria.set(x, fd)
+          }
+          const primera = f.txs.map(String).find((x: string) => idsOps.has(x))
+          if (primera) representante.set(primera, clave)
+        }
+        const facturaDe = (txId: string) => {
+          const propia = facturas.get(txId)
+          const dia = enDiaria.get(txId)
+          return propia && propia.estado !== 'omitida' ? propia : dia ?? propia ?? null
+        }
+
+        // Bogotá (UTC−5) para el mes: una operación de las 9 p. m. del 31 es
+        // de ese mes, no del siguiente.
+        const mesDe = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 7)
+        const r2 = (n: number) => Math.round(n * 100) / 100
+        // Todo lo que suma sale de liquidacionDe (con el reverso ya aplicado):
+        // un cargue anulado vale 0 y un ajuste vinculado a un cargue NO se
+        // cuenta aparte (ya está adentro del cargue). Así la utilidad cuadra.
+        const nuevo = () => ({
+          cargues: 0, anulados: 0, corregidos: 0, cargadoCop: 0, cargadoTotalCop: 0, usdCargado: 0, usdLlego: 0, utilidadCargues: 0, comisionBrebCop: 0,
+          conversiones: 0, convertidoCop: 0, convertidoClienteCop: 0, usdConvertido: 0, utilidadConversiones: 0,
+          utilidadEstimada: 0, sinUtilidad: 0, ajustes: 0, ajustadoCop: 0, ajustesVinculados: 0,
+          // La utilidad neta se abre en lo que se ganó y lo que se perdió: una
+          // sola operación en pérdida (p. ej. un cargue errado) se come la
+          // utilidad de muchas, y sin esto parecía que "no sumaba".
+          gananciaCop: 0, perdidaCop: 0, enPerdida: 0,
+          facturadas: 0, facturadoCop: 0, porFacturar: 0, facturasConError: 0, facturasDeAnulados: 0,
+          // De las facturas, cuántas son diarias (clientes de Colombia).
+          facturasDiarias: 0,
+          ultima: '' as string,
+        })
+        type Suma = ReturnType<typeof nuevo>
+        const total = nuevo()
+        const porMes = new Map<string, Suma>()
+        const porCliente = new Map<string, Suma>()
+        const de = (m: Map<string, Suma>, k: string) => { let s = m.get(k); if (!s) { s = nuevo(); m.set(k, s) } return s }
+        // En el detalle de un cliente, sus filas duplicadas (mismo correo)
+        // suman a él: es la misma persona.
+        const claveCliente = (t: any) => delCliente ? String(body.userId) : String(t.user_id)
+        const sumar = (fn: (s: Suma) => void, t: any) => {
+          fn(total); fn(de(porMes, mesDe(String(t.created_at)))); fn(de(porCliente, claveCliente(t)))
+          const c = de(porCliente, claveCliente(t)); if (String(t.created_at) > c.ultima) c.ultima = String(t.created_at)
+        }
+        const detalle: any[] = []
+        const sueltos: any[] = []
+        // Un débito que revierte un cargue se cuenta UNA sola vez: adentro del
+        // cargue (que queda anulado o corregido), nunca además como débito
+        // suelto. Se reconoce por su marca (reversaDe) o porque algún cargue lo
+        // tiene en su reverso — lo que pase primero; antes, si solo estaba una
+        // de las dos marcas, el débito se restaba otra vez aparte.
+        const ajustesEnReversos = new Set<string>()
+        for (const t of filasOps) if (t.type === 'load' && t.reverso && Array.isArray(t.reverso.ajustes)) for (const x of t.reverso.ajustes) if (x?.id != null) ajustesEnReversos.add(String(x.id))
+        const rielDe = (t: any) => {
+          const r = String(t.rail ?? t.currency ?? '').toUpperCase()
+          return r === 'COP_ACH' || r === 'ACH' ? 'ACH' : r === 'COP_BREB' || r === 'BREB' ? 'Bre-B' : r === 'COP_C3' ? 'Cuenta 3' : r === 'COP_C4' ? 'Cuenta 4' : r === 'COP' ? 'Saldo Lincoin' : String(t.currency ?? '')
+        }
+        const idsDelPeriodo = new Set<string>()
+        for (const t of filasOps) {
+          idsDelPeriodo.add(String(t.id))
+          if (t.type === 'adjustment') {
+            const vinculado = !!t.reversaDe || ajustesEnReversos.has(String(t.id))
+            const esDebito = String(t.direction ?? 'debit') === 'debit'
+            if (vinculado) sumar(s => { s.ajustesVinculados++ }, t)
+            else sumar(s => { s.ajustes++; s.ajustadoCop += esCopMon(t.currency) ? Number(t.amount) || 0 : 0 }, t)
+            if (delCliente) {
+              const fila = { id: t.id, type: t.type, amount: t.amount, currency: t.currency, riel: rielDe(t), created_at: t.created_at, nota: t.note ?? null, liq: null, factura: null, reversaDe: t.reversaDe ?? null, reversaAuto: t.reversaAuto === true, vinculado, esDebito, noRevierte: t.noRevierte === true, sugerencias: [] as any[] }
+              detalle.push(fila)
+              if (!vinculado && esDebito) sueltos.push(fila)
+            }
+            continue
+          }
+          const liq = liquidacionDe(t, t.otcCloseId ? cierres.get(String(t.otcCloseId)) ?? null : null)
+          // Un 'load' que no es un cargue del admin es un depósito del propio
+          // cliente: no es un cargue de Lincoin y no se cuenta acá.
+          if (!liq) continue
+          const f = facturaDe(String(t.id))
+          // Esta operación es la que cuenta la factura diaria (una vez).
+          const cuentaDiaria = !!f?.diaria && representante.get(String(t.id)) === f.clave
+          const u = liq.utilidadCop ?? 0
+          sumar(s => {
+            if (liq.tipo === 'cargue') {
+              if (liq.anulado) { s.anulados++; if (f?.estado === 'emitida') s.facturasDeAnulados++; return }
+              s.cargues++; if (liq.reversadoCop) s.corregidos++
+              s.cargadoCop += liq.tercerosCop ?? 0; s.cargadoTotalCop += liq.totalCop ?? liq.tercerosCop ?? 0
+              s.usdCargado += liq.usd ?? 0; s.usdLlego += liq.usdLlego ?? liq.usd ?? 0; s.utilidadCargues += u; s.comisionBrebCop += liq.comisionBrebCop ?? 0
+            } else {
+              s.conversiones++; s.convertidoCop += liq.totalCop ?? liq.tercerosCop ?? 0; s.convertidoClienteCop += liq.tercerosCop ?? 0
+              s.usdConvertido += liq.usd ?? 0; s.utilidadConversiones += u
+            }
+            if (u >= 0) s.gananciaCop += u; else { s.perdidaCop += u; s.enPerdida++ }
+            if (liq.fuente === 'estimada') s.utilidadEstimada += u
+            if (liq.fuente === 'sin_dato' && liq.facturable) s.sinUtilidad++
+            if (f?.diaria) {
+              if (f.estado === 'emitida') { if (cuentaDiaria) { s.facturadas++; s.facturasDiarias++ } s.facturadoCop += liq.totalCop ?? 0 }
+              else if (f.estado === 'error') { if (cuentaDiaria) s.facturasConError++ }
+              else if (liq.facturable && u > 0) s.porFacturar++
+            } else if (f?.estado === 'emitida') { s.facturadas++; s.facturadoCop += Number(f.total) || 0 }
+            else if (f?.estado === 'error') s.facturasConError++
+            else if (liq.facturable && u > 0) s.porFacturar++
+          }, t)
+          if (delCliente) detalle.push({
+            id: t.id, type: t.type, amount: t.amount, currency: t.currency, riel: rielDe(t), created_at: t.created_at,
+            ref: t.otcRef ?? null, nota: t.note ?? null, liq,
+            reverso: t.reverso && typeof t.reverso === 'object' ? { ajustes: Array.isArray(t.reverso.ajustes) ? t.reverso.ajustes : [], montoCop: t.reverso.montoCop ?? null } : null,
+            factura: f ? { estado: f.estado, numero: f.numero ?? null, total: f.total ?? null, error: f.error ?? null, emitida_at: f.emitida_at ?? null, ...(f.diaria ? { diaria: f.diaria, clave: f.clave } : {}) } : null,
+            // La venta tal como quedó guardada (sin el prorrateo de un ajuste):
+            // es lo que se edita con "Corregir venta".
+            venta: t.type === 'load' && t.source === 'admin_cargue' && t.acct && typeof t.acct === 'object' && Number(t.acct.usdtGross) > 0
+              ? { usdtGross: Number(t.acct.usdtGross), usdtNet: Number(t.acct.usdtNet) || null, sellRate: Number(t.acct.sellRate) || null, creditedCop: Number(t.acct.creditedCop ?? t.amount) || 0, correcciones: Array.isArray(t.acct.correccionesVenta) ? t.acct.correccionesVenta.length : 0 }
+              : null,
+          })
+        }
+        // A qué cargue puede corresponder cada débito suelto: del mismo saldo,
+        // anterior al débito y con lo que le queda por revertir >= el débito.
+        // Se buscan TODOS los cargues del cliente, no solo los del período: el
+        // error pudo ser el mes pasado. Primero el que cuadra exacto.
+        if (delCliente && sueltos.length && ids) {
+          const { data: cs } = await db.from('transactions').select('id, amount, currency, created_at, status, acct:raw_data->acct, reverso:raw_data->reverso, source:raw_data->>source')
+            .in('user_id', ids).eq('type', 'load').eq('status', 'Completado').order('created_at', { ascending: false }).limit(500)
+          const cargues = ((cs ?? []) as any[]).filter(c => c.source === 'admin_cargue' || c.source === 'admin_backfill').map(c => {
+            const credit = Number(c.acct?.creditedCop ?? c.amount) || 0
+            const ya = Number(c.reverso?.montoCop ?? 0) || 0
+            return { id: c.id, currency: c.currency, created_at: c.created_at, credit, resta: Math.max(0, credit - ya) }
+          })
+          for (const a of sueltos) {
+            const m = Number(a.amount) || 0
+            a.sugerencias = cargues
+              .filter(c => c.currency === a.currency && c.created_at <= a.created_at && c.resta >= m - 1)
+              .map(c => ({ ...c, exacto: Math.abs(c.resta - m) <= 1 }))
+              .sort((x, y) => Number(y.exacto) - Number(x.exacto) || String(y.created_at).localeCompare(String(x.created_at)))
+              .slice(0, 6)
+          }
+        }
+        const redondear = (s: Suma) => Object.fromEntries(Object.entries(s).map(([k, v]) => [k, typeof v === 'number' ? r2(v) : v])) as Suma
+
+        // Quién es cada cliente (nombre y documento para la factura).
+        const idsCli = Array.from(porCliente.keys())
+        const fichas = new Map<string, any>()
+        for (let i = 0; i < idsCli.length; i += 200) {
+          const { data } = await db.from('users').select('id, email, full_name, company_name, role, tax_id, doc_number').in('id', idsCli.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) fichas.set(String(u.id), u)
+        }
+        // Cómo se le factura a cada uno: Colombia (diaria) o exterior (por
+        // movimiento). Es lo que separa el Excel para la contadora.
+        const modelosCli = await modelosDe(db, idsCli)
+        const clientes = idsCli.map(id => {
+          const u = fichas.get(id) ?? {}
+          const m = modelosCli.get(id)
+          return {
+            userId: id, nombre: u.company_name || u.full_name || u.email || id, email: u.email ?? null, rol: u.role ?? null,
+            documento: u.tax_id || u.doc_number || null, ...redondear(porCliente.get(id)!),
+            modelo: (m?.modelo ?? 'colombia') as ModeloFactura, pais: m?.pais ?? null, modeloManual: !!m?.manual,
+          }
+        }).sort((a, b) => (b.cargadoTotalCop + b.convertidoCop) - (a.cargadoTotalCop + a.convertidoCop))
+        const porModelo: Record<string, any> = {}
+        for (const mo of ['colombia', 'exterior'] as const) {
+          const cs = clientes.filter(c => c.modelo === mo)
+          const sumaC = (k: string) => r2(cs.reduce((a, c: any) => a + (Number(c[k]) || 0), 0))
+          porModelo[mo] = { nombre: NOMBRE_MODELO[mo], clientes: cs.length, facturadas: sumaC('facturadas'), facturasDiarias: sumaC('facturasDiarias'), facturadoCop: sumaC('facturadoCop'), porFacturar: sumaC('porFacturar'), facturasConError: sumaC('facturasConError'),
+            utilidad: r2(sumaC('utilidadCargues') + sumaC('utilidadConversiones')), recibido: r2(sumaC('cargadoTotalCop') + sumaC('convertidoCop')) }
+        }
+        const meses = Array.from(porMes.entries()).sort((a, b) => b[0].localeCompare(a[0])).map(([mes, s]) => ({ mes, ...redondear(s) }))
+        // Los estados de factura del MISMO período y alcance que el resto del
+        // tablero: antes contaba todas las facturas de la historia junto a
+        // "por facturar" del mes, y los dos números no se podían comparar.
+        const estados: Record<string, number> = {}
+        for (const [txId, f] of facturas.entries()) if (idsDelPeriodo.has(txId) && !(f.estado === 'omitida' && enDiaria.has(txId))) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
+        // Cada factura diaria una vez (por su primera operación del período).
+        for (const [txId, clave] of representante.entries()) {
+          const f = facturas.get(clave)
+          if (f && idsDelPeriodo.has(txId)) estados[String(f.estado)] = (estados[String(f.estado)] ?? 0) + 1
+        }
+        return json({
+          ok: true, generado_at: new Date().toISOString(), desde, hasta,
+          truncado: ops.truncado, conFacturas,
+          totales: { ...redondear(total), clientes: clientes.length, porModelo },
+          meses, clientes, facturas: estados,
+          ...(delCliente ? { cliente: clientes.find(c => c.userId === String(body.userId)) ?? clientes[0] ?? null, ids, detalle: detalle.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) } : {}),
+        })
+      }
+
+      // ── Rechazados con factura ─────────────────────────────────────
+      // Un envío, cargue o conversión que se cayó DESPUÉS de completarse (el
+      // banco rechazó el envío y la plata volvió a la cuenta; un recaudo se
+      // reversó) pudo alcanzar a facturarse: la factura del cliente en su
+      // propio Siigo (comprobantes) o la de Lincoin (facturas_lincoin, propia o
+      // dentro de la diaria). Pasó con envíos que se vieron Completado por
+      // horas y el banco había rechazado (2026-11). Esas facturas no se anulan
+      // solas, y la contabilidad de arriba solo lee lo Completado: no se veían.
+      // Solo lee; anular es con nota crédito en Siigo.
+      if (body.action === 'contabilidad_rechazados') {
+        const accR: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const fecha = (v: unknown) => typeof v === 'string' && v && !isNaN(Date.parse(v)) ? new Date(v).toISOString() : null
+        const desde = fecha(body.desde), hasta = fecha(body.hasta)
+        const ESTADOS_RECHAZO = ['Rechazado', 'Fallido', 'Devuelto']
+        const TOPE = 5000
+        const filas: any[] = []
+        let truncado = false
+        for (let off = 0; off < TOPE; off += 1000) {
+          let q = db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, rail:raw_data->>rail, refunded:raw_data->refunded, reversado:raw_data->reversado, beneficiary:raw_data->>beneficiary, bank:raw_data->>bank, method:raw_data->>method, providerError:raw_data->>providerError, returnReason:raw_data->>returnReason, reembolsoExterno:raw_data->reembolsoExterno')
+            .in('status', ESTADOS_RECHAZO)
+          if (desde) q = q.gte('created_at', desde)
+          if (hasta) q = q.lt('created_at', hasta)
+          const { data, error } = await q.order('created_at', { ascending: false }).order('id', { ascending: true }).range(off, off + 999)
+          if (error) return json({ error: `No se pudieron leer los movimientos: ${error.message}` }, 500)
+          filas.push(...((data ?? []) as any[]))
+          if (!data || data.length < 1000) break
+          if (off + 1000 >= TOPE) truncado = true
+        }
+        const vis = filas.filter(t => accR.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accR))
+        const txIds = vis.map(t => String(t.id))
+        const usuarios = Array.from(new Set(vis.map(t => String(t.user_id)).filter(Boolean)))
+
+        // La factura del cliente (su Siigo), por movimiento.
+        const deCliente = new Map<string, any>()
+        let conComprobantes = true
+        for (let i = 0; i < txIds.length; i += 200) {
+          const { data, error } = await db.from('comprobantes').select('transaction_id, numero, factura_estado, factura_numero, factura_tipo, factura_at, dian:factura_detalle->>dian').in('transaction_id', txIds.slice(i, i + 200))
+          if (error) { conComprobantes = false; break }
+          for (const c of (data ?? []) as any[]) deCliente.set(String(c.transaction_id), c)
+        }
+        // La de Lincoin: la propia del movimiento, o la diaria que lo incluye
+        // (manda la enviada si hay varias).
+        const ENVIADAS = ['emitida', 'emitiendo', 'incierta']
+        const deLincoin = new Map<string, any>()
+        let conFacturasLincoin = true
+        for (let i = 0; i < txIds.length; i += 200) {
+          const { data, error } = await db.from('facturas_lincoin').select('transaction_id, estado, numero, total, emitida_at').in('transaction_id', txIds.slice(i, i + 200))
+          if (error) { conFacturasLincoin = false; break }
+          for (const f of (data ?? []) as any[]) if (f.estado !== 'omitida') deLincoin.set(String(f.transaction_id), f)
+        }
+        if (conFacturasLincoin && usuarios.length) {
+          const idsSet = new Set(txIds)
+          for (let i = 0; i < usuarios.length; i += 100) {
+            for (let off = 0; off < 20000; off += 1000) {
+              const { data, error } = await db.from('facturas_lincoin').select('transaction_id, estado, numero, total, emitida_at, txs:detalle->txs')
+                .in('user_id', usuarios.slice(i, i + 100)).like('transaction_id', 'dia:%').order('id', { ascending: true }).range(off, off + 999)
+              if (error) break
+              for (const f of (data ?? []) as any[]) {
+                if (!leerClaveDiaria(String(f.transaction_id)) || !Array.isArray(f.txs)) continue
+                for (const x of f.txs.map(String)) {
+                  if (!idsSet.has(x)) continue
+                  const ya = deLincoin.get(x)
+                  if (!ya || (!ENVIADAS.includes(String(ya.estado)) && ENVIADAS.includes(String(f.estado)))) deLincoin.set(x, { ...f, diaria: leerClaveDiaria(String(f.transaction_id))?.dia ?? null })
+                }
+              }
+              if (!data || data.length < 1000) break
+            }
+          }
+        }
+        const nombres = new Map<string, any>()
+        for (let i = 0; i < usuarios.length; i += 200) {
+          const { data } = await db.from('users').select('id, email, full_name, company_name').in('id', usuarios.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) nombres.set(String(u.id), u)
+        }
+        const TIPO: Record<string, string> = { dispersion: 'Envío', send: 'Retiro', load: 'Cargue', convert: 'Conversión', tx_created: 'Conversión', pay_sent: 'Pago enviado', pay_received: 'Pago recibido', otc_withdraw: 'Retiro OTC', otc_deposit: 'Depósito OTC', adjustment: 'Ajuste' }
+        // Vigente = hay que anularla. La del cliente: emitida y válida ante la
+        // DIAN (una rechazada por la DIAN nunca valió); 'emitiendo' = se
+        // estaba emitiendo cuando se cayó: verificar en Siigo.
+        const vigenteCliente = (c: any) => c?.factura_estado === 'emitida' ? (c.dian === 'rechazada' ? null : 'anular') : c?.factura_estado === 'emitiendo' ? 'verificar' : null
+        const vigenteLincoin = (f: any) => f?.estado === 'emitida' ? 'anular' : (f?.estado === 'emitiendo' || f?.estado === 'incierta') ? 'verificar' : null
+        const movimientos = vis.map(t => {
+          const u = nombres.get(String(t.user_id)) ?? {}
+          const c = deCliente.get(String(t.id)) ?? null
+          const f = deLincoin.get(String(t.id)) ?? null
+          return {
+            id: t.id, userId: t.user_id, cliente: u.company_name || u.full_name || u.email || String(t.user_id ?? ''),
+            tipo: TIPO[String(t.type)] ?? String(t.type), type: t.type, amount: Number(t.amount) || 0, currency: t.currency, status: t.status, created_at: t.created_at,
+            contraparte: t.beneficiary ?? t.bank ?? t.method ?? null,
+            motivo: t.returnReason ?? t.providerError ?? null,
+            reembolsado: t.refunded === true || t.refunded === 'true', reversado: t.reversado === true || t.reversado === 'true', reembolsoExterno: t.reembolsoExterno === true,
+            facturaCliente: c ? { comprobante: c.numero ?? null, estado: c.factura_estado ?? null, numero: c.factura_numero ?? null, tipo: c.factura_tipo ?? null, at: c.factura_at ?? null, dian: c.dian ?? null, accion: vigenteCliente(c) } : null,
+            facturaLincoin: f ? { estado: f.estado ?? null, numero: f.numero ?? null, total: f.total ?? null, emitida_at: f.emitida_at ?? null, diaria: f.diaria ?? null, accion: vigenteLincoin(f) } : null,
+          }
+        })
+        return json({
+          ok: true, desde, hasta, truncado, conComprobantes, conFacturasLincoin,
+          totales: {
+            movimientos: movimientos.length,
+            clientes: usuarios.length,
+            facturaCliente: movimientos.filter(m => m.facturaCliente?.accion).length,
+            facturaLincoin: movimientos.filter(m => m.facturaLincoin?.accion).length,
+          },
+          movimientos,
+        })
+      }
+
+      // ── Vincular solos los débitos viejos que cuadran exacto con un cargue ─
+      if (body.action === 'contabilidad_autovincular') {
+        const uid = String(body.userId ?? '')
+        const ids = /^[0-9a-f-]{36}$/i.test(uid) ? await idsMismaPersona(uid) : null
+        const r = await autoVincularPendientes(ids, auth.userId ?? null)
+        if (r.vinculados) await auditAdmin(req, 'admin.ajustes_autovinculados', { userId: uid || null, ...r })
+        return json({ ok: true, ...r })
+      }
+
+      // ── Vincular (o desvincular) un débito al cargue que corrige ─────────
+      if (body.action === 'contabilidad_vincular_ajuste') {
+        const ajusteId = String(body.ajusteId ?? '')
+        if (!ajusteId) return json({ ok: false, error: 'Falta el ajuste.' }, 400)
+        const r = await vincularAjuste(ajusteId, body.cargueId ? String(body.cargueId) : null, auth.userId ?? null)
+        if ('error' in r) return json({ ok: false, error: r.error }, r.status)
+        await auditAdmin(req, body.cargueId ? 'admin.ajuste_vinculado' : 'admin.ajuste_desvinculado', { ajusteId, cargueId: body.cargueId ?? null, anulado: r.anulado ?? null })
+        return json(r)
+      }
+
+      // ── Modelo de facturación de un cliente ────────────────────────────
+      // Colombia → una factura por día (día vencido) con todo lo que movió;
+      // exterior → una por movimiento. Por defecto lo decide el país del
+      // registro; acá se ajusta a mano (tabla lincoin_modelo_cliente, zz28).
+      // 'auto' borra el ajuste y vuelve a mandar el país.
+      //
+      // Con `pais` (Editar cliente → país de la empresa) se corrige también
+      // users.company_country: muchas empresas se registraron sin país y
+      // quedaban como Colombia aunque fueran de Brasil o Perú. Va por aquí y
+      // no por save_user para que quede con 2FA y en la auditoría: el país
+      // decide cómo se le factura.
+      if (body.action === 'cliente_modelo_factura' || body.action === 'cliente_modelo_factura_set') {
+        const uidM = String(body.userId ?? '')
+        if (!UUID_RE.test(uidM)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
+        if (body.action === 'cliente_modelo_factura_set') {
+          const nuevo = String(body.modelo ?? '')
+          if (!['colombia', 'exterior', 'auto'].includes(nuevo)) return json({ ok: false, error: 'Modelo inválido.' }, 400)
+          const paisNuevo = body.pais == null ? null : String(body.pais).replace(/\s+/g, ' ').trim()
+          if (paisNuevo != null && !/^[\p{L}][\p{L} .'-]{1,59}$/u.test(paisNuevo)) return json({ ok: false, error: 'Escribe el país de la empresa (solo letras).' }, 400)
+          const antes = (await modelosDe(db, [uidM])).get(uidM)
+          if (paisNuevo != null) {
+            const { data: filaU } = await db.from('users').select('id, role').eq('id', uidM).maybeSingle()
+            if (!filaU) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+            if ((filaU as any).role === 'admin') return json({ ok: false, error: 'Esa cuenta es de un administrador.' }, 400)
+            const up = await db.from('users').update({ company_country: paisNuevo }).eq('id', uidM)
+            if (up.error) return json({ ok: false, error: `No se pudo guardar el país: ${up.error.message}` }, 500)
+          }
+          const r = nuevo === 'auto'
+            ? await db.from('lincoin_modelo_cliente').delete().eq('user_id', uidM)
+            : await db.from('lincoin_modelo_cliente').upsert({ user_id: uidM, modelo: nuevo, por: auth.email ?? auth.userId ?? null, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+          if (r.error) {
+            const sinTabla = /lincoin_modelo_cliente|schema cache|does not exist/i.test(String(r.error.message))
+            // Sin la tabla no hay ajuste a mano que borrar: 'auto' ya es lo
+            // que rige, y el país (si vino) ya quedó guardado.
+            if (!(sinTabla && nuevo === 'auto')) {
+              return json({ ok: false, error: sinTabla ? 'Falta correr la migración 2026_zz28_modelo_factura_cliente.sql en Supabase.' : r.error.message }, sinTabla ? 409 : 500)
+            }
+          }
+          await auditAdmin(req, 'admin.cliente_modelo_factura', { userId: uidM, antes: antes?.modelo ?? null, antesManual: antes?.manual ?? null, ahora: nuevo, ...(paisNuevo != null ? { paisAntes: antes?.pais ?? null, pais: paisNuevo } : {}) })
+        }
+        const m = (await modelosDe(db, [uidM])).get(uidM)!
+        return json({ ok: true, modelo: m.modelo, pais: m.pais, manual: m.manual, nombre: NOMBRE_MODELO[m.modelo] })
+      }
+
+      // ── Corregir la VENTA de un cargue (tasa de venta, USDT que llegaron) ──
+      // Un cargue guarda en raw_data.acct la venta de los USDT del cliente:
+      // cuántos llegaron al proveedor (usdtNet) y a qué tasa se vendieron
+      // (sellRate). La utilidad es esa venta menos lo acreditado. Si al hacer
+      // el cargue se escribió mal la tasa (32 en vez de 3.200) o los USDT que
+      // llegaron (328 en vez de 3.248), la utilidad quedaba en millones
+      // negativos y no había cómo arreglarlo: solo anular con un ajuste, que
+      // le quita la plata al cliente — y lo acreditado estaba bien.
+      //
+      // Esto corrige SOLO el lado de Lincoin: lo acreditado al cliente y su
+      // tasa no cambian (el cliente recibió lo que recibió). Queda la historia
+      // de cada corrección en acct.correccionesVenta.
+      if (body.action === 'contabilidad_corregir_venta') {
+        const txId = String(body.txId ?? '')
+        if (!UUID_RE.test(txId)) return json({ ok: false, error: 'Falta el cargue.' }, 400)
+        const { data: txC } = await db.from('transactions')
+          .select('id, user_id, type, status, currency, amount, raw_data, sr:raw_data->acct->>sellRate, un:raw_data->acct->>usdtNet')
+          .eq('id', txId).maybeSingle()
+        const t = txC as any
+        if (!t || t.type !== 'load' || t.status !== 'Completado') return json({ ok: false, error: 'No se encontró ese cargue.' }, 404)
+        const accCV: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        if (!visibleEnPais(paisDeMovimiento(t), accCV)) return json({ ok: false, error: 'Ese cargue es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+        const rdV = (t.raw_data ?? {}) as Record<string, any>
+        const acct = rdV.acct && typeof rdV.acct === 'object' ? rdV.acct : null
+        if (String(rdV.source ?? '') !== 'admin_cargue' || !acct || !(Number(acct.usdtGross) > 0)) {
+          return json({ ok: false, error: 'Este cargue no guardó la venta de USDT: no hay tasa que corregir.' }, 400)
+        }
+        const sellRate = Number(body.sellRate)
+        const usdtGross = Number(acct.usdtGross)
+        const usdtNet = body.usdtNet != null && body.usdtNet !== '' ? Number(body.usdtNet) : Number(acct.usdtNet)
+        // Rango de un peso colombiano por dólar: lo que esté fuera es casi
+        // seguro otro error de digitación (el que se está corrigiendo).
+        if (!Number.isFinite(sellRate) || sellRate < 1000 || sellRate > 20000) return json({ ok: false, error: 'La tasa de venta va en pesos por USDT, entre 1.000 y 20.000.' }, 400)
+        if (!Number.isFinite(usdtNet) || !(usdtNet > 0)) return json({ ok: false, error: 'Escribe cuántos USDT llegaron al proveedor.' }, 400)
+        if (usdtNet > usdtGross + 0.000001) return json({ ok: false, error: `Al proveedor no pueden llegar más USDT de los que envió el cliente (${usdtGross}).` }, 400)
+        // Con la factura ya emitida no se cambia la utilidad por debajo: la
+        // DIAN tiene otra cifra. Primero se anula en Siigo.
+        try {
+          const { data: f } = await db.from('facturas_lincoin').select('estado, numero').eq('transaction_id', txId).maybeSingle()
+          if ((f as any)?.estado === 'emitida' || (f as any)?.estado === 'emitiendo') {
+            return json({ ok: false, error: `Este cargue ya tiene la factura ${(f as any).numero ?? ''} de Lincoin. Anúlala en Siigo antes de corregir la venta.` }, 409)
+          }
+        } catch { /* sin tabla de facturas */ }
+        const credited = Number(acct.creditedCop ?? t.amount) || 0
+        const feeUsdt = Number((usdtGross - usdtNet).toFixed(6))
+        const revenueCop = Math.round(usdtNet * sellRate)
+        const utilityCop = Math.round(revenueCop - credited)
+        const antes = { sellRate: Number(acct.sellRate) || null, usdtNet: Number(acct.usdtNet) || null, revenueCop: Number(acct.revenueCop) || null, utilityCop: Number(acct.utilityCop) }
+        const despues = { sellRate, usdtNet, revenueCop, utilityCop }
+        const motivoCV = String(body.motivo ?? '').trim().slice(0, 300) || null
+        const previas: any[] = Array.isArray(acct.correccionesVenta) ? acct.correccionesVenta : []
+        const acctNuevo = {
+          ...acct, usdtNet, feeUsdt, sellRate, revenueCop, feeCostCop: Math.round(feeUsdt * sellRate), utilityCop,
+          correccionesVenta: [...previas.slice(-9), { at: new Date().toISOString(), por: await autorDe(auth), antes, despues, motivo: motivoCV }],
+        }
+        // Escritura condicionada a que la venta siga como se leyó: dos
+        // correcciones a la vez no se pisan sin que nadie se entere.
+        let q = db.from('transactions').update({ raw_data: { ...rdV, acct: acctNuevo } }).eq('id', txId)
+        q = t.sr != null ? q.filter('raw_data->acct->>sellRate', 'eq', String(t.sr)) : q.filter('raw_data->acct->>sellRate', 'is', null)
+        q = t.un != null ? q.filter('raw_data->acct->>usdtNet', 'eq', String(t.un)) : q.filter('raw_data->acct->>usdtNet', 'is', null)
+        const { data: hecho, error: eCV } = await q.select('id')
+        if (eCV) return errorGenerico('contabilidad_corregir_venta', eCV)
+        if (!hecho?.length) return json({ ok: false, error: 'Otro cambio se hizo al mismo tiempo sobre este cargue. Recarga e intenta de nuevo.' }, 409)
+        await auditAdmin(req, 'admin.cargue_venta_corregida', { txId, userId: t.user_id, antes, despues, motivo: motivoCV })
+        return json({ ok: true, antes, despues })
+      }
+
+      // ── Facturación de LINCOIN en Siigo ─────────────────────────────────
+      // La hace la función facturacion (ahí viven Siigo y las credenciales
+      // cifradas). Acá solo se decide quién puede pedir qué y se le pasa el
+      // pedido con la llave del servicio. La access key nunca vuelve.
+      const ACCION_FACTURACION_LINCOIN: Record<string, string> = {
+        fact_lincoin_get: 'lincoin_config_get', fact_lincoin_set: 'lincoin_config_set', fact_lincoin_probar: 'lincoin_probar',
+        fact_lincoin_emitir: 'lincoin_emitir', fact_lincoin_al_dia: 'lincoin_al_dia', fact_lincoin_lista: 'lincoin_facturas',
+      }
+      if (ACCION_FACTURACION_LINCOIN[String(body.action)]) {
+        const sub = String(body.action).replace('fact_lincoin_', '')
+        const cuerpo: Record<string, unknown> = { action: ACCION_FACTURACION_LINCOIN[String(body.action)], adminId: auth.userId ?? null }
+        for (const k of ['config', 'cambiarActivo', 'transactionId', 'utilidad', 'estado', 'userId', 'limite']) if (k in body) cuerpo[k] = body[k]
+        try {
+          const r = await fetch(`${SUPABASE_URL}/functions/v1/facturacion`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+            body: JSON.stringify(cuerpo),
+            signal: AbortSignal.timeout(sub === 'emitir' ? 140_000 : 60_000),
+          })
+          const texto = await r.text()
+          let d: any = null
+          try { d = JSON.parse(texto) } catch { d = null }
+          if (!d) return json({ ok: false, error: `La facturación no respondió bien (HTTP ${r.status}).` }, 502)
+          if (sub === 'set' || sub === 'emitir') await auditAdmin(req, `admin.factura_lincoin_${sub}`, { transactionId: body.transactionId ?? null, ok: !!d.ok, cambiarActivo: body.cambiarActivo ?? null })
+          return json(d, r.ok ? 200 : r.status)
+        } catch (e) {
+          return json({ ok: false, error: /timeout|abort/i.test(String((e as Error)?.message)) ? 'Siigo tardó demasiado. La factura PUDO haberse creado: recargá la lista antes de reintentar.' : `No se pudo llamar a la facturación: ${(e as Error)?.message}` }, 502)
+        }
+      }
+
+      if (body.action === 'movimientos_cliente') {
+        const uid = String(body.userId ?? '')
+        if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ error: 'userId inválido' }, 400)
+        const accM: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        // La misma persona puede tener filas de usuario duplicadas (mismo
+        // correo, ids distintos: el login creó un perfil con el id del auth y
+        // otro quedó con el id real). Sus movimientos pueden estar bajo
+        // cualquiera de esos ids; se traen los de todos, como en la app del
+        // cliente (gasfree my_transactions).
+        let ids: string[] = [uid]
+        const { data: yo } = await db.from('users').select('email').eq('id', uid).maybeSingle()
+        if ((yo as any)?.email) {
+          const { data: hermanos } = await db.from('users').select('id').eq('email', (yo as any).email)
+          if (Array.isArray(hermanos) && hermanos.length) ids = Array.from(new Set([uid, ...hermanos.map((h: any) => String(h.id))]))
+        }
+        const filas: Record<string, unknown>[] = []
+        const PAGINA = 1000
+        // Si el historial pasa del tope se dice: la pantalla no puede llamar
+        // "completo" a algo que quedó cortado.
+        let truncado = true
+        for (let desde = 0; desde < 10000; desde += PAGINA) {
+          const { data, error } = await db.from('transactions').select('*').in('user_id', ids)
+            .order('created_at', { ascending: false }).range(desde, desde + PAGINA - 1)
+          if (error) return json({ error: error.message }, 500)
+          filas.push(...((data ?? []) as Record<string, unknown>[]))
+          if (!data || data.length < PAGINA) { truncado = false; break }
+        }
+        const visibles = filas.filter(t => accM.todosLosPaises || visibleEnPais(paisDeMovimiento(t), accM))
+        const esDuenoM = accM.rol === 'dueno'
+        return json({ ok: true, total: visibles.length, truncado, ids, transactions: visibles.map(t => ({ ...t, raw_data: autoresParaPanel(slimRawData(t.raw_data), esDuenoM, String(auth.userId ?? '')) })) })
+      }
+
+      // ── Límites por envío ACH ──────────────────────────────────────────
+      // General por tipo de cuenta + excepciones por cliente. Los aplica
+      // mouv-proxy (topeAchDe) en el momento del envío; acá solo se guardan.
+      // El tope del PROVEEDOR es el techo: ningún otro puede pasarlo.
+      if (body.action === 'limites_envio_get') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const { data } = await db.from('system_config').select('value').eq('key', 'limites_envio').maybeSingle()
+        let v: any = {}
+        try { v = (data as any)?.value ? JSON.parse((data as any).value) : {} } catch { v = {} }
+        const n = (x: any) => { const k = Number(x); return Number.isFinite(k) && k > 0 ? k : null }
+        const { data: filas } = await db.from('system_config').select('key, value').like('key', 'limite_envio:%')
+        const ids = (filas ?? []).map((f: any) => String(f.key).slice('limite_envio:'.length))
+        const { data: us } = ids.length ? await db.from('users').select('id, email, full_name, company_name, role').in('id', ids) : { data: [] as any[] }
+        const porId = new Map((us ?? []).map((u: any) => [u.id, u]))
+        const excepciones = (filas ?? []).map((f: any) => {
+          const id = String(f.key).slice('limite_envio:'.length)
+          let x: any = {}
+          try { x = JSON.parse(f.value) } catch { /* */ }
+          const u: any = porId.get(id) ?? {}
+          return { userId: id, achMax: n(x.achMax), nota: x.nota ?? null, at: x.at ?? null, email: u.email ?? null, nombre: u.company_name || u.full_name || null, tipo: u.role === 'business' ? 'empresa' : 'persona' }
+        }).filter((e: any) => e.achMax)
+        return json({ ok: true, limites: { achEmpresa: n(v.achEmpresa) ?? 500_000_000, achPersona: n(v.achPersona) ?? 50_000_000, achProveedor: n(v.achProveedor), at: v.at ?? null }, excepciones })
+      }
+
+      if (body.action === 'limites_envio_set' || body.action === 'limite_cliente_set') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+        // Pesos enteros, al menos el mínimo por envío. El techo de 10.000 M
+        // es contra el dedazo (un cero de más), no una regla del negocio.
+        const lee = (x: any): number | null => {
+          if (x === null || x === undefined || String(x).trim() === '') return null
+          const k = Number(String(x).replace(/[^\d]/g, ''))
+          return Number.isFinite(k) && k > 0 ? k : NaN
+        }
+        const valido = (k: number | null) => k === null || (Number.isFinite(k) && k >= 5000 && k <= 10_000_000_000)
+        const { data: prev } = await db.from('system_config').select('value').eq('key', 'limites_envio').maybeSingle()
+        let g: any = {}
+        try { g = (prev as any)?.value ? JSON.parse((prev as any).value) : {} } catch { g = {} }
+
+        if (body.action === 'limites_envio_set') {
+          const achEmpresa = lee(body.achEmpresa), achPersona = lee(body.achPersona), achProveedor = lee(body.achProveedor)
+          if (!valido(achEmpresa) || !valido(achPersona) || !valido(achProveedor) || achEmpresa === null || achPersona === null) {
+            return json({ error: 'Escribe montos en pesos entre 5.000 y 10.000.000.000.' }, 400)
+          }
+          if (achProveedor && (achEmpresa > achProveedor || achPersona > achProveedor)) {
+            return json({ error: `Ningún tope puede pasar el del proveedor (${achProveedor.toLocaleString('es-CO')} COP).` }, 400)
+          }
+          const valor = { achEmpresa, achPersona, achProveedor, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+          const { error } = await db.from('system_config').upsert({ key: 'limites_envio', value: JSON.stringify(valor) }, { onConflict: 'key' })
+          if (error) return json({ error: error.message }, 500)
+          await auditAdmin(req, 'limites.envio_general', { antes: g, despues: valor })
+          return json({ ok: true, limites: valor })
+        }
+
+        // Excepción de UN cliente. achMax vacío = quitarla (vuelve al general).
+        const uid = String(body.userId ?? '')
+        if (!uid) return json({ error: 'Falta el cliente.' }, 400)
+        const { data: cli } = await db.from('users').select('id, email').eq('id', uid).maybeSingle()
+        if (!cli) return json({ error: 'Cliente no encontrado.' }, 404)
+        const achMax = lee(body.achMax)
+        if (!valido(achMax)) return json({ error: 'Escribe un monto en pesos entre 5.000 y 10.000.000.000.' }, 400)
+        const prov = Number(g.achProveedor) > 0 ? Number(g.achProveedor) : null
+        if (achMax && prov && achMax > prov) {
+          return json({ error: `No puede pasar el tope del proveedor (${prov.toLocaleString('es-CO')} COP).` }, 400)
+        }
+        const key = `limite_envio:${uid}`
+        if (achMax === null) {
+          // Sin revisar el error decía "Excepción quitada" aunque no se hubiera borrado.
+          const { error: delErr } = await db.from('system_config').delete().eq('key', key)
+          if (delErr) return json({ error: `No se pudo quitar la excepción: ${delErr.message}` }, 500)
+        } else {
+          const valor = { achMax, nota: String(body.nota ?? '').slice(0, 200) || null, at: new Date().toISOString(), por: String(auth.userId ?? '') }
+          const { error } = await db.from('system_config').upsert({ key, value: JSON.stringify(valor) }, { onConflict: 'key' })
+          if (error) return json({ error: error.message }, 500)
+        }
+        await auditAdmin(req, 'limites.envio_cliente', { userId: uid, email: (cli as any).email ?? null, achMax })
+        return json({ ok: true })
+      }
+
+      if (body.action === 'access_policy_get') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const ip = ipOf(req)
+        const geo = await geoOf(ip)
+        return json({ ok: true, policy: await accessPolicy(), tuIp: ip, tuPais: geo?.countryCode ?? null, tuUbicacion: geo?.approx ?? null })
+      }
+
+      // Política de acceso: guardar. Es una acción sensible — exige que la
+      // sesión haya pasado el segundo factor.
+      if (body.action === 'access_policy_set') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const mfaErr = await requireMfaSession(req, auth.userId)
+        if (mfaErr) return json({ error: mfaErr, needs2fa: true }, 403)
+        const p = body.policy ?? {}
+        const ip = ipOf(req)
+        const geo = await geoOf(ip)
+        // APAGAR o AFLOJAR el candado exige verificarse de nuevo: el código
+        // del correo siempre, y el de la app si la cuenta tiene 2FA activo.
+        // Apretarlo (encenderlo, agregar un país o una IP) no pide nada: lo
+        // que hay que dificultar es bajar la guardia, no subirla.
+        {
+          const actual = await accessPolicy()
+          const quita = (a: string[], b: string[]) => a.some(x => !b.includes(x))
+          const afloja = (actual.enabled && !p.enabled)
+            || quita(actual.countries, Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase()) : [])
+            || quita(actual.ips, Array.isArray(p.ips) ? p.ips.map((i: any) => String(i)) : [])
+          if (afloja) {
+            // La LLAVE no se exige aquí: si el dispositivo se perdió, el
+            // titular tiene que poder seguir manejando su propio acceso.
+            const falta = (await stepUpFalta(req, String(auth.userId ?? ''))).filter(f => f !== 'passkey')
+            if (falta.length) {
+              return json({ error: 'Verifica tu identidad para bajar esta protección.', stepUp: true, falta }, 403)
+            }
+          }
+        }
+        const pol: AccessPolicy = {
+          enabled: !!p.enabled,
+          countries: Array.isArray(p.countries) ? p.countries.map((c: any) => String(c).toUpperCase().slice(0, 2)).filter(Boolean).slice(0, 20) : [],
+          ips: Array.isArray(p.ips) ? p.ips.map((i: any) => String(i).trim()).filter(Boolean).slice(0, 50) : [],
+        }
+        // Red de seguridad: al ENCENDERLA, si la conexión actual no quedaría
+        // permitida, se agrega sola. Encender un candado desde afuera de la
+        // puerta es la forma más rápida de quedarse sin panel.
+        if (pol.enabled && ip) {
+          const cc = String(geo?.countryCode ?? '').toUpperCase()
+          const permitido = pol.ips.includes(ip) || (cc && pol.countries.includes(cc))
+          if (!permitido) pol.ips.unshift(ip)
+        }
+        await db.from('system_config').upsert({ key: ACCESS_POLICY_KEY, value: JSON.stringify(pol) }, { onConflict: 'key' })
+        await auditAdmin(req, 'security.access_policy_set', { ...pol })
+        return json({ ok: true, policy: pol })
+      }
+
+      // Desbloquear una IP (solo admin, queda auditado).
+      if (body.action === 'unblock_ip' && body.ip) {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const list = (await blockedIps()).filter(b => b.ip !== String(body.ip))
+        await saveBlockedIps(list)
+        await auditAdmin(req, 'auth.ip_unblocked', { ip: String(body.ip) })
+        return json({ ok: true, blockedIps: list })
+      }
+
+      // Bloquear una IP a mano.
+      if (body.action === 'block_ip' && body.ip) {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        const ip = String(body.ip).trim()
+        const list = await blockedIps()
+        if (!list.some(b => b.ip === ip)) {
+          list.unshift({ ip, at: new Date().toISOString(), reason: String(body.reason ?? 'bloqueo manual').slice(0, 80), attempts: 0, geo: await geoOf(ip) })
+          await saveBlockedIps(list)
+          await auditAdmin(req, 'auth.ip_blocked', { ip, manual: true })
+        }
+        return json({ ok: true, blockedIps: list })
+      }
+
+      // Dejar constancia de una rotación de llaves/API.
+      if (body.action === 'log_key_rotation') {
+        if (!(await verifyAdmin(req)).ok) return json({ error: 'No autorizado' }, 401)
+        await auditAdmin(req, 'security.key_rotation', { note: String(body.note ?? '').slice(0, 200) || null })
+        return json({ ok: true })
       }
 
       // Registrar un INGRESO de admin (lo llama el front tras un login exitoso).
@@ -542,18 +5842,137 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true })
       }
 
+      // ── Conciliación: envíos que salieron pero no dejaron movimiento ─────
+      // El vigilante de lo que ya pasó una vez. Cada dispersión deja DOS
+      // rastros: la fila en 'transactions' —lo que ve el cliente— y una
+      // entrada en la auditoría. Si el envío ocurrió pero la fila no se
+      // escribió, el cliente ve un hueco y nadie más se entera.
+      //
+      // Acá se cruzan los dos rastros y se listan los envíos sin movimiento.
+      // Con reparar:true se reconstruye la fila desde la auditoría.
+      if (body.action === 'conciliar_movimientos') {
+        const dias = Math.min(Math.max(Number(body.dias ?? 30) || 30, 1), 180)
+        const desde = new Date(Date.now() - dias * 86400_000).toISOString()
+
+        const { data: eventos } = await db.from('audit_log')
+          .select('id, user_id, action, metadata, created_at')
+          .in('action', ['mouv.payout_breb.ok', 'mouv.payout_ach.ok', 'finity.payout_ach.ok', 'mouv.tx_insert_failed'])
+          .gte('created_at', desde).order('created_at', { ascending: false }).limit(1000)
+
+        // POR PÁGINAS: la API devuelve como mucho 1.000 filas por consulta,
+        // así que con .limit(3000) se leían solo 1.000 y el resto de los envíos
+        // EXISTENTES se reportaban como "huérfanos" — y Reconstruir los
+        // duplicaba.
+        const txs: any[] = []
+        for (let desdeFila = 0; desdeFila < 20000; desdeFila += 1000) {
+          const { data: pag, error: pagErr } = await db.from('transactions')
+            .select('id, user_id, amount, currency, created_at, raw_data')
+            .eq('type', 'dispersion').gte('created_at', desde)
+            .order('created_at', { ascending: false }).range(desdeFila, desdeFila + 999)
+          if (pagErr) return json({ ok: false, error: `No se pudieron leer los movimientos: ${pagErr.message}` }, 500)
+          txs.push(...((pag ?? []) as any[]))
+          if (!pag || pag.length < 1000) break
+        }
+
+        const porRef = new Set<string>()
+        const porUsuarioMonto = new Set<string>()
+        for (const t of txs) {
+          const ref = String(t?.raw_data?.providerRef ?? '')
+          if (ref) porRef.add(ref)
+          // Clave de respaldo para los envíos sin referencia del proveedor:
+          // usuario + monto + día. No es perfecta —dos envíos idénticos el
+          // mismo día colisionan— pero se prefiere no reportar de más.
+          porUsuarioMonto.add(`${t.user_id}|${Math.round(Number(t.amount ?? 0))}|${String(t.created_at ?? '').slice(0, 10)}`)
+        }
+
+        const huerfanos: any[] = []
+        for (const e of (eventos ?? []) as any[]) {
+          const m = (e.metadata ?? {}) as any
+          const ref = String(m.providerRef ?? '')
+          const monto = Math.round(Number(m.amount ?? 0))
+          const dia = String(e.created_at ?? '').slice(0, 10)
+          if (ref && porRef.has(ref)) continue
+          if (!ref && porUsuarioMonto.has(`${e.user_id}|${monto}|${dia}`)) continue
+          huerfanos.push({
+            auditId: e.id, userId: e.user_id, accion: e.action, at: e.created_at,
+            amount: monto, providerRef: ref || null,
+            railCol: m.railCol ?? (String(e.action).includes('breb') ? 'COP_BREB' : 'COP_ACH'),
+            recipient: m.recipient ?? null, motivo: m.motivo ?? null,
+          })
+        }
+
+        if (!body.reparar) {
+          return json({ ok: true, dias, revisados: (eventos ?? []).length, huerfanos: huerfanos.slice(0, 100), total: huerfanos.length })
+        }
+
+        // Reparar: se crea la fila que falta, marcada como reconstruida para
+        // que nadie la confunda con un registro de primera mano.
+        let creados = 0
+        for (const h of huerfanos.slice(0, 200)) {
+          if (!h.userId || !h.amount) continue
+          // Última comprobación, fila por fila, justo antes de crearla: ni un
+          // envío con esa referencia ni una reconstrucción previa del mismo
+          // evento. Dos clics en Reconstruir no pueden duplicar nada.
+          if (h.providerRef) {
+            const { data: ya } = await db.from('transactions').select('id').eq('type', 'dispersion').filter('raw_data->>providerRef', 'eq', String(h.providerRef)).limit(1)
+            if (ya?.length) continue
+          }
+          {
+            const { data: yaRec } = await db.from('transactions').select('id').filter('raw_data->>desdeAuditoria', 'eq', String(h.auditId)).limit(1)
+            if (yaRec?.length) continue
+          }
+          const { error } = await db.from('transactions').insert({
+            user_id: h.userId, type: 'dispersion', amount: h.amount, currency: h.railCol,
+            status: String(h.accion).endsWith('.ok') ? 'Completado' : 'Procesando',
+            created_at: h.at,
+            raw_data: {
+              source: 'conciliacion', title: h.railCol === 'COP_BREB' ? 'Dispersión Bre-B' : 'Dispersión ACH',
+              providerRef: h.providerRef, recipient: h.recipient,
+              beneficiary: h.recipient?.holderName ?? null,
+              reconstruido: true, desdeAuditoria: h.auditId, reconstruidoAt: new Date().toISOString(),
+            },
+          })
+          if (!error) creados++
+        }
+        await auditAdmin(req, 'conciliacion.movimientos_reconstruidos', { creados, de: huerfanos.length, dias })
+        return json({ ok: true, dias, creados, total: huerfanos.length })
+      }
+
       if (body.action === 'list_audit') {
         const limit = Math.min(Number(body.limit ?? 200) || 200, 500)
         let rows: any[] = []
         let res = await db.from('audit_log').select('*').order('created_at', { ascending: false }).limit(limit)
         if (res.error) res = await db.from('audit_log').select('*').order('id', { ascending: false }).limit(limit)
         if (!res.error) rows = res.data ?? []
+        // El monitoreo del EQUIPO es del dueño. Con la sección "Dashboard", un
+        // colaborador veía las IPs, la ubicación y el navegador del dueño, y la
+        // lista de países e IPs desde los que se puede entrar al panel. A quien
+        // no es dueño ni de Cumplimiento se le quitan los registros de ingreso,
+        // seguridad y equipo.
+        const rolAud = String(auth.acceso?.rol ?? '')
+        if (rolAud !== 'dueno' && rolAud !== 'cumplimiento') {
+          rows = rows.filter((r: any) => !/^(auth|security|equipo)\./.test(String(r?.action ?? '')))
+        }
         return json({ ok: true, audit: rows })
       }
 
       if (body.action === 'save_config') {
         const { settings } = body
-        if (!settings) return json({ error: 'Missing settings' }, 400)
+        if (!settings || typeof settings !== 'object') return json({ error: 'Missing settings' }, 400)
+        // Lo que administra el servidor con su propia acción (y su auditoría)
+        // no se toma de la pantalla: se conserva lo de la base. save_config
+        // guarda el objeto ENTERO que tiene el navegador, y con una copia
+        // vieja (cualquier guardado automático, como las tasas) pisaba el saldo
+        // de las cuentas de tesorería que tesoreria_movimiento acababa de
+        // mover, o volvía a abrir un riel de Coinsenda que se había cerrado.
+        try {
+          const { data: actual } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          const enBase = ((actual as any)?.settings ?? {}) as Record<string, unknown>
+          for (const k of CLAVES_CONFIG_DEL_SERVIDOR) {
+            if (k in enBase) (settings as Record<string, unknown>)[k] = enBase[k]
+            else delete (settings as Record<string, unknown>)[k]
+          }
+        } catch { return json({ error: 'No se pudo leer la configuración actual. No se guardó nada.' }, 500) }
         const { error } = await db.from('app_config').upsert({ id: 1, settings })
         if (error) return json({ error: error.message }, 500)
         return json({ ok: true })
@@ -568,6 +5987,7 @@ Deno.serve(async (req: Request) => {
           .update({ kyc_status: body.kycStatus })
           .eq('id', body.userId)
         if (kycErr) return json({ error: kycErr.message }, 500)
+        await auditAdmin(req, 'admin.set_kyc_status', { userId: body.userId, kycStatus: body.kycStatus })
         return json({ success: true })
       }
 
@@ -576,7 +5996,18 @@ Deno.serve(async (req: Request) => {
 
         // 0. Read gasfreeHdIndex + email/rol BEFORE deleting (para el counter y
         //    para el registro DURABLE de auditoría de quién borró a quién).
-        const { data: deletedUser } = await db.from('users').select('raw_data, email, role').eq('id', uid).single()
+        const { data: deletedUser } = await db.from('users').select('raw_data, email, role, balances, crypto_balances').eq('id', uid).single()
+        // Una cuenta con SALDO no se borra: con ella se irían sus movimientos
+        // y la plata del cliente quedaría sin dueño en los libros. Primero se
+        // le devuelve o se mueve el saldo.
+        {
+          const conSaldo = [(deletedUser as any)?.balances, (deletedUser as any)?.crypto_balances]
+            .flatMap(b => b && typeof b === 'object' ? Object.entries(b as Record<string, unknown>) : [])
+            .filter(([, v]) => Math.abs(Number(v) || 0) >= 0.01)
+          if (conSaldo.length) {
+            return json({ success: false, error: `Esta cuenta todavía tiene saldo (${conSaldo.map(([k, v]) => `${k} ${Number(v).toLocaleString('es-CO')}`).join(', ')}). Devuélvelo o muévelo antes de eliminarla.` }, 409)
+          }
+        }
         const deletedIndex: number | undefined = deletedUser?.raw_data?.gasfreeHdIndex
         await auditAdmin(req, 'admin.delete_user', {
           deletedUserId: uid,
@@ -622,6 +6053,38 @@ Deno.serve(async (req: Request) => {
         return json({ success: true })
       }
 
+      // ── Cambiar el correo de ACCESO de un cliente ──────────────────────
+      // El correo es con lo que el cliente entra y adonde llegan sus códigos,
+      // los avisos de ingreso y la recuperación de contraseña: cambiarlo es
+      // cambiar QUIÉN controla la cuenta. Por eso: solo el dueño (no figura en
+      // PERMISO), código de la app en cada cambio (ACCIONES_CON_CODIGO), nunca
+      // sobre una cuenta del panel, y aviso al correo ANTERIOR. Se cambia en
+      // los dos lados —la cuenta de acceso (Auth) y el perfil (users)—: si
+      // solo cambiaba uno, el cliente quedaba entrando con un correo y
+      // recibiendo los códigos en otro.
+      //
+      // Si el correo nuevo ya es de otra cuenta, no se pisa: primero se
+      // elimina esa (o se libera con «Liberar correo» si quedó solo el acceso).
+      if (body.action === 'cliente_cambiar_correo') {
+        const uidC = String(body.userId ?? '')
+        const nuevo = String(body.email ?? '').trim().toLowerCase()
+        if (!UUID_RE.test(uidC)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
+        if (nuevo.length > 120 || !CORREO_RE.test(nuevo)) return json({ ok: false, error: 'Escribe un correo válido.' }, 400)
+        const { data: filaC } = await db.from('users').select('id, email, role, full_name').eq('id', uidC).maybeSingle()
+        if (!filaC) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+        if ((filaC as any).role === 'admin') return json({ ok: false, error: 'Las cuentas del panel no se cambian desde aquí.' }, 400)
+        const anterior = String((filaC as any).email ?? '').trim().toLowerCase()
+        if (anterior === nuevo) return json({ ok: true, email: nuevo, sinCambio: true })
+        const ocupado = await correoOcupado(nuevo, uidC)
+        if (ocupado) return json({ ok: false, error: `${ocupado} Elimina esa cuenta (o libera el correo con «Liberar correo») y vuelve a intentar.` }, 409)
+        const fallo = await cambiarCorreoAcceso(uidC, anterior, nuevo)
+        if (fallo) return json({ ok: false, error: fallo }, 500)
+        const aviso = await soltarIdentidades(uidC, anterior, nuevo)
+        await auditAdmin(req, 'admin.cliente_cambiar_correo', { userId: uidC, anterior, nuevo, aviso })
+        await avisarCambioCorreo(anterior, nuevo, String((filaC as any).full_name ?? ''))
+        return json({ ok: true, email: nuevo, anterior, aviso })
+      }
+
       // Libera un correo "huérfano": borra el usuario de Supabase Auth que
       // tenga ese email (y cualquier fila de public.users que haya quedado,
       // por si acaso) aunque ya no exista perfil — para cuando un delete
@@ -630,6 +6093,20 @@ Deno.serve(async (req: Request) => {
       // registro nuevo sin que nadie lo notara.
       if (body.action === 'force_delete_by_email' && body.email) {
         const email = String(body.email).trim().toLowerCase()
+        // Es para liberar un correo que quedó a medias (cuenta de acceso sin
+        // perfil, o perfil vacío). Antes borraba el perfil sin mirar nada: una
+        // cuenta CON SALDO o del equipo se iba sin dejar rastro, saltándose la
+        // regla de delete_user (no se borra una cuenta con saldo).
+        {
+          const { data: perfil } = await db.from('users').select('id, role, balances, crypto_balances').eq('email', email).maybeSingle()
+          if (perfil) {
+            const conPlata = [...Object.values(((perfil as any).balances ?? {}) as Record<string, unknown>), ...Object.values(((perfil as any).crypto_balances ?? {}) as Record<string, unknown>)]
+              .some(v => Math.abs(Number(v) || 0) > 0)
+            if (conPlata) return json({ error: 'Esa cuenta tiene saldo: no se borra por aquí.' }, 400)
+            if ((perfil as any).role === 'admin') return json({ error: 'Esa cuenta es del equipo: quítala desde Seguridad → Equipo.' }, 400)
+          }
+          await auditAdmin(req, 'usuario.borrado_por_correo', { email, perfil: perfil ? String((perfil as any).id) : null })
+        }
         await db.from('users').delete().eq('email', email)
         let found: any = null
         for (let page = 1; page <= 20 && !found; page++) {
@@ -644,22 +6121,1305 @@ Deno.serve(async (req: Request) => {
         return json({ success: true, deletedAuthUserId: found.id })
       }
 
-      // Manually credit or debit a user's crypto balance
+      // Acreditar o descontar a mano el saldo de dólares o euros digitales de un
+      // cliente. Mismos candados que el cargue en pesos: solo USDC y EURC, el
+      // código 2FA del admin para ESTA operación, un id por operación para que
+      // un reintento no acredite dos veces, y constancia en la auditoría.
       if (body.action === 'admin_credit_crypto' && body.userId && body.currency && body.amount != null) {
-        const { data: u } = await db.from('users').select('crypto_balances').eq('id', body.userId).single()
-        const bals: Record<string, number> = (u?.crypto_balances as any) ?? {}
-        const cur: string = body.currency
+        const cur = String(body.currency).toUpperCase()
+        if (!['USDC', 'EURC'].includes(cur)) return json({ success: false, error: 'Solo se pueden ajustar saldos de USDC o EURC.' }, 400)
         const delta: number = parseFloat(body.amount)
-        const newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + delta).toFixed(8))
-        await db.from('users').update({ crypto_balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
-        if (delta > 0) {
-          await db.from('transactions').insert({
-            user_id: body.userId, type: 'otc_deposit', amount: delta, currency: body.currency,
-            status: 'Completado',
-            raw_data: { source: 'admin_manual', note: body.note ?? 'Depósito acreditado manualmente por admin', creditedAt: new Date().toISOString() },
-          })
+        if (!isFinite(delta) || delta === 0 || Math.abs(delta) > 10_000_000) return json({ success: false, error: 'Monto inválido' }, 400)
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ success: false, error: otpErr, needs2fa: true }, 403)
+        const opId = String(body.opId ?? body.cargueId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claveOp = opId ? `cripto:${body.userId}:${opId}` : ''
+        if (claveOp) {
+          const c = await reclamarCandado(db, claveOp, 86_400, String(auth.userId ?? ''), 'admin_credit_crypto')
+          if (c === 'ocupado') return json({ success: false, duplicado: true, error: 'Esta operación ya se aplicó (o se está aplicando). Revisa el saldo antes de repetirla.' }, 409)
+          if (c === 'error') return json({ success: false, error: 'No se pudo asegurar la operación contra duplicados. No se aplicó nada; intenta de nuevo.' }, 503)
         }
+        // Suma ATÓMICA en la base. Antes: leer todos los saldos cripto, sumar y
+        // escribir el objeto entero — un movimiento cripto del cliente en el
+        // medio se deshacía, y un descuento mayor al saldo quedaba en 0 sin
+        // avisar.
+        const { data: adjC, error: adjCErr } = await db.rpc('adjust_balances', { p_user_id: body.userId, p_fiat: {}, p_crypto: { [cur]: delta } })
+        if (adjCErr) {
+          await auditAdmin(req, 'admin.cripto_saldo_incierto', { userId: body.userId, currency: cur, delta, error: adjCErr.message })
+          return json({ success: false, error: 'No hubo respuesta clara al aplicar el saldo. Revisa el saldo del cliente ANTES de repetir.' }, 502)
+        }
+        if ((adjC as any)?.error) {
+          if (claveOp) await soltarCandado(db, claveOp)
+          return json({ success: false, error: (adjC as any).error === 'insufficient' ? 'El cliente no tiene saldo suficiente para ese descuento. No se cambió nada.' : 'No se pudo aplicar el saldo. No se cambió nada.' }, 400)
+        }
+        const newBal = Number((adjC as any)?.crypto_balances?.[cur] ?? (adjC as any)?.balances?.[cur] ?? 0)
+        await db.from('transactions').insert({
+          user_id: body.userId, type: delta > 0 ? 'otc_deposit' : 'adjustment', amount: Math.abs(delta), currency: cur,
+          status: 'Completado',
+          raw_data: { source: 'admin_manual', direction: delta > 0 ? 'credit' : 'debit', note: String(body.note ?? (delta > 0 ? 'Depósito acreditado manualmente' : 'Ajuste manual')).slice(0, 300), creditedAt: new Date().toISOString(), opId: opId || null },
+        })
+        await auditAdmin(req, 'admin.ajuste_cripto', { userId: body.userId, currency: cur, delta, nuevoSaldo: newBal, opId: opId || null })
         return json({ success: true, newBalance: newBal })
+      }
+
+      // ── Caja de Lincoin ──────────────────────────────────────────────
+      if (body.action === 'caja_estado') {
+        const esDuenoC = (auth.acceso?.rol ?? 'lectura') === 'dueno'
+        const proveedores = await estadoCaja()
+        // Cargues con la contabilidad sospechosa (tasa de venta absurda o
+        // utilidad muy negativa): solo el dueño, para revisarlos u ocultarlos.
+        let sospechosas: unknown[] = []
+        if (esDuenoC) {
+          const { data: sus } = await db.from('transactions')
+            .select('id, created_at, user_id, currency, amount, acct:raw_data->acct')
+            .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+            .is('raw_data->oculto', null).not('raw_data->acct', 'is', null)
+            .order('created_at', { ascending: false }).limit(2000)
+          const malas = ((sus ?? []) as any[]).filter(t => {
+            const a = t.acct ?? {}
+            return (Number(a.sellRate) > 0 && Number(a.sellRate) < 1000) || Number(a.utilityCop) < -1_000_000
+          }).slice(0, 10)
+          const ids = Array.from(new Set(malas.map(t => String(t.user_id))))
+          const nombres: Record<string, string> = {}
+          if (ids.length) {
+            const { data: us } = await db.from('users').select('id, full_name, company_name, email').in('id', ids)
+            for (const u of (us ?? []) as any[]) nombres[String(u.id)] = String(u.company_name || u.full_name || u.email || '—')
+          }
+          sospechosas = malas.map(t => ({ id: t.id, at: t.created_at, cliente: nombres[String(t.user_id)] ?? '—', proveedor: provDeRiel(t.currency) ?? 'Saldo Lincoin', monto: Number(t.amount) || 0, acct: t.acct }))
+        }
+        const { count: ocultos } = await db.from('transactions').select('id', { count: 'exact', head: true }).not('raw_data->oculto', 'is', null)
+        return json({ ok: true, proveedores, sospechosas, ocultos: ocultos ?? 0 })
+      }
+
+      // ── Tablero de Lincoin ───────────────────────────────────────────
+      // Utilidades por fuente y por día (del periodo), los movimientos de
+      // Lincoin del periodo y el saldo por bolsa desde la apertura.
+      if (body.action === 'lincoin_resumen') {
+        const esDuenoL = (auth.acceso?.rol ?? 'lectura') === 'dueno'
+        const yoIdL = String(auth.userId ?? '')
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+        const hoy = hoyBogota()
+        const desde = esYmd(body.desde) ? String(body.desde) : `${hoy.slice(0, 7)}-01`
+        const hasta = esYmd(body.hasta) ? String(body.hasta) : hoy
+        if (desde > hasta) return json({ ok: false, error: 'El inicio va después del final.' }, 400)
+        const nDias = Math.round((Date.parse(hasta) - Date.parse(desde)) / 86_400_000) + 1
+        if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
+        const aUtc = (ymd: string, fin = false) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 5 * 3600_000 + (fin ? 86_400_000 : 0)).toISOString()
+        const { filas } = await leerPorPaginas(() => db.from('transactions')
+          .select(`id, created_at, currency, user_id, ${SELECT_UTILIDAD}`)
+          .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+          .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 100_000 })
+        const fuente = (c: unknown) => provDeRiel(c) ?? 'Saldo Lincoin'
+        const porFuente: Record<string, { total: number; cargues: number; conContabilidad: number }> = {}
+        const porDia: Record<string, Record<string, number>> = {}
+        // Cuánto le dejó a Lincoin cada cliente en el periodo: la misma
+        // utilidad de los cargues, agrupada por quién cargó.
+        const porCliente: Record<string, { total: number; cargues: number; conContabilidad: number; fuentes: Record<string, number> }> = {}
+        for (const t of filas as any[]) {
+          if (!String(t.currency ?? '').toUpperCase().startsWith('COP')) continue
+          const f = fuente(t.currency)
+          const x = (porFuente[f] ??= { total: 0, cargues: 0, conContabilidad: 0 })
+          const c = (porCliente[String(t.user_id ?? '')] ??= { total: 0, cargues: 0, conContabilidad: 0, fuentes: {} })
+          x.cargues++
+          c.cargues++
+          if (t.oculto) continue
+          if (t.utilidad != null && t.utilidad !== '') { x.conContabilidad++; c.conContabilidad++ }
+          const u = utilidadLincoin(t)
+          x.total += u
+          c.total += u
+          c.fuentes[f] = (c.fuentes[f] ?? 0) + u
+          const dia = fechaBogota(String(t.created_at))
+          ;(porDia[dia] ??= {})[f] = ((porDia[dia] ?? {})[f] ?? 0) + u
+        }
+        const idsCli = Object.keys(porCliente).filter(Boolean)
+        const fichaCli: Record<string, { nombre: string; empresa: boolean }> = {}
+        for (let i = 0; i < idsCli.length; i += 200) {
+          const { data: us } = await db.from('users').select('id, full_name, company_name, email, role').in('id', idsCli.slice(i, i + 200))
+          for (const u of (us ?? []) as any[]) fichaCli[String(u.id)] = { nombre: String(u.company_name || u.full_name || u.email || '—'), empresa: u.role === 'business' }
+        }
+        const clientes = idsCli
+          .map(id => ({ id, nombre: fichaCli[id]?.nombre ?? 'Cliente eliminado', empresa: fichaCli[id]?.empresa ?? false, ...porCliente[id],
+            total: Math.round(porCliente[id].total), fuentes: Object.fromEntries(Object.entries(porCliente[id].fuentes).map(([k, v]) => [k, Math.round(v)])) }))
+          .sort((a, b) => b.total - a.total)
+        const movs = await movimientosCaja(desde, hasta)
+        // Un envío que el proveedor rechazó o devolvió lo anula el sistema solo.
+        const quien = (a: any) => !a ? '—' : a.sistema ? 'Lincoin (automático)' : esDuenoL ? String(a.nombre || a.email || 'admin') : (String(a.id ?? '') === yoIdL ? 'Tú' : 'Equipo')
+        return json({
+          ok: true, desde, hasta,
+          fuentes: ['Finity', 'Mouv', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
+          porDia: nDias <= 92 ? porDia : null,
+          clientes,
+          cajaMes: await cajaDelMes(desde, hasta, aUtc(desde), aUtc(hasta, true)),
+          movimientos: movs.map(m => ({ id: m.id, fecha: m.fecha, tipo: m.tipo, proveedor: m.proveedor, monto: Number(m.monto), descripcion: m.descripcion,
+            soporte: m.soporte_nombre ?? null, por: quien(m.por), esMio: String(m.por?.id ?? '') === yoIdL,
+            envio: m.envio ? { estado: m.envio.estado ?? null, titular: m.envio.titular ?? null, llave: m.envio.llave ?? null, ref: m.envio.ref ?? null, costoDe: m.envio.costoDe ?? null, detalle: m.envio.detalle ?? null } : null,
+            anulado: m.anulado ? { motivo: m.anulado.motivo, por: quien(m.anulado.por), at: m.anulado.at } : null })),
+          caja: await estadoCaja(),
+        })
+      }
+
+      // ── Reporte financiero (Reportes → Resumen financiero) ────────────
+      // Antes esa pestaña sumaba en el navegador la lista del panel (que ya no
+      // trae toda la base), mostraba "+12.5% vs mes anterior" escrito a mano y
+      // una gráfica vacía. Aquí se calcula todo en el servidor, de la base
+      // entera, con las mismas reglas que el resto del panel:
+      //   · Margen de los cargues: la utilidad de su contabilidad (acct). Un
+      //     cargue en pérdida va aparte, como gasto, para que se vea.
+      //   · Costo Mouv: el 0,10 % de Bre-B en los cargues a Mouv (el mismo que
+      //     resta utilidadLincoin: es de Mouv, no de Lincoin).
+      //   · Envíos: la comisión cobrada al cliente es ingreso; el costo del
+      //     proveedor (costoProveedorCop, cuando quedó registrado) es gasto.
+      //   · Caja de Lincoin: los "egresos" son gastos y los "ingresos"
+      //     externos, ingresos. Retiros (utilidad que sale a la empresa) y
+      //     aportes NO son resultado: se muestran aparte.
+      // periodo: 'dia' | 'mes' | 'anio' con una fecha (YYYY-MM-DD) dentro del
+      // periodo. userId: solo ese cliente (sin la caja, que no es de nadie).
+      // Se compara con el MISMO tramo del periodo anterior (el mes en curso,
+      // del 1 a hoy, contra el 1 al mismo día del mes pasado): comparar medio
+      // mes contra un mes entero siempre "bajaba".
+      if (body.action === 'reporte_financiero') {
+        const accR: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const TZ = 5 * 3600_000
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const periodo = (['dia', 'mes', 'anio'] as const).includes(body.periodo) ? body.periodo as 'dia' | 'mes' | 'anio' : 'mes'
+        const ancla = esYmd(body.fecha) ? String(body.fecha) : hoy
+        if (ancla > hoy) return json({ ok: false, error: 'Esa fecha todavía no llega.' }, 400)
+        const ymd = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+        const finDeMes = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate()
+        const rangoDe = (p: 'dia' | 'mes' | 'anio', f: string) => {
+          const y = Number(f.slice(0, 4)), m = Number(f.slice(5, 7)) - 1
+          if (p === 'dia') return { desde: f, hasta: f }
+          if (p === 'mes') return { desde: `${f.slice(0, 7)}-01`, hasta: `${f.slice(0, 7)}-${String(finDeMes(y, m)).padStart(2, '0')}` }
+          return { desde: `${y}-01-01`, hasta: `${y}-12-31` }
+        }
+        // Instantes UTC de un día de Bogotá.
+        const ini = (f: string) => Date.parse(`${f}T00:00:00Z`) + TZ
+        const fin = (f: string) => ini(f) + 86_400_000
+        const actual = rangoDe(periodo, ancla)
+        const tIni = ini(actual.desde)
+        const tFin = Math.min(fin(actual.hasta), Date.now())
+        // El periodo anterior y el mismo tramo dentro de él.
+        const y0 = Number(actual.desde.slice(0, 4)), m0 = Number(actual.desde.slice(5, 7)) - 1
+        const antDesde = periodo === 'dia' ? ymd(Date.parse(`${actual.desde}T00:00:00Z`) - 86_400_000)
+          : periodo === 'mes' ? ymd(Date.UTC(m0 === 0 ? y0 - 1 : y0, m0 === 0 ? 11 : m0 - 1, 1))
+          : `${y0 - 1}-01-01`
+        const antRango = rangoDe(periodo, antDesde)
+        const tAntIni = ini(antRango.desde)
+        const tAntFin = Math.min(fin(antRango.hasta), tAntIni + (tFin - tIni))
+
+        // Un solo cliente: con sus filas duplicadas del mismo correo.
+        const uidR = String(body.userId ?? '')
+        let idsR: string[] | null = null
+        if (uidR) {
+          if (!UUID_RE.test(uidR)) return json({ ok: false, error: 'Cliente inválido.' }, 400)
+          idsR = await idsMismaPersona(uidR)
+        }
+        const visibleR = (t: any) => accR.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.rail } }), accR)
+        const esCopR = (c: unknown) => String(c ?? '').toUpperCase().startsWith('COP')
+        const fuenteDe = (c: unknown) => provDeRiel(c) ?? 'Saldo Lincoin'
+        const FUENTES = ['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin']
+
+        // Las partidas. Todo en COP y sin decimales al final.
+        const vacia = () => ({
+          margenCargues: 0, comisionesEnvios: 0, otrosIngresos: 0,
+          perdidaCargues: 0, costoMouv: 0, costoEnvios: 0, egresos: 0,
+          entradas: 0, salidas: 0, nEntradas: 0, nSalidas: 0, nCargues: 0, nEnvios: 0,
+        })
+        type Partidas = ReturnType<typeof vacia>
+        const ingresosDe = (p: Partidas) => p.margenCargues + p.comisionesEnvios + p.otrosIngresos
+        const gastosDe = (p: Partidas) => p.perdidaCargues + p.costoMouv + p.costoEnvios + p.egresos
+        const cerrar = (p: Partidas) => {
+          const r = Object.fromEntries(Object.entries(p).map(([k, v]) => [k, Math.round(v)])) as Partidas
+          return { ...r, ingresos: Math.round(ingresosDe(p)), gastos: Math.round(gastosDe(p)), utilidad: Math.round(ingresosDe(p) - gastosDe(p)) }
+        }
+
+        const leerMovs = (desdeIso: string, hastaIso: string) => leerPorPaginas(() => {
+          let q = db.from('transactions')
+            .select(`id, created_at, type, currency, amount, user_id, rail:raw_data->>rail, source:raw_data->>source, feeCop:raw_data->>feeCop, costo:raw_data->>costoProveedorCop, ${SELECT_UTILIDAD}`)
+            .in('type', ['load', 'dispersion']).eq('status', 'Completado')
+            .gte('created_at', desdeIso).lt('created_at', hastaIso)
+          if (idsR) q = q.in('user_id', idsR)
+          return q
+        }, { tope: 120_000 })
+
+        // Suma un periodo. Con detalle: por tramo (hora/día/mes), por fuente y
+        // por cliente; sin detalle (el periodo anterior) solo el total.
+        const nTramos = periodo === 'dia' ? 24 : periodo === 'mes' ? finDeMes(y0, m0) : 12
+        const tramoDe = (iso: string) => {
+          const local = new Date(Date.parse(iso) - TZ)
+          return periodo === 'dia' ? local.getUTCHours() : periodo === 'mes' ? local.getUTCDate() - 1 : local.getUTCMonth()
+        }
+        const calcular = async (tA: number, tB: number, conDetalle: boolean) => {
+          const total = vacia()
+          const tramos = conDetalle ? Array.from({ length: nTramos }, vacia) : []
+          const porFuente: Record<string, Partidas> = {}
+          const porCliente: Record<string, Partidas> = {}
+          let cargSinCont = 0, enviosSinCosto = 0, nPerdida = 0
+          const { filas, truncado } = await leerMovs(new Date(tA).toISOString(), new Date(tB).toISOString())
+          for (const t of filas as any[]) {
+            if (!esCopR(t.currency) || !visibleR(t)) continue
+            const sumar = (fn: (p: Partidas) => void) => {
+              fn(total)
+              if (!conDetalle) return
+              const i = Math.max(0, Math.min(nTramos - 1, tramoDe(String(t.created_at))))
+              fn(tramos[i]); fn(porFuente[fuenteDe(t.currency)] ??= vacia()); fn(porCliente[String(t.user_id)] ??= vacia())
+            }
+            const monto = Math.abs(Number(t.amount) || 0)
+            if (t.type === 'load') {
+              sumar(p => { p.entradas += monto; p.nEntradas++ })
+              if (t.source !== 'admin_cargue') continue
+              sumar(p => { p.nCargues++ })
+              // Oculto (contabilidad sospechosa) o sin contabilidad: no suma.
+              if (t.oculto) continue
+              if (t.utilidad == null || t.utilidad === '' || !isFinite(Number(t.utilidad))) { cargSinCont++; continue }
+              const u = Number(t.utilidad)
+              const mouv = String(t.currency).toUpperCase() === 'COP_BREB' ? (Number(t.feeBreb) || 0) : 0
+              if (u < 0) nPerdida++
+              sumar(p => { if (u >= 0) p.margenCargues += u; else p.perdidaCargues += -u; p.costoMouv += mouv })
+            } else {
+              const fee = Number(t.feeCop) || 0
+              const costo = t.costo == null || t.costo === '' ? null : Number(t.costo) || 0
+              if (costo == null && fee > 0) enviosSinCosto++
+              sumar(p => { p.salidas += monto; p.nSalidas++; p.nEnvios++; p.comisionesEnvios += fee; p.costoEnvios += costo ?? 0 })
+            }
+          }
+          // La caja de Lincoin: solo en el reporte general (no es de un cliente).
+          const caja = { retiros: 0, aportes: 0, nEgresos: 0, gastos: [] as any[] }
+          if (!idsR) {
+            const dA = ymd(tA - TZ), dB = ymd(tB - 1 - TZ)
+            const movs = (await movimientosCaja(dA, dB)).filter(m => !m.anulado)
+            for (const m of movs) {
+              const monto = Number(m.monto) || 0
+              // Los movimientos de caja llevan fecha (sin hora): en el reporte
+              // de un día van a la hora en que se registraron.
+              const iso = periodo === 'dia' && m.creado_at && fechaBogota(String(m.creado_at)) === String(m.fecha) ? String(m.creado_at) : `${m.fecha}T17:00:00Z`
+              const aTramo = (fn: (p: Partidas) => void) => { fn(total); if (conDetalle) { fn(tramos[Math.max(0, Math.min(nTramos - 1, tramoDe(iso)))]); fn(porFuente[String(m.proveedor)] ??= vacia()) } }
+              if (m.tipo === 'egreso') { aTramo(p => { p.egresos += monto }); caja.nEgresos++; if (conDetalle) caja.gastos.push({ id: m.id, fecha: m.fecha, proveedor: m.proveedor, monto: Math.round(monto), descripcion: m.descripcion ?? '' }) }
+              else if (m.tipo === 'ingreso') aTramo(p => { p.otrosIngresos += monto })
+              else if (m.tipo === 'retiro') caja.retiros += monto
+              else if (m.tipo === 'aporte') caja.aportes += monto
+            }
+          }
+          return { total, tramos, porFuente, porCliente, cargSinCont, enviosSinCosto, nPerdida, truncado, caja }
+        }
+
+        let act: Awaited<ReturnType<typeof calcular>>, ant: Awaited<ReturnType<typeof calcular>> | null = null
+        try {
+          ;[act, ant] = await Promise.all([calcular(tIni, tFin, true), tAntFin > tAntIni ? calcular(tAntIni, tAntFin, false) : Promise.resolve(null)])
+        } catch (e) {
+          return json({ ok: false, error: `No se pudieron leer los movimientos: ${(e as Error).message}` }, 500)
+        }
+
+        // Nombres de los clientes que aparecen.
+        const idsCli = Object.keys(act.porCliente).filter(id => UUID_RE.test(id))
+        const ficha: Record<string, { nombre: string; email: string | null; empresa: boolean }> = {}
+        for (let i = 0; i < idsCli.length; i += 200) {
+          const { data: us } = await db.from('users').select('id, full_name, company_name, email, role').in('id', idsCli.slice(i, i + 200))
+          for (const u of (us ?? []) as any[]) ficha[String(u.id)] = { nombre: String(u.company_name || u.full_name || u.email || '—'), email: u.email ?? null, empresa: u.role === 'business' }
+        }
+        const clientes = idsCli.map(id => ({ id, nombre: ficha[id]?.nombre ?? 'Cliente eliminado', email: ficha[id]?.email ?? null, empresa: ficha[id]?.empresa ?? false, ...cerrar(act.porCliente[id]) }))
+          .sort((a, b) => b.utilidad - a.utilidad || (b.entradas + b.salidas) - (a.entradas + a.salidas))
+        let cliente: any = null
+        if (uidR) {
+          const { data: u } = await db.from('users').select('id, full_name, company_name, email, role').eq('id', uidR).maybeSingle()
+          cliente = u ? { id: uidR, nombre: String((u as any).company_name || (u as any).full_name || (u as any).email || '—'), email: (u as any).email ?? null, empresa: (u as any).role === 'business' } : { id: uidR, nombre: 'Cliente eliminado', email: null, empresa: false }
+        }
+        const tot = cerrar(act.total)
+        return json({
+          ok: true, generado_at: new Date().toISOString(), hoy,
+          periodo, desde: actual.desde, hasta: actual.hasta,
+          // Hasta dónde se contó: en el periodo en curso, hasta ahora.
+          corte: new Date(tFin).toISOString(), enCurso: tFin < fin(actual.hasta),
+          anterior: ant ? { desde: antRango.desde, hasta: ymd(tAntFin - 1 - TZ), completo: tAntFin >= fin(antRango.hasta), ...cerrar(ant.total) } : null,
+          cliente,
+          totales: tot,
+          tramos: act.tramos.map((p, i) => ({ i, ...cerrar(p) })),
+          fuentes: FUENTES.map(n => ({ fuente: n, ...cerrar(act.porFuente[n] ?? vacia()) })),
+          clientes: clientes.slice(0, 300), nClientes: clientes.length,
+          caja: { retiros: Math.round(act.caja.retiros), aportes: Math.round(act.caja.aportes), gastos: act.caja.gastos.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha))) },
+          avisos: { carguesSinContabilidad: act.cargSinCont, enviosSinCosto: act.enviosSinCosto, carguesEnPerdida: act.nPerdida, parcial: act.truncado || !!ant?.truncado },
+        })
+      }
+
+      // Registrar un movimiento de Lincoin (retiro, egreso/ingreso externo o
+      // aporte). El dueño y Tesorería; queda quién lo hizo.
+      if (body.action === 'caja_movimiento_crear') {
+        const tipo = String(body.tipo ?? '')
+        const prov = String(body.proveedor ?? '')
+        const monto = Number(body.monto)
+        const fecha = String(body.fecha ?? '')
+        const descripcion = String(body.descripcion ?? '').trim().slice(0, 300)
+        if (!(tipo in SIGNO_MOV)) return json({ ok: false, error: 'Tipo inválido' }, 400)
+        if (!CAJA.some(c => c.proveedor === prov)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
+        if (!isFinite(monto) || monto <= 0) return json({ ok: false, error: 'Monto inválido' }, 400)
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fecha > hoyBogota()) return json({ ok: false, error: 'Fecha inválida' }, 400)
+        if (descripcion.length < 3) return json({ ok: false, error: 'Escribe una descripción.' }, 400)
+        // Solo imagen o PDF en base64. Antes bastaba con que empezara por
+        // "data:", y el panel lo abría escribiéndolo dentro de una página:
+        // un "comprobante" con HTML (data:,x"><img onerror=…>) corría como
+        // script en lincoin.me cuando el dueño lo abría y se llevaba su sesión.
+        const soporteCrudo = typeof body.soporte === 'string' ? body.soporte : ''
+        if (soporteCrudo && !/^data:(image\/(png|jpeg|webp)|application\/pdf);base64,[A-Za-z0-9+/=]+$/.test(soporteCrudo)) {
+          return json({ ok: false, error: 'El comprobante tiene que ser una imagen (PNG, JPG o WEBP) o un PDF.' }, 400)
+        }
+        const soporte = soporteCrudo || null
+        if (soporte && soporte.length > 4_000_000) return json({ ok: false, error: 'El comprobante pesa demasiado (máx. ~3 MB).' }, 400)
+        const por = await autorDe(auth)
+        const { data: ins, error } = await db.from('caja_movimientos').insert({
+          fecha, tipo, proveedor: prov, monto, descripcion, soporte, soporte_nombre: soporte ? String(body.soporteNombre ?? 'comprobante').slice(0, 120) : null, por,
+        }).select('id').single()
+        if (error) return errorGenerico('caja_movimiento_crear', error)
+        await auditAdmin(req, 'caja.movimiento', { id: (ins as any)?.id, tipo, proveedor: prov, monto, fecha, descripcion })
+        return json({ ok: true, id: (ins as any)?.id })
+      }
+
+      // Anular un movimiento de Lincoin (no se borra). Solo el dueño.
+      if (body.action === 'caja_movimiento_anular') {
+        const id = String(body.id ?? '')
+        const motivo = String(body.motivo ?? '').trim().slice(0, 300)
+        if (!UUID_RE.test(id)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        if (motivo.length < 5) return json({ ok: false, error: 'Escribe el motivo.' }, 400)
+        const { data: upd, error } = await db.from('caja_movimientos').update({ anulado: { motivo, por: await autorDe(auth), at: new Date().toISOString() } }).eq('id', id).is('anulado', null).select('id')
+        if (error) return errorGenerico('caja_movimiento_anular', error)
+        if (!upd?.length) return json({ ok: false, error: 'Ese movimiento no existe o ya estaba anulado.' }, 404)
+        await auditAdmin(req, 'caja.movimiento_anulado', { id, motivo })
+        return json({ ok: true })
+      }
+
+      // ── Llaves Bre-B de Lincoin ────────────────────────────────────────
+      if (body.action === 'caja_llaves_get') {
+        const llaves = await llavesLincoin()
+        return json({ ok: true, llaves: llaves.map(l => ({ id: l.id, alias: l.alias ?? null, llave: l.llave, tipo: l.tipo ?? null, titular: l.titular, documento: l.documento, banco: l.banco ?? null, at: l.at ?? null })) })
+      }
+      // A nombre de quién está una llave, antes de inscribirla. Solo el dueño.
+      if (body.action === 'caja_llave_consultar') {
+        const llave = String(body.llave ?? '').trim().slice(0, 120)
+        if (llave.length < 3) return json({ ok: false, error: 'Escribe la llave.' }, 400)
+        const r = await mouvInterno({ action: 'lincoin_llave', llave, por: auth.userId ?? null }, 30_000)
+        if (r?.sinRespuesta) return json({ ok: false, error: 'No se pudo consultar el directorio Bre-B. Intenta de nuevo.' }, 502)
+        if (!r?.ok) return json({ ok: false, error: r?.message ?? 'No se pudo consultar la llave.' }, 502)
+        if (!r.encontrada) return json({ ok: false, error: 'Esa llave no aparece en Bre-B. Revísala.' }, 404)
+        return json({ ok: true, llave: r.llave, tipo: r.tipo, titular: r.titular, documento: r.documento, banco: r.banco })
+      }
+      // Inscribir una llave de Lincoin: el servidor vuelve a consultar el
+      // titular (no se confía en lo que mande la pantalla). Solo el dueño,
+      // con su código 2FA.
+      if (body.action === 'caja_llave_inscribir') {
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+        const llave = String(body.llave ?? '').trim().slice(0, 120)
+        const alias = String(body.alias ?? '').trim().slice(0, 60)
+        const r = await mouvInterno({ action: 'lincoin_llave', llave, por: auth.userId ?? null }, 30_000)
+        if (!r?.ok || !r.encontrada) return json({ ok: false, error: r?.message ?? 'Esa llave no aparece en Bre-B. Revísala.' }, 400)
+        if (!r.documento || !r.titular) return json({ ok: false, error: 'El directorio no dio el titular y el documento de esa llave, así que no se puede inscribir.' }, 400)
+        const llaves = await llavesLincoin()
+        if (llaves.some(l => String(l.llave) === String(r.llave))) return json({ ok: false, error: 'Esa llave ya está inscrita.' }, 409)
+        if (llaves.length >= 10) return json({ ok: false, error: 'Ya hay 10 llaves inscritas. Quita una para inscribir otra.' }, 400)
+        const nueva = { id: crypto.randomUUID(), llave: String(r.llave), tipo: r.tipo ?? null, titular: String(r.titular), documento: String(r.documento), banco: r.banco ?? null, alias: alias || null, por: await autorDe(auth), at: new Date().toISOString() }
+        const err = await guardarLlavesLincoin([...llaves, nueva])
+        if (err) return errorGenerico('caja_llave_inscribir', { message: err })
+        await auditAdmin(req, 'caja.llave_inscrita', { id: nueva.id, llave: enmascararLlave(nueva.llave), titular: nueva.titular, documento: nueva.documento })
+        return json({ ok: true })
+      }
+      if (body.action === 'caja_llave_quitar') {
+        const id = String(body.id ?? '')
+        const llaves = await llavesLincoin()
+        const l = llaves.find(x => x.id === id)
+        if (!l) return json({ ok: true })
+        const err = await guardarLlavesLincoin(llaves.filter(x => x.id !== id))
+        if (err) return errorGenerico('caja_llave_quitar', { message: err })
+        await auditAdmin(req, 'caja.llave_quitada', { id, llave: enmascararLlave(l.llave), titular: l.titular })
+        return json({ ok: true })
+      }
+
+      // ── Coinsenda: la llave con la que Lincoin firma ante su API ───────
+      // Solo el dueño (no figuran en PERMISO_DE_ACCION). El panel ve la
+      // pública y su huella; la privada se genera y se queda en el servidor.
+      // Lincoin tiene DOS cuentas en Coinsenda (Cuenta 3 y Cuenta 4): todas
+      // estas acciones llevan `cuenta` (3 si no viene, que era la única).
+      if (body.action === 'coinsenda_llave_estado') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        return json({ ok: true, cuenta: cuentaCs, llave: await estadoLlaveCoinsenda(db, cuentaCs), desdeSecreto: !!Deno.env.get(secretoLlave(cuentaCs)) })
+      }
+      // Generar la pareja. Con su código 2FA, y si ya hay una, solo con
+      // `reemplazar`: una llave nueva deja sin efecto la registrada en
+      // Coinsenda hasta que se pegue la nueva allá.
+      if (body.action === 'coinsenda_llave_generar') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+        if (!FIELD_ENC_KEY) return json({ ok: false, error: 'Falta FIELD_ENC_KEY en los secretos del servidor: sin ella la llave no se puede guardar cifrada.' }, 500)
+        const previa = await estadoLlaveCoinsenda(db, cuentaCs)
+        if (previa && body.reemplazar !== true) return json({ ok: false, existe: true, error: `Ya hay una llave generada para la Cuenta ${cuentaCs}. Si haces otra, la registrada en Coinsenda deja de servir hasta que pegues la nueva.` }, 409)
+        const nueva = await generarParCoinsenda()
+        const at = new Date().toISOString()
+        const por = await autorDe(auth)
+        const err = await guardarLlaveCoinsenda(db, { ...nueva, at, por }, cuentaCs)
+        if (err) return errorGenerico('coinsenda_llave_generar', { message: err })
+        await auditAdmin(req, previa ? 'coinsenda.llave_reemplazada' : 'coinsenda.llave_generada', { cuenta: cuentaCs, huella: nueva.huella, anterior: previa?.huella ?? null })
+        return json({ ok: true, llave: { publica: nueva.publica, huella: nueva.huella, at, por } })
+      }
+      // Las bolsas de Coinsenda para la Billetera y la caja: el disponible de
+      // la billetera COP de cada cuenta. Igual que Mouv y Finity, lo puede ver
+      // quien ve la plata. `cop` es el de la Cuenta 3 (lo que leía la pantalla
+      // antes de la Cuenta 4).
+      if (body.action === 'coinsenda_bolsa') {
+        const [b3, b4] = await Promise.all([leerBolsaCoinsenda(3), leerBolsaCoinsenda(4)])
+        const fila = (b: Awaited<ReturnType<typeof leerBolsaCoinsenda>>) => 'cop' in b ? { cop: b.cop } : { cop: null, error: b.error, sinConfigurar: b.sinConfigurar === true }
+        return json({ ok: true, cop: 'cop' in b3 ? b3.cop : null, cuentas: { 3: fila(b3), 4: fila(b4) } })
+      }
+      // Con qué cuenta firma Lincoin: el correo con el que se entra a
+      // Coinsenda. Va dentro del token firmado; sin él no hay sesión.
+      if (body.action === 'coinsenda_config_get') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        const c = await configCoinsenda(db, cuentaCs)
+        const { data: ac } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        const sw = (n: CuentaCoinsenda) => { const x = ((ac as any)?.settings?.[`cuenta${n}`] ?? {}) as Record<string, unknown>; return { breb: x.breb === true, ach: x.ach === true } }
+        return json({ ok: true, cuenta: cuentaCs, email: c.email ?? null, dominio: c.dominio, ultimaPrueba: c.ultimaPrueba ?? null, interruptores: sw(cuentaCs), cuenta3: sw(3) })
+      }
+      // Encender o apagar una cuenta para los clientes (Bre-B y ACH por
+      // separado). Va en la configuración pública (app_config.settings.cuenta3
+      // / cuenta4) porque la pantalla del cliente la lee para quitar el
+      // "Próximamente"; el servidor de envíos la vuelve a revisar en cada
+      // envío. Solo el dueño, con su sesión en 2FA, y solo si la conexión de
+      // ESA cuenta ya pasó la prueba. (coinsenda_cuenta3_set queda por si una
+      // pestaña abierta todavía la manda: siempre es la Cuenta 3.)
+      if (body.action === 'coinsenda_cuenta_set' || body.action === 'coinsenda_cuenta3_set') {
+        const cuentaCs: CuentaCoinsenda = body.action === 'coinsenda_cuenta3_set' ? 3 : cuentaCoinsendaDe(body.cuenta)
+        const clave = `cuenta${cuentaCs}`
+        const quiere = { breb: body.breb === true, ach: body.ach === true }
+        if (quiere.breb || quiere.ach) {
+          const c = await configCoinsenda(db, cuentaCs)
+          if ((c.ultimaPrueba as any)?.ok !== true) return json({ ok: false, error: `Primero dale «Probar conexión» a la Cuenta ${cuentaCs} y que pase: sin eso los envíos no saldrían.` }, 400)
+        }
+        const { data: ac, error: eAc } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        if (eAc) return errorGenerico('coinsenda_cuenta_set', eAc)
+        const settings = ((ac as any)?.settings ?? {}) as Record<string, any>
+        const antes = { breb: settings[clave]?.breb === true, ach: settings[clave]?.ach === true }
+        const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, [clave]: quiere } }).eq('id', 1)
+        if (eUp) return errorGenerico('coinsenda_cuenta_set', eUp)
+        await auditAdmin(req, `coinsenda.cuenta${cuentaCs}_cambio`, { cuenta: cuentaCs, antes, ahora: quiere })
+        return json({ ok: true, cuenta: cuentaCs, interruptores: quiere, [clave]: quiere })
+      }
+      // ── Tarifa fija por envío (Bre-B y ACH) ────────────────────────────
+      // Solo el dueño (no están en PERMISO_DE_ACCION) y guardar pide su
+      // código en cada cambio: es lo que se le cobra a todos los clientes.
+      // La tarifa = el costo más alto de los proveedores del riel + lo que
+      // cuesta una consulta AML (Sarblock → Ventas) + la utilidad que se
+      // quiera. Ver _shared/tarifas-envio.ts.
+      // ── SIREL (UIAF): clientes y operaciones con activos virtuales ───────
+      // Arma lo que se reporta en SIREL (sirel.ts tiene las reglas); el
+      // oficial lo descarga y lo sube él mismo con su usuario de SIREL. Solo
+      // lee, salvo el registro de lo que ya se envió (system_config).
+      if (body.action === 'sirel_periodo') {
+        const TZ = 5 * 3600_000
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const periodo = body.periodo === 'dia' ? 'dia' : 'mes'
+        const ancla = esYmd(body.fecha) ? String(body.fecha) : hoy
+        if (ancla > hoy) return json({ ok: false, error: 'Esa fecha todavía no llega.' }, 400)
+        const yS = Number(ancla.slice(0, 4)), mS = Number(ancla.slice(5, 7)) - 1
+        const finMes = new Date(Date.UTC(yS, mS + 1, 0)).getUTCDate()
+        const desde = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-01`
+        const hasta = periodo === 'dia' ? ancla : `${ancla.slice(0, 7)}-${String(finMes).padStart(2, '0')}`
+        const desdeIso = new Date(Date.parse(`${desde}T00:00:00Z`) + TZ).toISOString()
+        const hastaIso = new Date(Date.parse(`${hasta}T00:00:00Z`) + TZ + 86_400_000).toISOString()
+        const { filas: movs, truncado } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, created_at, type, currency, amount, user_id, raw_data')
+          .in('type', ['load', 'send', 'convert', 'otc_deposit']).eq('status', 'Completado')
+          .gte('created_at', desdeIso).lt('created_at', hastaIso), { tope: 100_000 })
+        const ops = (movs.map(operacionAv).filter(Boolean) as OperacionAv[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
+        const idsConOps = Array.from(new Set(ops.map(o => o.userId)))
+
+        // Clientes: todos los vinculados (KYC aprobado) y, además, cualquiera
+        // que haya operado en el período aunque no lo esté (eso también se ve).
+        const COLS_SIREL = 'id, email, phone, role, kyc_status, is_blocked, created_at, country, full_name, name, company_name, company_country, company_city, company_address, tax_id, tax_id_type, rep_legal_name, rep_first_name, rep_last_name, rep_doc_type, rep_doc_number, doc_type, doc_number, city, address, rd_empresa:raw_data->>companyName, rd_nit:raw_data->>nit, rd_tax_id:raw_data->>taxId, rd_doc:raw_data->>documentNumber, rd_tipo_doc:raw_data->>documentType, rd_rep:raw_data->>legalRep'
+        const { filas: vinculados } = await leerPorPaginas(() => db.from('users').select(COLS_SIREL).in('kyc_status', Array.from(VERIFICADO)), { tope: 100_000 })
+        const porId = new Map<string, any>(vinculados.filter((u: any) => u.role !== 'admin').map((u: any) => [String(u.id), u]))
+        const faltantes = idsConOps.filter(id => !porId.has(id))
+        for (let i = 0; i < faltantes.length; i += 200) {
+          const { data } = await db.from('users').select(COLS_SIREL).in('id', faltantes.slice(i, i + 200))
+          for (const u of (data ?? []) as any[]) porId.set(String(u.id), u)
+        }
+        const muniDe = (t: string | null) => { const m = municipioPorNombre(t); return m ? { codigo: m.codigo, nombre: m.nombre, deptoNombre: m.deptoNombre } : null }
+        const usdPorCliente = new Map<string, { n: number; usd: number }>()
+        for (const o of ops) { const a = usdPorCliente.get(o.userId) ?? { n: 0, usd: 0 }; a.n++; a.usd += o.valorUsd ?? 0; usdPorCliente.set(o.userId, a) }
+        const clientes = Array.from(porId.values()).map(u => {
+          const c = clienteSirel(u, muniDe)
+          const a = usdPorCliente.get(c.userId)
+          return { ...c, operaciones: a?.n ?? 0, usdPeriodo: Math.round((a?.usd ?? 0) * 100) / 100 }
+        }).sort((a, b) => (b.operaciones - a.operaciones) || String(a.nombre ?? '').localeCompare(String(b.nombre ?? '')))
+        const cliPorId = new Map(clientes.map(c => [c.userId, c]))
+        const operaciones = ops.map(o => { const c = cliPorId.get(o.userId); return { ...o, clienteNombre: c?.nombre ?? null, clienteDoc: c?.documento ?? null, clienteTipoDoc: c?.tipoDocumento ?? null } })
+
+        const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
+        let envios: any[] = []
+        try { const v = (envCfg as any)?.value; envios = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { envios = [] }
+        const clavePeriodo = periodo === 'dia' ? desde : desde.slice(0, 7)
+        await auditAdmin(req, 'sirel.consultar', { periodo, desde, hasta, clientes: clientes.length, operaciones: operaciones.length })
+        return json({
+          ok: true, periodo, desde, hasta, clavePeriodo, truncado,
+          clientes, operaciones,
+          resumen: {
+            clientes: clientes.length,
+            clientesConOperaciones: clientes.filter(c => c.operaciones > 0).length,
+            clientesConFaltantes: clientes.filter(c => c.faltan.length > 0).length,
+            operaciones: operaciones.length,
+            operacionesConFaltantes: operaciones.filter(o => o.faltan.length > 0).length,
+            totalUsd: Math.round(operaciones.reduce((s, o) => s + (o.valorUsd ?? 0), 0) * 100) / 100,
+            porTipo: Object.fromEntries((['deposito', 'retiro', 'venta', 'compra'] as const).map(t => [t, operaciones.filter(o => o.tipo === t).length])),
+          },
+          envios: envios.filter(e => String(e.periodo ?? '').startsWith(clavePeriodo.slice(0, 7))).sort((a, b) => String(b.at).localeCompare(String(a.at))),
+          enviosRecientes: envios.slice(-30).reverse(),
+        })
+      }
+      // Lo que se subió a SIREL: tipo, período y el radicado que da la UIAF.
+      // Queda en system_config (solo el servidor) y en la auditoría.
+      if (body.action === 'sirel_registrar_envio') {
+        const TIPOS_SIREL = ['clientes', 'transacciones', 'ausencia_transacciones', 'ros', 'ausencia_ros']
+        const tipo = String(body.tipo ?? '')
+        if (!TIPOS_SIREL.includes(tipo)) return json({ ok: false, error: 'Tipo de reporte inválido.' }, 400)
+        const periodoEnv = String(body.periodo ?? '').trim()
+        if (!/^\d{4}-\d{2}(-\d{2})?$/.test(periodoEnv)) return json({ ok: false, error: 'Período inválido.' }, 400)
+        const radicado = String(body.radicado ?? '').trim().slice(0, 80)
+        if (radicado.length < 3) return json({ ok: false, error: 'Escribe el número de radicado que te dio SIREL.' }, 400)
+        const filasEnv = Number.isFinite(Number(body.filas)) ? Math.max(0, Math.round(Number(body.filas))) : null
+        const nota = String(body.nota ?? '').trim().slice(0, 500) || null
+        const registro = { id: crypto.randomUUID(), tipo, periodo: periodoEnv, radicado, filas: filasEnv, nota, por: await autorDe(auth), at: new Date().toISOString() }
+        const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
+        let lista: any[] = []
+        try { const v = (envCfg as any)?.value; lista = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { lista = [] }
+        lista.push(registro)
+        const { error: eS } = await db.from('system_config').upsert({ key: 'sirel_envios', value: JSON.stringify({ lista }) }, { onConflict: 'key' })
+        if (eS) return errorGenerico('sirel_registrar_envio', eS)
+        await auditAdmin(req, 'sirel.envio_registrado', { tipo, periodo: periodoEnv, radicado, filas: filasEnv })
+        return json({ ok: true, registro })
+      }
+
+      if (body.action === 'tarifas_envio_get' || body.action === 'tarifas_envio_set') {
+        const envNum = (k: string) => { const v = Number((globalThis as any).Deno?.env?.get(k) ?? ''); return Number.isFinite(v) && v > 0 ? v : null }
+        // Lo que cuesta una consulta AML, de la configuración de Sarblock.
+        const { data: cr } = await db.from('system_config').select('value').eq('key', 'risk_venta_config').maybeSingle()
+        let costoAmlSarblock = 0
+        try { const v = (cr as any)?.value; costoAmlSarblock = Math.max(0, Math.round(Number((typeof v === 'string' ? JSON.parse(v) : v)?.costoPorConsulta) || 0)) } catch { /* sin config */ }
+        if (body.action === 'tarifas_envio_set') {
+          const base = normalizarBase(body.base)
+          // La consulta AML sale de Sarblock, no de lo que mande la pantalla:
+          // una sola fuente para el costo.
+          base.costoAml = costoAmlSarblock
+          const activo = body.activo === true
+          const { breb, ach } = calcularTarifas(base)
+          if (activo && !(costoAmlSarblock > 0)) return json({ ok: false, error: 'Primero pon en Cumplimiento → Sarblock → Ventas → Configuración lo que te cuesta cada consulta: la tarifa la incluye.' }, 400)
+          if (activo && (!(breb > 0) || !(ach > 0))) return json({ ok: false, error: 'Las dos tarifas tienen que ser mayores que cero.' }, 400)
+          const antes = await leerTarifasEnvio(db, true)
+          const nueva = {
+            activo, breb, ach, base,
+            // Nunca baja: con él se topa la comisión que se devuelve en un
+            // reembolso, y un envío viejo cobrado más caro se devuelve entero.
+            topeReembolso: Math.max(antes?.topeReembolso ?? 0, antes?.breb ?? 0, antes?.ach ?? 0, breb, ach),
+            at: new Date().toISOString(), por: String(auth.userId ?? ''),
+          }
+          const { error: eT } = await db.from('system_config').upsert({ key: CLAVE_TARIFAS_ENVIO, value: JSON.stringify(nueva) }, { onConflict: 'key' })
+          if (eT) return errorGenerico('tarifas_envio_set', eT)
+          await auditAdmin(req, 'tarifas_envio.guardar', { antes: antes ? { activo: antes.activo, breb: antes.breb, ach: antes.ach } : null, despues: { activo, breb, ach }, base })
+          return json({ ok: true, tarifas: nueva })
+        }
+        // Lo que cobra hoy cada cuenta sin tarifa fija (mismas reglas que
+        // mouv-proxy, con los mismos secrets): solo para mostrarlo.
+        const brebC1 = (envNum('BREB_MOUV_FIXED') ?? 800) + (envNum('BREB_MARGIN_COP') ?? 400)
+        const porCuenta = {
+          'Bre-B · Cuenta 1': brebC1, 'Bre-B · Cuenta 2': envNum('BREB2_FEE_COP') ?? brebC1,
+          'Bre-B · Cuenta 3': envNum('BREB3_FEE_COP') ?? 2500, 'Bre-B · Cuenta 4': envNum('BREB4_FEE_COP') ?? 2500,
+          'ACH': envNum('ACH_FEE_COP') ?? 2500, 'ACH · Cuenta 3': envNum('ACH3_FEE_COP') ?? 2500, 'ACH · Cuenta 4': envNum('ACH4_FEE_COP') ?? 2500,
+        }
+        // Lo que de verdad cobró cada proveedor en los envíos de los últimos
+        // 60 días (costoProveedorCop, cuando el proveedor lo informa: Finity
+        // en Bre-B y Coinsenda; Mouv y el ACH de Finity no lo devuelven).
+        const desde60 = new Date(Date.now() - 60 * 86400_000).toISOString()
+        const vistos: Record<string, number[]> = {}
+        for (let off = 0; off < 10000; off += 1000) {
+          const { data, error } = await db.from('transactions').select('currency, rail:raw_data->>rail, costo:raw_data->>costoProveedorCop')
+            .eq('type', 'dispersion').in('status', ['Completado', 'Procesando']).gte('created_at', desde60)
+            .not('raw_data->>costoProveedorCop', 'is', null).order('created_at', { ascending: false }).range(off, off + 999)
+          if (error) break
+          for (const t of (data ?? []) as any[]) {
+            const c = Number(t.costo); if (!Number.isFinite(c) || c < 0) continue
+            const cur = String(t.currency ?? ''), breb = String(t.rail ?? '').toUpperCase() === 'BREB'
+            const k = cur === 'COP_BREB' ? 'breb.mouv' : cur === 'COP_ACH' ? (breb ? 'breb.finity' : 'ach.finity') : (cur === 'COP_C3' || cur === 'COP_C4') ? (breb ? 'breb.coinsenda' : 'ach.coinsenda') : null
+            if (k) (vistos[k] ??= []).push(c)
+          }
+          if (!data || data.length < 1000) break
+        }
+        const observados: Record<string, { n: number; max: number; prom: number }> = {}
+        for (const [k, xs] of Object.entries(vistos)) observados[k] = { n: xs.length, max: Math.round(Math.max(...xs)), prom: Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) }
+        // Lo que se sabe por contrato (anotado en mouv-proxy): Mouv cobra
+        // $800 fijos por Bre-B (+0,10% que ya se cobra al recibir), Coinsenda
+        // $2.000 por Bre-B y $1.000 por banco. Finity no está escrito en
+        // ningún lado: sale de lo observado o lo escribe el dueño.
+        const conocidos: Record<string, number | null> = { 'breb.mouv': envNum('BREB_MOUV_FIXED') ?? 800, 'breb.finity': null, 'breb.coinsenda': 2000, 'ach.finity': null, 'ach.coinsenda': 1000 }
+        const sugerida = normalizarBase({
+          costos: Object.fromEntries((['breb', 'ach'] as const).map(r => [r, Object.fromEntries(PROVEEDORES_RIEL[r].map(([p]) => [p, Math.max(conocidos[`${r}.${p}`] ?? 0, observados[`${r}.${p}`]?.max ?? 0)]))])),
+          costoAml: costoAmlSarblock, utilidad: { breb: 0, ach: 0 },
+        })
+        return json({ ok: true, tarifas: await leerTarifasEnvio(db, true), porCuenta, observados, conocidos, sugerida, costoAmlSarblock,
+          proveedores: PROVEEDORES_RIEL })
+      }
+
+      if (body.action === 'coinsenda_config_guardar') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        const email = String(body.email ?? '').trim().toLowerCase().slice(0, 120)
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ ok: false, error: 'Escribe el correo con el que entras a Coinsenda.' }, 400)
+        // Cada cuenta es una cuenta DISTINTA de Coinsenda: con el mismo correo
+        // las dos bolsas serían la misma billetera contada dos veces.
+        const otraN: CuentaCoinsenda = cuentaCs === 3 ? 4 : 3
+        const otra = await configCoinsenda(db, otraN)
+        if (otra.email && String(otra.email).toLowerCase() === email) return json({ ok: false, error: `Ese correo ya es el de la Cuenta ${otraN}. La Cuenta ${cuentaCs} tiene que ser otra cuenta de Coinsenda.` }, 400)
+        // Cambiar el correo es cambiar de cuenta (otra billetera): se apagan
+        // sus envíos y hay que volver a probar la conexión antes de encenderlos.
+        const actual = await configCoinsenda(db, cuentaCs)
+        const cambia = !!actual.email && String(actual.email).toLowerCase() !== email
+        const err = await guardarConfigCoinsenda(db, cuentaCs, { email, telefono: null, ...(cambia ? { ultimaPrueba: null } : {}) })
+        if (err) return errorGenerico('coinsenda_config_guardar', { message: err })
+        let apagada = false
+        if (cambia) {
+          const { data: ac } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+          const settings = ((ac as any)?.settings ?? {}) as Record<string, any>
+          const clave = `cuenta${cuentaCs}`
+          if (settings[clave]?.breb === true || settings[clave]?.ach === true) {
+            const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, [clave]: { breb: false, ach: false } } }).eq('id', 1)
+            apagada = !eUp
+          }
+        }
+        await auditAdmin(req, 'coinsenda.cuenta_configurada', { cuenta: cuentaCs, email, anterior: cambia ? actual.email : undefined, apagada })
+        return json({ ok: true, cambia, apagada })
+      }
+      // Probar la conexión SIN mover plata: inicia sesión con la llave, y lee
+      // el perfil, las billeteras y los medios de envío (con sus costos y
+      // topes). Es lo primero que hay que ver funcionar antes de enviar.
+      if (body.action === 'coinsenda_probar') {
+        const cuentaCs = cuentaCoinsendaDe(body.cuenta)
+        const cfg = await configCoinsenda(db, cuentaCs)
+        if (!cfg.email && !cfg.telefono) return json({ ok: false, error: `Primero guarda el correo de la Cuenta ${cuentaCs} de Coinsenda.` }, 400)
+        const llaveC = await estadoLlaveCoinsenda(db, cuentaCs)
+        if (!llaveC && !Deno.env.get(secretoLlave(cuentaCs))) return json({ ok: false, error: `Primero genera la llave de la Cuenta ${cuentaCs} y regístrala en Coinsenda.` }, 400)
+        const cli = new ClienteCoinsenda(db, cfg, 25_000)
+        const pasos: { paso: string; ok: boolean; detalle?: string }[] = []
+        // Solo campos de primer y segundo nivel, y listas cortas: es para
+        // mirarlo en el panel, no para volcar respuestas enteras.
+        const plano = (v: unknown, prof = 0, max = 2): unknown => {
+          if (v === null || typeof v !== 'object') return v
+          if (prof >= max) return Array.isArray(v) ? `[${v.length}]` : '{…}'
+          if (Array.isArray(v)) return v.slice(0, 30).map(x => plano(x, prof + 1, max))
+          return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 80).map(([k, x]) => [k, plano(x, prof + 1, max)]))
+        }
+        const lista = (r: RespuestaCoinsenda) => Array.isArray(r.data) ? r.data : Array.isArray(r.data?.data) ? r.data.data : []
+        let uidPrueba: string | null = null
+        const terminar = async (ok: boolean, extra: Record<string, unknown> = {}) => {
+          const detalle = pasos.find(p => !p.ok)?.detalle ?? null
+          await guardarConfigCoinsenda(db, cuentaCs, { ultimaPrueba: { at: new Date().toISOString(), ok, detalle, userId: uidPrueba } })
+          await auditAdmin(req, 'coinsenda.prueba_conexion', { cuenta: cuentaCs, ok, detalle })
+          return json({ ok, pasos, ...extra })
+        }
+        const login = await cli.login()
+        if (!exitoso(login) || !jwtDe(login)) {
+          // Coinsenda responde 465 "Invalid signature" (no 401) cuando la clave
+          // registrada en ESA cuenta no es la nuestra: pasó el 1 nov con la
+          // Cuenta 4, cuya cuenta tenía registrada otra clave. Su panel muestra el
+          // inicio de la clave registrada; todas las RSA 2048 empiezan igual,
+          // así que se da el tramo que las distingue para compararlo a ojo.
+          const textoFallo = `${login.error ?? ''} ${JSON.stringify(login.data ?? '')}`
+          const deFirma = login.status === 401 || login.status === 403 || login.status === 465 || /signature|pubkey/i.test(textoFallo)
+          const tramo = tramoClave(llaveC?.publica)
+          const pista = deFirma
+            ? `. La clave registrada en la cuenta de Coinsenda de ${cfg.email ?? 'ese correo'} no es la que firma aquí. En Coinsenda (Ajustes → Desarrollador) la clave tiene que empezar «…CgKCAQEA${tramo ?? '?'}…»${tramo ? '' : ` (huella ${llaveC?.huella ?? 'del secreto'})`}. Si allá aparece otra, dale Reemplazar y pega la de aquí.`
+            : ''
+          pasos.push({ paso: 'Iniciar sesión', ok: false, detalle: describirFallo(login, 'iniciar sesión') + pista })
+          return terminar(false)
+        }
+        pasos.push({ paso: 'Iniciar sesión', ok: true })
+        const uid = await cli.userId()
+        uidPrueba = uid
+        // Las dos cuentas tienen que ser usuarios distintos de Coinsenda (un
+        // alias de correo puede llevar a la misma): si no, la misma billetera
+        // contaría como dos bolsas.
+        const otraN: CuentaCoinsenda = cuentaCs === 3 ? 4 : 3
+        const uidOtra = ((await configCoinsenda(db, otraN)).ultimaPrueba as any)?.userId ?? null
+        if (uid && uidOtra && String(uidOtra) === String(uid)) {
+          pasos.push({ paso: 'Cuenta distinta', ok: false, detalle: `Esta es la misma cuenta de Coinsenda que la Cuenta ${otraN}. Usa el correo de la otra cuenta.` })
+          return terminar(false)
+        }
+        const perfil = await cli.pedir('transaction', 'GET', '/users/{id}/profile')
+        pasos.push(exitoso(perfil) ? { paso: 'Perfil', ok: true } : { paso: 'Perfil', ok: false, detalle: describirFallo(perfil, 'leer el perfil') })
+        const cuentas = await cli.pedir('account', 'GET', '/users/{id}/accounts', { filter: { id: uid } })
+        pasos.push(exitoso(cuentas) ? { paso: 'Billeteras', ok: true } : { paso: 'Billeteras', ok: false, detalle: describirFallo(cuentas, 'leer las billeteras') })
+        // Sin filtrar por enabled/visible: con ese filtro la cuenta devolvió 44
+        // medios y ninguno en COP. Se leen todos y la pantalla muestra si cada
+        // uno está habilitado y visible.
+        const provs = await cli.pedir('withdraw', 'GET', '/withdrawProviders', { filter: { limit: 200 } })
+        pasos.push(exitoso(provs) ? { paso: 'Medios de envío', ok: true } : { paso: 'Medios de envío', ok: false, detalle: describirFallo(provs, 'leer los medios de envío') })
+        const pd = perfil.data?.data ?? perfil.data ?? {}
+        // Solo lo de pesos: la cuenta trae también billeteras y medios cripto
+        // que Lincoin no usa. Se filtra ANTES de recortar la lista, para que
+        // la de COP no quede por fuera del recorte.
+        // La moneda puede venir como texto ('cop') o como objeto ({ currency: 'cop' }).
+        const monedaDe = (x: any): string => String(x?.currency && typeof x.currency === 'object' ? (x.currency.currency ?? x.currency.symbol ?? '') : (x?.currency ?? '')).toLowerCase()
+        const esCop = (x: any) => monedaDe(x) === 'cop'
+        const todasB: any[] = exitoso(cuentas) ? lista(cuentas) : []
+        const todosP: any[] = exitoso(provs) ? lista(provs) : []
+        return terminar(pasos.every(p => p.ok), {
+          perfil: exitoso(perfil) ? plano(Object.fromEntries(Object.entries(pd).filter(([, x]) => x === null || typeof x !== 'object'))) : null,
+          billeteras: plano(todasB.filter(esCop)),
+          // Más profundidad para los de COP: ahí van los costos (provider.costs)
+          // y lo que pide cada alta (info_needed: bancos, tipos de cuenta).
+          proveedores: plano(todosP.filter(esCop), 0, 5),
+          otras: { billeteras: todasB.filter(x => !esCop(x)).length, proveedores: todosP.filter(x => !esCop(x)).length },
+          // Resumen de los demás medios (tipo, moneda, nombre, estado), para
+          // ver qué trae la cuenta sin volcar cada uno entero.
+          otrosMedios: todosP.filter(x => !esCop(x)).slice(0, 80).map(x => ({
+            tipo: x?.provider_type ?? null, moneda: monedaDe(x) || null, nombre: x?.name ?? x?.provider?.name ?? null,
+            habilitado: x?.enabled ?? null, visible: x?.visible ?? null,
+          })),
+        })
+      }
+      // El tablero de la pestaña Coinsenda: por cada cuenta, la bolsa en vivo
+      // y cuánto de ella es de los clientes, los envíos y su estado (hoy y el
+      // mes) y la utilidad de los envíos (comisión cobrada − costo de
+      // Coinsenda), por riel. Solo lee: no mueve nada.
+      if (body.action === 'coinsenda_dashboard') {
+        const hoy = hoyBogota()
+        const isoBogota = (ymd: string) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 5 * 3600_000).toISOString()
+        const inicioHoy = isoBogota(hoy), inicioMes = isoBogota(`${hoy.slice(0, 7)}-01`)
+        const SELECT_ENVIO = 'id, user_id, amount, currency, status, created_at, rail:raw_data->>rail, feeCop:raw_data->>feeCop, costo:raw_data->>costoProveedorCop, cuentaC:raw_data->coinsenda->>cuenta, cuentaBreb:raw_data->>cuentaBreb, cuentaAch:raw_data->>cuentaAch, beneficiario:raw_data->>beneficiary, refunded:raw_data->>refunded, revision:raw_data->>revisionManual'
+        const [bolsas, oblig, cfgs, llaves, acRes, delMes, recientesRes] = await Promise.all([
+          Promise.all(CUENTAS_COINSENDA.map(n => leerBolsaCoinsenda(n))),
+          obligacionesTodas(),
+          Promise.all(CUENTAS_COINSENDA.map(n => configCoinsenda(db, n))),
+          Promise.all(CUENTAS_COINSENDA.map(n => estadoLlaveCoinsenda(db, n))),
+          db.from('app_config').select('settings').eq('id', 1).maybeSingle(),
+          leerPorPaginas(() => db.from('transactions').select(SELECT_ENVIO)
+            .eq('type', 'dispersion').eq('raw_data->>proveedor', 'coinsenda').gte('created_at', inicioMes), { tope: 50_000 }),
+          db.from('transactions').select(SELECT_ENVIO)
+            .eq('type', 'dispersion').eq('raw_data->>proveedor', 'coinsenda').order('created_at', { ascending: false }).limit(40),
+        ])
+        const cuentaDeEnvio = (t: any): CuentaCoinsenda => cuentaCoinsendaDe(t.cuentaC ?? t.cuentaBreb ?? t.cuentaAch)
+        // Salió = Completado o todavía Procesando (sin devolver). Devuelto =
+        // rechazado o fallido con la plata de vuelta al cliente.
+        const estadoDe = (t: any) => t.status === 'Completado' ? 'completado' : t.status === 'Procesando' ? 'procesando' : 'devuelto'
+        const vacio = () => ({ n: 0, completados: 0, procesando: 0, devueltos: 0, monto: 0, cobrado: 0, costo: 0, utilidad: 0, porRiel: { breb: { n: 0, cobrado: 0, costo: 0, utilidad: 0 }, ach: { n: 0, cobrado: 0, costo: 0, utilidad: 0 } } })
+        const resumen: Record<string, { hoy: ReturnType<typeof vacio>; mes: ReturnType<typeof vacio> }> = {}
+        for (const n of CUENTAS_COINSENDA) resumen[n] = { hoy: vacio(), mes: vacio() }
+        for (const t of delMes.filas as any[]) {
+          const n = cuentaDeEnvio(t)
+          const est = estadoDe(t)
+          const riel = String(t.rail ?? '').toUpperCase() === 'ACH' ? 'ach' : 'breb'
+          for (const r of String(t.created_at) >= inicioHoy ? [resumen[n].hoy, resumen[n].mes] : [resumen[n].mes]) {
+            r.n++
+            if (est === 'completado') r.completados++; else if (est === 'procesando') r.procesando++; else r.devueltos++
+            if (est === 'devuelto') continue   // la comisión volvió al cliente: no hay utilidad
+            const fee = Number(t.feeCop) || 0, costo = Number(t.costo) || 0
+            r.monto += Number(t.amount) || 0
+            r.cobrado += fee; r.costo += costo; r.utilidad += fee - costo
+            const pr = r.porRiel[riel]
+            pr.n++; pr.cobrado += fee; pr.costo += costo; pr.utilidad += fee - costo
+          }
+        }
+        // Nombres de los clientes de los envíos recientes (el admin sí los ve).
+        const recientes = ((recientesRes.data ?? []) as any[])
+        const ids = Array.from(new Set(recientes.map(t => String(t.user_id)).filter(x => UUID_RE.test(x))))
+        const us = ids.length ? await usuariosPorId(ids) : []
+        const nombre = new Map(us.map((u: any) => [String(u.id), String(u.company_name || u.full_name || u.name || u.email || '')]))
+        const settings = ((acRes as any)?.data?.settings ?? {}) as Record<string, any>
+        return json({
+          ok: true, hoy, actualizado: new Date().toISOString(),
+          clientesParcial: !oblig || oblig.parcial,
+          cuentas: CUENTAS_COINSENDA.map((n, i) => {
+            const b = bolsas[i]
+            const bolsa = 'cop' in b ? b.cop : null
+            const clientes = Math.round(Number(oblig?.valor?.[RAIL_COINSENDA[n]] ?? 0))
+            const cfg = cfgs[i]
+            const up = (cfg.ultimaPrueba ?? null) as any
+            const redondear = (r: ReturnType<typeof vacio>) => ({
+              ...r, monto: Math.round(r.monto), cobrado: Math.round(r.cobrado), costo: Math.round(r.costo), utilidad: Math.round(r.utilidad),
+              porRiel: Object.fromEntries(Object.entries(r.porRiel).map(([k, v]) => [k, { ...v, cobrado: Math.round(v.cobrado), costo: Math.round(v.costo), utilidad: Math.round(v.utilidad) }])),
+            })
+            return {
+              cuenta: n, proveedor: PROV_COINSENDA[n], rail: RAIL_COINSENDA[n],
+              email: cfg.email ?? null, configurada: !!(cfg.email || cfg.telefono),
+              llave: llaves[i] ? { huella: llaves[i]!.huella, at: llaves[i]!.at } : null,
+              llaveDesdeSecreto: !!Deno.env.get(secretoLlave(n)),
+              ultimaPrueba: up ? { at: up.at ?? null, ok: up.ok === true, detalle: up.detalle ?? null } : null,
+              interruptores: { breb: settings[`cuenta${n}`]?.breb === true, ach: settings[`cuenta${n}`]?.ach === true },
+              bolsa, bolsaError: 'error' in b ? b.error : null,
+              clientes, libre: bolsa == null ? null : Math.round(bolsa - clientes),
+              hoy: redondear(resumen[n].hoy), mes: redondear(resumen[n].mes),
+            }
+          }),
+          recientes: recientes.slice(0, 40).map(t => ({
+            id: t.id, at: t.created_at, cuenta: cuentaDeEnvio(t), rail: String(t.rail ?? '').toUpperCase() === 'ACH' ? 'ACH' : 'Bre-B',
+            monto: Number(t.amount) || 0, comision: Number(t.feeCop) || 0, costo: t.costo == null ? null : Number(t.costo) || 0,
+            estado: estadoDe(t), status: t.status, revision: t.revision === 'true',
+            beneficiario: t.beneficiario ?? null, cliente: nombre.get(String(t.user_id)) || null,
+          })),
+          mesTruncado: delMes.truncado === true,
+        })
+      }
+
+      // ── Enviar la utilidad a la empresa (Bre-B desde la bolsa) ────────
+      // Orden a propósito:
+      //   1. 2FA de esta operación, llave de Lincoin y tope real de la bolsa.
+      //   2. El retiro se REGISTRA antes de mandar: así un segundo envío
+      //      simultáneo ya ve el disponible descontado, y si algo se cae a
+      //      mitad de camino queda la constancia.
+      //   3. Se manda. Si el proveedor dice que no, el retiro se anula solo
+      //      (la plata no salió). Si no contesta, queda «por confirmar»: no
+      //      se adivina, se revisa el estado después.
+      if (body.action === 'caja_enviar_empresa') {
+        const proveedor = String(body.proveedor ?? '')
+        const monto = Math.round(Number(body.monto))
+        const descripcion = String(body.descripcion ?? '').trim().slice(0, 300)
+        const opId = String(body.opId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        if (!CAJA.some(c => c.proveedor === proveedor)) return json({ ok: false, error: 'Bolsa inválida' }, 400)
+        // La utilidad sale por Bre-B desde Mouv o Finity; desde las cuentas de
+        // Coinsenda todavía no hay envío a las llaves de Lincoin.
+        if (esBolsaCoinsenda(proveedor)) return json({ ok: false, error: 'Por ahora la utilidad se envía desde la bolsa de Mouv o de Finity.' }, 400)
+        if (!isFinite(monto) || monto < 5000) return json({ ok: false, error: 'El monto mínimo es 5.000.' }, 400)
+        // Bre-B: hasta 12.000.000 por transferencia (tope de la red). Más que
+        // eso se envía en partes.
+        if (monto > 12_000_000) return json({ ok: false, error: 'Bre-B permite hasta 12.000.000 por transferencia. Envíalo en partes.' }, 400)
+        if (!opId) return json({ ok: false, error: 'Falta el identificador de la operación. Recarga la página.' }, 400)
+        const otpErr = await requireAdminOtp(auth.userId, body.otp)
+        if (otpErr) return json({ ok: false, error: otpErr, needs2fa: true }, 403)
+        const llave = (await llavesLincoin()).find(l => l.id === String(body.llaveId ?? ''))
+        if (!llave) return json({ ok: false, error: 'Elige una de las llaves de Lincoin.' }, 400)
+        // Un doble clic o un reintento con la misma operación no manda dos veces.
+        const clave = `caja_envio:${opId}`
+        const c = await reclamarCandado(db, clave, 86_400, String(auth.userId ?? ''), 'caja_enviar_empresa')
+        if (c === 'ocupado') return json({ ok: false, duplicado: true, error: 'Este envío ya se hizo (o se está haciendo). Revisa la lista de movimientos antes de repetirlo.' }, 409)
+        if (c === 'error') return json({ ok: false, error: 'No se pudo asegurar el envío contra duplicados. No se envió nada; intenta de nuevo.' }, 503)
+        // Un solo envío por bolsa a la vez: el disponible se calcula y se
+        // descuenta sin que otro envío se meta en el medio.
+        const claveBolsa = `caja_envio_bolsa:${proveedor}`
+        if ((await reclamarCandado(db, claveBolsa, 180, String(auth.userId ?? ''), 'caja_enviar_empresa')) !== 'ok') {
+          await soltarCandado(db, clave)
+          return json({ ok: false, error: `Hay otro envío desde ${proveedor} en curso. Espera a que termine.` }, 409)
+        }
+        // Hasta que el retiro quede registrado, nada salió: si algo se cae
+        // antes, el intento se libera para poder repetirlo.
+        let registrado = false
+        try {
+          const disp = await disponibleLincoin(proveedor)
+          if (!disp.ok) { await soltarCandado(db, clave); return json({ ok: false, error: (disp as { error: string }).error }, 409) }
+          const margen = margenCostoEnvio(monto)
+          if (monto + margen > disp.disponible) {
+            await soltarCandado(db, clave)
+            const maximo = Math.max(0, disp.disponible - margenCostoEnvio(disp.disponible))
+            return json({ ok: false, error: `En ${proveedor} hay ${disp.disponible.toLocaleString('es-CO')} de Lincoin para enviar (se deja ${margen.toLocaleString('es-CO')} para el costo de la transferencia). Puedes enviar hasta ${maximo.toLocaleString('es-CO')}.` }, 400)
+          }
+          const por = await autorDe(auth)
+          const hoy = hoyBogota()
+          const envioBase = { estado: 'enviando', llaveId: llave.id, llave: enmascararLlave(llave.llave), titular: llave.titular, documento: llave.documento, opId, at: new Date().toISOString() }
+          const { data: ins, error: insErr } = await db.from('caja_movimientos').insert({
+            fecha: hoy, tipo: 'retiro', proveedor, monto, por,
+            descripcion: descripcion || `Utilidad enviada a ${llave.alias || llave.titular} por Bre-B`,
+            envio: envioBase,
+          }).select('id').single()
+          if (insErr) {
+            await soltarCandado(db, clave)
+            const falta = /envio/.test(String(insErr.message ?? ''))
+            return json({ ok: false, error: falta ? 'Falta correr la migración 2026_zz22_caja_envios.sql en Supabase. No se envió nada.' : 'No se pudo registrar el retiro, así que no se envió nada. Intenta de nuevo.' }, 500)
+          }
+          const movId = String((ins as any).id)
+          registrado = true
+          const r = await mouvInterno({ action: 'lincoin_breb_enviar', proveedor, monto, llave: llave.llave, tipo: llave.tipo ?? '', titular: llave.titular, documento: llave.documento, por: auth.userId ?? null })
+          const ahora = new Date().toISOString()
+          if (r?.ok) {
+            await db.from('caja_movimientos').update({ envio: { ...envioBase, estado: 'en_proceso', ref: r.ref ?? null, referencia: r.referencia ?? null, titularProveedor: r.titular ?? null, costo: r.costo ?? null, enviadoAt: ahora } }).eq('id', movId)
+            // El costo de la transferencia sale de la misma bolsa: se anota
+            // como egreso para que la caja cuadre.
+            const costo = Math.round(Number(r.costo) || 0)
+            if (costo > 0) {
+              await db.from('caja_movimientos').insert({ fecha: hoy, tipo: 'egreso', proveedor, monto: costo, por, descripcion: `Costo de la transferencia Bre-B de la utilidad (${llave.alias || llave.titular})`, envio: { estado: 'costo', costoDe: movId } })
+            }
+            await auditAdmin(req, 'caja.envio_empresa', { id: movId, proveedor, monto, llave: enmascararLlave(llave.llave), titular: llave.titular, ref: r.ref ?? null, costo: costo || null })
+            return json({ ok: true, id: movId, estado: 'en_proceso', ref: r.ref ?? null, costo: costo || null })
+          }
+          if (r?.noSalio) {
+            await db.from('caja_movimientos').update({
+              envio: { ...envioBase, estado: 'no_salio', detalle: String(r.message ?? '').slice(0, 300) },
+              anulado: { motivo: `El envío no salió: ${String(r.message ?? 'el proveedor no lo aceptó').slice(0, 250)}`, por: { sistema: 'envío Bre-B' }, at: ahora },
+            }).eq('id', movId)
+            await soltarCandado(db, clave)
+            await auditAdmin(req, 'caja.envio_empresa_no_salio', { id: movId, proveedor, monto, motivo: r.message ?? null })
+            return json({ ok: false, error: r.message ?? 'El proveedor no aceptó el envío. No salió nada.' }, 400)
+          }
+          // Sin respuesta clara: puede haber salido. Queda registrado como
+          // retiro y «por confirmar»; NO se libera el candado de la operación.
+          await db.from('caja_movimientos').update({ envio: { ...envioBase, estado: 'por_confirmar', ref: r?.ref ?? null, referencia: r?.referencia ?? null, detalle: String(r?.message ?? 'sin respuesta del proveedor').slice(0, 300) } }).eq('id', movId)
+          await auditAdmin(req, 'caja.envio_empresa_incierto', { id: movId, proveedor, monto, ref: r?.ref ?? null })
+          return json({ ok: false, porConfirmar: true, id: movId, error: r?.message ?? 'El proveedor no contestó a tiempo: no sabemos si el envío salió. NO lo repitas; revisa su estado en unos minutos.' }, 202)
+        } catch (e) {
+          if (!registrado) await soltarCandado(db, clave)
+          throw e
+        } finally {
+          await soltarCandado(db, claveBolsa)
+        }
+      }
+
+      // Estado de un envío a la empresa: el proveedor dice si llegó, si lo
+      // devolvió o si sigue en proceso. Devuelto = la plata volvió a la bolsa:
+      // el retiro se anula solo.
+      if (body.action === 'caja_envio_estado') {
+        const id = String(body.id ?? '')
+        if (!UUID_RE.test(id)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        const { data: m, error } = await db.from('caja_movimientos').select('id, proveedor, monto, envio, anulado, creado_at').eq('id', id).maybeSingle()
+        if (error || !m) return json({ ok: false, error: 'Ese envío no existe.' }, 404)
+        const env = ((m as any).envio ?? {}) as Record<string, any>
+        if (!env.estado || env.estado === 'costo') return json({ ok: false, error: 'Ese movimiento no es un envío por Bre-B.' }, 400)
+        if ((m as any).anulado || ['enviado', 'no_salio', 'devuelto'].includes(String(env.estado))) return json({ ok: true, estado: env.estado })
+        if (!env.ref) return json({ ok: true, estado: env.estado, sinReferencia: true, mensaje: 'El proveedor no devolvió referencia de este envío: revísalo en su portal. Si no salió, el dueño puede anular el retiro.' })
+        const r = await mouvInterno({ action: 'lincoin_envio_estado', proveedor: (m as any).proveedor, ref: env.ref, creadaAt: (m as any).creado_at, por: auth.userId ?? null }, 60_000)
+        if (!r?.ok) return json({ ok: true, estado: env.estado, mensaje: 'El proveedor no contestó. Intenta de nuevo en un momento.' })
+        const ahora = new Date().toISOString()
+        if (r.estado === 'enviado') {
+          await db.from('caja_movimientos').update({ envio: { ...env, estado: 'enviado', detalle: r.detalle ?? null, confirmadoAt: ahora } }).eq('id', id)
+        } else if (r.estado === 'devuelto') {
+          await db.from('caja_movimientos').update({
+            envio: { ...env, estado: 'devuelto', detalle: r.detalle ?? null },
+            anulado: { motivo: 'El proveedor devolvió el envío: la plata volvió a la bolsa.', por: { sistema: 'envío Bre-B' }, at: ahora },
+          }).eq('id', id)
+          await auditAdmin(req, 'caja.envio_empresa_devuelto', { id, proveedor: (m as any).proveedor, monto: Number((m as any).monto) })
+        } else if (env.estado !== 'en_proceso') {
+          await db.from('caja_movimientos').update({ envio: { ...env, estado: 'en_proceso', detalle: r.detalle ?? null } }).eq('id', id)
+        }
+        return json({ ok: true, estado: r.estado })
+      }
+
+      // El comprobante de un movimiento (se pide aparte: no viaja en la lista).
+      if (body.action === 'caja_movimiento_soporte') {
+        const { data } = await db.from('caja_movimientos').select('soporte, soporte_nombre').eq('id', String(body.id ?? '')).maybeSingle()
+        return json({ ok: true, soporte: (data as any)?.soporte ?? null, nombre: (data as any)?.soporte_nombre ?? null })
+      }
+
+      // Abrir la caja ya (sin esperar la foto de las 23:59). Solo el dueño.
+      if (body.action === 'caja_abrir') {
+        const abiertas = await abrirCaja(await autorDe(auth))
+        await auditAdmin(req, 'caja.abierta', { abiertas })
+        return json({ ok: true, abiertas })
+      }
+
+      // Corregir el saldo de apertura de Lincoin en un proveedor (p. ej. con la
+      // cifra de un contador). Solo el dueño; queda quién, cuándo y antes/después.
+      if (body.action === 'caja_apertura_set') {
+        const prov = String(body.proveedor ?? '')
+        const lincoin = Number(body.lincoin)
+        if (!CAJA.some(c => c.proveedor === prov)) return json({ ok: false, error: 'Proveedor inválido' }, 400)
+        if (!isFinite(lincoin)) return json({ ok: false, error: 'Monto inválido' }, 400)
+        const { data: antes } = await db.from('caja_apertura').select('lincoin').eq('proveedor', prov).maybeSingle()
+        if (!antes) return json({ ok: false, error: 'La caja de ese proveedor todavía no está abierta.' }, 404)
+        const { error } = await db.from('caja_apertura').update({ lincoin, nota: String(body.nota ?? '').slice(0, 300) || null, editado_por: await autorDe(auth), editado_at: new Date().toISOString() }).eq('proveedor', prov)
+        if (error) return errorGenerico('caja_apertura_set', error)
+        await auditAdmin(req, 'caja.apertura_corregida', { proveedor: prov, antes: Number((antes as any).lincoin), despues: lincoin, nota: body.nota ?? null })
+        return json({ ok: true })
+      }
+
+      // Ocultar (o volver a mostrar) un movimiento SIN borrarlo: deja de
+      // listarse y su utilidad deja de sumar. Solo el dueño, con motivo.
+      if (body.action === 'mov_ocultar') {
+        const txId = String(body.txId ?? '')
+        if (!UUID_RE.test(txId)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        const ocultar = body.ocultar !== false
+        const motivo = String(body.motivo ?? '').trim().slice(0, 300)
+        if (ocultar && motivo.length < 5) return json({ ok: false, error: 'Escribe el motivo.' }, 400)
+        const { data: tx } = await db.from('transactions').select('raw_data').eq('id', txId).maybeSingle()
+        if (!tx) return json({ ok: false, error: 'No existe ese movimiento.' }, 404)
+        const rd = { ...(((tx as any).raw_data ?? {}) as Record<string, unknown>) }
+        if (ocultar) rd.oculto = { motivo, por: await autorDe(auth), at: new Date().toISOString() }
+        else delete rd.oculto
+        const { error } = await db.from('transactions').update({ raw_data: rd }).eq('id', txId)
+        if (error) return errorGenerico('mov_ocultar', error)
+        await auditAdmin(req, ocultar ? 'mov.oculto' : 'mov.mostrado', { txId, motivo: ocultar ? motivo : null })
+        return json({ ok: true })
+      }
+
+      // Detalle de un movimiento para la ventana de Tesorería: lo que sirve
+      // para entenderlo, sin el raw_data entero. Las cuentas van enmascaradas
+      // y los autores, como en el resto (nombres solo para el dueño).
+      if (body.action === 'tesoreria_detalle') {
+        const id = String(body.id ?? '')
+        if (!UUID_RE.test(id)) return json({ ok: false, error: 'Movimiento inválido' }, 400)
+        const accD: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const esDuenoD = accD.rol === 'dueno'
+        const yoIdD = String(auth.userId ?? '')
+        const { data: m } = await db.from('transactions').select('id, created_at, type, currency, amount, status, user_id, raw_data').eq('id', id).maybeSingle()
+        if (!m) return json({ ok: false, error: 'No existe ese movimiento.' }, 404)
+        if (!accD.todosLosPaises && !visibleEnPais(paisDeMovimiento(m as any), accD)) return json({ ok: false, error: 'Ese movimiento es de un país que no tienes asignado.' }, 403)
+        const rd = ((m as any).raw_data ?? {}) as Record<string, any>
+        const { data: u } = await db.from('users').select('full_name, company_name, email, tax_id').eq('id', (m as any).user_id).maybeSingle()
+        const enmascarar = (v: unknown) => { const t = String(v ?? '').replace(/\s/g, ''); return t ? (t.length > 4 ? `•••• ${t.slice(-4)}` : t) : null }
+        const autor = (a: any) => !a ? null : esDuenoD ? { quien: String(a.nombre || a.email || 'admin'), at: a.at ?? null } : { quien: String(a.id ?? '') === yoIdD ? 'Tú' : 'Equipo', at: a.at ?? null }
+        const acct = rd.acct && typeof rd.acct === 'object' ? rd.acct : null
+        return json({
+          ok: true,
+          mov: {
+            id: (m as any).id, at: (m as any).created_at, tipo: (m as any).type, riel: (m as any).currency, proveedor: provDeRiel((m as any).currency) ?? 'Saldo Lincoin',
+            monto: Number((m as any).amount) || 0, estado: (m as any).status, titulo: rd.title ?? null, nota: rd.note ?? null, direccion: rd.direction ?? null,
+            cliente: { nombre: (u as any)?.company_name || (u as any)?.full_name || '—', email: (u as any)?.email ?? null, documento: (u as any)?.tax_id ?? null },
+            hechoPor: autor(rd.por), resueltoPor: autor(rd.resueltoPor),
+            oculto: rd.oculto && esDuenoD ? { motivo: rd.oculto.motivo, quien: rd.oculto.por?.nombre || rd.oculto.por?.email || 'admin', at: rd.oculto.at } : (rd.oculto ? { motivo: 'oculto' } : null),
+            cargue: (m as any).type === 'load' ? {
+              bruto: rd.grossCop ?? null, comisionBreb: rd.feeCop ?? null, acreditadoAt: rd.creditedAt ?? null,
+              contabilidad: acct ? { usdtEnvio: acct.usdtGross, usdtLlego: acct.usdtNet, tasaVenta: acct.sellRate, tasaCliente: acct.clientRate, feeAsume: acct.feeBearer,
+                ventaCop: acct.revenueCop, alCliente: acct.copToClient, acreditado: acct.creditedCop, utilidadRegistrada: acct.utilityCop,
+                utilidadLincoin: utilidadLincoin({ currency: (m as any).currency, utilidad: acct.utilityCop, feeBreb: acct.feeCopBreb, oculto: rd.oculto, reverso: rd.reverso, acreditado: acct.creditedCop, montoFila: (m as any).amount }) } : null,
+              reverso: rd.reverso ?? null,
+            } : null,
+            dispersion: (m as any).type === 'dispersion' ? {
+              beneficiario: rd.beneficiary ?? rd.recipient ?? null, documento: rd.benefDoc ?? rd.documentNumber ?? null,
+              banco: rd.bancoDestino ?? rd.bank ?? null, cuenta: enmascarar(rd.account ?? rd.cuentaBreb),
+              referencia: rd.providerRef ?? rd.providerReference ?? null, estadoProveedor: rd.providerStatus ?? rd.providerState ?? null,
+              motivo: rd.motivoTexto ?? rd.motivo ?? rd.reason ?? null, comision: rd.feeCop ?? null, costoProveedor: rd.costoProveedorCop ?? null,
+              liquidadaAt: rd.settledAt ?? rd.reconciledAt ?? null,
+            } : null,
+            ajuste: (m as any).type === 'adjustment' ? { reversaDe: rd.reversaDe ?? null, automatica: rd.reversaAuto ?? null } : null,
+            traslado: (m as any).type === 'rail_move' ? { aprobadoAt: rd.approvedAt ?? null, rechazadoAt: rd.rejectedAt ?? null, motivoRechazo: rd.rejectReason ?? null } : null,
+          },
+        })
+      }
+
+      // ── Tablero de Tesorería ─────────────────────────────────────────
+      // Antes el tablero sumaba los ~200 movimientos que el panel tiene en
+      // memoria, mezclaba COP con USD, decidía "entrada" por el título y
+      // contaba retiros de un tipo (send) que ya no existe: mostraba "$0" con
+      // mil dispersiones en el mes. Esto calcula sobre la base, en COP y con
+      // hora de Colombia. Solo lee.
+      // body: { action:'tesoreria_resumen', desde?, hasta? (YYYY-MM-DD),
+      //         filtro?, q?, miembro?, mios?, pagina? }
+      if (body.action === 'tesoreria_resumen') {
+        const acc: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const esDueno = acc.rol === 'dueno'
+        const yoId = String(auth.userId ?? '')
+        const TZ = 5 * 3600_000   // Colombia: UTC−5, sin horario de verano
+        const ymdB = (ms: number) => new Date(ms - TZ).toISOString().slice(0, 10)
+        const aUtc = (ymd: string, finDelDia = false) => new Date(Date.parse(`${ymd}T00:00:00Z`) + TZ + (finDelDia ? 86_400_000 : 0)).toISOString()
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+        const hoy = ymdB(Date.now())
+        const desde = esYmd(body.desde) ? String(body.desde) : `${hoy.slice(0, 7)}-01`
+        const hasta = esYmd(body.hasta) ? String(body.hasta) : hoy
+        if (desde > hasta) return json({ ok: false, error: 'El inicio va después del final.' }, 400)
+        const nDias = Math.round((Date.parse(hasta) - Date.parse(desde)) / 86_400_000) + 1
+        if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
+        const visible = (t: any) => acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc)
+        const esCop = (c: unknown) => String(c ?? '').toUpperCase().startsWith('COP')
+        const prov = (c: unknown) => { const x = String(c ?? '').toUpperCase(); return x === 'COP_BREB' ? 'Mouv' : x === 'COP_ACH' ? 'Finity' : x === 'COP_C3' ? 'Coinsenda' : x === 'COP_C4' ? 'Coinsenda 2' : 'Saldo Lincoin' }
+
+        // 1 · Flujo del periodo: entradas (cargues) y salidas (dispersiones)
+        // completadas, en COP, por hora / día / semana.
+        const { filas: flujo, truncado: flujoTruncado } = await leerPorPaginas(() => db.from('transactions')
+          .select(`id, created_at, type, currency, amount, user_id, source:raw_data->>source, feeCop:raw_data->>feeCop, ${SELECT_UTILIDAD}`)
+          .in('type', ['load', 'dispersion', 'adjustment']).eq('status', 'Completado')
+          .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 60_000 })
+        const porHora = nDias === 1, porSemana = nDias > 45
+        const nBarras = porHora ? 24 : porSemana ? Math.ceil(nDias / 7) : nDias
+        const barras = Array.from({ length: nBarras }, (_, i) => ({ i, ent: 0, sal: 0 }))
+        const tot = { entradas: 0, nEnt: 0, salidas: 0, nSal: 0 }
+        const porProv: Record<string, { ent: number; sal: number; ajustes: number; costo: number; utilidad: number }> = {}
+        const inicioMs = Date.parse(`${desde}T00:00:00Z`)
+        for (const t of flujo) {
+          if (!esCop(t.currency) || !visible(t)) continue
+          const monto = Math.abs(Number(t.amount) || 0)
+          // Para el cierre: descuentos/reversas, costo de Mouv y utilidad.
+          if (t.type === 'adjustment') { (porProv[prov(t.currency)] ??= { ent: 0, sal: 0, ajustes: 0, costo: 0, utilidad: 0 }).ajustes += monto; continue }
+          const local = Date.parse(t.created_at) - TZ
+          const idx = porHora ? new Date(local).getUTCHours() : Math.floor((local - inicioMs) / 86_400_000 / (porSemana ? 7 : 1))
+          const b = barras[Math.max(0, Math.min(nBarras - 1, idx))]
+          const p = (porProv[prov(t.currency)] ??= { ent: 0, sal: 0, ajustes: 0, costo: 0, utilidad: 0 })
+          if (t.type === 'load') {
+            tot.entradas += monto; tot.nEnt++; b.ent += monto; p.ent += monto
+            if (String(t.currency).toUpperCase() === 'COP_BREB') p.costo += Number(t.feeCop) || 0
+            if (t.source === 'admin_cargue') p.utilidad += utilidadLincoin(t)
+          }
+          else { tot.salidas += monto; tot.nSal++; b.sal += monto; p.sal += monto }
+        }
+
+        // 2 · Por resolver: solo lo que pide que alguien haga algo.
+        const hace30m = new Date(Date.now() - 30 * 60_000).toISOString()
+        const inicioMes = aUtc(`${hoy.slice(0, 7)}-01`)
+        const [pendCargues, railPend, procesando, fallidas, rechazadas] = await Promise.all([
+          db.from('transactions').select('id, user_id, amount, currency, created_at').eq('type', 'load').eq('status', 'Pendiente').order('created_at', { ascending: true }).limit(50),
+          db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'rail_move').eq('status', 'Pendiente'),
+          db.from('transactions').select('amount, currency').eq('type', 'dispersion').eq('status', 'Procesando').lt('created_at', hace30m).limit(500),
+          db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'dispersion').eq('status', 'Fallido').gte('created_at', inicioMes),
+          db.from('transactions').select('id', { count: 'exact', head: true }).eq('type', 'dispersion').eq('status', 'Rechazado').gte('created_at', inicioMes),
+        ])
+        const cargesPend = ((pendCargues.data ?? []) as any[]).filter(visible)
+        // Bre-B · Cuenta 2 (Finity) caído: fallas DEL PROVEEDOR (5xx, 401/403,
+        // 408, 429) al crear el envío en la última hora. Con dos o más, el
+        // equipo lo ve en "Por resolver" sin esperar a que un cliente avise.
+        let breb2Caido: { fallos: number; ultimo: string; status: number } | null = null
+        try {
+          const { data: fallas } = await db.from('audit_log').select('created_at, metadata')
+            .eq('action', 'finity.payout_breb2.no_creada').gte('created_at', new Date(Date.now() - 3600_000).toISOString())
+            .order('created_at', { ascending: false }).limit(50)
+          const deProveedor = ((fallas ?? []) as any[]).filter(f => { const st = Number(f?.metadata?.httpStatus ?? 0); return st >= 500 || [401, 403, 408, 429].includes(st) })
+          if (deProveedor.length >= 2) breb2Caido = { fallos: deProveedor.length, ultimo: deProveedor[0].created_at, status: Number(deProveedor[0].metadata?.httpStatus ?? 0) }
+        } catch { /* sin auditoría, sin aviso */ }
+        const procVis = ((procesando.data ?? []) as any[]).filter(visible)
+
+        // 3 · El mes en curso: utilidad (de la contabilidad de cada cargue) y
+        // los clientes con más movimiento.
+        const { filas: delMes } = await leerPorPaginas(() => db.from('transactions')
+          .select(`id, type, currency, amount, user_id, source:raw_data->>source, ${SELECT_UTILIDAD}`)
+          .in('type', ['load', 'dispersion']).eq('status', 'Completado').gte('created_at', inicioMes), { tope: 60_000 })
+        let utilidad = 0, conAcct = 0, sinAcct = 0
+        const utilProv: Record<string, number> = {}
+        const volCliente: Record<string, { vol: number; ops: number }> = {}
+        for (const t of delMes as any[]) {
+          if (!esCop(t.currency) || !visible(t)) continue
+          if (t.type === 'load' && (t.source === 'admin_cargue')) {
+            if (t.oculto) continue
+            if (t.utilidad != null && t.utilidad !== '') { const u = utilidadLincoin(t); utilidad += u; conAcct++; utilProv[prov(t.currency)] = (utilProv[prov(t.currency)] ?? 0) + u }
+            else sinAcct++
+          }
+          const v = (volCliente[String(t.user_id)] ??= { vol: 0, ops: 0 }); v.vol += Math.abs(Number(t.amount) || 0); v.ops++
+        }
+        const top = Object.entries(volCliente).sort((a, b) => b[1].vol - a[1].vol).slice(0, 5)
+
+        // 4 · Movimientos, paginados en el servidor.
+        const filtro = String(body.filtro ?? 'todos')
+        const POR = 12
+        const pagina = Math.max(0, Math.min(500, Number(body.pagina) || 0))
+        let mq = db.from('transactions').select('id, created_at, type, currency, amount, status, user_id, raw_data', { count: 'exact' })
+          .order('created_at', { ascending: false })
+        mq = filtro === 'cargue' ? mq.eq('type', 'load')
+          : filtro === 'dispersion' ? mq.eq('type', 'dispersion')
+          : filtro === 'problemas' ? mq.in('type', ['load', 'dispersion', 'adjustment', 'rail_move']).in('status', ['Fallido', 'Rechazado', 'Procesando', 'Pendiente'])
+          : mq.in('type', ['load', 'dispersion', 'adjustment', 'rail_move'])
+        // Quién lo hizo: el dueño filtra por miembro; los demás, solo los suyos.
+        if (esDueno && /^[0-9a-f-]{36}$/i.test(String(body.miembro ?? ''))) mq = mq.eq('raw_data->por->>id', String(body.miembro))
+        if (!esDueno && body.mios === true) mq = mq.eq('raw_data->por->>id', yoId)
+        // Lo oculto no se lista; el dueño puede pedir verlo.
+        mq = esDueno && body.verOcultos === true ? mq.not('raw_data->oculto', 'is', null) : mq.is('raw_data->oculto', null)
+        const q = String(body.q ?? '').trim()
+        if (q) {
+          const soloNum = q.replace(/[.\s,$]/g, '')
+          if (/^\d+$/.test(soloNum)) mq = mq.eq('amount', Number(soloNum))
+          // El id es uuid: PostgREST no le aplica ilike, así que solo el id completo.
+          else if (UUID_RE.test(q)) mq = mq.eq('id', q)
+          else {
+            const { data: us } = await db.from('users').select('id').or(`full_name.ilike.%${q.replace(/[%,()]/g, '')}%,company_name.ilike.%${q.replace(/[%,()]/g, '')}%,email.ilike.%${q.replace(/[%,()]/g, '')}%`).limit(60)
+            const ids = ((us ?? []) as any[]).map(u => String(u.id))
+            mq = ids.length ? mq.in('user_id', ids) : mq.eq('user_id', '00000000-0000-0000-0000-000000000000')
+          }
+        }
+        const { data: movs, count: totalMovs, error: eMov } = await mq.range(pagina * POR, pagina * POR + POR - 1)
+        if (eMov) return errorGenerico('tesoreria_resumen', eMov)
+
+        // Nombres de los clientes que aparecen.
+        const idsNombre = Array.from(new Set([...(movs ?? []).map((m: any) => String(m.user_id)), ...top.map(([id]) => id), ...cargesPend.slice(0, 1).map((c: any) => String(c.user_id))].filter(id => UUID_RE.test(id))))
+        const nombres: Record<string, string> = {}
+        if (idsNombre.length) {
+          const { data: us } = await db.from('users').select('id, full_name, company_name, email').in('id', idsNombre)
+          for (const u of (us ?? []) as any[]) nombres[String(u.id)] = String(u.company_name || u.full_name || u.email || '—')
+        }
+        const hechoPor = (rd: any, type: string): string => {
+          const a = rd?.por ?? rd?.resueltoPor
+          if (type === 'dispersion' && !a) return 'Cliente'
+          if (!a) return esDueno ? 'admin (antes del registro)' : 'Equipo'
+          if (!esDueno) return String(a.id ?? '') === yoId ? 'Tú' : 'Equipo'
+          return String(a.nombre || a.email || 'admin')
+        }
+
+        // 5 · Monitoreo del equipo (solo el dueño): cargues de otros miembros
+        // fuera de horario (20:00–06:00 de Colombia) en los últimos 7 días.
+        let fueraDeHorario: unknown[] = []
+        if (esDueno) {
+          const { data: ult } = await db.from('transactions').select('id, created_at, amount, currency, por:raw_data->por')
+            .eq('raw_data->>source', 'admin_cargue').gte('created_at', new Date(Date.now() - 7 * 86_400_000).toISOString()).limit(1000)
+          fueraDeHorario = ((ult ?? []) as any[])
+            .filter(t => t.por && t.por.rol && t.por.rol !== 'dueno')
+            .filter(t => { const h = new Date(Date.parse(t.created_at) - TZ).getUTCHours(); return h >= 20 || h < 6 })
+            .map(t => ({ id: t.id, at: t.created_at, monto: Number(t.amount) || 0, quien: t.por.nombre || t.por.email, quienId: t.por.id, proveedor: prov(t.currency) }))
+        }
+        let equipo: unknown[] = []
+        if (esDueno) {
+          const { data: m } = await db.from('admin_miembros').select('id, nombre, email, rol').eq('activo', true)
+          equipo = (m ?? []) as unknown[]
+        }
+
+        const primero = cargesPend[0] as any
+        return json({
+          ok: true, desde, hasta, nDias, granularidad: porHora ? 'hora' : porSemana ? 'semana' : 'dia', parcial: flujoTruncado,
+          flujo: { ...tot, porProveedor: porProv, barras: barras.map(b => ({ ent: Math.round(b.ent), sal: Math.round(b.sal) })) },
+          porResolver: {
+            cargues: { n: cargesPend.length, total: cargesPend.reduce((s, c: any) => s + Math.abs(Number(c.amount) || 0), 0),
+              primero: primero ? { id: primero.id, cliente: nombres[String(primero.user_id)] ?? '—', monto: Number(primero.amount) || 0, proveedor: prov(primero.currency), at: primero.created_at } : null },
+            trasladosAch: railPend.count ?? 0,
+            procesando: { n: procVis.length, total: procVis.reduce((s, c: any) => s + Math.abs(Number(c.amount) || 0), 0) },
+            fallidasMes: fallidas.count ?? 0, rechazadasMes: rechazadas.count ?? 0,
+            breb2Caido,
+            fueraDeHorario,
+          },
+          utilidadMes: { total: Math.round(utilidad), conContabilidad: conAcct, sinContabilidad: sinAcct, porProveedor: utilProv },
+          topClientes: top.map(([id, v]) => ({ id, nombre: nombres[id] ?? '—', vol: v.vol, ops: v.ops })),
+          movimientos: {
+            total: totalMovs ?? 0, pagina, porPagina: POR,
+            filas: ((movs ?? []) as any[]).filter(visible).map(m => ({
+              id: m.id, at: m.created_at, cliente: nombres[String(m.user_id)] ?? '—', clienteId: m.user_id,
+              tipo: m.type === 'load' ? 'Cargue' : m.type === 'dispersion' ? 'Dispersión' : m.type === 'rail_move' ? 'Traslado a ACH' : 'Ajuste',
+              proveedor: prov(m.currency), monto: Number(m.amount) || 0, entrada: m.type === 'load' || (m.type === 'adjustment' && (m.raw_data?.direction ?? 'credit') === 'credit'),
+              estado: m.status, hechoPor: hechoPor(m.raw_data, m.type), esMio: String((m.raw_data?.por ?? m.raw_data?.resueltoPor)?.id ?? '') === yoId,
+              ...(esDueno && m.raw_data?.oculto ? { oculto: { motivo: m.raw_data.oculto.motivo, por: m.raw_data.oculto.por?.nombre || m.raw_data.oculto.por?.email || 'admin', at: m.raw_data.oculto.at } } : {}),
+            })),
+          },
+          equipo,
+        })
+      }
+
+      // Tesorería — "Registrar movimiento": sube o baja el saldo de UNA cuenta
+      // de tesorería (settings.treasuryAccounts).
+      //
+      // Antes el panel reescribía la configuración ENTERA con save_config, que
+      // es solo del dueño: a cualquiera del equipo le fallaba, y darle
+      // save_config para esto le habría abierto también tasas, países y
+      // límites. Esta acción toca solo el saldo de esa cuenta, y deja en la
+      // auditoría quién, cuánto, por qué y el saldo antes y después.
+      // body: { action:'tesoreria_movimiento', accountId?, currency, type:'credit'|'debit', amount, reason, refId? }
+      // Sin accountId se usa la primera cuenta de esa moneda (lo que hacía el
+      // panel al aprobar un cargue o un retiro).
+      if (body.action === 'tesoreria_movimiento') {
+        const tipo = String(body.type ?? '')
+        const monto = Number(body.amount)
+        const motivo = String(body.reason ?? '').trim().slice(0, 300)
+        if (tipo !== 'credit' && tipo !== 'debit') return json({ ok: false, error: 'Tipo inválido' }, 400)
+        if (!isFinite(monto) || monto <= 0) return json({ ok: false, error: 'Monto inválido' }, 400)
+        if (!motivo) return json({ ok: false, error: 'Falta el motivo' }, 400)
+
+        const { data: cfg, error: eCfg } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+        if (eCfg) return errorGenerico('tesoreria_movimiento', eCfg)
+        const settings = ((cfg as any)?.settings ?? {}) as Record<string, any>
+        const cuentas: any[] = Array.isArray(settings.treasuryAccounts) ? settings.treasuryAccounts : []
+        const cuenta = body.accountId != null
+          ? cuentas.find(a => String(a?.id) === String(body.accountId))
+          : cuentas.find(a => String(a?.currency) === String(body.currency ?? ''))
+        if (!cuenta) return json({ ok: false, error: 'No hay una cuenta de tesorería para eso.' }, 404)
+
+        const acc = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        if (!visibleEnPais(PAIS_POR_MONEDA[String(cuenta.currency ?? '').toUpperCase()] ?? null, acc)) {
+          return json({ ok: false, error: 'Esa cuenta es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+        }
+
+        const antes = Number(cuenta.amount ?? 0)
+        const despues = tipo === 'credit' ? antes + monto : antes - monto
+        const nuevas = cuentas.map(a => a === cuenta ? { ...a, amount: despues } : a)
+        const { error: eUp } = await db.from('app_config').update({ settings: { ...settings, treasuryAccounts: nuevas } }).eq('id', 1)
+        if (eUp) return errorGenerico('tesoreria_movimiento', eUp)
+
+        await auditAdmin(req, 'tesoreria.movimiento', {
+          cuenta: cuenta.id, banco: cuenta.bank ?? null, moneda: cuenta.currency, tipo, monto, motivo,
+          refId: body.refId ?? null, antes, despues,
+        })
+        return json({ ok: true, antes, despues })
       }
 
       // Cargues — acreditar (o descontar) manualmente el saldo FIAT de un
@@ -671,18 +7431,70 @@ Deno.serve(async (req: Request) => {
       // cuenta Bre-B (override con el secret BREB_CARGUE_FEE_PCT, en %).
       // Ej: cargue de 40.000.000 → comisión 40.000 → se acreditan 39.960.000.
       if (body.action === 'admin_credit_balance' && body.userId && body.currency && body.amount != null) {
-        const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH']
+        // COP_C3 / COP_C4 = Saldo Cuenta 3 / 4 (los respaldan las dos bolsas de Coinsenda).
+        const ALLOWED = ['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4']
         const cur: string = body.currency
         if (!ALLOWED.includes(cur)) return json({ success: false, error: `Riel no permitido: ${cur}` }, 400)
         const { data: u } = await db.from('users').select('balances').eq('id', body.userId).single()
         if (!u) return json({ success: false, error: 'Usuario no encontrado' }, 404)
         const bals: Record<string, number> = (u?.balances as any) ?? {}
-        const delta: number = parseFloat(body.amount)
+        const recordOnlyEarly = body.recordOnly === true
+
+        // ── 2FA por operación ──────────────────────────────────────────
+        // No basta con que la sesión lo haya pasado al entrar: cada cargue
+        // mueve dinero real, así que se confirma uno por uno. El registro
+        // histórico (recordOnly) también: no toca saldo, pero deja un cargue
+        // Completado de cualquier monto en Contabilidad y, con reversaDe,
+        // anula un cargue real (su utilidad y su factura). El panel ya no lo
+        // ofrece; si alguien lo usa por la API, que sea con el código.
+        {
+          const otpErr = await requireAdminOtp(auth.userId, body.otp)
+          if (otpErr) return json({ success: false, error: otpErr, needs2fa: true }, 403)
+        }
+
+        // ── Contabilidad ───────────────────────────────────────────────
+        // Si viene el detalle de la operación, el COP a acreditar lo DERIVA
+        // el servidor. Antes se escribía a mano y "lo que sobraba" se
+        // llamaba utilidad sin que nadie supiera de dónde salía.
+        let acct: Acct | null = null
+        let delta: number = parseFloat(body.amount)
+        if (body.acct && !recordOnlyEarly) {
+          const r = computeAcct(body.acct)
+          if ('error' in r) return json({ success: false, error: r.error }, 400)
+          acct = r.acct
+          // El monto lo manda la cuenta, no la pantalla: así el número que
+          // se acredita y el que queda en la contabilidad son el mismo.
+          delta = acct.copToClient
+        }
         if (!isFinite(delta) || delta === 0) return json({ success: false, error: 'Monto inválido' }, 400)
+        // UN cargue se aplica UNA vez. La pantalla manda un id por cargue y lo
+        // repite si reintenta: si la respuesta se perdió y el admin vuelve a
+        // apretar, el segundo pedido no acredita otra vez.
+        const cargueId = String(body.cargueId ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claveCargue = cargueId ? `cargue:${body.userId}:${cargueId}` : ''
+        if (claveCargue) {
+          const c = await reclamarCandado(db, claveCargue, 86_400, String(auth.userId ?? ''), 'admin_credit_balance')
+          if (c === 'ocupado') return json({ success: false, duplicado: true, error: 'Este cargue ya se aplicó (o se está aplicando). Revisa el saldo del cliente antes de repetirlo.' }, 409)
+          if (c === 'error') return json({ success: false, error: 'No se pudo asegurar el cargue contra duplicados (la base no respondió). No se aplicó nada; intenta de nuevo.' }, 503)
+        }
+        const soltar = async () => { if (claveCargue) await soltarCandado(db, claveCargue) }
         const BREB_CARGUE_FEE_PCT = Number(Deno.env.get('BREB_CARGUE_FEE_PCT') ?? '0.10') || 0.10
+        // Devolver un DESCUENTO no es recibir plata: no lleva la comisión de
+        // recepción Bre-B. Antes "Revertir" un descuento en Bre-B le volvía a
+        // cobrar el 0,10 % al cliente (revisión del 6 nov). Solo vale si el
+        // ajuste existe y es un descuento de ESE cliente, en ese riel y por
+        // al menos ese monto: no sirve para acreditar sin comisión cualquier cosa.
+        let esReversaDeDescuento = false
+        const reversaDeAjuste = String(body.reversaDeAjuste ?? '').trim()
+        if (cur === 'COP_BREB' && delta > 0 && reversaDeAjuste && !recordOnlyEarly) {
+          const { data: aj } = await db.from('transactions').select('id, user_id, type, currency, amount, raw_data').eq('id', reversaDeAjuste).maybeSingle()
+          esReversaDeDescuento = !!aj && String((aj as any).user_id) === String(body.userId) && (aj as any).type === 'adjustment'
+            && String((aj as any).currency) === cur && String((aj as any).raw_data?.direction ?? 'debit') === 'debit'
+            && delta <= Number((aj as any).amount ?? 0) + 1
+        }
         let feeCop = 0
         let credit = delta
-        if (cur === 'COP_BREB' && delta > 0) {
+        if (cur === 'COP_BREB' && delta > 0 && !esReversaDeDescuento) {
           feeCop = Math.round(delta * BREB_CARGUE_FEE_PCT / 100)
           credit = delta - feeCop
         }
@@ -690,11 +7502,18 @@ Deno.serve(async (req: Request) => {
         // el saldo (para cuadrar cargues viejos que se acreditaron sin fila
         // en transacciones y el resumen de Movimientos no los veía). En modo
         // registro no se aplica comisión: se anota el monto tal cual.
-        const recordOnly = body.recordOnly === true
+        const recordOnly = recordOnlyEarly
         if (recordOnly) { feeCop = 0; credit = delta }
+
+        // Utilidad REAL: lo que entró por la venta menos lo que de verdad se
+        // le acreditó al cliente. El fee de red ya está descontado porque
+        // 'revenueCop' solo cuenta los USDT que llegaron.
+        const utilityCop = acct ? Math.round(acct.revenueCop - credit) : null
         // ATÓMICO: primero el movimiento — si el registro falla, NO se toca
         // el saldo (un cargue sin rastro en el historial es un descuadre).
-        const { error: txInsErr } = await db.from('transactions').insert({
+        // Quién lo hizo: queda con el movimiento (ver autoresParaPanel).
+        const autorCargue = await autorDe(auth)
+        const { data: txIns, error: txInsErr } = await db.from('transactions').insert({
           user_id: body.userId,
           type: delta > 0 ? 'load' : 'adjustment',
           // El movimiento del cliente muestra lo NETO acreditado.
@@ -706,20 +7525,79 @@ Deno.serve(async (req: Request) => {
             rail: cur,
             direction: delta > 0 ? 'credit' : 'debit',
             ...(recordOnly ? { recordOnly: true } : {}),
+            // "No, es otro ajuste": queda anotado para que el vínculo
+            // automático de Contabilidad no lo pegue después a un cargue.
+            ...(delta < 0 && String(body.reversaDe ?? '').trim() === 'no' ? { noRevierte: true } : {}),
+            ...(esReversaDeDescuento ? { reversaDeAjuste } : {}),
             ...(feeCop > 0 ? { grossCop: delta, feeCop, feePct: BREB_CARGUE_FEE_PCT, feeConcept: 'Comisión por recepción Bre-B' } : {}),
+            // Contabilidad de la operación: queda GUARDADA con el movimiento,
+            // así la utilidad es un dato del cargue y no una resta posterior.
+            ...(acct ? { acct: { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } } : {}),
             note: body.note ?? (recordOnly ? 'Registro histórico (no afecta saldo)' : delta > 0
-              ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual (Mouv)')
+              ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual')
               : 'Ajuste manual'),
             creditedAt: new Date().toISOString(),
+            por: autorCargue,
           },
-        })
-        if (txInsErr) return json({ success: false, error: `No se registró el movimiento (${txInsErr.message}) — el saldo NO fue modificado.` }, 500)
+        }).select('id').single()
+        if (txInsErr) { await soltar(); return json({ success: false, error: `No se registró el movimiento (${txInsErr.message}) — el saldo NO fue modificado.` }, 500) }
+        // Todo cargue o descuento queda en la auditoría, tenga o no contabilidad
+        // (antes solo los que la tenían dejaban rastro de quién los hizo).
+        await auditAdmin(req, 'admin.cargue', { userId: body.userId, rail: cur, monto: credit, direccion: delta > 0 ? 'credit' : 'debit', recordOnly, txId: (txIns as any)?.id ?? null })
         let newBal = parseFloat(Number(bals[cur] ?? 0).toFixed(2))
         if (!recordOnly) {
-          newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
-          await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
+          // SUMA atómica sobre la base, no "saldo leído + monto". Antes se
+          // escribía el objeto de saldos ENTERO con la copia leída al
+          // principio: si en el medio el cliente enviaba plata por otro riel,
+          // ese débito se deshacía. Y un descuento mayor al saldo se dejaba en
+          // 0 en silencio, con el movimiento registrando el monto completo.
+          const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: body.userId, p_fiat: { [cur]: credit } })
+          const motivoAdj = (adj as any)?.error
+          if (motivoAdj || (adjErr && !/function .* does not exist|42883|PGRST202/i.test(`${adjErr.code ?? ''} ${adjErr.message ?? ''}`))) {
+            if (motivoAdj) {
+              // La base dijo que no: no se movió nada. Se borra el movimiento.
+              await db.from('transactions').delete().eq('id', (txIns as any)?.id)
+              await soltar()
+              return json({ success: false, error: motivoAdj === 'insufficient' ? 'El cliente no tiene saldo suficiente en ese riel para el descuento. No se cambió nada.' : `No se pudo aplicar al saldo (${motivoAdj}). No se cambió nada.` }, 400)
+            }
+            // Error de transporte: puede haberse aplicado. No se borra el
+            // movimiento ni se suelta el candado; se avisa para revisar.
+            await auditAdmin(req, 'admin.cargue_saldo_incierto', { userId: body.userId, rail: cur, credit, txId: (txIns as any)?.id ?? null, error: adjErr?.message ?? null })
+            return json({ success: false, error: 'No hubo respuesta clara al aplicar el saldo. Revisa el saldo del cliente ANTES de repetir: el movimiento quedó registrado.' }, 502)
+          }
+          if (adjErr) {
+            // Base sin adjust_balances: camino viejo, con la escritura revisada.
+            newBal = parseFloat(Math.max(0, (bals[cur] ?? 0) + credit).toFixed(2))
+            const { error: upErr } = await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', body.userId)
+            if (upErr) {
+              await db.from('transactions').delete().eq('id', (txIns as any)?.id)
+              await soltar()
+              return json({ success: false, error: `No se pudo aplicar al saldo (${upErr.message}). No se cambió nada.` }, 500)
+            }
+          } else {
+            newBal = parseFloat(Number((adj as any)?.balances?.[cur] ?? newBal).toFixed(2))
+          }
         }
-        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0 })
+        if (acct) await auditAdmin(req, 'admin.cargue_contable', { userId: body.userId, rail: cur, ...acct, creditedCop: credit, utilityCop })
+        // Un descuento que corrige un cargue hecho por error: se vincula ya,
+        // para que Contabilidad lo reste de ese cargue (y de su utilidad) en
+        // vez de dejarlo suelto. Si no se puede vincular, el descuento igual
+        // quedó aplicado: se avisa y se vincula después desde Contabilidad.
+        // Sin elegir (o "automático"): si el débito es igual a lo que le
+        // queda a un cargue reciente del mismo saldo, se vincula solo. "no" =
+        // el operador dijo que es otro ajuste.
+        let reverso: { ok: boolean; aviso?: string; error?: string; auto?: boolean; cargueId?: string } | null = null
+        if (delta < 0 && (txIns as any)?.id) {
+          const elegido = String(body.reversaDe ?? '').trim()
+          if (elegido && elegido !== 'no' && elegido !== 'auto') {
+            const v = await vincularAjuste(String((txIns as any).id), elegido, auth.userId ?? null)
+            reverso = 'error' in v ? { ok: false, error: v.error } : { ok: true, cargueId: elegido, ...(v.aviso ? { aviso: v.aviso } : {}) }
+          } else if (elegido !== 'no') {
+            const v = await autoVincularAjuste({ id: String((txIns as any).id), user_id: String(body.userId), amount: Math.abs(credit), currency: cur, created_at: new Date().toISOString() }, auth.userId ?? null)
+            if (v.cargueId) reverso = { ok: true, auto: true, cargueId: v.cargueId, ...(v.aviso ? { aviso: v.aviso } : {}) }
+          }
+        }
+        return json({ success: true, newBalance: newBal, recordOnly, grossCop: Math.abs(delta), feeCop, netCop: Math.abs(credit), feePct: feeCop > 0 ? BREB_CARGUE_FEE_PCT : 0, acct: acct ? { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } : null, ...(reverso ? { reverso } : {}) })
       }
 
       // ── Solicitudes "Mover Saldo Lincoin → ACH" (aprobación manual) ──
@@ -732,65 +7610,172 @@ Deno.serve(async (req: Request) => {
         if (!tx || tx.type !== 'rail_move') return json({ success: false, error: 'Solicitud no encontrada' }, 404)
         if (tx.status !== 'Pendiente') return json({ success: true, already: true, status: tx.status })
         const rd = (tx.raw_data ?? {}) as Record<string, any>
-        const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
-        const bals: Record<string, number> = (u?.balances as any) ?? {}
         const amt = Number(tx.amount ?? 0)
-        if (body.action === 'approve_rail_move') {
-          const toRail = String(rd.toRail ?? 'COP_ACH')
-          const newBal = parseFloat(((bals[toRail] ?? 0) + amt).toFixed(2))
-          await db.from('users').update({ balances: { ...bals, [toRail]: newBal } }).eq('id', tx.user_id)
-          await db.from('transactions').update({
-            status: 'Completado',
-            raw_data: { ...rd, approvedAt: new Date().toISOString(), title: 'Saldo Lincoin → ACH · aprobado' },
-          }).eq('id', tx.id)
-          return json({ success: true, newBalance: newBal })
+        const aprobar = body.action === 'approve_rail_move'
+        // Los rieles los escribía el navegador: solo existe COP → COP_ACH. Una
+        // fila que diga otra cosa no se acredita ni se "devuelve" a ningún lado.
+        if (String(rd.fromRail ?? 'COP') !== 'COP' || String(rd.toRail ?? 'COP_ACH') !== 'COP_ACH') {
+          return json({ success: false, error: 'Esta solicitud tiene rieles que no corresponden (solo Saldo Lincoin → ACH). No se movió nada; revísala a mano.' }, 400)
         }
-        const fromRail = String(rd.fromRail ?? 'COP')
-        const refunded = parseFloat(((bals[fromRail] ?? 0) + amt).toFixed(2))
-        await db.from('users').update({ balances: { ...bals, [fromRail]: refunded } }).eq('id', tx.user_id)
-        await db.from('transactions').update({
-          status: 'Rechazado',
-          raw_data: { ...rd, rejectedAt: new Date().toISOString(), rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)' },
-        }).eq('id', tx.id)
-        return json({ success: true, refunded: true })
+        // Las solicitudes nuevas las crea el servidor con el débito hecho
+        // (`debitado`). Una sin esa marca y sin el débito confirmado por quien
+        // la resuelve no se toca: aprobarla acreditaría plata que nunca se
+        // descontó, y rechazarla "devolvería" lo mismo.
+        if (!rd.debitado && body.confirmoDebito !== true) {
+          return json({ success: false, sinDebitoVerificado: true, error: 'Esta solicitud no tiene el débito verificado por el servidor (se creó desde una versión anterior de la app). Confirma en el historial del cliente que el Saldo Lincoin se descontó antes de resolverla.' }, 409)
+        }
+        const rail = aprobar ? 'COP_ACH' : 'COP'
+        const ahora = new Date().toISOString()
+        // RECLAMAR ANTES DE ACREDITAR. Antes se miraba el estado y después se
+        // escribía: dos clics (o dos pestañas) leían "Pendiente" los dos y
+        // acreditaban dos veces. El update condicional solo lo gana uno.
+        const { data: reclamada } = await db.from('transactions').update({
+          status: aprobar ? 'Completado' : 'Rechazado',
+          raw_data: aprobar
+            ? { ...rd, approvedAt: ahora, title: 'Saldo Lincoin → ACH · aprobado', resueltoPor: await autorDe(auth) }
+            : { ...rd, rejectedAt: ahora, rejectReason: body.reason ?? 'Rechazado por administración', title: 'Saldo Lincoin → ACH · rechazado (reembolsado)', resueltoPor: await autorDe(auth) },
+        }).eq('id', tx.id).eq('status', 'Pendiente').select('id')
+        if (!reclamada?.length) return json({ success: true, already: true })
+        // Abono atómico (sin leer-y-escribir el saldo entero).
+        let nuevo: number | null = null
+        const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [rail]: amt } })
+        const rpcFalta = !!adjErr && /function .* does not exist|42883|PGRST202|could not find the function/i.test(`${adjErr.code ?? ''} ${adjErr.message ?? ''}`)
+        if (!adjErr && !(adj as any)?.error) {
+          nuevo = Number((adj as any)?.balances?.[rail] ?? 0)
+        } else if (adjErr && !rpcFalta) {
+          // Se perdió la respuesta (red, timeout, 5xx): el abono PUDO haberse
+          // aplicado. Antes se leía y reescribía el saldo entero en este caso:
+          // si el abono sí se había hecho quedaba doble, y además se deshacían
+          // débitos hechos entretanto (revisión del 6 nov). Queda resuelta y
+          // en revisión, sin volver a Pendiente (un segundo clic duplicaría).
+          await db.from('transactions').update({ raw_data: { ...rd, revisionManual: true, abonoIncierto: true, abonoInciertoAt: ahora, motivoIncierto: String(adjErr.message ?? '').slice(0, 200) } }).eq('id', tx.id)
+          await auditAdmin(req, 'rail_move.abono_incierto', { txId: tx.id, rail, amt })
+          return json({ success: false, incierto: true, error: 'No se pudo confirmar si el saldo se abonó. Revisa el saldo del cliente antes de hacer nada: la solicitud quedó marcada para revisión.' }, 502)
+        } else if (rpcFalta) {
+          // Solo si la función de la base no existe (proyecto sin migrar) se
+          // usa el camino viejo de leer y escribir.
+          const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
+          const bals: Record<string, number> = (u?.balances as any) ?? {}
+          nuevo = parseFloat(((bals[rail] ?? 0) + amt).toFixed(2))
+          const { error: upErr } = await db.from('users').update({ balances: { ...bals, [rail]: nuevo } }).eq('id', tx.user_id)
+          if (upErr) nuevo = null
+        }
+        if (nuevo == null) {
+          // No se pudo abonar: la solicitud vuelve a Pendiente para reintentar.
+          await db.from('transactions').update({ status: 'Pendiente', raw_data: rd }).eq('id', tx.id)
+          return json({ success: false, error: 'No se pudo abonar el saldo. La solicitud sigue pendiente; intenta de nuevo.' }, 500)
+        }
+        return json(aprobar ? { success: true, newBalance: nuevo } : { success: true, refunded: true })
       }
 
-      // Credit conversion fee to admin's balance (called by performConversion for all users)
-      // body: { action: 'credit_conversion_fee', currency, amount, fromUserId, note? }
-      if (body.action === 'credit_conversion_fee' && body.currency && body.amount != null) {
-        const ADMIN_EMAIL = Deno.env.get('VITE_ADMIN_EMAIL') || 'admin@lincoin.com'
-        const { data: adminUser } = await db.from('users').select('id, balances, crypto_balances').eq('email', ADMIN_EMAIL).single()
-        if (!adminUser) return json({ success: false, reason: 'admin not found' })
-
-        const fee: number  = parseFloat(body.amount)
-        const cur: string  = body.currency
-        const isCrypto     = ['USDT', 'USDC', 'ETH', 'BNB', 'TRX', 'USDT_BSC', 'USDT_TRON', 'USDC_BSC', 'USDC_MATIC', 'USDC_BASE'].includes(cur)
-
-        if (isCrypto) {
-          const bals: Record<string, number> = (adminUser.crypto_balances as any) ?? {}
-          const newBal = parseFloat(((bals[cur] ?? 0) + fee).toFixed(8))
-          await db.from('users').update({ crypto_balances: { ...bals, [cur]: newBal } }).eq('id', adminUser.id)
-        } else {
-          const bals: Record<string, number> = (adminUser.balances as any) ?? {}
-          const newBal = parseFloat(((bals[cur] ?? 0) + fee).toFixed(4))
-          await db.from('users').update({ balances: { ...bals, [cur]: newBal } }).eq('id', adminUser.id)
-        }
-
-        // Log fee transaction for audit trail
-        await db.from('transactions').insert({
-          user_id: adminUser.id, type: 'fee_income', amount: fee, currency: cur, status: 'Completado',
-          raw_data: { source: 'conversion_fee', fromUserId: body.fromUserId ?? null, note: body.note ?? `Comisión de conversión`, creditedAt: new Date().toISOString() },
-        })
-        return json({ success: true })
+      // credit_conversion_fee YA NO EXISTE. Sumaba la comisión al saldo de la
+      // cuenta "casa" leyendo y reescribiendo el saldo entero, sin validar el
+      // monto (negativos o NaN pasaban) y buscando esa cuenta por un correo
+      // que el propio usuario puede cambiar. La parte de Lincoin de cada
+      // conversión ya queda guardada en la fila (raw_data.lincoin) por
+      // apply_conversion, que es de donde la lee Contabilidad.
+      if (body.action === 'credit_conversion_fee') {
+        return json({ success: false, error: 'Esta operación ya no existe: la comisión queda registrada en la propia conversión.' }, 410)
       }
 
       // Comprobante de UNA transacción, bajo demanda (ver slimRawData)
       if (body.action === 'get_tx_proof' && body.txId != null) {
-        const { data: tx } = await db.from('transactions').select('raw_data').eq('id', body.txId).single()
-        return json({ raw_data: tx?.raw_data ?? {} })
+        const { data: tx } = await db.from('transactions').select('raw_data, currency').eq('id', body.txId).single()
+        // El comprobante trae datos bancarios del beneficiario: solo para
+        // quien tiene asignado el país de ese movimiento (la lista ya llega
+        // filtrada; esto cierra el pedido directo por id).
+        const accesoTx = auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false }
+        if (tx && !visibleEnPais(paisDeMovimiento(tx as Record<string, unknown>), accesoTx)) {
+          return json({ error: 'Ese movimiento es de un país que no tienes asignado.', permisoDenegado: true }, 403)
+        }
+        // Quién del equipo lo hizo (nombre y correo) solo lo ve el dueño, como
+        // en las demás vistas del panel.
+        const esDuenoTx = accesoTx.rol === 'dueno'
+        return json({ raw_data: autoresParaPanel(tx?.raw_data ?? {}, esDuenoTx, String(auth.userId ?? '')) })
       }
 
-      // POST with no recognized action → fall through to data fetch (same as GET)
+      // ── CLIENTES POR PÁGINAS ────────────────────────────────────────────
+      // Búsqueda en el servidor: nombre, correo, razón social, documento, NIT,
+      // ID Lincoin o id. Devuelve una página y los conteos por tipo de cuenta.
+      // La hace la base (admin_buscar_usuarios); si esa función todavía no
+      // existe, una consulta más simple sin conteos por tipo.
+      if (body.action === 'usuarios_buscar') {
+        const q = String(body.q ?? '').trim().slice(0, 80)
+        const tipo = ['todos', 'empresas', 'personas', 'contadores', 'pendientes'].includes(String(body.tipo)) ? String(body.tipo) : 'todos'
+        const porPagina = Math.min(100, Math.max(1, Math.floor(Number(body.porPagina) || 50)))
+        const pagina = Math.max(0, Math.floor(Number(body.pagina) || 0))
+        const { data, error } = await db.rpc('admin_buscar_usuarios', { p_q: q || null, p_tipo: tipo, p_limit: porPagina, p_offset: pagina * porPagina })
+        if (!error && data && typeof data === 'object') {
+          const d = data as { total?: number; conteos?: Record<string, number>; usuarios?: Record<string, unknown>[] }
+          return json({ ok: true, total: Number(d.total) || 0, conteos: d.conteos ?? null, pagina, porPagina, usuarios: (d.usuarios ?? []).map(usuarioParaPanel) })
+        }
+        // Respaldo sin la función de la base (falta 2026_zz12): filtra por
+        // texto y por tipo con las MISMAS reglas que admin_buscar_usuarios.
+        // Antes solo sabía "empresas" y "pendientes": el chip de operadores
+        // (antes "Personas") mostraba también empresas y contadores, y el de
+        // contadores ni aparecía. Contador = rol 'contador', o con acceso
+        // aprobado o pedido en la contabilidad de alguna empresa; operador =
+        // lo que no es empresa, ni contador, ni del equipo.
+        const limpio = q.replace(/[,()"\\%*]/g, ' ').trim()
+        const contIds = new Set<string>()
+        try {
+          const { data: cr } = await db.from('users').select('id').eq('role', 'contador').limit(5000)
+          for (const r of (cr ?? []) as any[]) contIds.add(String(r.id))
+          const { data: emp } = await db.from('users').select('c:raw_data->contadores, s:raw_data->contadoresSolicitudes')
+            .eq('role', 'business').or('raw_data->contadores.not.is.null,raw_data->contadoresSolicitudes.not.is.null').limit(5000)
+          for (const e of (emp ?? []) as any[]) for (const l of [e.c, e.s]) if (Array.isArray(l)) for (const c of l) if (c?.id) contIds.add(String(c.id))
+        } catch { /* sin la lista, nadie se marca como contador */ }
+        const listaCont = [...contIds].filter(id => UUID_RE.test(id))
+        const enLista = `(${listaCont.join(',')})`
+        // "No es tal rol" incluye a las cuentas sin rol guardado: un neq solo
+        // las dejaba afuera (en SQL, NULL <> 'admin' no es verdadero).
+        const noEs = (consulta: any, rol: string) => consulta.or(`role.is.null,role.neq.${rol}`)
+        const filtrar = (consulta: any, t: string) => {
+          consulta = noEs(consulta, 'admin')
+          if (limpio) consulta = consulta.or(['email', 'full_name', 'company_name'].map(c => `${c}.ilike.*${limpio}*`).join(','))
+          if (t === 'empresas') consulta = consulta.eq('role', 'business')
+          if (t === 'pendientes') consulta = consulta.in('kyc_status', ['pending', 'in_review'])
+          if (t === 'contadores') consulta = listaCont.length ? noEs(consulta, 'business').in('id', listaCont) : consulta.eq('id', '00000000-0000-0000-0000-000000000000')
+          if (t === 'personas') { consulta = noEs(consulta, 'business'); if (listaCont.length) consulta = consulta.not('id', 'in', enLista) }
+          return consulta
+        }
+        const { data: filas, count, error: e2 } = await filtrar(db.from('users').select('*', { count: 'exact' }), tipo)
+          .order('created_at', { ascending: false, nullsFirst: false }).range(pagina * porPagina, pagina * porPagina + porPagina - 1)
+        if (e2) return json({ ok: false, error: e2.message }, 500)
+        // Los conteos de cada chip, con el mismo texto buscado.
+        const conteos: Record<string, number> = {}
+        await Promise.all(['todos', 'empresas', 'personas', 'contadores', 'pendientes'].map(async t => {
+          const { count: n } = await filtrar(db.from('users').select('id', { count: 'exact', head: true }), t)
+          if (typeof n === 'number') conteos[t] = n
+        }))
+        const tipoFila = (u: Record<string, unknown>) => u.role === 'business' ? 'empresa' : contIds.has(String(u.id)) ? 'contador' : 'persona'
+        const usuarios = ((filas ?? []) as Record<string, unknown>[]).map(u => ({ ...usuarioParaPanel(u), _tipo: tipoFila(u) }))
+        return json({ ok: true, total: count ?? 0, conteos, pagina, porPagina, usuarios, sinFuncionBase: true })
+      }
+
+      // Usuarios puntuales (los que el panel tiene abiertos o necesita para
+      // nombrar un movimiento), hasta 200 por llamada.
+      if (body.action === 'usuarios_por_id') {
+        const ids = idsValidos(body.ids, 200)
+        if (!ids.length) return json({ ok: true, usuarios: [] })
+        return json({ ok: true, usuarios: (await usuariosPorId(ids)).map(usuarioParaPanel) })
+      }
+
+      // Un POST con una acción que no existe ya NO cae a la descarga general
+      // (antes devolvía todos los usuarios y movimientos). Sin acción, sí:
+      // es lo mismo que el GET.
+      if (String(body.action ?? '').trim()) return json({ error: 'Acción desconocida o incompleta.' }, 400)
+    }
+
+    // La descarga general exige poder ver clientes (los cuatro roles lo
+    // tienen; un miembro dado de baja ya quedó afuera arriba).
+    {
+      const permisosG = permisosDe(auth.acceso ?? { rol: 'lectura' as Rol, paises: [], todosLosPaises: false })
+      if (!(permisosG.has('*') || permisosG.has('clientes.ver'))) return json({ error: 'Tu rol no permite esta operación.', permisoDenegado: true }, 403)
+      if (auth.acceso?.rol === 'colaborador') {
+        const falta = await falta2faColaborador(req, String(auth.userId ?? ''))
+        if (falta) return json({ error: falta, needs2fa: true, activar2fa: falta.startsWith('Activa') }, 403)
+      }
     }
 
     // GET (or POST without body) — fetch all users and recent transactions
@@ -800,11 +7785,36 @@ Deno.serve(async (req: Request) => {
     // ACH, cargas, retiros) tenían solo ~200/N de chance de venir → "no llegaban"
     // a Tesorería para aprobar. Ahora se ordena por created_at (columna indexada)
     // Y ADEMÁS se traen SIEMPRE todas las pendientes, sin que el tope las tape.
-    const [usersRes, txRes, pendingRes] = await Promise.all([
-      db.from('users').select('*'),
+    //
+    // USUARIOS: el conjunto de trabajo, no la base entera. Con 100.000
+    // clientes el panel no puede bajarlos todos cada 30 s, y PostgREST corta
+    // en 1.000 filas sin avisar: el resto desaparecía del panel en silencio.
+    // Viaja lo que el panel tiene a la vista: el equipo, los pendientes de
+    // revisión, los de OTC, los últimos registrados, los dueños de los
+    // movimientos cargados y los que el panel pidió por id (?incluir=). Lo
+    // demás se busca en el servidor (usuarios_buscar).
+    const incluir = idsValidos(new URL(req.url).searchParams.get('incluir'), 200)
+    const conteo = (f: (q: any) => any) => f(db.from('users').select('id', { count: 'exact', head: true })).then((r: any) => r.count ?? null)
+    const [txRes, pendingRes, equipoRes, pendKycRes, otcRes, recientesRes, pedidos, nTotal, nEquipo, nEmpresas, nPendientes, nVerificados, nBloqueados, obligaciones] = await Promise.all([
       db.from('transactions').select('*').order('created_at', { ascending: false }).limit(200),
       db.from('transactions').select('*').eq('status', 'Pendiente').order('created_at', { ascending: false }).limit(500),
+      db.from('users').select('*').eq('role', 'admin').limit(500),
+      db.from('users').select('*').in('kyc_status', ['pending', 'in_review']).order('created_at', { ascending: false, nullsFirst: false }).limit(500),
+      db.from('users').select('*').eq('raw_data->>otcEnabled', 'true').limit(1000),
+      db.from('users').select('*').order('created_at', { ascending: false, nullsFirst: false }).limit(300),
+      incluir.length ? usuariosPorId(incluir) : Promise.resolve([] as Record<string, unknown>[]),
+      conteo(q => q),
+      conteo(q => q.eq('role', 'admin')),
+      conteo(q => q.eq('role', 'business')),
+      conteo(q => q.in('kyc_status', ['pending', 'in_review'])),
+      conteo(q => q.in('kyc_status', ['verified', 'approved'])),
+      conteo(q => q.eq('is_blocked', true)),
+      obligacionesTodas().catch(() => null),
     ])
+    const usuariosPorIdMap = new Map<string, Record<string, unknown>>()
+    for (const r of [equipoRes.data, pendKycRes.data, otcRes.data, recientesRes.data, pedidos]) {
+      for (const u of (r ?? []) as Record<string, unknown>[]) usuariosPorIdMap.set(String(u.id), u)
+    }
 
     // Une recientes + pendientes, deduplicando por id (una pendiente reciente
     // aparece en ambas — se conserva una sola vez).
@@ -813,16 +7823,60 @@ Deno.serve(async (req: Request) => {
     for (const t of (pendingRes.data ?? [])) txById.set(String((t as any).id), t)
     const allTx = Array.from(txById.values())
 
+    // Los dueños de los movimientos cargados, para que cada fila tenga nombre.
+    const faltan = Array.from(new Set(allTx.map(t => String((t as any).user_id ?? '')).filter(id => UUID_RE.test(id) && !usuariosPorIdMap.has(id))))
+    for (const u of await usuariosPorId(faltan)) usuariosPorIdMap.set(String(u.id), u)
+    const usersRes = { data: Array.from(usuariosPorIdMap.values()) }
+
+    // ── FILTRO POR PAÍS ────────────────────────────────────────────────
+    // Esta es LA vía por la que el panel trae clientes y movimientos, así que
+    // es acá donde el "este miembro solo ve Colombia" tiene que ser cierto.
+    // Recortar en el navegador no sería una frontera: los datos ya habrían
+    // viajado y estarían en la memoria de la pestaña.
+    const acc: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+
+    // LOS CLIENTES NO SE FILTRAN POR PAÍS.
+    //
+    // Un cliente es un cliente: la misma persona aparece en todos lados y lo
+    // que cambia según el país son sus MONEDAS Y BILLETERAS — COP, Bre-B y ACH
+    // en Colombia; BRL y PIX en Brasil; USD/USDT arriba de todo.
+    //
+    // La primera versión de esto filtraba también la lista de clientes y fue
+    // un error: escondía personas enteras en vez de acotar sobre qué opera
+    // cada una, y dejó el panel sin clientes apenas se desplegó.
+    const usuariosVisibles = usersRes.data ?? []
+
+    // Los movimientos SÍ: un movimiento pertenece a un riel y un riel es de un
+    // país. Es lo que hace que "operar Colombia" signifique algo.
+    //
+    // Lo que no se puede atribuir a ningún país se MUESTRA, no se esconde: un
+    // dato que falta no es permiso para ocultarle a un operador un movimiento
+    // que quizás tiene que atender.
+    const movimientosVisibles = allTx.filter((t: Record<string, unknown>) =>
+      acc.todosLosPaises || visibleEnPais(paisDeMovimiento(t), acc),
+    )
+
+    const clientesTotal = nTotal != null && nEquipo != null ? nTotal - nEquipo : null
+    const clientesCargados = usuariosVisibles.filter((u: Record<string, unknown>) => u.role !== 'admin').length
     const payload = {
       // Usuarios: solo se quitan blobs base64 gigantes (>20 KB) — los campos
       // normales (contactos, wallets, notificaciones) pasan intactos.
-      users:        (usersRes.data ?? []).map((u: Record<string, unknown>) => ({ ...u, raw_data: slimRawData(u.raw_data, 20000) })),
-      transactions: allTx.map((t: Record<string, unknown>) => ({ ...t, raw_data: slimRawData(t.raw_data) })),
+      users:        usuariosVisibles.map(usuarioParaPanel),
+      // Conteos de TODA la base, para que los tableros no cuenten solo los
+      // que vinieron en la lista.
+      resumenUsuarios: { clientes: clientesTotal, empresas: nEmpresas, pendientes: nPendientes, verificados: nVerificados, bloqueados: nBloqueados, cargados: clientesCargados, parcial: clientesTotal != null && clientesTotal > clientesCargados },
+      obligaciones: obligaciones ? obligaciones.valor : null,
+      obligacionesParciales: obligaciones ? obligaciones.parcial : null,
+      transactions: movimientosVisibles.map((t: Record<string, unknown>) => ({ ...t, raw_data: autoresParaPanel(slimRawData(t.raw_data), (auth.acceso?.rol ?? 'lectura') === 'dueno', String(auth.userId ?? '')) })),
+      // Para que el panel pueda decir "estás viendo solo Colombia" en vez de
+      // dejar creer que eso es todo lo que hay.
+      alcance: { rol: acc.rol, paises: acc.paises, todos: acc.todosLosPaises },
     }
     const body = JSON.stringify(payload)
-    console.log(`[admin-data] respuesta: ${payload.users.length} usuarios, ${payload.transactions.length} tx, ${(body.length / 1024).toFixed(0)} KB`)
+    console.log(`[admin-data] respuesta: ${payload.users.length} usuarios, ${payload.transactions.length} tx (rol ${acc.rol}), ${(body.length / 1024).toFixed(0)} KB`)
     return new Response(body, { headers: { ...CORS, 'Content-Type': 'application/json' } })
   } catch (e) {
-    return json({ error: String(e) }, 500)
+    console.error('[admin-data] error no controlado:', String((e as any)?.message ?? e).slice(0, 500))
+    return json({ error: 'Error interno. Intenta de nuevo en un momento.' }, 500)
   }
 })

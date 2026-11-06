@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Shield, X, AlertTriangle, KeyRound } from 'lucide-react';
 import { supabasePersonas } from '../../../lib/supabaseClient';
 import { NAVY, TEAL } from './shared';
@@ -42,7 +42,15 @@ export const Step2FAModal: React.FC<{
         })();
     }, []);
 
+    // Candado síncrono contra el doble toque: se marca antes de cualquier await
+    // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+    const submitEnCursoRef = useRef(false);
     const submit = async () => {
+      if (submitEnCursoRef.current) return;
+      submitEnCursoRef.current = true;
+      try { return await submitUnaVez(); } finally { submitEnCursoRef.current = false; }
+    };
+    const submitUnaVez = async () => {
         if (!factorId) return;
         if (!/^\d{6}$/.test(code)) {
             setErr('Ingresa los 6 dígitos del código');
