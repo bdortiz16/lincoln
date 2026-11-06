@@ -2925,10 +2925,15 @@ serve(async (req: Request) => {
     // descontada aunque nunca llegó (5 nov: tres envíos ACH · Cuenta 4 de
     // 1, 13,56 y 20 millones). Ahora también se relee cada Completado de los
     // últimos días; si Coinsenda lo da por rechazado, se devuelve igual que
-    // a un Procesando. Cada uno se consulta como máximo cada 20 minutos (un
-    // candado por envío) y con un tope por vuelta, para no gastar el cupo
-    // de consultas de Coinsenda.
-    const diasDevolucion = Number(Deno.env.get('COINSENDA_RECONCILE_DAYS') ?? '7') || 7
+    // a un Procesando. Cada uno tiene un candado por envío y hay un tope por
+    // vuelta, para no gastar el cupo de consultas de Coinsenda.
+    //
+    // Ritmo (6 nov): los de las últimas 48 h —cuando el banco suele
+    // devolver— se consultan cada 5 minutos; los más viejos, cada 30. Antes
+    // todos cada 20 minutos y solo 7 días: una devolución tardía podía
+    // esperar 20 minutos, y una de 8 días no se veía nunca. Ahora se miran
+    // 15 días.
+    const diasDevolucion = Number(Deno.env.get('COINSENDA_RECONCILE_DAYS') ?? '15') || 15
     let qC = db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
       .eq('type', 'dispersion').eq('status', 'Completado')
@@ -2939,7 +2944,7 @@ serve(async (req: Request) => {
       .limit(barrido ? 300 : 60)
     if (!barrido) qC = qC.eq('user_id', userId!)
     const { data: completadas } = await qC
-    const topeCompletadas = barrido ? 25 : 10
+    const topeCompletadas = barrido ? 50 : 10
     // El admin que aprieta "Sincronizar" en la ficha de UN cliente quiere la
     // respuesta ahora: si el barrido automático del panel acababa de tomar el
     // candado, ese clic no releía nada y no mostraba el estado del proveedor.
@@ -2949,7 +2954,8 @@ serve(async (req: Request) => {
     for (const t of (completadas ?? []) as any[]) {
       if (completadasARevisar.length >= topeCompletadas) break
       if (sinCandado) { completadasARevisar.push(t); continue }
-      const c = await reclamarCandado(db, `cs_devolucion:${t.id}`, 20 * 60, null, 'coinsenda_devolucion')
+      const reciente = Date.now() - new Date(t.created_at).getTime() < 48 * 3600_000
+      const c = await reclamarCandado(db, `cs_devolucion:${t.id}`, reciente ? 5 * 60 : 30 * 60, null, 'coinsenda_devolucion')
       if (c === 'ok' || c === 'sin_tabla') completadasARevisar.push(t)
     }
     const out: Record<string, unknown>[] = []
