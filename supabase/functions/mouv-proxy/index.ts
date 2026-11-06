@@ -2843,16 +2843,37 @@ serve(async (req: Request) => {
     const barrido = vigilanteCoinsenda || (caller.admin && payload?.todos === true)
     const userId = barrido ? null : requireOwner(caller, payload)
     if (!barrido && !userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
+    // Ventana de 60 días (antes 15): un envío Procesando de 16 días dejaba de
+    // mirarse y la plata del cliente se quedaba descontada sin que nadie lo
+    // supiera. Se leen hasta 200 y se revisan 40 por vuelta, primero los que
+    // pueden resolverse solos: los que ya se sabe que esperan a una persona
+    // (retiro no encontrado, estado desconocido, sin referencia) van al
+    // final. Antes iban por antigüedad, y 40 trabados viejos tapaban a los
+    // nuevos para siempre.
     let q = db.from('transactions')
       .select('id, user_id, amount, currency, status, raw_data, created_at')
       .eq('type', 'dispersion').eq('status', 'Procesando')
       .filter('raw_data->>proveedor', 'eq', 'coinsenda')
-      .gte('created_at', new Date(Date.now() - 15 * 86_400_000).toISOString())
+      .gte('created_at', new Date(Date.now() - 60 * 86_400_000).toISOString())
       .order('created_at', { ascending: true })
-      .limit(barrido ? 40 : 15)
+      .limit(200)
     if (!barrido) q = q.eq('user_id', userId!)
-    const { data: filas, error: errFilas } = await q
+    const { data: filasTodas, error: errFilas } = await q
     if (errFilas) return json(500, { ok: false, error: 'lectura', message: 'No se pudieron leer los envíos de las Cuentas 3 y 4.' })
+    const esperaPersona = (t: any) => { const r = t?.raw_data ?? {}; return !!(r.retiroNoEncontrado || r.estadoDesconocido || r.sinReferencia) }
+    const filas = [...(filasTodas ?? []).filter((t: any) => !esperaPersona(t)), ...(filasTodas ?? []).filter(esperaPersona)]
+      .slice(0, barrido ? 40 : 15)
+    // Lo que no se puede resolver solo NO se queda en silencio: la fila pasa
+    // a revisión manual, queda en la auditoría y se avisa a los admins. Una
+    // sola vez por motivo, para no repetir el aviso cada 3 minutos.
+    const aRevision = async (tx: any, rd: Record<string, any>, marca: 'estadoDesconocido' | 'sinReferencia', extra: Record<string, unknown>) => {
+      if (rd[marca]) return
+      const ahora = new Date().toISOString()
+      await db.from('transactions').update({ raw_data: { ...rd, revisionManual: true, [marca]: true, ...extra, ultimaRevision: ahora } })
+        .eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
+      await logAudit(String(tx.user_id), `coinsenda.reconcile.${marca === 'sinReferencia' ? 'sin_referencia' : 'estado_desconocido'}`, { txId: tx.id, amount: tx.amount, ...extra })
+      await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: tx.currency, created_at: tx.created_at, raw_data: rd })
+    }
     // ── DEVOLUCIONES TARDÍAS ─────────────────────────────────────────
     // Coinsenda marca un retiro 'accepted' (y aquí queda Completado) y el
     // banco de destino todavía puede rechazarlo o devolverlo después: el
@@ -2952,7 +2973,12 @@ serve(async (req: Request) => {
       const cli = await clienteDe(cuentaTx)
       const edadS = (Date.now() - new Date(tx.created_at).getTime()) / 1000
       try {
-        if (!ref) { out.push({ id: tx.id, result: 'sin_referencia' }); continue }
+        if (!ref) {
+          // Sin el id del retiro no hay a quién preguntar: una persona tiene
+          // que buscarlo en Coinsenda. Antes se quedaba Procesando sin aviso.
+          if (edadS >= 600) await aRevision(tx, rd, 'sinReferencia', { cuenta: cuentaTx })
+          out.push({ id: tx.id, result: 'sin_referencia' }); continue
+        }
         // El envío todavía puede estar terminando de confirmarse.
         if (edadS < 45) { out.push({ id: tx.id, result: 'muy_reciente' }); continue }
         const lr = await leerRetiro(cli, ref)
@@ -3004,6 +3030,9 @@ serve(async (req: Request) => {
         if (estado === 'rejected' || estado === 'no_salio') {
           out.push(await devolverCoinsenda(tx, rd, ref, cuentaTx, estado, 'Procesando')); continue
         }
+        // Un estado que no conocemos (p. ej. 'canceled'): no se decide solo si
+        // salió o no. Antes quedaba Procesando para siempre sin aviso.
+        await aRevision(tx, rd, 'estadoDesconocido', { cuenta: cuentaTx, providerRef: ref, estadoCoinsenda: estado })
         out.push({ id: tx.id, result: 'estado_desconocido', ...(caller.admin ? { estado } : {}) })
       } catch (e) {
         out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
@@ -3035,7 +3064,7 @@ serve(async (req: Request) => {
     if (vigilanteCoinsenda) {
       const resumen: Record<string, number> = {}
       for (const r of out) resumen[String(r.result)] = (resumen[String(r.result)] ?? 0) + 1
-      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto) {
+      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto || resumen.estado_desconocido || resumen.sin_referencia) {
         await logAudit(null, 'coinsenda.vigilante', { revisados: out.length, resumen })
       }
     }
