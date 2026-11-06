@@ -161,6 +161,19 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
           setErrorMsg("Escribe la razón social de tu empresa.");
           setLoading(false); return;
       }
+      // Revisión del 6 nov: el formulario de empresas dejaba registrarse sin
+      // nombre (la cuenta quedaba como "Empresa Nueva") y sin país de
+      // constitución, del que sale cómo se le factura (Colombia o exterior).
+      if (userRole === 'business') {
+          if ((companyName.match(/\p{L}/gu) ?? []).length < 3) {
+              setErrorMsg("Escribe el nombre legal de tu empresa (mínimo 3 letras).");
+              setLoading(false); return;
+          }
+          if (!companyCountry) {
+              setErrorMsg("Elige el país de constitución de tu empresa.");
+              setLoading(false); return;
+          }
+      }
 
       try {
         const timeout = new Promise<{ error: string }>(resolve =>
@@ -171,8 +184,8 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
             email,
             password,
             role: userRole || 'personal',
-            name: userRole === 'business' ? (companyName || 'Empresa Nueva') : esOperador && tipoOperador === 'empresa' ? razonSocial.trim() : 'Usuario Nuevo',
-            companyName: userRole === 'business' ? companyName : esOperador && tipoOperador === 'empresa' ? razonSocial.trim() : undefined,
+            name: userRole === 'business' ? (companyName.trim() || 'Empresa Nueva') : esOperador && tipoOperador === 'empresa' ? razonSocial.trim() : 'Usuario Nuevo',
+            companyName: userRole === 'business' ? companyName.trim() : esOperador && tipoOperador === 'empresa' ? razonSocial.trim() : undefined,
             tipoOperador: esOperador ? tipoOperador : undefined,
             country: userRole === 'business' ? companyCountry : undefined,
             referralCode,
@@ -486,7 +499,14 @@ export const Register: React.FC<RegisterProps> = ({ onSuccess, onLoginClick, onB
                         className="mt-1 w-4 h-4 rounded border-slate-500 text-[#0C0E0D] focus:ring-[#0C0E0D] cursor-pointer" 
                     />
                     <label htmlFor="businessPrivacy" className="text-xs text-slate-900 cursor-pointer leading-relaxed">
-                        Acepto las <a href="#" className="text-[#0C0E0D] font-semibold">políticas de privacidad</a> y los <a href="#" className="text-[#0C0E0D] font-semibold">términos y condiciones</a> de uso del servicio.
+                        {/* Revisión del 6 nov: esta casilla tenía enlaces "#" y no
+                            nombraba el SARLAFT, pero el registro guarda que la
+                            empresa aceptó términos, privacidad y SARLAFT
+                            (aceptacionLegal.documentos). Mismo texto y enlaces
+                            que la casilla del formulario de operador. */}
+                        Acepto los <a href="/terminos" target="_blank" rel="noopener noreferrer" className="text-[#0C0E0D] font-semibold underline">Términos y Condiciones</a>,
+                        la <a href="/privacidad" target="_blank" rel="noopener noreferrer" className="text-[#0C0E0D] font-semibold underline">Política de Tratamiento de Datos Personales</a> (incluida
+                        la autorización para tratar mis datos) y la <a href="/sarlaft" target="_blank" rel="noopener noreferrer" className="text-[#0C0E0D] font-semibold underline">Política SARLAFT</a> de Lincoin.
                     </label>
                 </div>
 

@@ -156,6 +156,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // Qué conciliación vigilar después de enviar: la de Bre-B · Cuenta 1, la de
   // ACH/Bre-B · Cuenta 2, o la de las Cuentas 3 y 4 ('c3' cubre las dos).
   const vigilarModo = useRef<'breb' | 'ach' | 'c3'>('breb');
+  // Cómo se nombra en el aviso el envío vigilado. Revisión del 6 nov: el
+  // aviso decía "Tu envío Bre-B…" también para un envío ACH. No sale solo de
+  // vigilarModo porque 'ach' cubre también la Cuenta 2 de Bre-B (concilia por
+  // el mismo proveedor): se guarda al enviar, junto con el modo.
+  const vigilarEtiqueta = useRef('');
   // Contacto elegido para el envío COP (trae destKind/brebKey/banco para la
   // dispersión REAL inline de Mouv).
   const [sendContact, setSendContact] = useState<any>(null);
@@ -369,16 +374,32 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   };
 
   // Cotizar la comisión del riel al entrar a Confirmar (paso 4 · banco).
+  // Revisión del 6 nov: el efecto no tenía guarda de cancelación. Si el
+  // cliente cambiaba de cuenta (Cuenta 1 → 3) mientras llegaba la cotización
+  // anterior, la respuesta vieja aterrizaba después y la pantalla mostraba la
+  // comisión de la otra cuenta. Ahora la ruta se calcula en cada render y una
+  // respuesta solo se aplica si sigue viva y es de la ruta que está en
+  // pantalla.
+  const quoteEsBreb = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
+  const rutaQuote = quoteEsBreb
+      ? (brebCuenta === 2 ? 'BREB2' : brebCuenta === 3 ? 'BREB3' : brebCuenta === 4 ? 'BREB4' : 'BREB')
+      : (achCuenta === 3 ? 'ACH3' : achCuenta === 4 ? 'ACH4' : 'ACH');
+  const rutaQuoteRef = useRef(rutaQuote);
+  rutaQuoteRef.current = rutaQuote;
   useEffect(() => {
       if (!(sendStep === 4 && sendMode === 'bank' && currentUser?.id)) { setPayoutQuote(null); return; }
-      const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
+      const isBrebM = quoteEsBreb;
+      const rail = rutaQuote;
       const amt = getRawAmount(sendForm.amount);
+      let vivo = true;
+      const aplica = () => vivo && rutaQuoteRef.current === rail;
       setPayoutQuote({ loading: true });
-      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail: isBrebM ? (brebCuenta === 2 ? 'BREB2' : brebCuenta === 3 ? 'BREB3' : brebCuenta === 4 ? 'BREB4' : 'BREB') : (achCuenta === 3 ? 'ACH3' : achCuenta === 4 ? 'ACH4' : 'ACH'), amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
-          .then(r => setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM && brebCuenta !== 2 ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }))
-          .catch(e => setPayoutQuote({ loading: false, error: String(e?.message ?? e) }));
+      callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail, amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
+          .then(r => { if (!aplica()) return; setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM && brebCuenta !== 2 ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }); })
+          .catch(e => { if (!aplica()) return; setPayoutQuote({ loading: false, error: String(e?.message ?? e) }); });
+      return () => { vivo = false; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendStep, sendMode, currentUser?.id, brebCuenta, achCuenta]);
+  }, [sendStep, sendMode, currentUser?.id, brebCuenta, achCuenta, rutaQuote]);
 
   const [gasfreeFeePreview, setGasfreeFeePreview] = useState<{ loading: boolean; feeUsdt?: number; transferFeeUsdt?: number; activateFeeUsdt?: number; error?: string }>({ loading: false });
   useEffect(() => {
@@ -408,10 +429,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           if (!cambios.length) return;
           vigilarHasta.current = 0;   // ya se resolvió: dejar de insistir
           refreshData?.();
+          // Las Cuentas 3 y 4 concilian juntas (Bre-B y ACH): ahí no se nombra
+          // el riel porque el cambio puede ser de cualquiera de los dos.
+          const etiqueta = vigilarModo.current === 'c3' ? '' : (vigilarEtiqueta.current || (vigilarModo.current === 'ach' ? 'ACH ' : 'Bre-B '));
           if (cambios.some((x: any) => x.result === 'refunded')) {
-              showToast(`Tu envío ${vigilarModo.current === 'c3' ? '' : 'Bre-B '}fue devuelto — el monto y la comisión ya volvieron a tu saldo.`, 9000);
+              showToast(`Tu envío ${etiqueta}fue devuelto — el monto y la comisión ya volvieron a tu saldo.`, 9000);
           } else {
-              showToast(`✅ Tu envío ${vigilarModo.current === 'c3' ? '' : 'Bre-B '}fue confirmado.`);
+              showToast(`✅ Tu envío ${etiqueta}fue confirmado.`);
           }
       }, 12000);
       return () => clearInterval(t);
@@ -744,6 +768,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                   // por el desenlace de ESTE envío. Si se devolvió, el cliente
                   // se entera mientras todavía está en la pantalla.
                   vigilarModo.current = cuenta3 ? 'c3' : cuenta2 || !isBreb ? 'ach' : 'breb';
+                  vigilarEtiqueta.current = cuenta3 ? '' : isBreb ? 'Bre-B ' : 'ACH ';
                   vigilarHasta.current = Date.now() + 4 * 60 * 1000;
                   sendingRef.current = false; setIsSending(false); setSendStep(5);
                   refreshData?.();
@@ -850,12 +875,17 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       // documentNumber del envío anterior: un residuo de la persona a la que
       // se le acababa de pagar, esperando a mezclarse con el siguiente
       // beneficiario. Solo sobreviven país y moneda, que son preferencias.
+      // Revisión del 6 nov: también se quedaban el motivo y el ordenante (por
+      // cuenta de quién se paga, a quién se le factura la comisión) del envío
+      // anterior; el siguiente salía con los de otro pago si nadie los
+      // cambiaba.
       setSendForm({
         ...sendForm,
         amount: '', reason: 'Envío de dinero',
         beneficiaryName: '', beneficiaryType: 'personal',
         documentType: '', documentNumber: '',
         bankName: '', accountType: '', accountNumber: '',
+        motivo: '', ordenanteId: '',
       });
       setCashForm({ recipientName: '', docType: 'CC', docNumber: '', phone: '', city: '' });
       setCashReference('');
@@ -869,6 +899,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       setSendContact(null);
       setSendMethodSel(null);
       setBrebCuenta(1);
+      // Revisión del 6 nov: la cuenta ACH elegida (3 o 4) sobrevivía al
+      // cierre y el siguiente envío ACH arrancaba en esa cuenta sin que el
+      // cliente la hubiera elegido.
+      setAchCuenta(1);
       idemRef.current = '';
       setPayUnknown(false);
       metodoFijoRef.current = false;
@@ -1327,8 +1361,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   </div>
                               )}
                               {!saldoUnificado && (
+                              // Revisión del 6 nov: cerraba solo con setIsSendModalOpen(false)
+                              // y quedaban vivos el beneficiario, el formulario y la llave
+                              // de idempotencia del envío a medio armar: al volver a abrir
+                              // se mezclaban con el siguiente. Se cierra como cualquier otro
+                              // cierre, con closeSendModal.
                               <button
-                                  onClick={() => { setIsSendModalOpen(false); setSendStep(1); setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}
+                                  onClick={() => { closeSendModal(); setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}
                                   className="w-full flex items-center justify-between transition-colors hover:bg-white/[0.04]"
                                   style={{ padding: '11px 15px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'transparent' }}>
                                   <span style={{ fontSize: 12.5, color: '#878E88' }}>¿Solo quieres mover saldo entre tus rieles?</span>

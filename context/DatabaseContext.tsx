@@ -2543,6 +2543,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     const id = authData.user.id;
     const intendedRole = rolPedido;
 
+    // País de constitución que eligió la empresa en el registro. Revisión del
+    // 6 nov: se pedía en el formulario pero no se guardaba en ningún lado, y
+    // de ese país sale el modelo de factura (_shared/modelo-factura.ts: sin
+    // país se asume Colombia, así una empresa de Perú quedaba facturada como
+    // colombiana). Va en la columna y en raw_data, que es donde lo leen el
+    // servidor, Contabilidad y la bandera del cliente.
+    const paisEmpresa = typeof data.country === 'string' ? data.country.trim() : '';
+
     // Build profile WITHOUT hash first — insert IMMEDIATELY before hashPassword's async gap
     // so onAuthStateChange's profile fetch finds our row with the correct role.
     const newProfile: any = {
@@ -2552,6 +2560,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       role: intendedRole,
       balances: { USD: 0, COP: 0, CLP: 0, MXN: 0, PEN: 0 },
       kyc_status: 'pending',
+      ...(paisEmpresa ? { company_country: paisEmpresa } : {}),
       raw_data: {
         notifications: [],
         ownReferralCode: id.slice(-6).toUpperCase(),
@@ -2559,6 +2568,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         aceptacionLegal,
         // Operadores: persona natural o empresa (lo eligen al registrarse).
         ...(data.tipoOperador ? { tipoOperador: data.tipoOperador } : {}),
+        ...(paisEmpresa ? { companyCountry: paisEmpresa } : {}),
       },
     };
 
@@ -2571,6 +2581,16 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           .update({ role: intendedRole, full_name: data.name || 'Usuario' })
           .eq('id', id);
       } catch {}
+      // El país va aparte (revisión del 6 nov): si esa columna fallara por lo
+      // que fuera, no se lleva por delante el rol y el nombre de arriba. La
+      // fila recién creada por el trigger no trae país, así que no se pisa
+      // uno ya puesto. raw_data.companyCountry lo escribe el parche del hash
+      // de más abajo (lleva el raw_data de newProfile completo).
+      if (paisEmpresa) {
+        try {
+          await supabase.from('users').update({ company_country: paisEmpresa }).eq('id', id).is('company_country', null);
+        } catch {}
+      }
       // El guardia de la base revierte en silencio el cambio de rol que hace
       // el navegador: si la fila la creó el trigger (como Operador), el tipo
       // de cuenta lo fija el servidor (rol_inicial, solo cuentas recién creadas).
@@ -2745,31 +2765,34 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     //    con la tasa real, y aplica los deltas (no acepta saldos absolutos del
     //    cliente). Evita que alguien se auto-acredite saldo. Si el endpoint
     //    aún no está desplegado (o hay red mala) se cae al camino legacy. ────
+    // Revisión del 6 nov: ya NO hay camino legacy. Cuando el servidor no
+    // respondía success con un error fuera de la lista HARD (endpoint viejo,
+    // red, 500), el navegador dejaba el saldo optimista, escribía él mismo los
+    // saldos y un movimiento 'convert' y devolvía éxito: una conversión que el
+    // servidor nunca aplicó (o rechazó) quedaba como hecha. Si el servidor no
+    // dijo que sí, es que no: se revierte el saldo y se avisa.
+    let r: any = null;
     if (isSupabaseConfigured && SURL) {
       try {
         const token = getStoredToken();
-        const r = await fetch(`${SURL}/functions/v1/admin-data`, {
+        r = await fetch(`${SURL}/functions/v1/admin-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
           body: JSON.stringify({ action: 'apply_conversion', userId: currentUser.id, src, tgt, amtS, amtT, fee, coupon }),
         }).then(x => x.json()).catch(() => null);
-        // La parte de Lincoin queda registrada en la propia conversión (servidor).
-        if (r?.success) return {};
-        // Rechazo de negocio del servidor (tasa/saldo/parámetros) → revertir y avisar.
-        const HARD = ['Saldo insuficiente', 'El monto de la conversión no coincide con la tasa vigente.', 'Parámetros de conversión inválidos'];
-        if (r?.error && HARD.includes(String(r.error))) {
-          setCurrentUser(prev => prev ? { ...prev, balances: prevBalances } : prev);
-          setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: prevBalances } : u));
-          return { error: String(r.error) };
-        }
-        // Cualquier otra cosa (endpoint viejo / null) → camino legacy abajo.
-      } catch { /* red → legacy */ }
+      } catch { r = null; }
     }
-
-    // ── LEGACY (respaldo si apply_conversion no está desplegado) ──
-    saveUser({ ...currentUser, balances: newBal }, false, true).catch(() => {});
-    saveTx({ userId: currentUser.id, userName: currentUser.name, type: 'convert', initials: 'CV', title: `${src} a ${tgt}`, date: new Date().toLocaleDateString(), createdAt: new Date().toISOString(), amount: amtS, currency: src, status: 'Completado', fee, couponCode: coupon, targetAmount: amtT, targetCurrency: tgt }).catch(() => {});
-    return {};
+    // La parte de Lincoin queda registrada en la propia conversión (servidor).
+    if (r?.success) return {};
+    // Rechazo de negocio del servidor (tasa/saldo/parámetros) o fallo de
+    // infraestructura → revertir siempre el saldo optimista y avisar.
+    pendingWriteUntilRef.current = 0;
+    setCurrentUser(prev => prev ? { ...prev, balances: prevBalances } : prev);
+    setUsers(prev => prev.map(u => u.id === currentUser.id ? { ...u, balances: prevBalances } : u));
+    // El refresco trae el saldo real por si el servidor sí alcanzó a aplicarla
+    // y solo se perdió la respuesta.
+    fetchData();
+    return { error: r?.error ? String(r.error) : 'No se pudo convertir. Revisa tu saldo antes de repetir.' };
   };
 
   // ¿El RPC NO existe (falta su migración)? Solo en ese caso se usa el camino
@@ -3099,6 +3122,18 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
       } catch { /* ignore */ }
     };
 
+    // Deshace lo optimista (saldo propio, saldo del destinatario y la fila
+    // "Completado"). Revisión del 6 nov: solo se hacía en el rechazo de
+    // negocio; si el RPC fallaba por infraestructura (red, permiso, función
+    // no desplegada) o no respondía a tiempo, la pantalla se quedaba con el
+    // saldo descontado y un pago "Completado" que el servidor no había hecho
+    // (o no había confirmado). Si sí salió, el refresco de después lo trae.
+    const revertirOptimista = () => {
+      setCurrentUser(prev => prev ? { ...prev, balances: currentUser.balances } : prev);
+      setUsers(prev => prev.map(u => u.id === snapRecipientId ? { ...u, balances: recipient.balances } : u));
+      setTransactions(prev => prev.filter((t: any) => t.id !== optimisticTxId));
+    };
+
     // cuypay_transfer (SECURITY DEFINER) does everything atomically server-side:
     // debits sender, credits recipient, inserts pay_sent + pay_received tx records.
     try {
@@ -3124,9 +3159,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
           no_funds: 'Saldo insuficiente',
         };
         // Revert optimistic update on business error
-        setCurrentUser(prev => prev ? { ...prev, balances: currentUser.balances } : prev);
-        setUsers(prev => prev.map(u => u.id === snapRecipientId ? { ...u, balances: recipient.balances } : u));
-        setTransactions(prev => prev.filter((t: any) => t.id !== optimisticTxId));
+        revertirOptimista();
         return { error: MSG[rpcData.error] || rpcData.error };
       } else if (rpcData?.success) {
         await refreshAll();
@@ -3138,6 +3171,8 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
         // SIN RESPUESTA NO ES "NO SALIÓ". El pago se hace en el servidor y la
         // respuesta pudo perderse con el pago ya hecho. Antes se decía "tu
         // saldo no se movió, reintenta", y el reintento lo duplicaba.
+        // Tampoco se deja la fila optimista "Completado": no sabemos si salió.
+        revertirOptimista();
         refreshAll().catch(() => {});
         return { desconocido: true, error: 'No pudimos confirmar el pago a tiempo. Puede que sí haya salido: revisa tus Movimientos antes de repetirlo.' };
       }
@@ -3153,6 +3188,7 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
     // Mover dinero es exclusivamente del servidor. Si el RPC no responde, el
     // pago no ocurre y se dice: es mejor que el usuario reintente a que el
     // saldo lo escriba la pantalla.
+    revertirOptimista();
     refreshAll().catch(() => {});
     return { error: 'No pudimos completar el pago en este momento. Revisa tus Movimientos antes de repetirlo.' };
   };

@@ -81,7 +81,7 @@ import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
 import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
-import { achEta, achEtaShort } from './achEta';
+import { achEta, achEtaShort, isBusinessDayCO } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
 import { ClientesSection } from './ClientesSection';
 import { EnviarDineroModal, EnviarHandle, EnviarPrefill, prefillDeContacto } from './EnviarDineroModal';
@@ -368,7 +368,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   useEffect(() => {
     try {
       const path = activeView === 'mouv' ? rutaMouv(mouvMode, otcRail) : (VIEW_PATHS[activeView] || '/portal_empresas');
-      if (window.location.pathname !== path) window.history.pushState({ view: activeView }, '', path);
+      // Recién entrado, la dirección todavía es la del ingreso o el registro
+      // (/ingresar_empresas, /registro_empresas, /confirmar_correo): se
+      // REEMPLAZA en vez de apilarse. Revisión del 6 nov: con pushState, Atrás
+      // volvía al Login con la sesión abierta.
+      const enIngreso = /^\/(ingresar(_[a-z]+)?|registro_[a-z]+|confirmar_correo)\/?$/.test(window.location.pathname);
+      if (window.location.pathname !== path) {
+        if (enIngreso) window.history.replaceState({ view: activeView }, '', path);
+        else window.history.pushState({ view: activeView }, '', path);
+      }
     } catch { /* entorno sin history */ }
   }, [activeView, mouvMode, otcRail]);
   useEffect(() => {
@@ -2519,7 +2527,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const nCuentaB = isBreb ? Number(t.cuentaBreb ?? rd.cuentaBreb) || 1 : 1;
           const nCuentaA = !isBreb ? Number(t.cuentaAch ?? rd.cuentaAch) || 1 : 1;
           let title = t.title || ROW_LABELS[t.type] || t.type;
-          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · ${nombreCuenta(nCuentaB)}` : 'Bre-B') : (nCuentaA === 3 ? `ACH · ${nombreCuenta(3)}` : 'ACH')}${ben ? ` · ${ben}` : ''}`;
+          // ACH nombra la Cuenta 3 y la 4 (revisión del 6 nov: con
+          // `nCuentaA === 3` un envío por la Cuenta 4 salía como "ACH" a secas).
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · ${nombreCuenta(nCuentaB)}` : 'Bre-B') : (nCuentaA >= 3 ? `ACH · ${nombreCuenta(nCuentaA)}` : 'ACH')}${ben ? ` · ${ben}` : ''}`;
           else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
           else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
           const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -2572,9 +2582,15 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
-          a.download = `movimientos-lincoin-${new Date().toISOString().slice(0, 10)}.csv`;
+          // Fecha del nombre en hora de Bogotá (UTC−5): con la de UTC, un
+          // export después de las 7 p. m. salía con la fecha de mañana.
+          a.download = `movimientos-lincoin-${new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10)}.csv`;
           a.click();
-          URL.revokeObjectURL(a.href);
+          // Revisión del 6 nov: revocar en el mismo instante del click hace
+          // que Safari y Firefox a veces descarguen un archivo vacío o fallen
+          // (la descarga arranca después). Se revoca pasado un rato.
+          const href = a.href;
+          setTimeout(() => URL.revokeObjectURL(href), 30000);
       };
       const monthLabel = new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric' });
       const secBtn: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 9, padding: '10px 14px', fontSize: 13.5, fontWeight: 600, color: '#F4F4F2' };
@@ -2814,6 +2830,13 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // instante lo leen en false los dos. El ref se marca antes de cualquier await
   // y se suelta cuando termina (el estado lo maneja el resto de la función).
   const moviendoRef = useRef(false);
+  // Llave de idempotencia de la solicitud Saldo Lincoin → ACH. Revisión del 6
+  // nov: sin ella, un reintento después de perder la respuesta (red caída,
+  // timeout) descontaba otra vez y dejaba dos solicitudes Pendiente. Se crea
+  // una vez por solicitud y se REUTILIZA en cada reintento; solo se renueva
+  // cuando el servidor confirmó que la solicitud quedó registrada. Con la
+  // misma llave el servidor no descuenta dos veces.
+  const idemMoverAchRef = useRef('');
   const handleBrebMove = async () => {
     if (moviendoRef.current) return;
     moviendoRef.current = true;
@@ -2837,13 +2860,24 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       // El servidor descuenta y registra la solicitud EN UN SOLO PASO. Antes
       // el navegador insertaba la fila y se descontaba él mismo: si ese
       // guardado fallaba, Tesorería aprobaba plata que nunca se descontó.
-      const r: any = await llamarFuncion('admin-data', { action: 'solicitar_mover_ach', userId: currentUser.id, amount }).catch(() => null);
+      if (!idemMoverAchRef.current) {
+        try { idemMoverAchRef.current = crypto.randomUUID(); }
+        catch { idemMoverAchRef.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`; }
+      }
+      const r: any = await llamarFuncion('admin-data', { action: 'solicitar_mover_ach', userId: currentUser.id, amount, idemKey: idemMoverAchRef.current }).catch(() => null);
       if (!r?.ok) {
         setBrebMoving(false);
-        showToast(r?.error || 'No pudimos registrar la solicitud y NO se descontó tu saldo. Intenta de nuevo en un momento.', 7000, 'error');
+        // Sin respuesta del servidor (red, timeout, respuesta ilegible) no
+        // sabemos si se descontó: llamarFuncion devuelve entonces el texto de
+        // la excepción ("TypeError: Failed to fetch"), que no se le muestra
+        // al cliente. Los rechazos del servidor sí traen su mensaje.
+        const sinRespuesta = !r || !r.error || /^(TypeError|TimeoutError|AbortError|SyntaxError|Error)\b|failed to fetch|networkerror|load failed|timed out|unexpected token|json/i.test(String(r.error));
+        showToast(sinRespuesta ? 'No pudimos confirmar la solicitud. Revisa tus movimientos antes de repetirla.' : String(r.error), 7000, 'error');
         refreshData?.();
         return;
       }
+      // Quedó registrada: la próxima solicitud lleva una llave nueva.
+      idemMoverAchRef.current = '';
       setBrebMoving(false);
       setBrebMoveOpen(false);
       setBrebAmountStr('');
@@ -3030,9 +3064,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const c3Bal = getBalance('COP_C3');
                   const c4Bal = getBalance('COP_C4');
                   // Estado del riel ACH: L–V 7:00–18:00 hora Colombia (UTC-5).
+                  // Revisión del 6 nov: solo miraba lunes a viernes, y un festivo
+                  // (ACH no opera) salía "operativo ahora". isBusinessDayCO ya
+                  // descarta fines de semana y festivos (Ley Emiliani).
                   const _cot = new Date(Date.now() - 5 * 3600 * 1000);
-                  const _dow = _cot.getUTCDay(); const _hr = _cot.getUTCHours();
-                  const achOpen = _dow >= 1 && _dow <= 5 && _hr >= 7 && _hr < 18;
+                  const _hr = _cot.getUTCHours();
+                  const achOpen = isBusinessDayCO(_cot) && _hr >= 7 && _hr < 18;
                   // Cuenta que viene en camino: se ve apagada y con
                   // "Próximamente", sin saldo ni botón, y nunca con el nombre
                   // del aliado que hay detrás.
@@ -3168,7 +3205,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                           <p style={{ fontSize: 11, color: '#878E88', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><span style={{ color: '#F4F4F2', fontWeight: 700 }}>Cuenta 1</span> · Saldo ACH</p>
                                           <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.6px', color: '#F4F4F2', marginTop: 2 }}>{Math.round(achBal).toLocaleString('es-CO')}</p>
                                       </div>
-                                      <button onClick={() => { if (achOpen) openSendMoney(undefined, { metodo: 'ach' }); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible L–V 7:00–18:00 hora Colombia'}
+                                      <button onClick={() => { if (achOpen) openSendMoney(undefined, { metodo: 'ach' }); }} disabled={!achOpen || achBal <= 0} title={achOpen ? '' : 'Disponible en días hábiles (L–V sin festivos) de 7:00 a 18:00, hora Colombia'}
                                           style={{ fontSize: 12, fontWeight: 700, flexShrink: 0, padding: '7px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', color: (!achOpen || achBal <= 0) ? '#878E88' : '#F4F4F2', background: 'transparent', cursor: (!achOpen || achBal <= 0) ? 'not-allowed' : 'pointer' }}
                                           className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                                   </div>
@@ -3179,7 +3216,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               <p style={{ fontSize: 12, color: '#878E88', lineHeight: 1.5, margin: '10px 0 0' }}>Dispersa a cualquier cuenta en Colombia por el riel ACH tradicional.{achMaxEnvio ? ` Hasta ${millones(achMaxEnvio)} por envío${achMaxPersona && achMaxPersona < achMaxEnvio ? ` (${millones(achMaxPersona)} si el beneficiario es una persona)` : ''}.` : ''} Con este saldo también envías por Bre-B · Cuenta 2.</p>
                               <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
                                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: achOpen ? '#4ADE80' : '#878E88' }} />
-                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
+                                  <span style={{ fontSize: 11.5, color: '#878E88' }}>L–V hábiles 7:00–18:00 · {achOpen ? 'operativo ahora' : 'fuera de horario'}</span>
                               </div>
                           </div>
                           <div style={{ padding: '11px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.015)', display: 'flex', gap: 13 }}>

@@ -15,6 +15,7 @@ import { KycBeneficiarioModal, agruparHallazgos } from './KycBeneficiarioModal';
 import { celdaCsv } from '../lib/csv';
 import { SirelEmpresa } from './SirelEmpresa';
 import { nombreCuenta } from '../lib/nombreCuenta';
+import { motivoLegibleCliente } from '../lib/textoCliente';
 
 declare const __BUILD_TS__: string;
 
@@ -448,6 +449,13 @@ export const ContactsSection: React.FC<{
     const enviableSinValidar = (c: Partial<MouvContact> | null | undefined, st: string) =>
         !!c && (st === 'en_proceso' || st === 'rechazada') && c.accountKind !== 'wallet' && c.destKind !== 'breb' && cuentasAchSinValidacion.length > 0;
     const txtCuentasSinValidar = cuentasAchSinValidacion.map(n => `ACH · ${nombreCuenta(n)}`).join(' o ');
+    // Motivo del rechazo de la inscripción que se puede mostrar. Revisión del
+    // 6 nov: lastError guarda la respuesta cruda del registro bancario
+    // ("[registro bancario] HTTP 400: {…}") y salía tal cual en la insignia y
+    // en la ficha. Al cliente solo le llega si es un motivo que entiende
+    // (mismo filtro que los comprobantes); el texto crudo, solo al admin.
+    const motivoRechazoVisible = (e: unknown): string | null =>
+        (currentUser as any)?.role === 'admin' ? (e ? String(e) : null) : motivoLegibleCliente(e);
     // Menú "···" del modal de detalle
     const [detailMenu, setDetailMenu] = useState(false);
     // Países habilitados desde Admin → Configuración → Países. Por defecto
@@ -640,7 +648,12 @@ export const ContactsSection: React.FC<{
             // y el cliente insistía con "Volver a consultar" sin saber por qué
             // no servía (caso Ider Luna, 2026-11-05).
             tono = ROJO; estado = 'DOCUMENTO INVÁLIDO'; motivo = 'Corrige el número';
-            ayuda = String(k.detalle ?? 'El número de documento no es válido. Borra el beneficiario e inscríbelo con el número correcto.');
+            // Revisión del 6 nov: k.detalle es el texto que devolvió el
+            // proveedor de la consulta (puede traer su nombre o un error
+            // técnico). Al cliente, siempre el texto fijo; el detalle crudo
+            // solo lo ve un administrador.
+            const textoFijo = 'El número de documento no es válido. Borra el beneficiario e inscríbelo con el número correcto.';
+            ayuda = (currentUser as any)?.role === 'admin' && k.detalle ? String(k.detalle) : textoFijo;
         } else if (est !== 'finalizado') {
             const agotado = Number(k.intentos ?? 0) >= 8;
             tono = AMBAR; estado = agotado ? 'EN REVISIÓN' : 'SIN RESULTADO';
@@ -758,9 +771,17 @@ export const ContactsSection: React.FC<{
         // respuesta: el botón "no hacía nada" y el motivo solo quedaba en el
         // registro de auditoría.
         // Va junto al botón (la ficha abierta tapa el aviso de la página).
+        // Revisión del 6 nov: r.motivo es el texto crudo del servidor y puede
+        // nombrar al aliado de la consulta ("… respondió 502"). Al cliente le
+        // va un texto fijo; el motivo real queda en la consola y, para un
+        // administrador, en pantalla.
+        const esAdminVista = (currentUser as any)?.role === 'admin';
+        if (r && r.ok === false) { try { console.warn('[antecedentes] no se pudo consultar:', r.motivo ?? r.message ?? r); } catch { /* */ } }
         setFalloConsulta(x => {
             const y = { ...x };
-            if (r && r.ok === false) y[c.id] = String(r.motivo ?? r.message ?? 'No se pudo hacer la consulta. Inténtalo de nuevo en unos minutos.');
+            if (r && r.ok === false) y[c.id] = esAdminVista && (r.motivo ?? r.message)
+                ? String(r.motivo ?? r.message)
+                : 'No se pudo completar la verificación. Intenta de nuevo en unos minutos.';
             else delete y[c.id];
             return y;
         });
@@ -1548,10 +1569,39 @@ export const ContactsSection: React.FC<{
     // Se suma POR MONEDA y se muestra la dominante. Sumar COP con USDT en una
     // sola cifra sería inventar un número, y a un beneficiario de Colombia se
     // le manda COP; a una wallet, USDT. Casi nunca las dos.
+    //
+    // Revisión del 6 nov, tres arreglos:
+    //  · Moneda: los envíos COP se guardan con el saldo del que salieron
+    //    (COP_BREB, COP_ACH, COP_C3, COP_C4…). Se agrupaba por esa clave y se
+    //    mostraba solo la mayor, así que a quien se le pagaba por Bre-B y por
+    //    ACH se le veía solo una parte. Todo COP_* cuenta como COP y se suma.
+    //  · Quién: se emparejaba también por NOMBRE, y dos beneficiarios con el
+    //    mismo nombre (o la misma persona con dos cuentas) se sumaban la plata
+    //    del otro. Ahora solo por la cuenta o la llave destino.
+    //  · Cuándo: el mes y el año empiezan en hora de Bogotá (UTC−5), no en la
+    //    hora del navegador.
+    const llaveDeBenef = (c: MouvContact) => {
+        const isWallet = c.accountKind === 'wallet';
+        const isBreb = c.destKind === 'breb';
+        return String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
+    };
+    const normCuenta = (v: unknown) => String(v ?? '').trim().toLowerCase().replace(/[\s-]/g, '');
+    const esDelBenef = (t: any, llave: string) => {
+        const k = normCuenta(llave);
+        if (!k) return false;
+        const destino = t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? '';
+        return normCuenta(destino) === k;
+    };
+    const monedaMovido = (cur: unknown) => {
+        const m = String(cur ?? 'COP');
+        return /^COP(_|$)/.test(m) ? 'COP' : m;
+    };
     const movidoPor = useMemo(() => {
-        const ahora = new Date();
-        const inicioMes = new Date(ahora.getFullYear(), ahora.getMonth(), 1).getTime();
-        const inicioAnio = new Date(ahora.getFullYear(), 0, 1).getTime();
+        // Inicio del mes y del año en Bogotá, como instantes UTC (00:00 de
+        // Bogotá = 05:00 UTC).
+        const bog = new Date(Date.now() - 5 * 3600 * 1000);
+        const inicioMes = Date.UTC(bog.getUTCFullYear(), bog.getUTCMonth(), 1, 5);
+        const inicioAnio = Date.UTC(bog.getUTCFullYear(), 0, 1, 5);
         const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
         const mios = (transactions as any[]).filter(t =>
             t.userId === currentUser?.id &&
@@ -1560,15 +1610,13 @@ export const ContactsSection: React.FC<{
         const out: Record<string, { mes: number; anio: number; moneda: string; envios: number }> = {};
         for (const c of contacts) {
             const isWallet = c.accountKind === 'wallet';
-            const isBreb = c.destKind === 'breb';
-            const llave = String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
-            const nombre = String(c.name ?? '');
+            const llave = llaveDeBenef(c);
             const porMoneda: Record<string, { mes: number; anio: number; envios: number }> = {};
             for (const t of mios) {
-                if (String(t.account ?? '') !== llave && String(t.beneficiary ?? '') !== nombre) continue;
+                if (!esDelBenef(t, llave)) continue;
                 const ts = cuando(t);
                 if (ts < inicioAnio) continue;
-                const m = String(t.currency ?? 'COP');
+                const m = monedaMovido(t.currency);
                 const acc = porMoneda[m] ?? (porMoneda[m] = { mes: 0, anio: 0, envios: 0 });
                 const monto = Number(t.amount) || 0;
                 acc.anio += monto; acc.envios += 1;
@@ -1595,17 +1643,16 @@ export const ContactsSection: React.FC<{
     // Los movimientos hacia UN beneficiario, con el mismo criterio que las
     // barras y que el detalle. Una sola función para que las tres pantallas no
     // cuenten distinto la misma plata.
+    // Empareja igual que las barras: por cuenta o llave, no por nombre
+    // (revisión del 6 nov).
     const movimientosDe = (c: MouvContact) => {
-        const isWallet = c.accountKind === 'wallet';
-        const isBreb = c.destKind === 'breb';
-        const llave = String((isWallet ? c.accountNumber : (isBreb ? (c.brebKey ?? c.accountNumber) : c.accountNumber)) ?? '');
-        const nombre = String(c.name ?? '');
+        const llave = llaveDeBenef(c);
         const cuando = (t: any) => new Date(t.createdAt ?? t.created_at ?? t.date ?? 0).getTime() || 0;
         return (transactions as any[])
             .filter(t =>
                 t.userId === currentUser?.id &&
                 (t.type === 'dispersion' || t.type === 'send') &&
-                (String(t.account ?? '') === llave || String(t.beneficiary ?? '') === nombre))
+                esDelBenef(t, llave))
             .sort((a, b) => cuando(b) - cuando(a));
     };
 
@@ -2111,7 +2158,7 @@ export const ContactsSection: React.FC<{
                                     <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
                                 </div>
                             </div>
-                            <p style={{ fontSize: 11, color: '#878E88', lineHeight: 1.5, marginTop: -4 }}>Van al tercero en Siigo para el documento soporte. Si no eliges ciudad, se toma la del lugar de expedición de la cédula (Registraduría).</p>
+                            <p style={{ fontSize: 11, color: '#878E88', lineHeight: 1.5, marginTop: -4 }}>Van al tercero del documento soporte (facturación electrónica). Si no eliges ciudad, se toma la del lugar de expedición de la cédula (Registraduría).</p>
                         </>
                     ) : (
                     /* ── Rama ACH / otros países: cuenta bancaria ── */
@@ -2169,7 +2216,7 @@ export const ContactsSection: React.FC<{
                                         <input value={form.address} onChange={e => setForm(fm => ({ ...fm, address: e.target.value }))} placeholder="Calle 10 # 20-30" style={INP} />
                                     </div>
                                 </div>
-                                <p style={{ fontSize: 11, color: '#878E88', lineHeight: 1.5, marginTop: -4 }}>Van al tercero en Siigo para el documento soporte. Si no eliges ciudad, se toma la del lugar de expedición de la cédula (Registraduría).</p>
+                                <p style={{ fontSize: 11, color: '#878E88', lineHeight: 1.5, marginTop: -4 }}>Van al tercero del documento soporte (facturación electrónica). Si no eliges ciudad, se toma la del lugar de expedición de la cédula (Registraduría).</p>
                             </>
                         )}
                     </>
@@ -2324,7 +2371,7 @@ export const ContactsSection: React.FC<{
                     const statusPill = st === 'aprobada'
                         ? <span className="inline-flex items-center gap-1" style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}><CheckCircle size={10} /> VERIFICADO</span>
                         : st === 'rechazada'
-                            ? <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={c.lastError ?? undefined}>RECHAZADO</span>
+                            ? <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }} title={motivoRechazoVisible(c.lastError) ?? undefined}>RECHAZADO</span>
                             : <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '4px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>EN VALIDACIÓN</span>;
                     const avatar = (
                         <div style={{ width: 38, height: 38, borderRadius: '50%', background: 'linear-gradient(140deg, #2E3330, #1A1D1B)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -2340,10 +2387,25 @@ export const ContactsSection: React.FC<{
                     const frenado = amlFrena(c);
                     const sinValidar = enviableSinValidar(c, st);
                     const puedeEnviar = !!onSendTo && (st === 'aprobada' || sinValidar) && !frenado;
+                    // Revisión del 6 nov: el texto de ayuda de Enviar decía "Sigue
+                    // en validación" también a un beneficiario que la Cuenta 1 ya
+                    // RECHAZÓ, y "Bloqueado por cumplimiento" a una cédula mal
+                    // digitada (documento_invalido), que no es un bloqueo: se
+                    // corrige el número.
+                    const estAml = String(amlDe(c)?.estado ?? '');
+                    const tituloEnviar = frenado
+                        ? (estAml === 'documento_invalido'
+                            ? 'Corrige el documento del beneficiario: el número no es válido. Bórralo e inscríbelo con el número correcto.'
+                            : amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.')
+                        : sinValidar
+                            ? (st === 'rechazada'
+                                ? `La validación de ACH · Cuenta 1 rechazó esta cuenta. Puedes enviarle por ${txtCuentasSinValidar}.`
+                                : `Sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}.`)
+                            : undefined;
                     const actions = (
                         <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
                             <button onClick={() => onSendTo?.(c)} disabled={!puedeEnviar}
-                                title={frenado ? (amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.') : sinValidar ? `Sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}.` : undefined}
+                                title={tituloEnviar}
                                 style={{ fontSize: 12.5, fontWeight: 600, color: puedeEnviar ? '#F4F4F2' : '#878E88', cursor: puedeEnviar ? 'pointer' : 'not-allowed' }}
                                 className="hover:text-[#4ADE80] transition-colors">Enviar</button>
                             <button onClick={e => abrirMenu(c.id, e)} style={{ color: '#878E88', fontWeight: 700, fontSize: 14, padding: '2px 6px', borderRadius: 6 }} className="hover:bg-white/[0.06] transition-colors">···</button>
@@ -2625,7 +2687,8 @@ export const ContactsSection: React.FC<{
                                                 )}
                                                 {String(k.estado ?? '') === 'finalizado' && k.reportId && (
                                                     <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
-                                                        Si algo cambia en las listas, TusDatos avisa y la consulta se repite sola.
+                                                        {/* Sin el nombre del aliado (revisión del 6 nov): el cliente nunca lo ve. */}
+                                                        Si algo cambia en las listas, nuestra verificación avisa y la consulta se repite sola.
                                                     </p>
                                                 )}
                                             </>
@@ -2657,7 +2720,7 @@ export const ContactsSection: React.FC<{
                                         <Fila l="Riel" v={m.railLine} />
                                         <Fila l="Estado" v={st === 'aprobada' ? 'Verificada por el banco' : st === 'rechazada' ? <span style={{ color: '#F87171' }}>Rechazada</span> : <span style={{ color: '#FBBF24' }}>En validación</span>} />
                                         {c.providerStatus && <Fila l="Según el proveedor" v={<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{String(c.providerStatus)}</span>} />}
-                                        {st === 'rechazada' && c.lastError && <Fila l="Motivo" v={String(c.lastError).slice(0, 200)} />}
+                                        {st === 'rechazada' && motivoRechazoVisible(c.lastError) && <Fila l="Motivo" v={String(motivoRechazoVisible(c.lastError)).slice(0, 200)} />}
                                         {c.accountKind === 'wallet' && (
                                             <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
                                                 Para el riesgo de la dirección en cadena (sanciones, mixers, rutas contaminadas), consultala en Servicios → KYT.
@@ -2680,10 +2743,12 @@ export const ContactsSection: React.FC<{
                 const keyValue = isWallet ? detail.accountNumber : (isBreb ? (detail.brebKey ?? detail.accountNumber) : detail.accountNumber);
                 const copyKey = () => { navigator.clipboard?.writeText(String(keyValue ?? '')); setNotice({ ok: true, text: isBreb ? 'Llave copiada.' : isWallet ? 'Dirección copiada.' : 'Cuenta copiada.' }); };
                 // ACTIVIDAD: envíos a este destino (dispersiones / envíos del usuario)
+                // Mismo emparejamiento que las barras: por cuenta o llave, no
+                // por nombre (revisión del 6 nov).
                 const myTx = (transactions as any[]).filter(t =>
                     t.userId === currentUser?.id &&
                     (t.type === 'dispersion' || t.type === 'send') &&
-                    (String(t.account ?? '') === String(keyValue ?? '') || String(t.beneficiary ?? '') === String(detail.name ?? '')) &&
+                    esDelBenef(t, String(keyValue ?? '')) &&
                     (t.status === 'Completado' || t.status === 'Procesando'));
                 const txTimeOf = (t: any) => new Date(t.createdAt ?? t.date ?? 0).getTime() || 0;
                 const lastTx = [...myTx].sort((a, b) => txTimeOf(b) - txTimeOf(a))[0];
@@ -2708,13 +2773,16 @@ export const ContactsSection: React.FC<{
                 ];
                 // Ciudad y dirección (Colombia): van al tercero en Siigo. Si
                 // faltan, se completan acá mismo.
+                // En pantalla se dice "el tercero del documento soporte", sin
+                // nombrar el programa de facturación (revisión del 6 nov: el
+                // cliente nunca ve el nombre de un aliado).
                 const esColombia = !isWallet && (detail.country ?? 'Colombia') === 'Colombia';
                 const tieneDir = !!detail.cityCode;
                 const lugarExp = String(amlDe(detail)?.lugarExpedicion ?? '');
                 const lugarFuente = String(amlDe(detail)?.lugarFuente ?? 'registraduria');
                 const textoCiudadCedula = lugarFuente === 'registraduria'
-                    ? `La Registraduría dice que la cédula se expidió en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala.`
-                    : `Según el ${lugarFuente} (de la consulta de antecedentes), la persona está en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en Siigo; si vive en otra, cámbiala.`;
+                    ? `La Registraduría dice que la cédula se expidió en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en el documento soporte; si vive en otra, cámbiala.`
+                    : `Según el ${lugarFuente} (de la consulta de antecedentes), la persona está en ${lugarExp || 'esta ciudad'}. Se usa como ciudad del tercero en el documento soporte; si vive en otra, cámbiala.`;
                 if (esColombia && tieneDir && !dirEdit) {
                     rows.push({ l: 'Ciudad', v: detail.cityName ?? municipioPorCodigo(detail.cityCode)?.nombre ?? detail.cityCode ?? '' });
                     rows.push({ l: 'Dirección', v: <span>{detail.address || 'Sin dirección informada'} <button onClick={() => setDirEdit({ cityCode: detail.cityCode ?? '', address: detail.address ?? '', guardando: false, error: null })} style={{ marginLeft: 6, color: '#878E88', fontSize: 11.5, fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' }}>Editar</button></span> });
@@ -2726,8 +2794,8 @@ export const ContactsSection: React.FC<{
                             {!tieneDir && dirEdit?.cityCode
                                 ? `${textoCiudadCedula} La dirección es opcional: si no la sabes, va «Sin dirección informada».`
                                 : lugarExp
-                                    ? `La cédula se expidió en ${lugarExp}, y de ahí no sale un municipio colombiano (consulado o nombre repetido). Si no eliges ciudad, el tercero en Siigo va con la ciudad configurada en Contabilidad → Configuración (o la de tu empresa) y el lugar de expedición queda escrito en la dirección. La dirección es opcional.`
-                                    : 'Va al tercero en Siigo. Sin ciudad, la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»). La dirección es opcional.'}
+                                    ? `La cédula se expidió en ${lugarExp}, y de ahí no sale un municipio colombiano (consulado o nombre repetido). Si no eliges ciudad, el tercero del documento soporte va con la ciudad configurada en Contabilidad → Configuración (o la de tu empresa) y el lugar de expedición queda escrito en la dirección. La dirección es opcional.`
+                                    : 'Va al tercero del documento soporte. Sin ciudad, la DIAN rechaza el documento soporte («Falta o es inválido el país del tercero»). La dirección es opcional.'}
                         </p>
                         <div className="grid grid-cols-2 gap-3" style={{ marginTop: 10 }}>
                             <div>
@@ -3023,7 +3091,8 @@ export const ContactsSection: React.FC<{
                                         )}
                                         {est === 'finalizado' && k.reportId && (
                                             <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', marginTop: 9, lineHeight: 1.5 }}>
-                                                Si algo cambia en las listas, TusDatos nos avisa y la consulta se repite sola.
+                                                {/* Sin el nombre del aliado (revisión del 6 nov): el cliente nunca lo ve. */}
+                                                Nuestra verificación avisa si algo cambia en las listas, y la consulta se repite sola.
                                             </p>
                                         )}
                                     </div>
@@ -3065,8 +3134,8 @@ export const ContactsSection: React.FC<{
                                 Mientras está en validación no se le cuenta al
                                 cliente cómo va el registro por dentro — para él
                                 el estado es el del banco, y es en validación. */}
-                            {st === 'rechazada' && detail.lastError && (
-                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(detail.lastError).slice(0, 240)}</p>
+                            {st === 'rechazada' && motivoRechazoVisible(detail.lastError) && (
+                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 8, wordBreak: 'break-word' }}>Motivo: {String(motivoRechazoVisible(detail.lastError)).slice(0, 240)}</p>
                             )}
                         </div>
 

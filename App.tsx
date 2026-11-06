@@ -109,6 +109,18 @@ const rutaDeVista = (view: ViewState, role: UserRole): string | null => {
 const rutaInicial = (): { view: ViewState; role?: UserRole } | null => {
   try { return RUTAS_APP[window.location.pathname] ?? null; } catch { return null; }
 };
+// Pantallas para entrar o crear cuenta, y paneles. Revisión del 6 nov: tras
+// entrar, el botón Atrás del navegador volvía a /ingresar_empresas y App
+// ponía la vista de Login con la sesión viva (y desde ahí se podía "entrar"
+// o registrarse otra vez encima de la sesión abierta). Con sesión, esas
+// direcciones llevan al panel, y al pasar de una de ellas al panel la
+// dirección se reemplaza en vez de apilarse.
+const VISTAS_INGRESO: ViewState[] = ['role-selection', 'login', 'register', 'confirmation'];
+const VISTAS_PANEL: ViewState[] = ['dashboard', 'personal-dashboard', 'persona-dashboard', 'contador-dashboard'];
+const esRutaDeIngreso = (path: string): boolean => {
+  const r = RUTAS_APP[path];
+  return !!r && VISTAS_INGRESO.includes(r.view);
+};
 
 const LEGACY_BLUES = ['#2563eb', '#1d4ed8', '#3b82f6', '#60a5fa', '#0ea5e9', '#06b6d4', '#7dd3fc', '#4f46e5', '#4b9fe1', '#1e40af'];
 
@@ -354,14 +366,33 @@ const App: React.FC = () => {
       // La dirección actual ya es una pantalla de esta misma vista (p. ej.
       // /personas_movimientos dentro del portal Personas): se respeta.
       if (RUTAS_APP[window.location.pathname]?.view === currentView) return;
-      if (window.location.pathname !== path) window.history.pushState({ view: currentView }, '', path);
+      if (window.location.pathname !== path) {
+        // Del ingreso al panel se REEMPLAZA la dirección (revisión del 6 nov):
+        // así Atrás no vuelve a la pantalla de Login con la sesión abierta.
+        if (VISTAS_PANEL.includes(currentView) && esRutaDeIngreso(window.location.pathname)) window.history.replaceState({ view: currentView }, '', path);
+        else window.history.pushState({ view: currentView }, '', path);
+      }
     } catch { /* sin history */ }
   }, [currentView, userRole]);
+  // Panel de la sesión abierta (o null si no hay sesión adentro). Lo lee el
+  // listener de Atrás/Adelante, que se registra una sola vez y no ve el
+  // estado nuevo; se actualiza en cada render más abajo.
+  const panelDeSesionRef = useRef<ViewState | null>(null);
   useEffect(() => {
     const onPop = () => {
       const doc = paginaDeRuta(window.location.pathname);
       if (doc) { setStaticPageKey(doc); setCurrentView('static-page'); return; }
       const r = RUTAS_APP[window.location.pathname];
+      // Con la sesión abierta, Atrás hacia /ingresar_*, /registro_* o
+      // /confirmar_correo no muestra esas pantallas: deja al cliente en su
+      // panel y corrige la dirección (revisión del 6 nov). Sin sesión (p. ej.
+      // después de Salir) todo sigue igual que antes.
+      const panel = panelDeSesionRef.current;
+      if (r && panel && VISTAS_INGRESO.includes(r.view)) {
+        try { window.history.replaceState({ view: panel }, '', rutaDeVista(panel, 'business') ?? '/portal_empresas'); } catch { /* sin history */ }
+        setCurrentView(panel);
+        return;
+      }
       if (r) { if (r.role) setUserRole(r.role); setCurrentView(r.view); }
       else if (window.location.pathname === '/') setCurrentView(v => (['role-selection', 'login', 'register', 'static-page'].includes(v) ? 'landing' : v));
     };
@@ -373,6 +404,11 @@ const App: React.FC = () => {
   const [showMarketingModal, setShowMarketingModal] = useState(false);
 
   const { currentUser, isAuthLoading, logoutUser, isPasswordRecovery, setNewPassword, mfaPending, ultimoCierre } = useDatabase();
+  // Solo cuenta como "adentro" una sesión de cliente que ya pasó el código
+  // 2FA: mientras falta el código, la pantalla de ingreso es la que manda.
+  panelDeSesionRef.current = currentUser && currentUser.role !== 'admin' && !mfaPending
+    ? vistaDelRol(currentUser.role, currentUser.id)
+    : null;
   const { config } = useSystemConfig();
   // Verificación por correo (2 pasos) tras el login. Se pasa una vez por
   // sesión; "recordar dispositivo" la evita por 30 días en este navegador.
@@ -491,6 +527,12 @@ const App: React.FC = () => {
       // La marca del portal queda atada a esta cuenta (se puso al elegir
       // Contabilidad, antes de saber quién iba a entrar).
       if (vista === 'contador-dashboard' && portalActual(currentUser.id) === 'contabilidad' && !leerMarcaPortal()?.uid) fijarPortal('contabilidad', currentUser.id);
+      // Los documentos legales (/terminos, /privacidad, /sarlaft…) abren con
+      // sesión o sin ella. Revisión del 6 nov: con el KYB pendiente, en
+      // revisión o rechazado, la rama de abajo cambiaba la vista al panel
+      // antes de llegar a la excepción de 'static-page', y esas empresas no
+      // podían abrir los términos (ni desde el enlace del registro).
+      if (currentView === 'static-page') return;
       if (currentUser.kycStatus === 'pending' || currentUser.kycStatus === 'in_progress' || currentUser.kycStatus === 'in_review' || currentUser.kycStatus === 'rejected') {
           // Cada rol va derecho a SU panel; el banner de KYC/KYB vive adentro.
           if (currentView !== vista) setCurrentView(vista);
