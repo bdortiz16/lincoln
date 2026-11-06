@@ -7,6 +7,7 @@ import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
 import { nombreCuenta } from '../lib/nombreCuenta';
 import { BanderaPais } from './BanderaPais';
+import { banderaExterior } from '../lib/banderaPais';
 
 // ─────────────────────────────────────────────────────────────
 // AdminClientes — maestro-detalle.
@@ -644,7 +645,7 @@ export const AdminClientes: React.FC<{
                   }}>{iniciales(sel.name || sel.email)}</div>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <h3 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}><BanderaPais cliente={sel} />{sel.name || 'Sin nombre'}</h3>
+                      <h3 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>{sel.name || 'Sin nombre'}</h3>
                       {bloqueado(sel) ? <Pill tono="mal">SUSPENDIDA</Pill>
                         : verificado(sel) ? <Pill tono="ok">KYC VERIFICADO</Pill>
                           : <Pill>KYC PENDIENTE</Pill>}
@@ -653,7 +654,7 @@ export const AdminClientes: React.FC<{
                         <span title={modeloCli.modelo === 'exterior' ? 'Empresa del exterior: Lincoin le factura cada movimiento' : 'Empresa de Colombia: una factura por día, al día siguiente'}>
                           <Pill tono={modeloCli.modelo === 'exterior' ? 'curso' : 'neutro'}>
                             {modeloCli.modelo === 'exterior'
-                              ? `EXTERIOR${modeloCli.pais && !esColombia(modeloCli.pais) ? ` · ${modeloCli.pais.toUpperCase()}` : ''}`
+                              ? `${modeloCli.pais && banderaExterior(modeloCli.pais) ? `${banderaExterior(modeloCli.pais)} ` : ''}EXTERIOR${modeloCli.pais && !esColombia(modeloCli.pais) ? ` · ${modeloCli.pais.toUpperCase()}` : ''}`
                               : modeloCli.pais ? 'COLOMBIA' : 'COLOMBIA · SIN PAÍS'}
                           </Pill>
                         </span>
@@ -923,7 +924,9 @@ export const AdminClientes: React.FC<{
                     onChange={e => setEdPais(e.target.value === '__otro' ? ' ' : e.target.value)} aria-label="País de la empresa"
                     style={{ width: '100%', height: 40, marginTop: 8, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 10px', color: edPais ? C.text : C.sub, fontSize: 13, fontFamily: FONT }}>
                     <option value="">Elige el país…</option>
-                    {PAISES_EXTERIOR.map(p => <option key={p} value={p}>{p}</option>)}
+                    {/* El valor guardado sigue siendo el nombre ("Brasil"): la
+                        bandera es solo para elegirlo más rápido. */}
+                    {PAISES_EXTERIOR.map(p => <option key={p} value={p}>{banderaExterior(p) ? `${banderaExterior(p)}  ${p}` : p}</option>)}
                     <option value="__otro">Otro país…</option>
                   </select>
                   {edPais && !PAISES_EXTERIOR.includes(edPais) && (
