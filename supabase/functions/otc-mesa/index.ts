@@ -432,7 +432,8 @@ async function avisarMesa(titulo: string, cuerpo: string, tag: string): Promise<
       // servicio en Authorization lo rechaza el runtime con "Conflicting API keys".
       headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
       body: JSON.stringify({
-        action: 'enviar', rol: 'admin', titulo, cuerpo, tag,
+        // Solo a quien opera la mesa OTC (el mismo permiso que abre la pantalla).
+        action: 'enviar', rol: 'admin', permiso: ['plata.mover', 'fn.otc'], titulo, cuerpo, tag,
         url: '/admin-empresas', insistir: true,
       }),
       signal: AbortSignal.timeout(8000),

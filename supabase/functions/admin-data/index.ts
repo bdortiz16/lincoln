@@ -2967,6 +2967,11 @@ Deno.serve(async (req: Request) => {
         const moneda = String(selfServiceBody.currency ?? '').toUpperCase()
         const col = String(selfServiceBody.debitKey ?? moneda).toUpperCase()
         if (!/^[A-Z0-9_]{2,20}$/.test(moneda) || !/^[A-Z0-9_]{2,20}$/.test(col)) return json({ ok: false, error: 'Moneda inválida.' }, 400)
+        // Lo que se descuenta y lo que se pide son la MISMA moneda (COP con
+        // COP o COP_*, USDT con USDT o USDT_*). Las elegía el navegador por
+        // separado: se descontaban 1.000 COP y Tesorería veía "Envío USDT
+        // 1.000" (revisión del 6 nov).
+        if (!(col === moneda || col.startsWith(`${moneda}_`))) return json({ ok: false, error: 'La moneda del retiro no corresponde con el saldo del que sale.' }, 400)
         // Una cuenta bloqueada o en lista negra no retira, aunque llame directo.
         const { data: uR } = await db.from('users').select('is_blocked, raw_data, full_name, role').eq('id', uidR).maybeSingle()
         if (!uR) return json({ ok: false, error: 'Usuario no encontrado.' }, 404)
@@ -3025,9 +3030,22 @@ Deno.serve(async (req: Request) => {
         if (!(await verifySelfOrAdmin(req, uidS))) return json({ ok: false, error: 'No autorizado' }, 401)
         const monto = Math.round(Number(selfServiceBody.amount))
         if (!(monto > 0)) return json({ ok: false, error: 'Monto inválido.' }, 400)
+        // La misma solicitud no descuenta dos veces (doble toque o reintento
+        // tras perder la respuesta), igual que solicitar_retiro: sin esto
+        // quedaban dos débitos y dos solicitudes Pendiente (revisión del 6 nov).
+        const idemS = String(selfServiceBody.idemKey ?? '').replace(/[^\w-]/g, '').slice(0, 80)
+        const claveS = idemS ? `mover_ach:${uidS}:${idemS}` : ''
+        if (claveS) {
+          const c = await reclamarCandado(db, claveS, 86_400, uidS, 'solicitar_mover_ach')
+          if (c === 'ocupado') return json({ ok: false, duplicado: true, error: 'Ya hay una solicitud igual en curso. Revisa tus movimientos antes de repetirla.' }, 409)
+          if (c === 'error') return json({ ok: false, error: 'No pudimos registrar la solicitud en este momento. No se descontó nada; intenta de nuevo.' }, 503)
+        }
+        const soltarS = async () => { if (claveS) await soltarCandado(db, claveS) }
         const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidS, p_fiat: { COP: -monto } })
-        if (eAdj) return json({ ok: false, error: 'No se pudo descontar el saldo. No se cambió nada; intenta de nuevo.' }, 500)
-        if ((adj as any)?.error) return json({ ok: false, error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente en tu Saldo Lincoin.' : String((adj as any).error) }, 400)
+        // Error de red: el débito PUDO aplicarse. El candado queda puesto para
+        // que un reintento con la misma clave no descuente otra vez.
+        if (eAdj) return json({ ok: false, error: 'No se pudo confirmar el descuento. Revisa tus movimientos antes de repetir la solicitud.' }, 500)
+        if ((adj as any)?.error) { await soltarS(); return json({ ok: false, error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente en tu Saldo Lincoin.' : String((adj as any).error) }, 400) }
         const { data: uS } = await db.from('users').select('full_name').eq('id', uidS).maybeSingle()
         const ahoraS = new Date().toISOString()
         const { data: insS, error: insErrS } = await db.from('transactions').insert({
@@ -3043,6 +3061,7 @@ Deno.serve(async (req: Request) => {
         if (insErrS) {
           // Sin solicitud no puede quedar descontado: se devuelve.
           await db.rpc('adjust_balances', { p_user_id: uidS, p_fiat: { COP: monto } })
+          await soltarS()
           return json({ ok: false, error: 'No pudimos registrar la solicitud y no se descontó tu saldo. Intenta de nuevo.' }, 500)
         }
         return json({ ok: true, id: (insS as any)?.id ?? null, balances: (adj as any)?.balances ?? null })
@@ -3053,20 +3072,14 @@ Deno.serve(async (req: Request) => {
         if (!(await verifySelfOrAdmin(req, uidM))) return json({ error: 'No autorizado' }, 401)
         const op = String(selfServiceBody.op ?? '')
         const ahora = new Date().toISOString()
+        // Mover entre Saldo Lincoin y Bre-B ya NO es autoservicio (revisión del
+        // 6 nov). Llenaba el riel desde el que se envía (COP_BREB, respaldado
+        // por la bolsa de Mouv) sin 2FA ni aprobación de Tesorería, justo lo
+        // que apply_conversion prohíbe para los rieles de envío; la pantalla
+        // ni lo usaba (dice "escríbenos a soporte"), pero se podía llamar
+        // directo. Lo hace el equipo desde la Billetera.
         if (op === 'breb') {
-          const monto = Math.round(Number(selfServiceBody.amount))
-          const dir = String(selfServiceBody.dir ?? '')
-          if (!(monto > 0) || !['to_breb', 'from_breb'].includes(dir)) return json({ ok: false, error: 'Monto o dirección inválidos.' }, 400)
-          const delta = dir === 'to_breb' ? { COP: -monto, COP_BREB: monto } : { COP: monto, COP_BREB: -monto }
-          const { data: adj, error: eAdj } = await db.rpc('adjust_balances', { p_user_id: uidM, p_fiat: delta })
-          if (eAdj) return json({ ok: false, error: 'No se pudo mover el saldo. No se descontó nada.' }, 500)
-          if ((adj as any)?.error) return json({ ok: false, error: (adj as any).error === 'insufficient' ? 'Saldo insuficiente en la cuenta de origen.' : String((adj as any).error) }, 400)
-          const { data: u } = await db.from('users').select('full_name').eq('id', uidM).maybeSingle()
-          await db.from('transactions').insert({
-            user_id: uidM, type: 'breb_move', amount: monto, currency: 'COP', status: 'Completado',
-            raw_data: { initials: 'BB', title: dir === 'to_breb' ? 'Peso Lincoin → BreB Lincoin' : 'BreB Lincoin → Peso Lincoin', date: new Date().toLocaleDateString('es-CO'), createdAt: ahora, userName: (u as any)?.full_name ?? null, servidor: true },
-          })
-          return json({ ok: true, balances: (adj as any)?.balances ?? null })
+          return json({ ok: false, error: 'Mover saldo entre tu Saldo Lincoin y Bre-B lo hace nuestro equipo. Escríbenos a soporte@lincoin.me.' }, 410)
         }
         if (op === 'consolidar_usdt') {
           // Los montos salen de la BASE, no del navegador.
@@ -3296,11 +3309,13 @@ Deno.serve(async (req: Request) => {
           const ver = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-            body: JSON.stringify({ action: 'verify', userId: uidS, code: codigoCorreo }),
+            // El código tiene que ser uno pedido PARA activar el 2FA (email-otp lo
+            // guarda con su propósito): uno de ingreso ya no sirve aquí.
+            body: JSON.stringify({ action: 'verify', userId: uidS, code: codigoCorreo, proposito: 'activar_2fa' }),
           }).then(x => x.json()).catch(() => null)
           if (!ver?.ok) {
             // Un código ya usado, vencido o sin pedir no es adivinar: no cuenta.
-            if (!['used', 'no_code', 'expired', 'superseded', 'busy'].includes(String(ver?.error ?? ''))) {
+            if (!['used', 'no_code', 'expired', 'superseded', 'busy', 'wrong_purpose'].includes(String(ver?.error ?? ''))) {
               await auditAdmin(req, 'security.mfa_alta_codigo_correo_invalido', { userId: uidS, motivo: ver?.error ?? 'sin respuesta' })
             }
             return json({ success: false, pideCodigoCorreo: true, error: ver?.message ?? 'El código del correo no es válido o ya venció.' })
@@ -7624,9 +7639,21 @@ Deno.serve(async (req: Request) => {
         // Abono atómico (sin leer-y-escribir el saldo entero).
         let nuevo: number | null = null
         const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [rail]: amt } })
+        const rpcFalta = !!adjErr && /function .* does not exist|42883|PGRST202|could not find the function/i.test(`${adjErr.code ?? ''} ${adjErr.message ?? ''}`)
         if (!adjErr && !(adj as any)?.error) {
           nuevo = Number((adj as any)?.balances?.[rail] ?? 0)
-        } else if (adjErr) {
+        } else if (adjErr && !rpcFalta) {
+          // Se perdió la respuesta (red, timeout, 5xx): el abono PUDO haberse
+          // aplicado. Antes se leía y reescribía el saldo entero en este caso:
+          // si el abono sí se había hecho quedaba doble, y además se deshacían
+          // débitos hechos entretanto (revisión del 6 nov). Queda resuelta y
+          // en revisión, sin volver a Pendiente (un segundo clic duplicaría).
+          await db.from('transactions').update({ raw_data: { ...rd, revisionManual: true, abonoIncierto: true, abonoInciertoAt: ahora, motivoIncierto: String(adjErr.message ?? '').slice(0, 200) } }).eq('id', tx.id)
+          await auditAdmin(req, 'rail_move.abono_incierto', { txId: tx.id, rail, amt })
+          return json({ success: false, incierto: true, error: 'No se pudo confirmar si el saldo se abonó. Revisa el saldo del cliente antes de hacer nada: la solicitud quedó marcada para revisión.' }, 502)
+        } else if (rpcFalta) {
+          // Solo si la función de la base no existe (proyecto sin migrar) se
+          // usa el camino viejo de leer y escribir.
           const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
           const bals: Record<string, number> = (u?.balances as any) ?? {}
           nuevo = parseFloat(((bals[rail] ?? 0) + amt).toFixed(2))

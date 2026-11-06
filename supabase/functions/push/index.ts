@@ -344,8 +344,16 @@ Deno.serve(async (req) => {
 
       let ids: string[] = Array.isArray(payload.user_ids) ? payload.user_ids.map(String) : []
       if (String(payload.rol ?? '') === 'admin') {
-        const { data: admins } = await db.from('users').select('id').eq('role', 'admin')
-        ids = ids.concat((admins ?? []).map((u: any) => String(u.id)))
+        // Solo los miembros ACTIVOS del equipo con permiso para esa sección
+        // (`permiso`, el mismo que abre la pantalla). Antes iba a todo
+        // role='admin': un miembro dado de baja, o uno de Solo lectura,
+        // seguía recibiendo en el teléfono los montos de los cierres OTC
+        // (revisión del 6 nov). Sin `permiso`, solo el dueño.
+        const { data: admins } = await db.from('users').select('id, email').eq('role', 'admin').limit(200)
+        const permiso = Array.isArray(payload.permiso) ? payload.permiso.map(String) : payload.permiso ? String(payload.permiso) : undefined
+        for (const u of (admins ?? []) as any[]) {
+          try { if ((await equipoPermite(db, String(u.id), permiso, { email: u.email ?? null })).ok) ids.push(String(u.id)) } catch { /* sin acceso, sin aviso */ }
+        }
       }
       ids = [...new Set(ids.filter(Boolean))]
       if (!ids.length) return json(200, { ok: true, enviados: 0, fallidos: 0, muertas: 0, motivo: 'sin destinatarios' })

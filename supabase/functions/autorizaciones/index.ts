@@ -46,6 +46,7 @@ import { mergeRaw } from '../_shared/raw-data.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { requireMfaSession } from '../_shared/admin-auth.ts'
+import { inicioMesBogota } from '../_shared/cupos.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -197,8 +198,14 @@ async function avisarCumplimiento(asunto: string, html: string, mensaje: string)
     } catch { /* el correo es un extra */ }
   }
   try {
-    const { data: admins } = await db.from('users').select('id').eq('role', 'admin').limit(20)
-    for (const a of (admins ?? []) as any[]) await notificar(String(a.id), asunto, mensaje, 'info', '/admin')
+    // Solo a los miembros activos con Cumplimiento (quien revisa operadores).
+    // Antes iba a todo role='admin', también a los dados de baja (revisión
+    // del 6 nov).
+    const { data: admins } = await db.from('users').select('id, email').eq('role', 'admin').limit(50)
+    for (const a of (admins ?? []) as any[]) {
+      const ok = await equipoPermite(db, String(a.id), ['cumplimiento', 'fn.cumplimiento'], { email: a.email ?? null }).then(r => r.ok).catch(() => false)
+      if (ok) await notificar(String(a.id), asunto, mensaje, 'info', '/admin')
+    }
   } catch { /* la campana es un extra */ }
 }
 
@@ -526,7 +533,10 @@ Deno.serve(async (req) => {
 
       // El código lo escribe cada cuenta en su perfil y no es único en la base:
       // si dos empresas lo comparten no se adivina a cuál mandar la solicitud.
-      const { data: emps } = await db.from('users').select('*').eq('role', 'business').eq('raw_data->>ownReferralCode', codigo).limit(2)
+      // Sin distinguir mayúsculas (como en contador): hay cuentas viejas con el
+      // código en minúsculas y su operador recibía "No hay una empresa con ese
+      // ID" (revisión del 6 nov). Sin comodines.
+      const { data: emps } = await db.from('users').select('*').eq('role', 'business').ilike('raw_data->>ownReferralCode', codigo.replace(/[%_\\]/g, '')).limit(2)
       if ((emps ?? []).length > 1) return json({ ok: false, error: 'Ese ID está repetido. Pídele a la empresa que se comunique con soporte.' }, 409)
       const emp = (emps ?? [])[0]
       if (!emp) return json({ ok: false, error: 'No hay una empresa con ese ID. Pídele a la empresa que lo copie de su panel (Clientes).' }, 404)
@@ -559,8 +569,11 @@ Deno.serve(async (req) => {
       const { data: pe } = await db.from('users').select('id, full_name, company_name, email, sol:raw_data->personasSolicitudes').eq('role', 'business').contains('raw_data', { personasSolicitudes: [{ id: yo.id }] }).limit(1)
       const s = pe?.[0] ? lista<Solicitud>({ s: (pe[0] as any).sol }, 's').find(x => x.id === yo.id) : null
       const pend = pe?.[0] ? { id: String(pe[0].id), nombre: nombreEmpresa(pe[0]), etapa: etapa(s) } : null
-      // Consumo del mes: retiros a banco/Bre-B completados o en curso.
-      const ini = new Date(); ini.setDate(1); ini.setHours(0, 0, 0, 0)
+      // Consumo del mes: retiros a banco/Bre-B completados o en curso. El mes
+      // es el de Colombia, igual que el tope que aplica mouv-proxy: con el mes
+      // en UTC, entre las 19:00 y las 24:00 del último día el portal mostraba
+      // cupo del mes nuevo y el envío se rechazaba (revisión del 6 nov).
+      const ini = new Date(inicioMesBogota())
       const { data: tx } = await db.from('transactions').select('amount, status').eq('user_id', yo.id).eq('type', 'dispersion').gte('created_at', ini.toISOString())
       const usado = (tx ?? []).filter((t: any) => ['Completado', 'Procesando', 'Pendiente'].includes(String(t.status))).reduce((s: number, t: any) => s + (Number(t.amount) || 0), 0)
       return json({ ok: true, autorizada: actual, pendiente: pend, usadoMes: usado, datos: yo.raw.autorizacion ?? null })
@@ -593,7 +606,7 @@ Deno.serve(async (req) => {
       // pasan de las 1.000 filas que PostgREST devuelve de una vez.
       const usado: Record<string, number> = {}
       if (autorizadas.length && body.sinUso !== true) {
-        const ini = new Date(); ini.setDate(1); ini.setHours(0, 0, 0, 0)
+        const ini = new Date(inicioMesBogota())  // mes de Colombia, como el tope del servidor
         const idsA = autorizadas.map(a => a.id)
         for (let i = 0; i < idsA.length; i += 150) {
           await leerPorPaginas(() => db.from('transactions').select('id, user_id, amount, status').in('user_id', idsA.slice(i, i + 150)).eq('type', 'dispersion').gte('created_at', ini.toISOString()), { alLote: (lote) => {

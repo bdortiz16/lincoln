@@ -224,7 +224,9 @@ function detailRow(label: string, value: string): string {
 
 function buildDetailRows(tx: TxRecord, completed = false): string {
   const rows: string[] = []
-  const now = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
+  // En hora de Colombia: el servidor corre en UTC y una operación de las
+  // 21:00 del día 5 salía como del día 6 (revisión del 6 nov).
+  const now = new Date().toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/Bogota' })
 
   if (tx.type === 'pay_received') rows.push(detailRow('De', tx.raw_data?.senderName || 'Usuario Lincoin'))
   if (tx.type === 'pay_sent')     rows.push(detailRow('Para', tx.raw_data?.recipientName || 'Usuario Lincoin'))
@@ -607,7 +609,17 @@ Deno.serve(async (req) => {
       const noun = isSend ? 'envío' : 'operación'
       const ben = tx.raw_data?.beneficiary
       subject = `Lincoin · No pudimos completar tu ${noun} de ${a}`
-      const msg = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${esc(ben)}</strong>` : ''} por <strong>${esc(a)}</strong>. <strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos. Si el problema persiste, escríbenos.`
+      // "Tu saldo fue devuelto" solo si de verdad se devolvió: una salida con
+      // la devolución hecha (refunded). Antes salía en todo Fallido/Rechazado,
+      // también en un depósito rechazado que nunca se acreditó o en un envío
+      // cuyo reintegro falló o va después (revisión del 6 nov).
+      const devuelto = isSend && tx.raw_data?.refunded === true && !tx.raw_data?.reembolsoIncierto
+      const sobreSaldo = devuelto
+        ? '<strong>Tu saldo fue devuelto</strong> y puedes intentarlo de nuevo en unos minutos.'
+        : isSend
+          ? 'Estamos revisando tu saldo: si en unos minutos no ves el monto de vuelta, escríbenos.'
+          : 'En tus movimientos de la app ves el detalle.'
+      const msg = `Hola <strong style="color:${BRAND_NAVY}">${esc(name)}</strong>, no pudimos completar tu ${noun}${ben ? ` a <strong>${esc(ben)}</strong>` : ''} por <strong>${esc(a)}</strong>. ${sobreSaldo} Si el problema persiste, escríbenos.`
       html = customHtmlEmail(`No pudimos completar tu ${noun}`, msg, subject)
     } else {
       subject = completed ? buildSubjectCompleted(tx) : buildSubject(tx)

@@ -1274,11 +1274,15 @@ Deno.serve(async (req) => {
 
       const results: any[] = []
       for (const [oid, rows] of groups) {
-        // 1) Deduplicar: conservar el id menor, borrar el resto (misma orden).
-        rows.sort((a, b) => Number(a.id) - Number(b.id))
+        // 1) Duplicados de la misma orden: ya NO se borran (revisión del 6 nov).
+        //    Los ids son uuid y `Number(uuid)` daba NaN, así que la fila que se
+        //    conservaba era cualquiera y se podía borrar la que el servidor
+        //    debitó; la orden además sale de un texto que escribe el cliente.
+        //    Se conserva la Completado si hay, y las demás solo se anotan.
+        rows.sort((a, b) => (a.status === 'Completado' ? 0 : 1) - (b.status === 'Completado' ? 0 : 1) || String(a.id).localeCompare(String(b.id)))
         const keep = rows[0]
         const dupIds = rows.slice(1).map(r => r.id)
-        if (dupIds.length) await db.from('transactions').delete().in('id', dupIds)
+        if (dupIds.length) await logAudit(uid, 'finity.withdrawal.duplicados_sin_borrar', { orden: oid, conservada: keep.id, otras: dupIds })
 
         // 2) Estado real desde Finity.
         let realState: string | null = null
@@ -1295,6 +1299,15 @@ Deno.serve(async (req) => {
         }
 
         const mapped = mapState(realState)
+        // Un retiro Completado no vuelve atrás desde aquí: pasarlo a Pendiente
+        // lo devolvía a la cola de Tesorería y podía terminar en un segundo
+        // pago manual (revisión del 6 nov). Si Finity lo da por rechazado
+        // después de completado, lo mira una persona.
+        if (keep.status === 'Completado' && mapped !== 'Completado') {
+          if (mapped === 'Rechazado') await logAudit(String(keep.user_id), 'finity.withdrawal.completado_luego_rechazado', { txId: keep.id, orden: oid, finityState: realState })
+          results.push({ oid, kept: keep.id, finityState: realState, mapped, note: 'completado_no_se_baja' })
+          continue
+        }
         if (mapped !== keep.status) {
           if (mapped === 'Rechazado' && keep.status !== 'Rechazado') {
             // CAS ANTI DOBLE-REEMBOLSO: reclamar el rechazo+reembolso ANTES de
@@ -1473,7 +1486,9 @@ Deno.serve(async (req) => {
         .select('id, amount, currency, status, raw_data, created_at')
         .eq('user_id', uid).eq('type', 'load').eq('status', 'Pendiente')
         .order('created_at', { ascending: true }).limit(20)
-      const pending = (pend ?? []).filter((t: any) => (t.raw_data ?? {}).source === 'finity_payment_link')
+      // Los que quedaron en revisión manual (crédito fallido o incierto) no se
+      // vuelven a acreditar solos: los resuelve un admin.
+      const pending = (pend ?? []).filter((t: any) => (t.raw_data ?? {}).source === 'finity_payment_link' && !(t.raw_data ?? {}).revisionManual)
       if (!pending.length) return json(200, { ok: true, credited: 0, note: 'sin cobros pendientes' })
       // Movimientos recientes de Finity.
       const { res } = await finityTry('movements', {})
@@ -1542,9 +1557,19 @@ Deno.serve(async (req) => {
         const col = String(tx.currency ?? 'COP')
         try { await creditBalanceAtomic(uid, col, Number(tx.amount ?? 0)) }   // atómico (pentest #3)
         catch (e) {
-          // Sin crédito, la fila no puede quedar Completado: vuelve a revisión.
-          await db.from('transactions').update({ status: 'Pendiente', raw_data: { ...rd, revisionManual: true, creditoFallido: String((e as Error)?.message ?? e).slice(0, 200) } }).eq('id', tx.id)
-          await logAudit(uid, 'finity.payin.credito_fallido', { txId: tx.id })
+          const msg = String((e as Error)?.message ?? e).slice(0, 200)
+          // INCIERTO = se perdió la respuesta: el saldo PUDO haber subido. Se
+          // deja Completado y en revisión: devolverla a Pendiente hacía que la
+          // siguiente consulta del cliente la acreditara otra vez (revisión
+          // del 6 nov). Un "no" claro de la base sí vuelve a Pendiente, en
+          // revisión (no se reintenta sola).
+          if (/incierto/i.test(msg)) {
+            await db.from('transactions').update({ raw_data: { ...rd, payinStatus: 'PAID', finityMovement: match?.id ?? null, revisionManual: true, creditoIncierto: msg } }).eq('id', tx.id).eq('status', 'Completado')
+            await logAudit(uid, 'finity.payin.credito_incierto', { txId: tx.id, motivo: msg })
+          } else {
+            await db.from('transactions').update({ status: 'Pendiente', raw_data: { ...rd, revisionManual: true, creditoFallido: msg } }).eq('id', tx.id)
+            await logAudit(uid, 'finity.payin.credito_fallido', { txId: tx.id, motivo: msg })
+          }
           continue
         }
         await logAudit(uid, 'finity.payin.credited', { txId: tx.id, amount: tx.amount, movement: match?.id ?? null })
@@ -1683,7 +1708,7 @@ async function ponerFrenoInscripciones(http: number) {
       await fetch(`${SUPABASE_URL}/functions/v1/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-        body: JSON.stringify({ action: 'enviar', rol: 'admin', titulo: 'Finity bloqueó las inscripciones', cuerpo: `Finity respondió ${http} al inscribir cuentas. Lincoin pausó los intentos ${Math.round(espera / 60000)} min. Inscríbelas a mano en el portal mientras tanto.`, tag: 'finity-freno', url: '/admin' }),
+        body: JSON.stringify({ action: 'enviar', rol: 'admin', permiso: ['plata.mover', 'tesoreria', 'fn.fallos'], titulo: 'Finity bloqueó las inscripciones', cuerpo: `Finity respondió ${http} al inscribir cuentas. Lincoin pausó los intentos ${Math.round(espera / 60000)} min. Inscríbelas a mano en el portal mientras tanto.`, tag: 'finity-freno', url: '/admin' }),
         signal: AbortSignal.timeout(8000),
       }).catch(() => {})
     }

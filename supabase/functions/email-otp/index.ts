@@ -181,7 +181,15 @@ Deno.serve(async (req) => {
     const email = servicio && body.email ? String(body.email).trim() : undefined
     const userId = servicio ? (body.userId ? String(body.userId) : undefined) : String(propioId)
     if (!email && !userId) return json(400, { error: 'missing_identity' })
-    const proposito = PROPOSITOS[String(body.proposito ?? '')] ?? PROPOSITOS.login
+    // El PROPÓSITO queda guardado con el código y se exige al verificarlo
+    // cuando quien verifica lo dice. Antes cualquier código vigente servía
+    // para todo: con la contraseña de alguien se pedía uno "para entrar", se
+    // le convencía de leerlo y se usaba para inscribir OTRA app 2FA (y con
+    // eso sacar plata), sin que saliera el correo de "están activando tu 2FA"
+    // (revisión del 6 nov). El de activar 2FA solo lo pide el servidor.
+    let propositoClave = PROPOSITOS[String(body.proposito ?? '')] ? String(body.proposito) : 'login'
+    if (!servicio && propositoClave === 'activar_2fa') propositoClave = 'login'
+    const proposito = PROPOSITOS[propositoClave]
 
     // IP del cliente, la que pone el proxy de la plataforma.
     const clientIp = ipDe(req)
@@ -243,7 +251,7 @@ Deno.serve(async (req) => {
         ...(prev?.codeHash && Number(prev.expiresAt ?? 0) > ahoraMs ? [{ h: String(prev.codeHash), v: Number(prev.v ?? 1), exp: Number(prev.expiresAt) }] : []),
         ...(Array.isArray(prev?.reemplazados) ? prev.reemplazados : []),
       ].filter((r: any) => r && typeof r.h === 'string' && Number(r.exp ?? 0) > ahoraMs).slice(0, 3)
-      const otp = { codeHash, v: 2, expiresAt: ahoraMs + 10 * 60 * 1000, attempts: 0, sentAt: ahoraMs, ...(reemplazados.length ? { reemplazados } : {}) }
+      const otp = { codeHash, v: 2, expiresAt: ahoraMs + 10 * 60 * 1000, attempts: 0, sentAt: ahoraMs, proposito: propositoClave, ...(reemplazados.length ? { reemplazados } : {}) }
 
       // ── UN SOLO CÓDIGO POR VEZ, AUNQUE LLEGUEN DOS PETICIONES JUNTAS ────
       // El freno de 30 s de arriba mira `prev`, que se leyó al empezar. Dos
@@ -331,6 +339,12 @@ Deno.serve(async (req) => {
           : json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
       }
       if (Date.now() > Number(otp.expiresAt)) return json(200, { ok: false, error: 'expired', message: 'El código venció. Pide uno nuevo.' })
+      // Si quien verifica dice para qué es, el código tiene que ser de ESO
+      // (sin cobrar intento: no es adivinar). Los de antes no traen propósito
+      // y cuentan como de ingreso.
+      if (body.proposito && String(otp.proposito ?? 'login') !== String(body.proposito)) {
+        return json(200, { ok: false, error: 'wrong_purpose', message: 'Ese código es para otra operación. Pide uno nuevo desde aquí.' })
+      }
       if (Number(otp.attempts ?? 0) >= 5) return json(200, { ok: false, error: 'too_many', message: 'Demasiados intentos. Pide un código nuevo.' })
       // EL INTENTO SE COBRA ANTES DE MIRAR EL CÓDIGO. Antes se comparaba
       // primero y se sumaba después, condicionado al valor leído: con diez
