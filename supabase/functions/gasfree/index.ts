@@ -2229,14 +2229,20 @@ async function myConvertSettle(
   }
 
   // 3) Hop 2: tesorería (ya con el USDT del cliente) → Mouv.
-  let providerHop: any = null, providerError: string | null = null
+  let providerHop: any = null, providerError: string | null = null, hop2Incierto = false
   try { providerHop = await payFromTreasury(provAddr, fwd, prov?.name ?? 'Mouv') }
-  catch (e) { providerError = String((e as any)?.message ?? e).slice(0, 300) }
+  catch (e) { providerError = String((e as any)?.message ?? e).slice(0, 300); hop2Incierto = !!(e as any)?.desenlaceDesconocido }
   if (!providerHop) {
+    // Revisión del 6 nov: si el relay no contestó, el pago al proveedor PUDO
+    // haber salido. Con 'hop2_failed' el finalize lo reenviaba y la tesorería
+    // pagaba dos veces on-chain. 'hop2_incierto' no se reintenta solo: queda
+    // para revisión (ver el final de myConvertFinalize).
+    const fase = hop2Incierto ? 'hop2_incierto' : 'hop2_failed'
     const txId = await insertConvert('Pendiente', {
-      convertPhase: 'hop2_failed', usdtToProvider: null, providerTraceId: null, providerPending: true, providerError,
+      convertPhase: fase, usdtToProvider: null, providerTraceId: null, providerPending: true, providerError,
+      ...(hop2Incierto ? { revisionManual: true } : {}),
     })
-    return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0, usdtOut: value, providerError, traceId: r.traceId, txId }
+    return { ok: true, status: 'Pendiente', phase: fase, copCredited: 0, usdtOut: value, providerError, traceId: r.traceId, txId }
   }
 
   // 4) Esperar a que Mouv confirme la recepción (hop 2).
@@ -2283,8 +2289,15 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
   const { data, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [col]: delta } })
   if (!error && !(data as any)?.error) return
   const motivo = String(error?.message ?? (data as any)?.error ?? 'sin respuesta').slice(0, 200)
-  try { await db.from('audit_log').insert({ user_id: userId, action: 'gasfree.credito_fallido', metadata: { userId, col, delta, motivo, revisionManual: true, at: new Date().toISOString() } }) } catch { /* */ }
-  throw new Error(`No pudimos acreditar ${delta} ${col}: quedó para revisión manual.`)
+  // Revisión del 6 nov: un error de TRANSPORTE (la respuesta se perdió) es
+  // INCIERTO: el ajuste pudo haberse aplicado y repetirlo acreditaría dos
+  // veces. Un error en la respuesta ({error:'not_found'…}) es un no seguro.
+  // Quien llama mira `incierto` para decidir si suelta su reclamo.
+  const incierto = !!error
+  try { await db.from('audit_log').insert({ user_id: userId, action: 'gasfree.credito_fallido', metadata: { userId, col, delta, motivo, incierto, revisionManual: true, at: new Date().toISOString() } }) } catch { /* */ }
+  const x: any = new Error(`No pudimos acreditar ${delta} ${col}: quedó para revisión manual.`)
+  x.incierto = incierto
+  throw x
 }
 
 // ── FIRMA DEL SERVIDOR EN LAS CONVERSIONES ─────────────────────────
@@ -2415,9 +2428,16 @@ async function myConvertCredit(
   try {
     await creditBalanceAtomic(userId, 'COP_ACH', copAmount)   // atómico (pentest #3)
   } catch (e) {
-    // Si el crédito falla, LIBERAR el claim (rd no trae creditClaimed) para que
-    // un reintento legítimo pueda volver a intentarlo — si no, quedaría trabado.
-    await db.from('transactions').update({ raw_data: { ...rd } }).eq('id', txId)
+    // Si el crédito falla SEGURO, LIBERAR el claim (rd no trae creditClaimed)
+    // para que un reintento legítimo pueda volver a intentarlo. Si quedó
+    // INCIERTO (revisión del 6 nov) el COP pudo haber entrado: soltar el
+    // reclamo dejaba que el reintento acreditara dos veces. Queda reclamado y
+    // marcado para revisión.
+    if ((e as any)?.incierto) {
+      await db.from('transactions').update({ raw_data: { ...rd, creditClaimed: true, creditoIncierto: true, revisionManual: true } }).eq('id', txId)
+    } else {
+      await db.from('transactions').update({ raw_data: { ...rd } }).eq('id', txId)
+    }
     throw e
   }
   const { data: uf } = await db.from('users').select('balances').eq('id', userId).single()
@@ -2454,6 +2474,12 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
   }
   const soltarHop2 = async () => {
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_failed' } })
+      .eq('id', txId).filter('raw_data->>convertPhase', 'eq', 'hop2_sending')
+  }
+  // El relay no contestó: el pago pudo salir. No vuelve a 'hop2_failed' (eso
+  // lo reenviaría); queda en 'hop2_incierto' para revisión (revisión del 6 nov).
+  const marcarHop2Incierto = async () => {
+    await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_incierto', revisionManual: true, hop2InciertoAt: new Date().toISOString() } })
       .eq('id', txId).filter('raw_data->>convertPhase', 'eq', 'hop2_sending')
   }
   const provAddr = String(rd.providerAddress ?? '').trim()
@@ -2495,15 +2521,29 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
         .eq('id', txId).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
       // Se devuelve lo que de verdad se debitó (firmado en la fila), no el
       // monto que pidió el cliente: con un pedido inflado se acreditaba de más.
-      if (claimed?.length) await creditBalanceAtomic(userId, 'USD', Number(rd.debitUsd ?? 0))
+      if (claimed?.length) {
+        // Revisión del 6 nov: antes un fallo del crédito subía como excepción
+        // con la fila ya en Rechazado/refunded y nadie lo volvía a mirar. Ahora
+        // queda anotado en la fila para que el equipo lo vea.
+        try { await creditBalanceAtomic(userId, 'USD', Number(rd.debitUsd ?? 0)) }
+        catch (e) {
+          const incierto = !!(e as any)?.incierto
+          await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop1_failed', refunded: false, ...(incierto ? { reembolsoIncierto: true } : { reembolsoPendiente: true }), revisionManual: true } })
+            .eq('id', txId).eq('status', 'Rechazado')
+          return { ok: false, status: 'Rechazado', phase: 'hop1_failed', refunded: false, revision: true }
+        }
+      }
       return { ok: false, status: 'Rechazado', phase: 'hop1_failed', refunded: true }
     }
     if (c1 !== 'confirmed') return { ok: true, status: 'Pendiente', phase: 'hop1_pending', copCredited: 0 }
     if (!provAddr || fwd <= 0) return settleOnly ? { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 } : await complete()
     if (!(await tomarHop2(String(rd.convertPhase)))) return { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
-    let hop: any = null
-    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* reintentar luego */ }
-    if (!hop) { await soltarHop2(); return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 } }
+    let hop: any = null, incierto = false
+    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch (e) { incierto = !!(e as any)?.desenlaceDesconocido }
+    if (!hop) {
+      if (incierto) { await marcarHop2Incierto(); return { ok: true, status: 'Pendiente', phase: 'hop2_incierto', copCredited: 0 } }
+      await soltarHop2(); return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
+    }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
     return c2 === 'confirmed' ? (settleOnly ? await markRecharged(hop.traceId) : await complete(hop.traceId)) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
@@ -2518,9 +2558,12 @@ async function myConvertFinalize(userId: string, txId: string, settleOnly = fals
     }
     if (!provAddr || fwd <= 0) return { ok: true, status: 'Pendiente', phase: 'no_provider', copCredited: 0 }
     if (!(await tomarHop2(String(rd.convertPhase)))) return { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
-    let hop: any = null
-    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch { /* luego */ }
-    if (!hop) { await soltarHop2(); return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 } }
+    let hop: any = null, incierto = false
+    try { hop = await payFromTreasury(provAddr, fwd, String(rd.providerName ?? 'Mouv')) } catch (e) { incierto = !!(e as any)?.desenlaceDesconocido }
+    if (!hop) {
+      if (incierto) { await marcarHop2Incierto(); return { ok: true, status: 'Pendiente', phase: 'hop2_incierto', copCredited: 0 } }
+      await soltarHop2(); return { ok: true, status: 'Pendiente', phase: 'hop2_failed', copCredited: 0 }
+    }
     await db.from('transactions').update({ raw_data: { ...rd, convertPhase: 'hop2_pending', providerTraceId: hop.traceId, usdtToProvider: fwd } }).eq('id', txId)
     const c2 = await waitTrace(hop.traceId)
     return c2 === 'confirmed' ? (settleOnly ? await markRecharged(hop.traceId) : await complete(hop.traceId)) : { ok: true, status: 'Pendiente', phase: 'hop2_pending', copCredited: 0 }
@@ -3111,11 +3154,16 @@ async function payFromTreasury(toAddress: string, amount: number, providerName?:
   await assertTreasuryDestination(toAddress)   // lista blanca de la Bóveda
   const rec = await recaudadora()
   const r = await sendCore(rec.pkHex, rec.eoa, toAddress, amount)
-  await logTreasuryMovement({
-    direction: 'out', amount, toAddress, providerName: providerName ?? null,
-    traceId: r.traceId, state: r.state, feeChargedUsdt: r.feeChargedUsdt,
-    activateFeeUsdt: r.activateFeeUsdt, transferFeeUsdt: r.transferFeeUsdt,
-  })
+  // Revisión del 6 nov: el pago YA salió. Si anotarlo en el historial fallaba,
+  // la excepción hacía creer a quien llama que no salió (hop2_failed) y el
+  // siguiente intento pagaba otra vez on-chain.
+  try {
+    await logTreasuryMovement({
+      direction: 'out', amount, toAddress, providerName: providerName ?? null,
+      traceId: r.traceId, state: r.state, feeChargedUsdt: r.feeChargedUsdt,
+      activateFeeUsdt: r.activateFeeUsdt, transferFeeUsdt: r.transferFeeUsdt,
+    })
+  } catch (e) { console.error('payFromTreasury: no se pudo anotar el movimiento', String((e as any)?.message ?? e)) }
   return r
 }
 
