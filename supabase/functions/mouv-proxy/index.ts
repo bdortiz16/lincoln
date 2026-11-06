@@ -2186,7 +2186,8 @@ serve(async (req: Request) => {
   // La vigilancia de Finity no usa Mouv: sin esta excepción, faltar la llave
   // de Mouv apagaba también la vigilancia, y el aviso de Finity se contestaba
   // "bien" sin haberse revisado (Finity no reintenta).
-  if (!MOUV_API_KEY && !(await req.clone().json().then((b: any) => b?.action === 'vigilar_finity').catch(() => false))) {
+  // Lo mismo las Cuentas 3 y 4 (Coinsenda): su conciliación no toca Mouv.
+  if (!MOUV_API_KEY && !(await req.clone().json().then((b: any) => ['vigilar_finity', 'vigilar_coinsenda', 'reconcile_cuenta3'].includes(b?.action)).catch(() => false))) {
     return json(200, { error: 'mouv_not_configured', message: 'El servicio de envíos no está disponible en este momento. Intenta más tarde o escríbenos a soporte@lincoin.me.' })
   }
 
@@ -2472,7 +2473,23 @@ serve(async (req: Request) => {
     return json(200, { ok: true, revisadas: results.length, ...(parcial ? { parcial: true, pendientes: vivas.length + tardias.length - results.length } : {}), resumen, results })
   }
 
-  const caller = await validCaller(req, payload)
+  // ── VIGILANTE DE LAS CUENTAS 3 Y 4 (Coinsenda) ────────────────────────
+  // La base lo llama sola cada pocos minutos (2026_zz31), con la clave que
+  // genera para sí misma, como el vigilante de Finity. Antes la conciliación
+  // de estas cuentas dependía de que alguien abriera el panel o de un cron de
+  // GitHub sin sus secretos: el 5 nov dos envíos rechazados por el banco se
+  // devolvieron recién cuando el dueño entró al panel. Corre el mismo
+  // barrido que reconcile_cuenta3 con todos=true.
+  let vigilanteCoinsenda = false
+  if (action === 'vigilar_coinsenda') {
+    const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
+    vigilanteCoinsenda = (!!SERVICE_KEY && igualSeguro(bearer, SERVICE_KEY)) || await traeSecretoDeLaBase(req, db)
+    if (!vigilanteCoinsenda) return json(403, { error: 'forbidden' })
+  }
+
+  const caller = vigilanteCoinsenda
+    ? { ok: true, userId: null, admin: true, viaJwt: true, servicio: true }
+    : await validCaller(req, payload)
   if (!caller.ok) return json(401, { error: 'unauthorized', message: 'Tu sesión expiró. Vuelve a iniciar sesión.' })
 
   // ── Rol en el equipo ──────────────────────────────────────────────────
@@ -2822,8 +2839,8 @@ serve(async (req: Request) => {
   // cliente para sus propios envíos. Concilia las DOS cuentas de Coinsenda
   // (Cuenta 3 y Cuenta 4): cada retiro se lee con la cuenta que lo creó, porque
   // el id de un retiro de una cuenta no existe en la otra.
-  if (action === 'reconcile_cuenta3') {
-    const barrido = caller.admin && payload?.todos === true
+  if (action === 'reconcile_cuenta3' || vigilanteCoinsenda) {
+    const barrido = vigilanteCoinsenda || (caller.admin && payload?.todos === true)
     const userId = barrido ? null : requireOwner(caller, payload)
     if (!barrido && !userId) return json(403, { error: 'forbidden', message: 'Vuelve a iniciar sesión.' })
     let q = db.from('transactions')
@@ -3010,6 +3027,16 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'completado_ok', ...(caller.admin ? { estado } : {}) })
       } catch (e) {
         out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
+      }
+    }
+    // La respuesta del vigilante no la lee nadie (la manda la base): cuando
+    // movió plata o algo falló, queda un resumen en la auditoría. Cada
+    // reembolso ya deja además su propio registro.
+    if (vigilanteCoinsenda) {
+      const resumen: Record<string, number> = {}
+      for (const r of out) resumen[String(r.result)] = (resumen[String(r.result)] ?? 0) + 1
+      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto) {
+        await logAudit(null, 'coinsenda.vigilante', { revisados: out.length, resumen })
       }
     }
     return json(200, { ok: true, checked: (filas?.length ?? 0) + completadasARevisar.length, results: out })

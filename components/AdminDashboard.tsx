@@ -1011,9 +1011,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // apretarlo. Con el listado de Mouv llegando con retraso, un clic único casi
   // siempre cae temprano y no encuentra nada — que es exactamente lo que pasó.
   //
-  // Corre sola cada 3 minutos con el panel abierto, en silencio. Solo
-  // interrumpe si movió plata: un reembolso automático es algo que el operador
-  // tiene que enterarse el mismo momento, lo demás es ruido.
+  // Corre sola cada 3 minutos con el panel abierto, en silencio. Ya NO abre
+  // una ventana cuando devuelve algo: tapaba la pantalla en la que uno
+  // estaba (6 nov, "esto tiene que ir en Fallos, no en ventana"). Lo devuelto
+  // queda en Fallos, marcado "Devuelto al cliente", y suma en su contador.
+  // La conciliación de verdad la hace la base sola (vigilantes de Bre-B,
+  // Finity y Coinsenda); esto es solo un refuerzo mientras el panel está abierto.
   const autoConcAt = useRef(0);
   useEffect(() => {
     // El colaborador sin Fallos ni Tesorería no concilia: el servidor se lo
@@ -1034,23 +1037,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       ]);
       if (!vivo || (!r?.ok && !c3?.ok)) return;
       const res = [...(r?.ok ? (r.results ?? []) : []), ...(c3?.ok ? (c3.results ?? []) : [])] as any[];
-      const dev = res.filter((x: any) => x.result === 'refunded');
-      const comp = res.filter((x: any) => x.result === 'completed');
-      if (dev.length || comp.length) refreshData?.();
-      // Solo la plata devuelta justifica cortarle la pantalla a alguien.
-      if (dev.length) {
-        setResConciliar({
-          ...resumenCuentas34(c3),
-          revisados: Number(r?.ok ? (r.checked ?? 0) : 0) + Number(c3?.ok ? (c3.checked ?? 0) : 0),
-          completados: comp.length,
-          devueltos: dev.length,
-          plata: dev.reduce((n: number, x: any) => n + Number(x.refund ?? 0), 0),
-          enCurso: res.filter((x: any) => x.result === 'still_processing' || x.result === 'sin_confirmar_revisar').length,
-          esperaFirma: res.filter((x: any) => x.result === 'espera_firma').length,
-          vias: [], motivos: [], listado: r?.ok ? (r.listado ?? null) : null, muestra: null,
-          automatica: true,
-        });
-      }
+      // Si algo cambió, se relee el panel: lo devuelto aparece en Fallos.
+      if (res.some((x: any) => x.result === 'refunded' || x.result === 'completed')) refreshData?.();
     };
     const t = setInterval(correr, 180000);
     const alVolver = () => { correr(); };
@@ -5290,9 +5278,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const c = String(cur ?? '');
       if (c === 'COP_BREB') return 'Bre-B';
       if (c === 'COP_ACH') return 'ACH';
+      if (c === 'COP_C3') return 'Cuenta 3';
+      if (c === 'COP_C4') return 'Cuenta 4';
       if (c === 'COP') return 'Saldo Lincoin';
       if (c.startsWith('USD')) return 'USDT';
       return c || '—';
+    };
+    // Los envíos por Coinsenda dicen su cuenta: "ACH · Cuenta 4" y no solo
+    // "COP_C4" o "ACH", que no dejaba saber de qué bolsa salió.
+    const etiquetaRiel = (t: any): string => {
+      const rd = t.raw_data ?? {};
+      if (String(t.proveedor ?? rd.proveedor ?? '') !== 'coinsenda') return railLabel(t.currency);
+      const cuenta = rd.coinsenda?.cuenta ?? rd.cuentaAch ?? rd.cuentaBreb ?? (String(t.currency) === 'COP_C4' ? 4 : 3);
+      const riel = rd.rail ?? rd.riel ?? (rd.cuentaBreb ? 'Bre-B' : 'ACH');
+      return `${String(riel).toUpperCase().includes('BRE') ? 'Bre-B' : 'ACH'} · Cuenta ${cuenta} · Coinsenda`;
+    };
+    // Lo que ya volvió al cliente (la conciliación o un admin): cuánto, cuándo
+    // y por qué. Un rechazo devuelto ya no pide nada; se distingue de un
+    // fallo que sí hay que mirar.
+    const devolucion = (t: any): { monto: number; cuando: any; auto: boolean; despuesDePagado: boolean } | null => {
+      const rd = t.raw_data ?? {};
+      if (!(t.refunded ?? rd.refunded)) return null;
+      return {
+        monto: Number(t.refundCop ?? rd.refundCop ?? 0),
+        cuando: rd.returnedAt ?? rd.reconciledAt ?? t.updatedAt ?? null,
+        auto: !(rd.manualReturn ?? t.manualReturn),
+        despuesDePagado: !!(rd.devueltoDespuesDeCompletado ?? t.devueltoDespuesDeCompletado),
+      };
     };
     // El error del proveedor llega como objeto {step, httpStatus, path, body}.
     // Mostrarlo como un JSON pegado y cortado obligaba a adivinar; se desglosa
@@ -5303,7 +5315,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const raw = t.error ?? t.raw_data?.error;
       let obj: any = raw;
       if (typeof raw === 'string') { try { obj = JSON.parse(raw); } catch { obj = null; } }
-      const em = t.errorMessage ?? t.raw_data?.errorMessage;
+      // Sin error técnico (un envío que el banco devolvió después de pagado no
+      // falló al salir), se muestra el motivo de la devolución y el estado que
+      // dio el proveedor, en vez de "Sin detalle técnico".
+      const motivoProv = t.providerError ?? t.raw_data?.providerError;
+      const estadoProv = t.providerState ?? t.raw_data?.providerState;
+      const em = t.errorMessage ?? t.raw_data?.errorMessage
+        ?? (motivoProv ? `${motivoProv}${estadoProv ? ` (estado en el proveedor: ${estadoProv})` : ''}` : undefined);
       if (!obj && em) { try { obj = JSON.parse(String(em)); } catch { /* texto plano */ } }
       const PASOS: Record<string, string> = { destino: 'Registrar la cuenta destino', retiro: 'Crear la orden de retiro' };
       if (obj && typeof obj === 'object') {
@@ -5462,8 +5480,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{railLabel(t.currency)}</span>
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{etiquetaRiel(t)}</span>
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{String(t.status).toUpperCase()}</span>
+                      {devolucion(t) && (
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: 'rgba(74,222,128,0.12)', color: '#16A34A', border: '1px solid rgba(74,222,128,0.35)' }}>
+                          DEVUELTO AL CLIENTE
+                        </span>
+                      )}
                       <span className="text-xs text-slate-400">{fmtDate(fechaDe(t))}</span>
                     </div>
                     <p className="text-sm font-bold text-slate-800 mt-1.5">{Number(t.amount).toLocaleString('es-CO')} <span className="text-slate-400 font-medium">{String(t.currency ?? '').split('_')[0]}</span></p>
@@ -5471,6 +5494,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                     {(t.beneficiary || t.account) && (
                       <p className="text-xs text-slate-500">Beneficiario: <span className="font-semibold text-slate-700">{t.beneficiary ?? '—'}</span>{t.account ? ` · ${t.account}` : ''}</p>
                     )}
+                    {(() => {
+                      const d = devolucion(t);
+                      if (!d) return null;
+                      return (
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {d.monto > 0 ? <>Reintegrados <span className="font-semibold text-slate-700">{d.monto.toLocaleString('es-CO')} COP</span> (monto + comisión)</> : 'Saldo reintegrado'}
+                          {' · '}{d.auto ? 'automático' : 'a mano'}
+                          {d.cuando ? ` · ${fmtDate(d.cuando)}` : ''}
+                          {d.despuesDePagado && <> · <span className="font-semibold text-slate-700">el banco lo devolvió después de pagado</span></>}
+                        </p>
+                      );
+                    })()}
                   </div>
                   <button
                     onClick={() => { navigator.clipboard.writeText(errText(t)).then(() => showToast('Error copiado')).catch(() => {}); }}
