@@ -2149,12 +2149,27 @@ async function facturaDelComprobanteEnSiigo(userId: string, token: string, partn
   const idents = [...new Set((Array.isArray(identificaciones) ? identificaciones : [identificaciones]).filter(Boolean))]
   const delCliente: any[] = []
   for (const identificacion of idents) {
+    // Revisión del 6 nov: sin `total_results`, Number(undefined ?? 0) daba 0 y
+    // se cortaba en la página 1 aunque hubiera más; y tras 10 páginas se
+    // respondía ok:true sin haber revisado todo. Las dos cosas hacían creer
+    // que la factura no estaba y se reenviaba (duplicada ante la DIAN). Ahora,
+    // como en buscarFacturaLincoinEnSiigo: sin el total, una página incompleta
+    // es la última; y si no se revisó todo, ok:false.
+    let vistas = 0, completo = false
     for (let page = 1; page <= 10; page++) {
       const r = await siigo('GET', `/v1/invoices?customer_identification=${encodeURIComponent(identificacion)}&date_start=${desde}&page=${page}&page_size=100`, { token, partner, ms: 30000 })
       if (!r.ok) return { ok: false, factura: null, motivo: motivoDe(r) }
       const res: any[] = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : []
+      vistas += res.length
       delCliente.push(...res.filter(x => !x?.customer?.identification || String(x.customer.identification) === identificacion))
-      if (!res.length || page * 100 >= Number(r.data?.pagination?.total_results ?? 0)) break
+      const totalRaw = r.data?.pagination?.total_results
+      const totalRes = totalRaw == null || totalRaw === '' ? NaN : Number(totalRaw)
+      const porPagina = Number(r.data?.pagination?.page_size) || 100
+      if (!res.length || (Number.isFinite(totalRes) ? vistas >= totalRes : res.length < porPagina)) { completo = true; break }
+    }
+    // Si la marca ya apareció, no hace falta revisar el resto.
+    if (!completo && !delCliente.some(x => !(x?.id != null && excluir.has(String(x.id))) && llevaMarca(x, numero))) {
+      return { ok: false, factura: null, motivo: `el cliente tiene más de 1000 facturas en Siigo desde el ${desde} y no se alcanzaron a revisar todas` }
     }
   }
   const libres = delCliente.filter(x => !(x?.id != null && excluir.has(String(x.id))))
