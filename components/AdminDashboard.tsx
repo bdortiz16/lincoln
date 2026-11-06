@@ -75,6 +75,7 @@ import {
   Vault
 } from 'lucide-react';
 import { Logo } from './Logo';
+import { BanderaPais } from './BanderaPais';
 import { AdminGasFreeSection } from './AdminGasFreeSection';
 import { AdminMonitor } from './AdminMonitor';
 import { AdminTreasuryPanel } from './AdminTreasuryPanel';
@@ -2627,7 +2628,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   <div className="flex items-center justify-between" style={{ gap: 10, padding: '11px 13px' }}>
                     <div style={{ minWidth: 0 }}>
                       <p style={{ ...ROTULO, marginBottom: 2 }}>{carguesDir === 'credit' ? 'Le acreditas a' : 'Le descuentas a'}</p>
-                      <p style={{ margin: 0, fontWeight: 800, fontSize: 16, letterSpacing: '-0.3px', color: '#F4F4F2' }}>{carguesClient.name ?? 'Sin nombre'}</p>
+                      <p style={{ margin: 0, fontWeight: 800, fontSize: 16, letterSpacing: '-0.3px', color: '#F4F4F2' }}><BanderaPais cliente={carguesClient} />{carguesClient.name ?? 'Sin nombre'}</p>
                       <p style={{ margin: '2px 0 0', fontSize: 11.5, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {carguesClient.email} · {carguesClient.role === 'business' ? 'Empresa' : carguesClient.role === 'personal' ? 'Operador' : carguesClient.role}
                       </p>
@@ -2675,7 +2676,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 14px', border: 'none', borderTop: i ? '1px solid rgba(255,255,255,0.05)' : 'none', background: 'transparent', cursor: 'pointer', color: '#F4F4F2' }}>
                         <span style={{ width: 30, height: 30, borderRadius: 999, background: 'rgba(255,255,255,0.08)', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{(u.name ?? 'U').slice(0, 2).toUpperCase()}</span>
                         <span style={{ minWidth: 0, flex: 1 }}>
-                          <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}>{u.name ?? 'Sin nombre'}</span>
+                          <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700 }}><BanderaPais cliente={u} />{u.name ?? 'Sin nombre'}</span>
                           <span style={{ display: 'block', fontSize: 11.5, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</span>
                         </span>
                         {i === 0 && carguesSearch.trim() && <span style={{ fontSize: 10, color: '#878E88', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, padding: '2px 6px' }}>Enter</span>}

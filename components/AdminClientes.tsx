@@ -6,6 +6,7 @@ import { descargarXlsx } from '../lib/xlsx';
 import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
 import { nombreCuenta } from '../lib/nombreCuenta';
+import { BanderaPais } from './BanderaPais';
 
 // ─────────────────────────────────────────────────────────────
 // AdminClientes — maestro-detalle.
@@ -591,7 +592,7 @@ export const AdminClientes: React.FC<{
                       display: 'grid', placeItems: 'center', color: C.sub, fontWeight: 800, fontSize: 13,
                     }}>{iniciales(u.name || u.email)}</div>
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.name || 'Sin nombre'}</p>
+                      <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}><BanderaPais cliente={u} />{u.name || 'Sin nombre'}</p>
                       <p style={{ fontSize: 11.5, color: C.sub, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '0.8px', color: tipoDe(u) === 'empresa' ? C.text : C.sub }}>{ROT_TIPO[tipoDe(u)]}</span> · {u.email}
                       </p>
@@ -643,7 +644,7 @@ export const AdminClientes: React.FC<{
                   }}>{iniciales(sel.name || sel.email)}</div>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <h3 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>{sel.name || 'Sin nombre'}</h3>
+                      <h3 style={{ fontSize: 21, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}><BanderaPais cliente={sel} />{sel.name || 'Sin nombre'}</h3>
                       {bloqueado(sel) ? <Pill tono="mal">SUSPENDIDA</Pill>
                         : verificado(sel) ? <Pill tono="ok">KYC VERIFICADO</Pill>
                           : <Pill>KYC PENDIENTE</Pill>}
