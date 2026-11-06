@@ -222,11 +222,54 @@ const rpcNoExiste = (e: any): boolean => !!e && /42883|PGRST202|could not find t
 function conReintegro(msg: string, ok: boolean): string {
   return ok ? msg : msg.replace(/Tu saldo fue devuelto[^.]*\.?/, 'Estamos devolviendo tu saldo: si en unos minutos no lo ves, escríbenos a soporte.')
 }
-const marcasReintegro = (ok: boolean) => ok ? { refunded: true } : { refunded: false, reembolsoPendiente: true, revisionManual: true }
+// `idem` = la devolución pasó por reembolsar_envio (2026_zz32): reintentarla
+// no puede pagar dos veces, así que la reintenta sola el vigilante
+// (reintentarReembolsos). Sin `idem` queda para un admin, como antes.
+// `total` = lo que había que devolver (monto + comisión): el reintento lo
+// usa si la fila no trae feeCop, siempre con el tope de comisión del servidor.
+const marcasReintegro = (ok: boolean, idem = false, total?: number) => ok ? { refunded: true } : { refunded: false, reembolsoPendiente: true, revisionManual: true, ...(idem ? { reembolsoIdem: true, ...(total != null ? { reembolsoMonto: total } : {}) } : {}) }
+
+// ── Devolución IDEMPOTENTE (2026_zz32) ───────────────────────────────────
+// Registro y crédito en la misma transacción, con el id del envío como
+// llave: una devolución que ya se aplicó contesta 'ya' y no vuelve a sumar.
+// Antes, si se perdía la respuesta de adjust_balances, no había forma de
+// saber si el saldo había vuelto y la fila esperaba a un admin.
+// 'sin_rpc' = la migración no está: quien llama usa el camino de antes.
+type ResultadoReembolso = { r: 'ok' | 'ya' | 'fallo' | 'incierto' | 'sin_rpc'; saldo: number | null }
+async function reembolsoIdempotente(txId: string, userId: string, col: string, monto: number, origen: string): Promise<ResultadoReembolso> {
+  if (!Number.isFinite(monto) || monto <= 0) {
+    await logAudit(userId, 'reembolso.monto_invalido', { txId, col, monto: String(monto), origen })
+    return { r: 'fallo', saldo: null }
+  }
+  const { data, error } = await db.rpc('reembolsar_envio', { p_tx_id: txId, p_user_id: userId, p_currency: col, p_monto: monto, p_origen: origen })
+  if (error) {
+    if (rpcNoExiste(error)) return { r: 'sin_rpc', saldo: null }
+    // La respuesta se perdió: pudo aplicarse. Reintentar es seguro (la
+    // llave lo frena), así que se reintenta en la próxima vuelta.
+    await logAudit(userId, 'reembolso.incierto', { txId, col, monto, origen, motivo: error.message })
+    return { r: 'incierto', saldo: null }
+  }
+  const d = (data ?? {}) as any
+  if (d.error) {
+    await logAudit(userId, 'reembolso.rechazado_por_la_base', { txId, col, monto, origen, motivo: d.error })
+    return { r: 'fallo', saldo: null }
+  }
+  if (d.ya_aplicado) {
+    await logAudit(userId, 'reembolso.ya_aplicado', { txId, col, monto, origen, montoRegistrado: d.monto ?? null, at: d.at ?? null })
+    return { r: 'ya', saldo: null }
+  }
+  return { r: 'ok', saldo: d.saldo != null ? Number(d.saldo) : null }
+}
 
 // Devolver el saldo de un envío que no salió. Si no se pudo devolver, la fila
-// NO se marca reembolsada: queda en revisión y se avisa a los admins.
-async function reintegrarEnvio(userId: string, railCol: string, total: number): Promise<{ ok: boolean; saldo: number | null }> {
+// NO se marca reembolsada: queda pendiente y se avisa a los admins. Con el id
+// del envío va por reembolsar_envio y el vigilante la reintenta sola.
+async function reintegrarEnvio(userId: string, railCol: string, total: number, txId?: string | null): Promise<{ ok: boolean; saldo: number | null; idem?: boolean }> {
+  if (txId) {
+    const ri = await reembolsoIdempotente(String(txId), userId, railCol, total, 'envio_fallido')
+    if (ri.r === 'ok' || ri.r === 'ya') return { ok: true, saldo: ri.saldo }
+    if (ri.r !== 'sin_rpc') return { ok: false, saldo: null, idem: true }
+  }
   const { data: adj, error } = await db.rpc('adjust_balances', { p_user_id: userId, p_fiat: { [railCol]: total } })
   if (!error && !(adj as any)?.error) return { ok: true, saldo: Number(((adj as any)?.balances?.[railCol]) ?? 0) }
   if (!error || !rpcNoExiste(error)) {
@@ -2910,7 +2953,9 @@ serve(async (req: Request) => {
       if (c === 'ok' || c === 'sin_tabla') completadasARevisar.push(t)
     }
     const out: Record<string, unknown>[] = []
-    if (!filas?.length && !completadasARevisar.length) return json(200, { ok: true, checked: 0, results: out })
+    // El barrido sigue aunque no haya nada que leer en Coinsenda: abajo
+    // reintenta las devoluciones pendientes.
+    if (!barrido && !filas?.length && !completadasARevisar.length) return json(200, { ok: true, checked: 0, results: out })
     const clientes = new Map<CuentaCoinsenda, ClienteCoinsenda>()
     const clienteDe = async (c: CuentaCoinsenda) => {
       if (!clientes.has(c)) clientes.set(c, new ClienteCoinsenda(db, await configCoinsenda(db, c), 20_000))
@@ -2941,7 +2986,19 @@ serve(async (req: Request) => {
           ...(estadoPrevio === 'Completado' ? { devueltoDespuesDeCompletado: true, completadoAntes: true } : {}) },
       }).eq('id', tx.id).eq('status', estadoPrevio).filter('raw_data->>refunded', 'is', null).select('id')
       if (!claimed?.length) return { id: tx.id, result: 'refund_already_claimed' }
-      const credito = await creditBalanceAtomic3(String(tx.user_id), railCol, refund)
+      // Con reembolsar_envio (2026_zz32) la devolución tiene llave: si falla o
+      // se pierde la respuesta, la fila queda Rechazado con reembolsoPendiente
+      // y el vigilante la reintenta sola (reintentarReembolsos) sin poder
+      // pagar dos veces. Sin la migración, el camino de antes.
+      const ri = await reembolsoIdempotente(String(tx.id), String(tx.user_id), railCol, refund, `coinsenda_${estadoPrevio === 'Completado' ? 'devuelto' : 'rechazado'}`)
+      if (ri.r === 'fallo' || ri.r === 'incierto') {
+        await db.from('transactions').update({ raw_data: { ...rd, refunded: false, reembolsoPendiente: true, reembolsoIdem: true, refundCop: refund, providerState: estado, providerError: motivo, reconciledAt: ahora, reembolsoFallidoAt: ahora,
+          ...(estadoPrevio === 'Completado' ? { devueltoDespuesDeCompletado: true, completadoAntes: true } : {}) } })
+          .eq('id', tx.id).eq('status', 'Rechazado')
+        await logAudit(String(tx.user_id), 'coinsenda.reconcile.reembolso_pendiente', { txId: tx.id, cuenta: cuentaTx, refund, railCol, providerRef: ref, motivo: ri.r })
+        return { id: tx.id, result: 'reembolso_pendiente' }
+      }
+      const credito = ri.r === 'sin_rpc' ? await creditBalanceAtomic3(String(tx.user_id), railCol, refund) : 'ok'
       if (credito === 'incierto') {
         // El saldo pudo haber vuelto (se perdió la respuesta): el reclamo
         // se queda puesto para no devolver dos veces; lo revisa un admin.
@@ -3058,13 +3115,70 @@ serve(async (req: Request) => {
         out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
       }
     }
+    // ── DEVOLUCIONES QUE FALLARON: se reintentan solas ──────────────────
+    // Solo las que pasaron por reembolsar_envio (reembolsoIdem): ahí la llave
+    // por envío impide pagar dos veces. Las de antes de la migración siguen
+    // para un admin: su primer crédito pudo haberse aplicado sin registro.
+    // Cubre todos los proveedores (Mouv, Finity, Coinsenda): el vigilante es
+    // el único que corre solo cada pocos minutos.
+    if (barrido) {
+      const { data: pendientes } = await db.from('transactions')
+        .select('id, user_id, amount, currency, status, raw_data, created_at')
+        .eq('type', 'dispersion').in('status', ['Fallido', 'Rechazado'])
+        .filter('raw_data->>reembolsoPendiente', 'eq', 'true')
+        .filter('raw_data->>reembolsoIdem', 'eq', 'true')
+        .gte('created_at', new Date(Date.now() - 60 * 86_400_000).toISOString())
+        .order('created_at', { ascending: true })
+        .limit(100)
+      // 20 por vuelta; se leen 100 para que las que ya agotaron sus intentos
+      // no tapen a las nuevas.
+      let reintentadas = 0
+      for (const tx of (pendientes ?? []) as any[]) {
+        const rd = (tx.raw_data ?? {}) as Record<string, any>
+        if (rd.refunded === true) continue
+        if (reintentadas >= 20) break
+        // Un "no" de la base que se repite 10 veces (p. ej. la cuenta ya no
+        // existe) no se arregla insistiendo: queda para un admin, que ya
+        // tiene la fila en revisión y el aviso.
+        if (Number(rd.reembolsoIntentos ?? 0) >= 10) continue
+        reintentadas++
+        try {
+          // Las mismas guardas que la devolución normal: fila firmada por el
+          // servidor y referencia del proveedor no repetida en otro envío.
+          if (!(await filaFirmada(tx, 'dispersion'))) { if (!rd.sinFirmaServidor) await aRevisionSinFirma(tx, 'reintento_reembolso'); out.push({ id: tx.id, result: 'reintento_sin_firma' }); continue }
+          // Sin feeCop en la fila, la comisión sale de lo que había que
+          // devolver; reembolsoPermitido la topa igual con la del servidor.
+          const feeFila = rd.feeCop ?? Math.max(0, Number(rd.reembolsoMonto ?? 0) - Number(tx.amount ?? 0))
+          const permiso = await reembolsoPermitido({ ...tx, raw_data: { ...rd, feeCop: feeFila } }, String(rd.providerRef ?? '').trim(), 'reintento_reembolso')
+          if (!permiso.ok) { out.push({ id: tx.id, result: 'reintento_ref_duplicada' }); continue }
+          const col = String(tx.currency ?? '')
+          const ri = await reembolsoIdempotente(String(tx.id), String(tx.user_id), col, permiso.refund, 'reintento')
+          const ahora = new Date().toISOString()
+          if (ri.r === 'ok' || ri.r === 'ya') {
+            await db.from('transactions').update({ raw_data: { ...rd, refunded: true, refundCop: permiso.refund, reembolsoPendiente: undefined, revisionManual: undefined, reembolsoReintentadoAt: ahora } })
+              .eq('id', tx.id).filter('raw_data->>reembolsoPendiente', 'eq', 'true')
+            await logAudit(String(tx.user_id), 'reembolso.reintento_ok', { txId: tx.id, refund: permiso.refund, col, yaEstaba: ri.r === 'ya', intentos: Number(rd.reembolsoIntentos ?? 0) + 1 })
+            if (ri.r === 'ok') {
+              await notifyTx(tx.id)
+              await avisarCliente(String(tx.user_id), 'Tu envío fue devuelto', `El envío de ${Number(tx.amount).toLocaleString('es-CO')} COP no llegó y ya volvió a tu saldo, con la comisión.`, `devuelto-${tx.id}`)
+            }
+            out.push({ id: tx.id, result: 'refunded', refund: permiso.refund, reintento: true })
+          } else {
+            await db.from('transactions').update({ raw_data: { ...rd, reembolsoIntentos: Number(rd.reembolsoIntentos ?? 0) + 1, reembolsoFallidoAt: ahora } }).eq('id', tx.id)
+            out.push({ id: tx.id, result: 'reembolso_pendiente', motivo: ri.r })
+          }
+        } catch (e) {
+          out.push({ id: tx.id, result: 'error', ...(caller.admin ? { error: String((e as Error)?.message ?? e).slice(0, 160) } : {}) })
+        }
+      }
+    }
     // La respuesta del vigilante no la lee nadie (la manda la base): cuando
     // movió plata o algo falló, queda un resumen en la auditoría. Cada
     // reembolso ya deja además su propio registro.
     if (vigilanteCoinsenda) {
       const resumen: Record<string, number> = {}
       for (const r of out) resumen[String(r.result)] = (resumen[String(r.result)] ?? 0) + 1
-      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto || resumen.estado_desconocido || resumen.sin_referencia) {
+      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto || resumen.reembolso_pendiente || resumen.estado_desconocido || resumen.sin_referencia) {
         await logAudit(null, 'coinsenda.vigilante', { revisados: out.length, resumen })
       }
     }
@@ -5382,13 +5496,13 @@ serve(async (req: Request) => {
       }
       // La confirmación no pasó (4xx claro) o el retiro quedó rechazado: no
       // salió nada → REINTEGRAR monto + comisión.
-      const reint3 = await reintegrarEnvio(userId, railCol, totalDebit)
+      const reint3 = await reintegrarEnvio(userId, railCol, totalDebit, txId)
       await asentarTx('Fallido', {
         // errorMessage lo puede ver el cliente: sin el nombre del aliado. El
         // detalle técnico (con el nombre) queda aparte, para el admin.
         ...base3, error: conf.crudo ?? 'c3_failed', errorMessage: `La ${nombreCuenta(cuentaCs)} no confirmó el envío, así que no salió.`,
         detalleProveedor: conf.error ?? `retiro en estado ${conf.estado || 'desconocido'}`,
-        httpStatus: conf.status || null, ...marcasReintegro(reint3.ok), failedAt: ahora,
+        httpStatus: conf.status || null, ...marcasReintegro(reint3.ok, reint3.idem, totalDebit), failedAt: ahora,
       })
       if (!reint3.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: ahora, raw_data: { ...prettyBase, reembolsoPendiente: true } })
       await logAudit(userId, `coinsenda.${action}.fail`, { cuenta: cuentaCs, amount, providerRef: prepC3!.retiroId, httpStatus: conf.status || null, estado: conf.estado ?? null, error: conf.error ?? null })
@@ -5438,7 +5552,7 @@ serve(async (req: Request) => {
       }
       // Finity dijo que no, o lo frenamos antes de confirmar (titular o monto
       // que no cuadran): no salió nada → REINTEGRAR monto + comisión.
-      const reintF = await reintegrarEnvio(userId, railCol, totalDebit)
+      const reintF = await reintegrarEnvio(userId, railCol, totalDebit, txId)
       const restoredF = reintF.saldo ?? 0
       const provMsgF = fb.mensaje ? null : digMotivoRechazo(fb.body)
       const friendlyF = mensajeFalloBreb2(fb, true)
@@ -5447,7 +5561,7 @@ serve(async (req: Request) => {
         ...(fb.providerRef ? { providerRef: fb.providerRef } : {}),
         error: fb.body ?? 'finity_breb_failed', errorMessage: sinAliados(fb.mensaje ?? provMsgF ?? `paso ${fb.paso ?? '?'} · HTTP ${fb.httpStatus ?? 0}`),
         pasoFallido: fb.paso ?? null, httpStatus: fb.httpStatus ?? null,
-        ...marcasReintegro(reintF.ok), failedAt: ahora,
+        ...marcasReintegro(reintF.ok, reintF.idem, totalDebit), failedAt: ahora,
       })
       if (!reintF.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: ahora, raw_data: { ...prettyBase, reembolsoPendiente: true } })
       await logAudit(userId, `finity.${action}.fail`, { amount, paso: fb.paso ?? null, httpStatus: fb.httpStatus ?? null, error: (() => { try { return JSON.stringify(fb.body ?? {}).slice(0, 300) } catch { return null } })() })
@@ -5594,9 +5708,9 @@ serve(async (req: Request) => {
 
       // Rechazo EXPLICITO del proveedor (4xx) o envio ya devuelto → REINTEGRAR
       // monto + comisión (atómico; fallback read-write).
-      const reintM = await reintegrarEnvio(userId, railCol, totalDebit)
+      const reintM = await reintegrarEnvio(userId, railCol, totalDebit, txId)
       const restored = reintM.saldo ?? 0
-      await asentarTx('Fallido', { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, ...marcasReintegro(reintM.ok), failedAt: new Date().toISOString() })
+      await asentarTx('Fallido', { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', httpStatus: pay.status, ...marcasReintegro(reintM.ok, reintM.idem, totalDebit), failedAt: new Date().toISOString() })
       if (!reintM.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { ...prettyBase, reembolsoPendiente: true } })
       await logAudit(userId, `mouv.${action}.fail`, { amount, rail, status: pay.status, data: pay.data ?? null })
       await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
@@ -5681,7 +5795,7 @@ serve(async (req: Request) => {
         })
       }
       // Guardar el motivo legible en la tx para que el comprobante del fallo lo muestre.
-      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: sinAliados(provMsg ?? techHint ?? null), bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, ...marcasReintegro(reintM.ok), failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
+      if (txId) { try { await db.from('transactions').update({ raw_data: { ...prettyBase, ...feeDetail, error: pay.data ?? 'payout_failed', errorMessage: sinAliados(provMsg ?? techHint ?? null), bloqueoDelProveedor: porCumplimientoDelProveedor || undefined, httpStatus: pay.status, ...marcasReintegro(reintM.ok, reintM.idem, totalDebit), failedAt: new Date().toISOString() } }).eq('id', txId) } catch { /* best-effort */ } }
       // NOTA: no se devuelven `data`/`detail` técnicos al cliente. El detalle
       // real vive en la tx (errorMessage/error/httpStatus) y en el audit_log.
       await soltarCandados()
@@ -5752,7 +5866,7 @@ serve(async (req: Request) => {
     }
 
     // Finity dijo que NO (rechazo claro) → REINTEGRAR monto + comisión.
-    const reintA = await reintegrarEnvio(userId, railCol, totalDebit)
+    const reintA = await reintegrarEnvio(userId, railCol, totalDebit, txId)
     const restored5 = reintA.saldo ?? 0
     const finErr: any = fin.error
     // El motivo vive en error.BODY ({ step, httpStatus, path, body }). Se leía
@@ -5769,7 +5883,7 @@ serve(async (req: Request) => {
     const finMsg = motivoParaCliente(finMsgRaw)
     // errorMessage: el motivo legible si lo hay (lo ven el comprobante y el
     // Panel de Fallos); si no, el detalle técnico. El cuerpo entero queda en `error`.
-    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: sinAliados(finMsg ?? finMsgRaw ?? detail ?? null), pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok), failedAt: new Date().toISOString() })
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: sinAliados(finMsg ?? finMsgRaw ?? detail ?? null), pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok, reintA.idem, totalDebit), failedAt: new Date().toISOString() })
     if (!reintA.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { ...prettyBase, reembolsoPendiente: true } })
     await logAudit(userId, `finity.${action}.fail`, { amount, paso: finPaso || null, error: JSON.stringify(fin.error ?? {}).slice(0, 400) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
