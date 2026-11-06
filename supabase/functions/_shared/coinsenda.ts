@@ -453,7 +453,12 @@ export async function confirmarRetiro(cli: ClienteCoinsenda, id: string): Promis
 export async function leerRetiro(cli: ClienteCoinsenda, id: string): Promise<{ ok: true; existe: boolean; estado?: string; crudo?: any } | { ok: false; error: string }> {
   const r = await cli.pedir('withdraw', 'GET', '/users/{id}/withdraws', { filter: { where: { id }, limit: 1 } })
   if (!exitoso(r)) return { ok: false, error: describirFallo(r, 'leer el retiro') }
-  const w = listaDe(r)[0]
+  // Se toma el retiro con ESE id, no el primero de la lista. Si Coinsenda
+  // ignora el filtro (ya pasó con otros filtros, ver destinosInscritos),
+  // devuelve otros retiros del usuario: un 'rejected' ajeno reembolsaba un
+  // envío pagado y un 'accepted' ajeno completaba uno rechazado (revisión
+  // del 6 nov). Sin coincidencia exacta, no existe.
+  const w = listaDe(r).find((x: any) => String(x?.id ?? '') === String(id))
   if (!w) return { ok: true, existe: false }
   return { ok: true, existe: true, estado: String(w.state ?? '').toLowerCase(), crudo: w }
 }

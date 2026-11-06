@@ -2528,7 +2528,7 @@ serve(async (req: Request) => {
   // todos=true). La función de la base que lo llama (2026_vigilante_breb)
   // pedía una 'service_key' guardada a mano en private_config que nadie
   // guardó: corría cada minuto y no hacía nada. Ahora usa la misma clave que
-  // la base genera para sí misma (2026_zz32).
+  // la base genera para sí misma (2026_zz33).
   let vigilanteCoinsenda = false
   let vigilanteBreb = false
   if (action === 'vigilar_coinsenda' || action === 'vigilar_breb') {
@@ -2912,18 +2912,18 @@ serve(async (req: Request) => {
     if (!barrido) q = q.eq('user_id', userId!)
     const { data: filasTodas, error: errFilas } = await q
     if (errFilas) return json(500, { ok: false, error: 'lectura', message: 'No se pudieron leer los envíos de las Cuentas 3 y 4.' })
-    const esperaPersona = (t: any) => { const r = t?.raw_data ?? {}; return !!(r.retiroNoEncontrado || r.estadoDesconocido || r.sinReferencia) }
+    const esperaPersona = (t: any) => { const r = t?.raw_data ?? {}; return !!(r.retiroNoEncontrado || r.estadoDesconocido || r.sinReferencia || r.pendienteViejo) }
     const filas = [...(filasTodas ?? []).filter((t: any) => !esperaPersona(t)), ...(filasTodas ?? []).filter(esperaPersona)]
       .slice(0, barrido ? 40 : 15)
     // Lo que no se puede resolver solo NO se queda en silencio: la fila pasa
     // a revisión manual, queda en la auditoría y se avisa a los admins. Una
     // sola vez por motivo, para no repetir el aviso cada 3 minutos.
-    const aRevision = async (tx: any, rd: Record<string, any>, marca: 'estadoDesconocido' | 'sinReferencia', extra: Record<string, unknown>) => {
+    const aRevision = async (tx: any, rd: Record<string, any>, marca: 'estadoDesconocido' | 'sinReferencia' | 'pendienteViejo', extra: Record<string, unknown>) => {
       if (rd[marca]) return
       const ahora = new Date().toISOString()
       await db.from('transactions').update({ raw_data: { ...rd, revisionManual: true, [marca]: true, ...extra, ultimaRevision: ahora } })
         .eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
-      await logAudit(String(tx.user_id), `coinsenda.reconcile.${marca === 'sinReferencia' ? 'sin_referencia' : 'estado_desconocido'}`, { txId: tx.id, amount: tx.amount, ...extra })
+      await logAudit(String(tx.user_id), `coinsenda.reconcile.${marca === 'sinReferencia' ? 'sin_referencia' : marca === 'pendienteViejo' ? 'pendiente_viejo' : 'estado_desconocido'}`, { txId: tx.id, amount: tx.amount, ...extra })
       await avisarAdminSinConfirmar({ id: tx.id, user_id: tx.user_id, amount: tx.amount, currency: tx.currency, created_at: tx.created_at, raw_data: rd })
     }
     // ── DEVOLUCIONES TARDÍAS ─────────────────────────────────────────
@@ -3063,6 +3063,20 @@ serve(async (req: Request) => {
         let estado = String(lr.estado ?? '')
         if (estado === 'pending') {
           if (edadS < 120) { out.push({ id: tx.id, result: 'pendiente' }); continue }
+          // Un retiro que lleva más de un día sin confirmar NO se confirma solo:
+          // la plata saldría días después y el cliente pudo haber reenviado el
+          // pago entretanto (el beneficiario cobraría dos veces). Lo decide una
+          // persona (revisión del 6 nov: la ventana de Procesando es de 60 días).
+          if (edadS > 24 * 3600) {
+            await aRevision(tx, rd, 'pendienteViejo', { cuenta: cuentaTx, estadoProveedor: 'pending', edadHoras: Math.round(edadS / 3600) })
+            out.push({ id: tx.id, result: 'pendiente_viejo' }); continue
+          }
+          // Un solo reconfirmador por envío. Ahora concilian a la vez el
+          // vigilante, cada panel abierto y el cliente: si una vuelta recibe un
+          // 4xx ("en proceso") mientras la confirmación de otra sigue en curso,
+          // relee 'pending' y devolvía la plata de un retiro que sí salió.
+          const candRe = await reclamarCandado(db, `cs_reconfirmar:${tx.id}`, 180, null, 'coinsenda_reconfirmar')
+          if (candRe === 'ocupado') { out.push({ id: tx.id, result: 'reconfirmando' }); continue }
           const c = await confirmarRetiro(cli, ref)
           await logAudit(String(tx.user_id), 'coinsenda.reconcile.reconfirmar', { txId: tx.id, cuenta: cuentaTx, providerRef: ref, desenlace: c.desenlace, httpStatus: c.status || null })
           if (c.desenlace === 'salio' || c.desenlace === 'aceptado') estado = String(c.estado ?? 'confirmed')
@@ -3179,7 +3193,11 @@ serve(async (req: Request) => {
             }
             out.push({ id: tx.id, result: 'refunded', refund: permiso.refund, reintento: true })
           } else {
-            await db.from('transactions').update({ raw_data: { ...rd, reembolsoIntentos: Number(rd.reembolsoIntentos ?? 0) + 1, reembolsoFallidoAt: ahora } }).eq('id', tx.id)
+            // Condicionado a que siga pendiente: si entretanto un admin la
+            // devolvió con force_return (refunded: true), escribir la copia
+            // vieja de raw_data le borraba esa marca (revisión del 6 nov).
+            await db.from('transactions').update({ raw_data: { ...rd, reembolsoIntentos: Number(rd.reembolsoIntentos ?? 0) + 1, reembolsoFallidoAt: ahora } })
+              .eq('id', tx.id).filter('raw_data->>reembolsoPendiente', 'eq', 'true').filter('raw_data->>refunded', 'eq', 'false')
             out.push({ id: tx.id, result: 'reembolso_pendiente', motivo: ri.r })
           }
         } catch (e) {
@@ -3193,7 +3211,11 @@ serve(async (req: Request) => {
     if (vigilanteCoinsenda) {
       const resumen: Record<string, number> = {}
       for (const r of out) resumen[String(r.result)] = (resumen[String(r.result)] ?? 0) + 1
-      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto || resumen.reembolso_pendiente || resumen.estado_desconocido || resumen.sin_referencia) {
+      // Solo lo que cambió o falló EN ESTA vuelta. Un envío sin referencia o
+      // con estado desconocido sigue Procesando y saldría en cada vuelta
+      // (~480 registros al día por fila trabada); su paso a revisión ya queda
+      // en la auditoría una sola vez (aRevision).
+      if (resumen.refunded || resumen.completed || resumen.error || resumen.reembolso_fallido || resumen.reembolso_incierto || resumen.reembolso_pendiente) {
         await logAudit(null, 'coinsenda.vigilante', { revisados: out.length, resumen })
       }
     }
@@ -3675,6 +3697,13 @@ serve(async (req: Request) => {
       return json(200, { ok: true, confirmada: true, avisoDescartado: true })
     }
     if (tx.status === 'Completado') return json(200, { ok: true, already: 'Completado' })
+    // Solo un envío EN CURSO se confirma a mano. Un Fallido o Rechazado ya se
+    // dio por no salido: con el reembolso pendiente, pasarlo a Completado lo
+    // sacaba del reintento automático (que solo mira Fallido/Rechazado) y el
+    // cliente se quedaba sin su devolución (revisión del 6 nov).
+    if (tx.status !== 'Procesando' && tx.status !== 'Pendiente') {
+      return json(409, { error: 'estado_no_confirmable', message: `Este envío está ${tx.status}: ya se dio por no salido y no se puede marcar como pagado desde aquí.` })
+    }
 
     await db.from('transactions').update({
       status: 'Completado',
@@ -3686,7 +3715,7 @@ serve(async (req: Request) => {
         revisionManual: undefined,
         ...(rd.avisoFinityFallo ? { avisoFinityFallo: undefined, avisoFinityDescartado: { ...rd.avisoFinityFallo, por: caller.userId, at: new Date().toISOString() } } : {}),
       },
-    }).eq('id', tx.id).neq('status', 'Rechazado')
+    }).eq('id', tx.id).in('status', ['Procesando', 'Pendiente']).filter('raw_data->>refunded', 'is', null)
     await logAudit(tx.user_id, 'mouv.confirmar_dispersion', {
       txId: tx.id, admin: caller.userId, providerRef: rd.providerRef ?? null,
     })
@@ -4111,7 +4140,7 @@ serve(async (req: Request) => {
     if (ref.length < 4) return json(400, { error: 'ref_invalida', message: 'Pegá el ID tal como aparece en la consola del proveedor.' })
 
     const { data: tx } = await db.from('transactions')
-      .select('id, user_id, type, raw_data').eq('id', txId).maybeSingle()
+      .select('id, user_id, type, amount, created_at, raw_data').eq('id', txId).maybeSingle()
     if (!tx) return json(404, { error: 'not_found' })
     if (tx.type !== 'dispersion') return json(400, { error: 'not_a_dispersion' })
 
@@ -4123,6 +4152,28 @@ serve(async (req: Request) => {
     if (yaUsada?.length) {
       return json(409, { error: 'ref_duplicada', message: `Ese ID ya está vinculado al movimiento ${yaUsada[0].id}.` })
     }
+    // Ni el de un envío de la utilidad de Lincoin (caja), que no es una
+    // dispersión y el chequeo de arriba no ve.
+    const { data: deCaja } = await db.from('caja_movimientos').select('id').filter('envio->>ref', 'eq', ref).limit(1)
+    if (deCaja?.length) {
+      return json(409, { error: 'ref_de_caja', message: 'Ese ID es de un envío de la utilidad de Lincoin, no de este cliente.' })
+    }
+    // Y el movimiento del proveedor tiene que ser de ESTE monto. El vigilante
+    // concilia por este id cada minuto y, si el movimiento salió devuelto,
+    // reembolsa: un id de otro envío devuelto pegado en un envío que sí llegó
+    // reembolsaba plata que salió (revisión del 6 nov). Mouv da los montos en
+    // centavos. Si Mouv todavía no lo encuentra, se guarda igual (es el caso
+    // de la consola adelantada); sin movimiento encontrado nada se reembolsa.
+    const stV = await mouvTransferStatus(ref, (tx as any).created_at ?? null)
+    if (stV.found) {
+      const raw = (stV.raw?.data ?? stV.raw ?? {}) as Record<string, any>
+      const centavos = [raw.amount, raw.netAmount, raw.net_amount].map(Number).filter(n => Number.isFinite(n) && n > 0)
+      const esperado = Math.round(Number(tx.amount ?? 0) * 100)
+      if (centavos.length && esperado > 0 && !centavos.some(c => Math.abs(Math.round(c) - esperado) <= 100)) {
+        await logAudit(tx.user_id, 'mouv.vincular_referencia.monto_distinto', { txId: tx.id, providerRef: ref, admin: caller.userId, montoFila: tx.amount, montoProveedorCentavos: centavos })
+        return json(409, { error: 'monto_distinto', message: `Ese movimiento del proveedor es de ${(centavos[0] / 100).toLocaleString('es-CO')} COP y este envío es de ${Number(tx.amount).toLocaleString('es-CO')} COP: no es el mismo.` })
+      }
+    }
 
     const rd = (tx.raw_data ?? {}) as Record<string, any>
     const { error } = await db.from('transactions').update({
@@ -4132,9 +4183,9 @@ serve(async (req: Request) => {
 
     await logAudit(tx.user_id, 'mouv.vincular_referencia', { txId: tx.id, providerRef: ref, admin: caller.userId })
 
-    // Con el id ya guardado se consulta el estado en el acto: es justo lo que
-    // faltaba para poder decidir.
-    const st = await mouvTransferStatus(ref)
+    // El estado ya se consultó arriba (para comparar el monto): se devuelve
+    // en el acto, que es justo lo que faltaba para poder decidir.
+    const st = stV
     return json(200, {
       ok: true, providerRef: ref,
       estadoProveedor: st.found ? st.state : null,
@@ -4304,23 +4355,35 @@ serve(async (req: Request) => {
     // solo la sección "Fallos" se le reintegraba a un cómplice un envío que
     // sí había salido (plata doble). Si el proveedor no responde o no
     // encuentra el envío, se sigue como antes: ese es justo el caso del botón.
+    //
+    // TAMPOCO mientras el proveedor lo tiene EN CURSO (revisión del 6 nov):
+    // un Bre-B esperando firma, un retiro de Coinsenda 'confirmed' (ya salió
+    // de la billetera) o un ACH de Finity en proceso todavía pueden llegar. Si
+    // se devolvía y después llegaba, el beneficiario cobraba y el cliente
+    // también; la fila quedaba Rechazado y ninguna conciliación la volvía a
+    // mirar. En curso se espera: la conciliación lo cierra sola.
     {
       const refFR = String(rd.providerRef ?? rd.coinsenda?.retiro ?? '').trim()
       let completadoSegunProveedor = false
+      let enCursoSegunProveedor = false
       let estadoProv: string | null = null
       if (refFR) {
         try {
           if (String(rd.proveedor ?? '') === 'coinsenda') {
             const cFR = cuentaCoinsendaDe(rd.coinsenda?.cuenta ?? rd.cuentaBreb ?? rd.cuentaAch)
             const lrFR = await leerRetiro(new ClienteCoinsenda(db, await configCoinsenda(db, cFR), 20_000), refFR)
-            if (lrFR.ok && lrFR.existe) { estadoProv = String(lrFR.estado ?? ''); completadoSegunProveedor = estadoProv === 'accepted' }
+            if (lrFR.ok && lrFR.existe) {
+              estadoProv = String(lrFR.estado ?? '')
+              completadoSegunProveedor = estadoProv === 'accepted'
+              enCursoSegunProveedor = estadoProv === 'confirmed' || estadoProv === 'pending'
+            }
           } else if ((String(tx.currency) === 'COP_ACH' && String(rd.proveedor ?? '') !== 'coinsenda') || rd.feeProvider === 'finity' || rd.proveedor === 'finity' || /^mvm-/i.test(refFR)) {
             const stF = await finityCall('withdrawal_status', String(tx.user_id), { id: refFR })
             const vF = stF?.ok === true ? veredictoFinity(stF) : null
-            if (vF) { estadoProv = vF.estado; completadoSegunProveedor = vF.veredicto === 'completado' }
+            if (vF) { estadoProv = vF.estado; completadoSegunProveedor = vF.veredicto === 'completado'; enCursoSegunProveedor = vF.veredicto === 'en_proceso' }
           } else {
             const stM = await mouvTransferStatus(refFR, (tx as any).created_at ?? null)
-            if (stM.found) { estadoProv = stM.state; completadoSegunProveedor = stM.verdict === 'completed' }
+            if (stM.found) { estadoProv = stM.state; completadoSegunProveedor = stM.verdict === 'completed'; enCursoSegunProveedor = stM.verdict === 'pending' }
           }
         } catch { /* sin respuesta del proveedor: se decide como antes */ }
       }
@@ -4329,6 +4392,13 @@ serve(async (req: Request) => {
         return json(409, {
           error: 'proveedor_completado',
           message: `El proveedor confirma que este envío llegó (${estadoProv}). No se puede devolver desde aquí: si de verdad no llegó, hay que reclamarlo al proveedor.`,
+        })
+      }
+      if (enCursoSegunProveedor) {
+        await logAudit(tx.user_id, 'mouv.force_return.denegado_en_curso', { txId: tx.id, admin: caller.userId, providerRef: refFR, estadoProveedor: estadoProv })
+        return json(409, {
+          error: 'proveedor_en_curso',
+          message: `El proveedor todavía tiene este envío en curso (${estadoProv}): puede llegar. No se devuelve mientras tanto; la conciliación lo cierra sola cuando el proveedor lo resuelva.`,
         })
       }
     }
@@ -4376,7 +4446,22 @@ serve(async (req: Request) => {
     }
     if (!claimed?.length) return json(200, { ok: true, already: 'refund_already_claimed' })
 
-    const creditoFR = await creditBalanceAtomic3(tx.user_id, railCol, refund)
+    // El crédito va por reembolsar_envio (2026_zz32), con el id del envío
+    // como llave, igual que las devoluciones automáticas. Antes era un
+    // adjust_balances suelto: si la devolución automática ya se había
+    // aplicado pero su respuesta se perdió (fila con reembolsoPendiente), o si
+    // el reintento del vigilante corría a la vez, el botón acreditaba una
+    // segunda vez (revisión del 6 nov). 'ya' = ya estaba devuelto: no se suma.
+    // Sin la migración se usa el camino de antes.
+    const riFR = await reembolsoIdempotente(String(tx.id), String(tx.user_id), railCol, refund, 'force_return')
+    if (riFR.r === 'ya') {
+      await logAudit(tx.user_id, 'mouv.force_return.ya_devuelto', { txId: tx.id, refund, admin: caller.userId })
+      return json(200, { ok: true, already: 'refunded', refundCop: refund })
+    }
+    const creditoFR: ResultadoCredito = riFR.r === 'ok' ? 'ok'
+      : riFR.r === 'incierto' ? 'incierto'
+      : riFR.r === 'fallo' ? 'fallo'
+      : await creditBalanceAtomic3(tx.user_id, railCol, refund)
     if (creditoFR === 'incierto') {
       // No se sabe si el saldo volvió: si se soltara el reclamo, un segundo
       // clic devolvería otra vez. Queda reclamado y en revisión.
