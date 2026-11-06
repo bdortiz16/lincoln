@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { pedirMouv, pedirAdmin } from './adminApi';
 import { useMovimientosCliente } from './useMovimientosCliente';
-import { descargarMovimientosCliente } from './excelMovimientosCliente';
+import { descargarMovimientosCliente, direccionDe, TIPOS } from './excelMovimientosCliente';
 import { descargarXlsx } from '../lib/xlsx';
 import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
@@ -23,6 +23,16 @@ import { nombreCuenta } from '../lib/nombreCuenta';
 //   · Suspender no va en rojo: el rojo se reserva para lo que ya salió mal,
 //     no para una acción que el admin todavía está considerando.
 // ─────────────────────────────────────────────────────────────
+
+// ¿El movimiento SUMA al saldo del cliente? La lista vieja solo conocía
+// deposit/receive/payin/gasfree_credit, y el cargue de saldo ('load'), que es
+// casi todo lo que entra a una empresa, salía con flecha de salida y signo
+// menos (6 nov). Se usa la misma regla que el Excel del cliente
+// (direccionDe): load, depósitos OTC y pagos recibidos entran, y un ajuste
+// entra o sale según su dirección. Se suman los tipos que solo conocía esta
+// pantalla.
+const entraAlSaldo = (t: any): boolean =>
+  direccionDe(t) === 'Entrada' || ['receive', 'payin', 'gasfree_credit'].includes(String(t?.type));
 
 const C = {
   doc: '#070808', chrome: '#0A0C0B', card: '#0C0E0D', elev: '#121413',
@@ -1035,7 +1045,7 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
             {movs.length === 0 ? (
               <p style={{ fontSize: 12.5, color: C.sub, padding: '0 16px 16px', margin: 0 }}>Esta cuenta todavía no tiene movimientos.</p>
             ) : movs.slice(0, 5).map((t: any, i: number) => {
-              const entra = ['deposit', 'receive', 'payin', 'gasfree_credit'].includes(String(t.type));
+              const entra = entraAlSaldo(t);
               const estado = String(t.status ?? '');
               const tono = ['Completado', 'Liquidado', 'Aprobado'].includes(estado) ? 'ok'
                 : ['Fallido', 'Rechazado'].includes(estado) ? 'mal'
@@ -1051,7 +1061,7 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
                   </div>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <p style={{ fontSize: 13, fontWeight: 600, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {t.concept ?? t.description ?? t.type ?? 'Movimiento'}
+                      {t.concept ?? t.description ?? TIPOS[String(t.type)] ?? t.type ?? 'Movimiento'}
                     </p>
                     <p style={{ fontSize: 11.5, color: C.sub, margin: 0 }}>{fechaHora(t.createdAt ?? t.date)}</p>
                   </div>
@@ -1355,7 +1365,7 @@ const Movimientos: React.FC<any> = ({ movs, onSondear, sondeando }) => (
     {movs.length === 0 ? (
       <p style={{ fontSize: 12.5, color: C.sub, padding: 22, margin: 0, textAlign: 'center' }}>Esta cuenta todavía no tiene movimientos.</p>
     ) : movs.slice(0, 60).map((t: any, i: number) => {
-      const entra = ['deposit', 'receive', 'payin', 'gasfree_credit'].includes(String(t.type));
+      const entra = entraAlSaldo(t);
       const estado = String(t.status ?? '');
       const tono = ['Completado', 'Liquidado', 'Aprobado'].includes(estado) ? 'ok'
         : ['Fallido', 'Rechazado'].includes(estado) ? 'mal' : estado === 'Pendiente' ? 'curso' : 'neutro';
@@ -1365,7 +1375,7 @@ const Movimientos: React.FC<any> = ({ movs, onSondear, sondeando }) => (
             <Ico d={entra ? I.abajo : String(t.type) === 'conversion' ? I.cambio : I.arriba} size={14} />
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>{t.concept ?? t.description ?? t.type ?? 'Movimiento'}</p>
+            <p style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>{t.concept ?? t.description ?? TIPOS[String(t.type)] ?? t.type ?? 'Movimiento'}</p>
             <p style={{ fontSize: 11.5, color: C.sub, margin: 0, fontFamily: MONO }}>{fechaHora(t.createdAt ?? t.date)}{t.reference ? ` · ${t.reference}` : ''}</p>
           </div>
           <p style={{ fontSize: 13, fontWeight: 700, margin: 0, whiteSpace: 'nowrap' }}>
