@@ -2365,8 +2365,29 @@ serve(async (req: Request) => {
       }).eq('id', tx.id).neq('status', 'Completado').select('id')
       if (claimed?.length) {
         const col = String(tx.currency ?? 'COP')
-        await creditBalanceAtomic(tx.user_id, col, Number(tx.amount ?? 0))   // atómico (pentest #3)
-        await logAudit(tx.user_id, 'mouv.payin_pse.credited', { ref, amount: tx.amount, status })
+        // Revisión del 6 nov: antes se acreditaba sin mirar el resultado. Si el
+        // ajuste fallaba, la fila quedaba Completado (sin plata en el saldo) y
+        // nadie volvía a intentarlo. Ahora: fallo seguro → se suelta el reclamo
+        // (vuelve a Pendiente, a revisión) porque NO se acreditó; incierto → la
+        // fila sigue Completado (pudo haberse acreditado, reintentar duplicaría)
+        // y queda marcada para que un humano lo mire en el saldo.
+        const r = await creditBalanceAtomic3(tx.user_id, col, Number(tx.amount ?? 0))   // atómico (pentest #3)
+        if (r === 'ok') {
+          await logAudit(tx.user_id, 'mouv.payin_pse.credited', { ref, amount: tx.amount, status })
+        } else if (r === 'fallo') {
+          await db.from('transactions').update({
+            status: 'Pendiente',
+            raw_data: { ...rd, payinStatus: status, verified: true, creditoFallido: true, revisionManual: true },
+          }).eq('id', tx.id).eq('status', 'Completado')
+          await logAudit(tx.user_id, 'mouv.payin_pse.credito_fallido', { ref, amount: tx.amount, status })
+          return json(200, { ok: true, credited: false, revision: 'credito_fallido', ref })
+        } else {
+          await db.from('transactions').update({
+            raw_data: { ...rd, payinStatus: status, paidAt: new Date().toISOString(), verified: true, creditoIncierto: true, revisionManual: true },
+          }).eq('id', tx.id)
+          await logAudit(tx.user_id, 'mouv.payin_pse.credito_incierto', { ref, amount: tx.amount, status })
+          return json(200, { ok: true, credited: 'incierto', revision: 'credito_incierto', ref })
+        }
       }
       return json(200, { ok: true, credited: true, ref })
     }
@@ -3985,9 +4006,7 @@ serve(async (req: Request) => {
         // siguiente vuelta.
         const cDep = await reclamarCandado(db, `breb_dep:${depId}`, 600, ext, 'breb_conciliar')
         if (cDep === 'ocupado' || cDep === 'error') { out.push({ dep: depId, result: 'en_curso_otra_vuelta' }); continue }
-        const { data: creada, error: insErr } = await db.from('transactions').insert({
-          user_id: ext, type: 'load', amount: neto, currency: 'COP_BREB', status: 'Completado',
-          raw_data: {
+        const rdRecaudo: Record<string, unknown> = {
             source: 'mouv_breb_recaudo', title: 'Recaudo Bre-B',
             depositId: depId, brutoCop: bruto, comisionCop: comision, netoCop: neto,
             llave: dep?.brebKey?.value ?? null, llaveId: dep?.brebKey?.id ?? null,
@@ -3999,7 +4018,9 @@ serve(async (req: Request) => {
             providerTransferId: dep?.providerTransferId ?? null,
             confirmadoAt: dep?.providerConfirmedAt ?? null,
             acreditadoAt: new Date().toISOString(),
-          },
+        }
+        const { data: creada, error: insErr } = await db.from('transactions').insert({
+          user_id: ext, type: 'load', amount: neto, currency: 'COP_BREB', status: 'Completado', raw_data: rdRecaudo,
         }).select('id').maybeSingle()
         // Si la fila no se pudo escribir NO se acredita: sin movimiento, el
         // saldo sube y no hay como explicar de donde salio.
@@ -4008,9 +4029,14 @@ serve(async (req: Request) => {
         // El crédito puede NO entrar (ajuste rechazado o incierto). Antes la
         // fila quedaba Completado igual y el cliente perdía el depósito en
         // silencio: ahora queda marcada para revisión, con el motivo.
-        if (!(await creditBalanceAtomic(ext, 'COP_BREB', neto))) {
-          await db.from('transactions').update({ status: 'Pendiente', raw_data: { source: 'mouv_breb_recaudo', title: 'Recaudo Bre-B', depositId: depId, brutoCop: bruto, comisionCop: comision, netoCop: neto, revisarCredito: true, acreditadoAt: null } }).eq('id', (creada as any).id)
-          await logAudit(ext, 'mouv.breb_recaudo.credito_fallido', { depId, neto })
+        // Revisión del 6 nov: se distingue 'fallo' (seguro que no entró) de
+        // 'incierto' (pudo entrar): un reverso posterior solo se perdona sin
+        // débito si es seguro que el crédito no entró. Y se conservan los
+        // datos del pagador (antes el update los borraba).
+        const rCred = await creditBalanceAtomic3(ext, 'COP_BREB', neto)
+        if (rCred !== 'ok') {
+          await db.from('transactions').update({ status: 'Pendiente', raw_data: { ...rdRecaudo, revisarCredito: true, ...(rCred === 'incierto' ? { creditoIncierto: true } : {}), acreditadoAt: null } }).eq('id', (creada as any).id)
+          await logAudit(ext, 'mouv.breb_recaudo.credito_fallido', { depId, neto, resultado: rCred })
           out.push({ dep: depId, result: 'credito_fallido_revisar', neto })
           continue
         }
@@ -4024,6 +4050,31 @@ serve(async (req: Request) => {
         if (!fila) { out.push({ dep: depId, result: 'reversado_nunca_acreditado' }); continue }
         const frd = ((fila as any).raw_data ?? {}) as Record<string, any>
         if (frd.reversado) { out.push({ dep: depId, result: 'ya_reversado' }); continue }
+        // Un recaudo cuyo crédito NO entró (Pendiente con revisarCredito) no se
+        // le cobra al cliente: se marca devuelto sin debitar. Antes el reverso
+        // le quitaba un neto que nunca se le había acreditado, o se lo anotaba
+        // como deuda (revisión del 6 nov).
+        // Crédito INCIERTO (pudo haber entrado): ni se perdona ni se debita a
+        // ciegas. Queda para que una persona mire el saldo.
+        if (frd.creditoIncierto) {
+          if (!frd.reversoPorRevisar) {
+            await db.from('transactions').update({
+              raw_data: { ...frd, reversoPorRevisar: true, reversoVistoAt: new Date().toISOString(), revisionManual: true },
+            }).eq('id', (fila as any).id).filter('raw_data->>reversado', 'is', null)
+            await logAudit(ext, 'mouv.breb_recaudo.reverso_credito_incierto', { depId })
+          }
+          out.push({ dep: depId, result: 'reverso_revisar_credito_incierto' })
+          continue
+        }
+        if ((fila as any).status !== 'Completado' || frd.revisarCredito) {
+          const { data: marcada } = await db.from('transactions').update({
+            status: 'Devuelto',
+            raw_data: { ...frd, reversado: true, reversadoAt: new Date().toISOString(), reversadoSinDebito: true, revisarCredito: false },
+          }).eq('id', (fila as any).id).filter('raw_data->>reversado', 'is', null).select('id')
+          await logAudit(ext, 'mouv.breb_recaudo.reversado_sin_credito', { depId, estadoFila: (fila as any).status })
+          out.push({ dep: depId, result: marcada?.length ? 'reversado_nunca_acreditado' : 'reverso_ya_reclamado' })
+          continue
+        }
 
         // CAS antes de tocar el saldo, igual que en los reembolsos.
         const { data: claimed } = await db.from('transactions').update({
@@ -5983,7 +6034,9 @@ serve(async (req: Request) => {
     const finMsg = motivoParaCliente(finMsgRaw)
     // errorMessage: el motivo legible si lo hay (lo ven el comprobante y el
     // Panel de Fallos); si no, el detalle técnico. El cuerpo entero queda en `error`.
-    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', error: fin.error ?? 'finity_failed', errorMessage: sinAliados(finMsg ?? finMsgRaw ?? detail ?? null), pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok, reintA.idem, totalDebit), failedAt: new Date().toISOString() })
+    // feeCop debitado (revisión del 6 nov): sin él, un force_return o un
+    // reintento de reembolso sobre esta fila devolvía el monto sin la comisión.
+    await asentarTx('Fallido', { ...prettyBase, feeProvider: 'finity', feeCop, error: fin.error ?? 'finity_failed', errorMessage: sinAliados(finMsg ?? finMsgRaw ?? detail ?? null), pasoFallido: finPaso || null, noSalio: true, ...marcasReintegro(reintA.ok, reintA.idem, totalDebit), failedAt: new Date().toISOString() })
     if (!reintA.ok) await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, created_at: new Date().toISOString(), raw_data: { ...prettyBase, reembolsoPendiente: true } })
     await logAudit(userId, `finity.${action}.fail`, { amount, paso: finPaso || null, error: JSON.stringify(fin.error ?? {}).slice(0, 400) })
     await notifyTx(txId) // correo "no pudimos completar tu envío · saldo devuelto"
