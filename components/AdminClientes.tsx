@@ -291,6 +291,10 @@ export const AdminClientes: React.FC<{
   // (Colombia → factura diaria; exterior → por movimiento).
   const [edOrigen, setEdOrigen] = useState<'colombia' | 'exterior'>('colombia');
   const [edPais, setEdPais] = useState('');
+  // ¿Tocó el país o el origen? Solo entonces se guarda el país. Antes, con la
+  // facturación ajustada a mano, corregir solo el nombre reescribía el país y
+  // borraba el ajuste (revisión del 6 nov).
+  const [edPaisTocado, setEdPaisTocado] = useState(false);
   // Correo de ACCESO: con lo que el cliente entra y adonde le llegan los
   // códigos. Se cambia por su propia acción del servidor (solo el dueño, con
   // código 2FA), nunca con el resto del perfil.
@@ -448,11 +452,14 @@ export const AdminClientes: React.FC<{
       setDiagSync({ at: new Date().toISOString(), breb, ach, c3 });
 
       const revisados = Number(breb?.checked ?? 0) + Number(ach?.checked ?? 0) + Number(c3?.checked ?? 0);
-      const cambios = [...(breb?.results ?? []), ...(ach?.results ?? [])]
-        .filter((r: any) => r?.result && r.result !== 'sin_cambios' && r.result !== 'no_encontrado').length
-        // De las Cuentas 3 y 4 solo cuenta lo que cambió de verdad: sus demás
-        // resultados (completado_ok, pendiente…) son "sigue igual".
-        + (c3?.results ?? []).filter((r: any) => r?.result === 'refunded' || r?.result === 'completed').length;
+      // Solo cuenta lo que CAMBIÓ de verdad (lista cerrada). Antes se excluía
+      // 'sin_cambios', un valor que el servidor nunca devuelve, y todo lo
+      // demás (sigue en curso, sigue completado, error…) salía como
+      // "actualizado": "3 de 3 actualizados" sin que cambiara nada
+      // (revisión del 6 nov).
+      const CAMBIO = new Set(['refunded', 'completed', 'reversado', 'reversado_con_deuda', 'reversado_nunca_acreditado']);
+      const cambios = [...(breb?.results ?? []), ...(ach?.results ?? []), ...(c3?.results ?? [])]
+        .filter((r: any) => CAMBIO.has(String(r?.result ?? ''))).length;
 
       // El mensaje dice lo que de verdad pasó. "Actualizado" cuando no se
       // actualizó nada es cómo este botón escondió el problema durante meses.
@@ -480,9 +487,17 @@ export const AdminClientes: React.FC<{
     await refreshData?.();
   };
 
+  // Los cambios de la ficha avisan si el servidor dijo que no: antes el
+  // error se perdía y el interruptor volvía solo, sin ningún mensaje
+  // (revisión del 6 nov).
   const alternar = async (campo: string, valor: boolean, etiqueta: string) => {
     if (!sel) return;
-    await updateUserProfile?.(sel.id, { [campo]: valor });
+    try {
+      await updateUserProfile?.(sel.id, { [campo]: valor });
+    } catch (e: any) {
+      showToast?.(`No se pudo cambiar ${etiqueta.toLowerCase()}: ${String(e?.message ?? e)}`, 8000, 'error');
+      return;
+    }
     await refreshData?.();
     showToast?.(`${etiqueta} ${valor ? 'activado' : 'desactivado'}.`);
   };
@@ -527,7 +542,7 @@ export const AdminClientes: React.FC<{
               {listaAbierta ? 'Ocultar lista' : 'Ver lista'}
             </button>
           )}
-          <button onClick={sincronizar} disabled={sincronizando} style={{ ...btnSec, opacity: sincronizando ? 0.6 : 1 }}>
+          <button onClick={sincronizar} disabled={sincronizando || !sel} style={{ ...btnSec, opacity: sincronizando || !sel ? 0.6 : 1 }}>
             <span style={{ display: 'inline-flex', animation: sincronizando ? 'spin 1s linear infinite' : 'none' }}><Ico d={I.refrescar} /></span>
             {sincronizando ? 'Sincronizando…' : 'Sincronizar'}
           </button>
@@ -669,10 +684,15 @@ export const AdminClientes: React.FC<{
                   <button onClick={() => {
                     setEdNombre(sel.name ?? ''); setEdRol(sel.role === 'business' ? 'business' : 'personal');
                     setEdCorreo(String(sel.email ?? ''));
+                    // El selector arranca con el PAÍS real de la empresa; el
+                    // modelo de facturación solo se usa si no hay país (una
+                    // empresa colombiana facturada a mano como exterior no
+                    // tiene que inventar un país extranjero para guardar).
                     const p = modeloCli?.pais ?? sel.companyCountry ?? null;
-                    const ext = modeloCli ? modeloCli.modelo === 'exterior' : !esColombia(p);
+                    const ext = p ? !esColombia(p) : modeloCli?.modelo === 'exterior';
                     setEdOrigen(ext ? 'exterior' : 'colombia');
                     setEdPais(ext && p && !esColombia(p) ? String(p) : '');
+                    setEdPaisTocado(false);
                     setEditando(true);
                   }} style={btnSec}><Ico d={I.lapiz} /> Editar</button>
                   <button onClick={sincronizar} disabled={sincronizando} style={{ ...btnSec, opacity: sincronizando ? 0.6 : 1 }}><Ico d={I.refrescar} /> Sincronizar</button>
@@ -700,12 +720,17 @@ export const AdminClientes: React.FC<{
                                 ? 'El servidor rechazará TODAS sus operaciones de dinero y la cuenta desaparecerá de Cargues, GasFree y pendientes. Es más que una suspensión.'
                                 : 'La cuenta vuelve a las listas operativas. Seguirá suspendida si lo estaba.',
                               accion: async () => {
-                                await updateUserProfile?.(sel.id, {
-                                  blacklisted: entra,
-                                  isBlocked: entra ? true : sel.isBlocked,
-                                  blockReason: entra ? 'Lista negra — actividad maliciosa' : sel.blockReason,
-                                  blacklistedAt: entra ? new Date().toISOString() : null,
-                                });
+                                try {
+                                  await updateUserProfile?.(sel.id, {
+                                    blacklisted: entra,
+                                    isBlocked: entra ? true : sel.isBlocked,
+                                    blockReason: entra ? 'Lista negra — actividad maliciosa' : sel.blockReason,
+                                    blacklistedAt: entra ? new Date().toISOString() : null,
+                                  });
+                                } catch (e: any) {
+                                  showToast?.(`No se pudo cambiar la lista negra: ${String(e?.message ?? e)}`, 8000, 'error');
+                                  return;
+                                }
                                 await refreshData?.();
                                 showToast?.(entra ? 'Cuenta enviada a lista negra.' : 'Cuenta retirada de la lista negra.');
                               },
@@ -909,7 +934,7 @@ export const AdminClientes: React.FC<{
               <Etiqueta>PAÍS DE LA EMPRESA</Etiqueta>
               <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
                 {(['colombia', 'exterior'] as const).map(o => (
-                  <button key={o} onClick={() => setEdOrigen(o)} disabled={!modeloCli}
+                  <button key={o} onClick={() => { setEdOrigen(o); setEdPaisTocado(true); }} disabled={!modeloCli}
                     style={{
                       flex: 1, height: 40, borderRadius: 9, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, cursor: modeloCli ? 'pointer' : 'not-allowed',
                       background: edOrigen === o ? 'rgba(74,222,128,0.07)' : 'transparent',
@@ -921,7 +946,7 @@ export const AdminClientes: React.FC<{
               {edOrigen === 'exterior' && (
                 <>
                   <select value={PAISES_EXTERIOR.includes(edPais) ? edPais : edPais ? '__otro' : ''} disabled={!modeloCli}
-                    onChange={e => setEdPais(e.target.value === '__otro' ? ' ' : e.target.value)} aria-label="País de la empresa"
+                    onChange={e => { setEdPais(e.target.value === '__otro' ? ' ' : e.target.value); setEdPaisTocado(true); }} aria-label="País de la empresa"
                     style={{ width: '100%', height: 40, marginTop: 8, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 10px', color: edPais ? C.text : C.sub, fontSize: 13, fontFamily: FONT }}>
                     <option value="">Elige el país…</option>
                     {/* El valor guardado sigue siendo el nombre ("Brasil"): la
@@ -930,7 +955,7 @@ export const AdminClientes: React.FC<{
                     <option value="__otro">Otro país…</option>
                   </select>
                   {edPais && !PAISES_EXTERIOR.includes(edPais) && (
-                    <input value={edPais.trimStart()} onChange={e => setEdPais(e.target.value || ' ')} placeholder="Escribe el país" autoFocus
+                    <input value={edPais.trimStart()} onChange={e => { setEdPais(e.target.value || ' '); setEdPaisTocado(true); }} placeholder="Escribe el país" autoFocus
                       style={{ width: '100%', height: 40, marginTop: 8, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 13px', color: C.text, fontSize: 13, outline: 'none', fontFamily: FONT }} />
                   )}
                 </>
@@ -952,9 +977,11 @@ export const AdminClientes: React.FC<{
                   // El país va por su propia acción del servidor (con 2FA y
                   // auditoría): decide cómo se le factura. Solo si cambió.
                   const paisNuevo = edOrigen === 'colombia' ? 'Colombia' : edPais.trim();
-                  if (edOrigen === 'exterior' && (!paisNuevo || esColombia(paisNuevo))) { showToast?.('Elige el país de la empresa del exterior.', 6000, 'error'); return; }
+                  if (edPaisTocado && edOrigen === 'exterior' && (!paisNuevo || esColombia(paisNuevo))) { showToast?.('Elige el país de la empresa del exterior.', 6000, 'error'); return; }
                   const paisAntes = modeloCli?.pais ?? null;
-                  const cambioPais = !!modeloCli && (
+                  // Solo si TOCÓ el país: el ajuste manual de la facturación
+                  // ya no se pierde por corregir el nombre.
+                  const cambioPais = !!modeloCli && edPaisTocado && (
                     modeloCli.manual
                     || (edOrigen === 'colombia' ? !(paisAntes && esColombia(paisAntes)) : paisNuevo.toLowerCase() !== String(paisAntes ?? '').trim().toLowerCase())
                   );
@@ -974,7 +1001,15 @@ export const AdminClientes: React.FC<{
                       if (!r?.ok) { showToast?.(r?.permisoDenegado ? 'Tu rol no permite cambiar el país de la empresa.' : (r?.error ?? 'No se pudo guardar el país.'), 7000, 'error'); return; }
                       setModeloCli({ modelo: r.modelo, pais: r.pais ?? null, manual: !!r.manual });
                     }
-                    await updateUserProfile?.(sel.id, { name: edNombre.trim(), role: edRol, ...(cambioPais ? { companyCountry: paisNuevo } : {}), ...(cambioCorreo ? { email: correoNuevo } : {}) });
+                    // updateUserProfile LANZA si el servidor dice que no (rol sin
+                    // permiso, red caída). Sin atraparlo la ventana se cerraba,
+                    // el cambio se revertía solo y no salía ningún mensaje.
+                    try {
+                      await updateUserProfile?.(sel.id, { name: edNombre.trim(), role: edRol, ...(cambioPais ? { companyCountry: paisNuevo } : {}), ...(cambioCorreo ? { email: correoNuevo } : {}) });
+                    } catch (e: any) {
+                      showToast?.(`No se guardaron los cambios: ${String(e?.message ?? e)}`, 8000, 'error');
+                      return;
+                    }
                     setEditando(false);
                     await refreshData?.();
                     showToast?.([
@@ -1155,7 +1190,11 @@ const Resumen: React.FC<any> = ({ sel, movs, saldo, totalUsd, alternar, bloquead
                     cuerpo: suspender
                       ? 'El cliente no podrá entrar ni operar. Sus saldos y movimientos se conservan, y la acción queda en el registro de auditoría.'
                       : 'El cliente vuelve a tener acceso y puede operar con normalidad.',
-                    accion: async () => { await toggleUserBlock?.(sel.id, suspender); await refreshData?.(); showToast?.(suspender ? 'Cuenta suspendida.' : 'Cuenta reactivada.'); },
+                    accion: async () => {
+                      try { await toggleUserBlock?.(sel.id, suspender); }
+                      catch (e: any) { showToast?.(`No se pudo ${suspender ? 'suspender' : 'reactivar'} la cuenta: ${String(e?.message ?? e)}`, 8000, 'error'); return; }
+                      await refreshData?.(); showToast?.(suspender ? 'Cuenta suspendida.' : 'Cuenta reactivada.');
+                    },
                   });
                 }}
                 style={{ ...btnSec, color: C.sub }}>

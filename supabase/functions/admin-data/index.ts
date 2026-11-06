@@ -178,14 +178,29 @@ const provDeRiel = (c: unknown) => { const x = String(c ?? '').toUpperCase(); re
 // cumplimiento el 2026-10-29), no plata de Lincoin; la contabilidad del
 // cargue lo venía sumando como utilidad. Un cargue oculto (raw_data.oculto)
 // o sin contabilidad no suma.
-function utilidadLincoin(t: { currency?: unknown; utilidad?: unknown; feeBreb?: unknown; oculto?: unknown }): number {
+//
+// Un cargue REVERTIDO (raw_data.reverso) sigue la misma regla que
+// Contabilidad (_shared/liquidacion-lincoin.ts, conReverso): anulado no deja
+// utilidad y corregido en parte la deja en proporción. Antes aquí se ignoraba:
+// Contabilidad mostraba 0 y Tesorería, Lincoin, Reportes y la caja seguían
+// sumando la utilidad del cargue anulado; la caja quedaba con una
+// "diferencia sin explicar" (revisión del 6 nov).
+function utilidadLincoin(t: { currency?: unknown; utilidad?: unknown; feeBreb?: unknown; oculto?: unknown; reverso?: unknown; acreditado?: unknown; montoFila?: unknown }): number {
   if (t.oculto) return 0
   if (t.utilidad == null || t.utilidad === '') return 0
   const u = Number(t.utilidad)
   if (!isFinite(u)) return 0
-  return u - (String(t.currency ?? '').toUpperCase() === 'COP_BREB' ? (Number(t.feeBreb) || 0) : 0)
+  const base = u - (String(t.currency ?? '').toUpperCase() === 'COP_BREB' ? (Number(t.feeBreb) || 0) : 0)
+  const rev = t.reverso && typeof t.reverso === 'object' ? t.reverso as Record<string, unknown> : null
+  const revCop = Number(rev?.montoCop) || 0
+  const acreditado = Number(t.acreditado ?? t.montoFila) || 0
+  if (revCop > 0 && acreditado > 0) {
+    if (rev?.anulado === true || revCop >= acreditado - 1) return 0
+    return base * (acreditado - revCop) / acreditado
+  }
+  return base
 }
-const SELECT_UTILIDAD = 'utilidad:raw_data->acct->>utilityCop, feeBreb:raw_data->acct->>feeCopBreb, oculto:raw_data->oculto'
+const SELECT_UTILIDAD = 'utilidad:raw_data->acct->>utilityCop, feeBreb:raw_data->acct->>feeCopBreb, oculto:raw_data->oculto, reverso:raw_data->reverso, acreditado:raw_data->acct->>creditedCop, montoFila:amount'
 
 async function utilidadPorProveedor(desdeIso: string): Promise<Record<string, number>> {
   const { filas } = await leerPorPaginas(() => db.from('transactions')
@@ -4279,13 +4294,20 @@ Deno.serve(async (req: Request) => {
           }
         }
 
+        // Sin `activo` en el pedido se CONSERVA el que tiene. Antes cualquier
+        // guardado sin ese campo lo dejaba activo: corregirle el nombre a un
+        // miembro dado de baja (el modal de Editar no manda `activo`) le
+        // devolvía el acceso al panel sin aviso (revisión del 6 nov).
+        const { data: filaPrevia } = await db.from('admin_miembros').select('activo').eq('id', (cuenta as any).id).maybeSingle()
+        const activoFinal = typeof body.activo === 'boolean' ? body.activo
+          : filaPrevia ? (filaPrevia as any).activo !== false : true
         const fila = {
           id: (cuenta as any).id,
           email,
           nombre: String(body.nombre ?? (cuenta as any).name ?? '').slice(0, 120) || null,
           rol,
           paises: rol === 'dueno' ? [] : paises,   // al dueño no se le miran
-          activo: body.activo === false ? false : true,
+          activo: activoFinal,
           actualizado_at: new Date().toISOString(),
           creado_por: auth.userId,
           // Solo se escribe para el colaborador: así guardar un rol fijo sigue
@@ -7134,7 +7156,7 @@ Deno.serve(async (req: Request) => {
               bruto: rd.grossCop ?? null, comisionBreb: rd.feeCop ?? null, acreditadoAt: rd.creditedAt ?? null,
               contabilidad: acct ? { usdtEnvio: acct.usdtGross, usdtLlego: acct.usdtNet, tasaVenta: acct.sellRate, tasaCliente: acct.clientRate, feeAsume: acct.feeBearer,
                 ventaCop: acct.revenueCop, alCliente: acct.copToClient, acreditado: acct.creditedCop, utilidadRegistrada: acct.utilityCop,
-                utilidadLincoin: utilidadLincoin({ currency: (m as any).currency, utilidad: acct.utilityCop, feeBreb: acct.feeCopBreb, oculto: rd.oculto }) } : null,
+                utilidadLincoin: utilidadLincoin({ currency: (m as any).currency, utilidad: acct.utilityCop, feeBreb: acct.feeCopBreb, oculto: rd.oculto, reverso: rd.reverso, acreditado: acct.creditedCop, montoFila: (m as any).amount }) } : null,
               reverso: rd.reverso ?? null,
             } : null,
             dispersion: (m as any).type === 'dispersion' ? {
@@ -7442,9 +7464,22 @@ Deno.serve(async (req: Request) => {
         }
         const soltar = async () => { if (claveCargue) await soltarCandado(db, claveCargue) }
         const BREB_CARGUE_FEE_PCT = Number(Deno.env.get('BREB_CARGUE_FEE_PCT') ?? '0.10') || 0.10
+        // Devolver un DESCUENTO no es recibir plata: no lleva la comisión de
+        // recepción Bre-B. Antes "Revertir" un descuento en Bre-B le volvía a
+        // cobrar el 0,10 % al cliente (revisión del 6 nov). Solo vale si el
+        // ajuste existe y es un descuento de ESE cliente, en ese riel y por
+        // al menos ese monto: no sirve para acreditar sin comisión cualquier cosa.
+        let esReversaDeDescuento = false
+        const reversaDeAjuste = String(body.reversaDeAjuste ?? '').trim()
+        if (cur === 'COP_BREB' && delta > 0 && reversaDeAjuste && !recordOnlyEarly) {
+          const { data: aj } = await db.from('transactions').select('id, user_id, type, currency, amount, raw_data').eq('id', reversaDeAjuste).maybeSingle()
+          esReversaDeDescuento = !!aj && String((aj as any).user_id) === String(body.userId) && (aj as any).type === 'adjustment'
+            && String((aj as any).currency) === cur && String((aj as any).raw_data?.direction ?? 'debit') === 'debit'
+            && delta <= Number((aj as any).amount ?? 0) + 1
+        }
         let feeCop = 0
         let credit = delta
-        if (cur === 'COP_BREB' && delta > 0) {
+        if (cur === 'COP_BREB' && delta > 0 && !esReversaDeDescuento) {
           feeCop = Math.round(delta * BREB_CARGUE_FEE_PCT / 100)
           credit = delta - feeCop
         }
@@ -7478,6 +7513,7 @@ Deno.serve(async (req: Request) => {
             // "No, es otro ajuste": queda anotado para que el vínculo
             // automático de Contabilidad no lo pegue después a un cargue.
             ...(delta < 0 && String(body.reversaDe ?? '').trim() === 'no' ? { noRevierte: true } : {}),
+            ...(esReversaDeDescuento ? { reversaDeAjuste } : {}),
             ...(feeCop > 0 ? { grossCop: delta, feeCop, feePct: BREB_CARGUE_FEE_PCT, feeConcept: 'Comisión por recepción Bre-B' } : {}),
             // Contabilidad de la operación: queda GUARDADA con el movimiento,
             // así la utilidad es un dato del cargue y no una resta posterior.

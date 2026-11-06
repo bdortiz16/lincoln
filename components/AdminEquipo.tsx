@@ -239,7 +239,9 @@ const ModalMiembro: React.FC<{
 
   const guardar = async (hacerAdmin = false) => {
     setGuardando(true); setError(null);
-    const r = await pedirAdmin({ action: 'equipo_guardar', email, nombre, rol, paises, hacerAdmin, ...(rol === 'colaborador' ? { funciones } : {}) }).catch(() => null);
+    // Al editar se manda el estado que tiene: corregir el nombre de alguien
+    // a quien se le quitó el acceso lo reactivaba (revisión del 6 nov).
+    const r = await pedirAdmin({ action: 'equipo_guardar', email, nombre, rol, paises, hacerAdmin, ...(inicial ? { activo: inicial.activo !== false } : {}), ...(rol === 'colaborador' ? { funciones } : {}) }).catch(() => null);
     setGuardando(false);
     // El servidor distingue "no tiene cuenta" de "no es admin" y lo dice con
     // sus palabras. Mostrarlo tal cual evita el clásico "algo salió mal" que

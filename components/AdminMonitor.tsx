@@ -184,12 +184,19 @@ export const AdminMonitor: React.FC = () => {
     try {
       // Desbloquear una IP pide el código 2FA en el servidor: se pide acá y se
       // repite la llamada (lib/codigo2fa.ts).
-      await conCodigo2fa(async (otp) => {
+      const r: any = await conCodigo2fa(async (otp) => {
         const r = await fetch(`${SURL}/functions/v1/admin-data`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${tokenOf() ?? SKEY}` }, body: JSON.stringify(otp ? { ...payload, otp } : payload) });
         return r.json().catch(() => null);
       });
+      // Se dice si NO se aplicó: bloquear o desbloquear una IP es solo del
+      // dueño, y a los demás el servidor les dice que no. Antes la respuesta
+      // se descartaba y quien bloqueaba una IP atacante creía que había
+      // quedado bloqueada (revisión del 6 nov).
+      if (r && !r.cancelado && (r.ok === false || r.error)) {
+        window.alert(`No se aplicó: ${r?.message ?? r?.error ?? 'el servidor no lo permitió.'}`);
+      }
       await loadSec();
-    } catch { /* */ }
+    } catch (e: any) { window.alert(`No se aplicó: ${String(e?.message ?? e)}`); }
     setSecBusy(false);
   };
   // "Chrome en Mac" a partir del user-agent — más legible que la cadena cruda.

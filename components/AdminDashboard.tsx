@@ -397,6 +397,27 @@ const AvisoCorreos: React.FC = () => {
     );
 };
 
+// Tasa COP/USDT escrita a mano. Al lado, el monto se escribe con punto de
+// miles, y aquí el punto se leía como decimal: "3.950" quedaba en 3,95 y la
+// utilidad salía en millones negativos (el incidente "32 en vez de 3.200"
+// que CorregirVenta tuvo que remediar; revisión del 6 nov). Una tasa está
+// en los miles: con coma, la coma es el decimal ("3.950,50"); sin coma, un
+// punto seguido de exactamente tres dígitos es de miles ("3.950" = 3950) y
+// si no, es decimal ("3950.5"). Debajo del campo se muestra cómo se entendió.
+function leerTasa(v: string): number {
+  const t = String(v ?? '').replace(/[^\d.,]/g, '');
+  if (!t) return 0;
+  let s: string;
+  if (t.includes(',')) s = t.replace(/\./g, '').replace(',', '.');
+  else {
+    const partes = t.split('.');
+    const miles = partes.length > 2 || (partes.length === 2 && partes[1].length === 3 && partes[0] !== '' && partes[0] !== '0');
+    s = miles ? partes.join('') : t;
+  }
+  const x = parseFloat(s);
+  return Number.isFinite(x) ? x : 0;
+}
+
 // Resumen de la conciliación de las Cuentas 3 y 4 (Coinsenda) para el panel.
 // Va aparte de las cifras de Bre-B porque sus casos son otros: sobre todo los
 // envíos ya pagados que se releen por si el banco los devolvió después, y ahí
@@ -726,6 +747,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // Un descuento que corrige un cargue hecho por error: a qué cargue revierte.
   // Así Contabilidad lo resta de ese cargue y de su utilidad, sin descuadre.
   const [carguesReversaDe, setCarguesReversaDe] = useState('');
+  // Id del DESCUENTO que se devuelve con un crédito (botón Revertir sobre un
+  // descuento): el servidor no le cobra la comisión de recepción Bre-B.
+  const [carguesReversaDeAjuste, setCarguesReversaDeAjuste] = useState('');
   const [carguesRecordOnly, setCarguesRecordOnly] = useState(false);
   const [carguesBusy, setCarguesBusy] = useState(false);
   const [carguesMsg, setCarguesMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -760,7 +784,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // "Cargando…" encima de la cifra y un fallo pasajero no borra la que ya se
   // ve. Va en un objeto y no como booleano suelto porque los botones pasan
   // el loader directo a onClick, y el evento del clic llegaría como `true`.
-  const loadCoinsendaPool = async (opts?: { silencioso?: boolean }) => {
+  const loadCoinsendaPool = async (opts?: { silencioso?: boolean }): Promise<boolean> => {
     const silencioso = opts?.silencioso === true;
     if (!silencioso) { setCoinsendaPool({ loading: true }); setCoinsenda2Pool({ loading: true }); }
     const r = await pedirAdmin({ action: 'coinsenda_bolsa' }).catch(() => null);
@@ -770,6 +794,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     if (r?.ok && r.cuentas) { poner(setCoinsendaPool, de(r.cuentas['3'] ?? r.cuentas[3], 3)); poner(setCoinsenda2Pool, de(r.cuentas['4'] ?? r.cuentas[4], 4)); }
     else if (r?.ok) { poner(setCoinsendaPool, { loading: false, cop: r.cop ?? null }); poner(setCoinsenda2Pool, { loading: false, error: 'Actualiza la página para ver la Cuenta 4.' }); }
     else { const e = r?.error ?? 'No se pudo leer la bolsa de Coinsenda.'; poner(setCoinsendaPool, { loading: false, error: e }); poner(setCoinsenda2Pool, { loading: false, error: e }); }
+    return !!r?.ok;
   };
   // Resolver conversión trabada: el USDT llegó al proveedor pero el COP no se
   // acreditó → se acredita a mano y se cierra el movimiento.
@@ -826,7 +851,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     } catch (e: any) { setStuckMsg({ ok: false, text: e?.message ?? 'Error' }); }
     setStuckBusy(false);
   };
-  const loadMouvPool = async (opts?: { silencioso?: boolean }) => {
+  const loadMouvPool = async (opts?: { silencioso?: boolean }): Promise<boolean> => {
     const silencioso = opts?.silencioso === true;
     // En la vuelta automática, un error no tapa la cifra buena que ya se ve.
     const ponerError = (error: string) => setMouvPool(prev => (silencioso && prev && !prev.error && !prev.loading) ? prev : { loading: false, error });
@@ -846,10 +871,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         body: JSON.stringify({ action: 'treasury_balances' }),
       });
       const d = await r.json();
-      if (d?.error) ponerError(d.error);
-      else setMouvPool({ loading: false, total: d.total ?? d.cop ?? null, breb: d.breb ?? null, ach: d.ach ?? null });
+      if (d?.error) { ponerError(d.error); return false; }
+      setMouvPool({ loading: false, total: d.total ?? d.cop ?? null, breb: d.breb ?? null, ach: d.ach ?? null });
+      return true;
     } catch (e: any) {
       ponerError(e?.message ?? 'Error de red');
+      return false;
     }
   };
 
@@ -1063,7 +1090,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo confirmar.');
   };
 
-  const loadFinityPool = async (opts?: { silencioso?: boolean }) => {
+  const loadFinityPool = async (opts?: { silencioso?: boolean }): Promise<boolean> => {
     const silencioso = opts?.silencioso === true;
     const ponerError = (error: string) => setFinityPool(prev => (silencioso && prev && !prev.error && !prev.loading) ? prev : { loading: false, error });
     if (!silencioso) setFinityPool({ loading: true });
@@ -1082,11 +1109,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         body: JSON.stringify({ action: 'treasury_balances' }),
       });
       const d = await r.json();
-      if (d?.error) ponerError(d.error);
-      else if (d?.ok === false) ponerError(d.error ?? 'Finity no respondió');
-      else setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null });
+      if (d?.error) { ponerError(d.error); return false; }
+      if (d?.ok === false) { ponerError(d.error ?? 'Finity no respondió'); return false; }
+      setFinityPool({ loading: false, cop: d.cop ?? null, usdt: d.usdt ?? null });
+      return true;
     } catch (e: any) {
       ponerError(e?.message ?? 'Error de red');
+      return false;
     }
   };
 
@@ -1131,14 +1160,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         !mouvPool ? loadMouvPool() : null,
         !finityPool ? loadFinityPool() : null,
         !coinsendaPool ? loadCoinsendaPool() : null,
-      ]).then(() => setBolsasAt(Date.now()));
+      ]).then(r => { if (r.some(x => x === true)) setBolsasAt(Date.now()); });
     }
     if (activeTab === 'auditoria') { loadAudit(); loadAdminLogins(); }
     // Al salir de la Billetera el cargue a medio hacer se descarta: al volver
     // arranca otra vez en el paso 1, sin un cliente elegido de antes.
     if (activeTab !== 'cargues') {
       setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1);
-      setCarguesAmount(''); setCarguesNote(''); setCarguesReversaDe(''); setCarguesMsg(null);
+      setCarguesAmount(''); setCarguesNote(''); setCarguesReversaDe(''); setCarguesReversaDeAjuste(''); setCarguesMsg(null);
       setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1163,12 +1192,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       if (!vivo || enCurso || document.hidden) return;
       enCurso = true; ultima = Date.now();
       try {
-        await Promise.all([
+        const leidas = await Promise.all([
           loadMouvPool({ silencioso: true }),
           loadFinityPool({ silencioso: true }),
           loadCoinsendaPool({ silencioso: true }),
         ]);
-        if (vivo) { setBolsasAt(Date.now()); setCajaVer(v => v + 1); }
+        // La hora solo avanza si alguna bolsa se leyó de verdad: con los tres
+        // proveedores caídos, "última lectura hace segundos" sobre cifras
+        // viejas engañaba justo antes de un cargue (revisión del 6 nov).
+        if (vivo) { if (leidas.some(Boolean)) setBolsasAt(Date.now()); setCajaVer(v => v + 1); }
       } finally { enCurso = false; }
     };
     const t = setInterval(() => { if (Date.now() - ultima >= 29000) releer(); }, 5000);
@@ -1193,7 +1225,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const acctCalc = (() => {
     const n = (v: string) => { const x = parseFloat(String(v).replace(/[^\d.]/g, '')); return Number.isFinite(x) ? x : 0; };
     const usdtGross = n(acctUsdtGross), usdtNet = n(acctUsdtNet);
-    const sellRate = n(acctSellRate), clientRate = n(acctClientRate);
+    const sellRate = leerTasa(acctSellRate), clientRate = leerTasa(acctClientRate);
     const listo = usdtGross > 0 && usdtNet > 0 && sellRate > 0 && clientRate > 0 && usdtNet <= usdtGross;
     const feeUsdt = Math.max(0, Number((usdtGross - usdtNet).toFixed(6)));
     const base = acctFeeBearer === 'lincoin' ? usdtGross : usdtNet;
@@ -1204,7 +1236,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     const feeBreb = carguesRail === 'COP_BREB' && carguesDir === 'credit' && !carguesRecordOnly
       ? Math.round(copToClient * 0.10 / 100) : 0;
     const creditedCop = copToClient - feeBreb;
-    return { listo, usdtGross, usdtNet, feeUsdt, sellRate, clientRate, revenueCop, copToClient, feeCostCop, feeBreb, creditedCop, utilityCop: revenueCop - creditedCop };
+    // La utilidad de Lincoin NO incluye ese 0,10 %: es un costo de Mouv (así
+    // la cuenta el servidor en utilidadLincoin). Con revenue − acreditado, la
+    // Billetera mostraba 40.000 de más en un cargue Bre-B de 40 M frente a
+    // Tesorería y Lincoin (revisión del 6 nov).
+    return { listo, usdtGross, usdtNet, feeUsdt, sellRate, clientRate, revenueCop, copToClient, feeCostCop, feeBreb, creditedCop, utilityCop: revenueCop - copToClient };
   })();
   const usandoAcct = acctOn && carguesDir === 'credit' && !carguesRecordOnly;
 
@@ -1226,6 +1262,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // Id de ESTE cargue: se repite si se reintenta (respuesta perdida, error de
   // red) para que el servidor no lo aplique dos veces. Se renueva al aplicarse.
   const cargueIdRef = useRef<string | null>(null);
+  // Verificación reforzada (correo + app) que pide el servidor para cargar:
+  // vale 30 min y solo se pedía al ENTRAR a Tesorería. En la Billetera la
+  // respuesta `stepUp` se mostraba como un error sin salida, y un
+  // colaborador con Billetera pero sin Tesorería no tenía dónde verificarse
+  // (revisión del 6 nov). Ahora se abre aquí mismo; al terminar vuelve la
+  // confirmación del MISMO cargue (mismo id: no se aplica dos veces) para
+  // escribir un código nuevo, porque el anterior ya venció.
+  const [stepUpCargue, setStepUpCargue] = useState(false);
+  const cargueEnEsperaRef = useRef<{ raw: number } | null>(null);
   const submitCargue = async () => {
     if (submitCargueEnCursoRef.current) return;
     submitCargueEnCursoRef.current = true;
@@ -1253,6 +1298,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           action: 'admin_credit_balance', userId: carguesClient.id, currency: carguesRail,
           amount: delta, note: carguesNote.trim() || undefined,
           ...(carguesDir === 'debit' && carguesReversaDe ? { reversaDe: carguesReversaDe } : {}),
+          ...(carguesDir === 'credit' && carguesReversaDeAjuste ? { reversaDeAjuste: carguesReversaDeAjuste } : {}),
           cargueId: (cargueIdRef.current ??= (crypto as any)?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`),
           ...(carguesRecordOnly ? { recordOnly: true } : { otp: cargueOtp.trim() }),
           ...(usandoAcct ? { acct: {
@@ -1281,13 +1327,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         if (d.reverso?.auto) showToast('El descuento se vinculó solo al cargue que revierte.', 6000);
         if (d.reverso && !d.reverso.ok) setCarguesMsg({ ok: false, text: `⚠️ El descuento se aplicó, pero no se pudo vincular al cargue: ${d.reverso.error}. Vincúlalo desde Contabilidad → Clientes.` });
         else if (d.reverso?.aviso) showToast(d.reverso.aviso, 9000);
-        setCarguesAmount(''); setCarguesNote(''); setCargueOtp(''); setCarguesReversaDe('');
+        setCarguesAmount(''); setCarguesNote(''); setCargueOtp(''); setCarguesReversaDe(''); setCarguesReversaDeAjuste('');
         // El siguiente cargue vuelve a pedir TODO: cliente, cuenta y operación.
-        // Antes solo se vaciaba la cuenta y el cliente quedaba elegido.
+        // Antes solo se vaciaba la cuenta y el cliente quedaba elegido. Y
+        // vuelve a "Acreditar" con contabilidad: después de un Revertir
+        // quedaba en "Descontar" y sin contabilidad (revisión del 6 nov).
         setCarguesRail(null); setCarguesClientId(null); setCarguesPaso(1);
+        setCarguesDir('credit'); setAcctOn(true);
         setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
+      } else if (d?.stepUp) {
+        cargueEnEsperaRef.current = carguesConfirm;
+        setStepUpCargue(true);
+        setCarguesMsg({ ok: false, text: 'Para cargar hay que verificar tu identidad otra vez (correo y app). Al terminar vuelve la confirmación de este mismo cargue.' });
       } else {
         setCarguesMsg({ ok: false, text: `❌ ${d?.error || 'No se pudo aplicar el cargue.'}` });
       }
@@ -1338,6 +1391,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         d = await pedir({ confirmoDebito: true });
       }
       if (d?.success) { showToast(action === 'approve' ? '✅ Aprobado — saldo ACH acreditado al cliente.' : 'Solicitud rechazada — COP reembolsado.'); refreshData(); }
+      // La verificación de Tesorería venció (30 min): se vuelve a pedir.
+      // Antes la pantalla seguía "dentro" y cada aprobación fallaba igual.
+      else if (d?.stepUp) { setTesoreriaOk(false); showToast('Tu verificación de Tesorería venció: verifícate otra vez y vuelve a aprobar.', 7000, 'error'); }
       else showToast(`❌ ${d?.error || 'No se pudo aplicar.'}`, 5000, 'error');
     } catch (e: any) { showToast(`❌ ${e?.message ?? 'Error de red'}`, 5000, 'error'); }
     setRailMoveBusy(null);
@@ -1547,6 +1603,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   // un rodeo válido.
   const [tesoreriaOk, setTesoreriaOk] = useState(false);
   useEffect(() => { if (activeTab !== 'treasury') setTesoreriaOk(false); }, [activeTab]);
+  // La verificación del servidor dura 30 min; la pantalla no caducaba y
+  // quien seguía dentro veía fallar cada aprobación (revisión del 6 nov).
+  useEffect(() => {
+    if (!tesoreriaOk) return;
+    const t = setTimeout(() => setTesoreriaOk(false), 29 * 60 * 1000);
+    return () => clearTimeout(t);
+  }, [tesoreriaOk]);
 
   // Tablero de Tesorería: las cifras las calcula el servidor sobre toda la
   // base (tesoreria_resumen). Se piden al abrir y cuando cambia un filtro;
@@ -1726,7 +1789,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     })
     .sort((a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime());
 
-  const failuresCount = failuresList.length + sinConfirmarList.length;
+  // El contador cuenta lo que pide una DECISIÓN, no todo el historial de
+  // rechazos: un rechazo ya devuelto al cliente está cerrado. Antes sumaba
+  // todos los Fallido/Rechazado cargados y nunca bajaba (revisión del 6 nov).
+  // Queda abierto: un reembolso incierto o en revisión, uno pendiente que
+  // falló, o un caso que el servidor mandó a revisión manual.
+  const fallaSinResolver = (t: any) => {
+    const rd = t.raw_data ?? {};
+    const devuelto = !!(t.refunded ?? rd.refunded);
+    const enRevision = !!(rd.revisionManual ?? t.revisionManual);
+    if (devuelto) return !!(rd.reembolsoIncierto ?? t.reembolsoIncierto) || enRevision;
+    return !!(rd.reembolsoPendiente ?? t.reembolsoPendiente) || enRevision;
+  };
+  const failuresCount = failuresList.filter(fallaSinResolver).length + sinConfirmarList.length;
 
   // Cierres OTC que esperan a la mesa. El conteo lo hace el servidor (accion
   // `resumen`) y no esta pantalla: contar aca obligaria a traerse la bandeja
@@ -1932,24 +2007,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     }
   };
 
-  const handleSyncCrypto = async (userId: string, userName: string) => {
-    const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-    const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-    const walletKeys = ['USDT_BSC', 'USDT_TRON', 'USDC_BSC', 'USDC_BASE'];
-    let credited = 0;
-    for (const wk of walletKeys) {
-      try {
-        const r = await fetch(`${SURL}/functions/v1/gasfree`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'apikey': SKEY, 'Authorization': `Bearer ${SKEY}` },
-          body: JSON.stringify({ action: 'verify_and_credit', userId, walletKey: wk }),
-        });
-        const d = await r.json();
-        if (d.credited && d.credited > 0) credited += d.credited;
-      } catch {}
-    }
-    showToast(credited > 0 ? `✅ Sincronizado: +${credited.toFixed(2)} acreditados a ${userName}` : `Sincronizado — sin diferencias pendientes para ${userName}`);
-  };
+  // "Sincronizar depósitos cripto" se quitó (revisión del 6 nov): llamaba a
+  // gasfree con la llave anónima y con una acción (verify_and_credit) que no
+  // existe, así que siempre decía "sin diferencias pendientes" sin haber
+  // revisado nada. Lincoin ya no recibe depósitos en USDT.
 
   const handleApproveKYC = async () => {
     if (!selectedClient) return;
@@ -2137,10 +2198,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       reader.onload = (event) => {
           try {
               const json = JSON.parse(event.target?.result as string);
-              if (confirm("ADVERTENCIA: Esta acción sobrescribirá TODA la base de datos actual (Usuarios, Transacciones, Configuración). ¿Estás seguro de que deseas restaurar el sistema?")) {
+              // Lo que de verdad hace: sube la CONFIGURACIÓN del archivo al servidor
+              // (tarifas, cuentas, textos). Usuarios y movimientos NO se restauran
+              // (solo quedan en este navegador). Antes decía "Sistema restaurado
+              // correctamente" y un respaldo viejo revertía la configuración viva
+              // sin que nadie lo notara (revisión del 6 nov).
+              if (confirm("ADVERTENCIA: esto reemplaza la CONFIGURACIÓN actual de la plataforma (tarifas, cuentas, textos) por la del archivo.\n\nUsuarios, saldos y movimientos NO se restauran desde aquí.\n\n¿Seguro que quieres reemplazar la configuración?")) {
                   const success = restoreDatabase(json);
                   if (success) {
-                      showToast("Sistema restaurado correctamente.");
+                      showToast(json?.config ? "Configuración reemplazada por la del archivo. Usuarios y movimientos no cambiaron." : "El archivo no traía configuración: no se cambió nada en el servidor.");
                       if (fileInputRef.current) fileInputRef.current.value = '';
                   } else {
                       alert("Error: El archivo de backup es inválido o está corrupto.");
@@ -2400,7 +2466,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       // Volver a un paso anterior. Volver al 1 suelta el cliente (y la cuenta,
       // que es de ese cliente); lo escrito de la operación se conserva.
       const irAPaso = (n: 1 | 2 | 3) => {
-        if (n === 1) { setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1); setCarguesMsg(null); return; }
+        if (n === 1) { setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1); setCarguesMsg(null); setCarguesReversaDe(''); setCarguesReversaDeAjuste(''); return; }
         setCarguesPaso(n);
       };
       // Últimos cargues manuales del cliente elegido, para la columna derecha.
@@ -2739,6 +2805,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               onChange={e => setAcctUsdtGross(e.target.value.replace(/[^\d.]/g, ''))}
                               className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
                               style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                            {acctUsdtGross && <p className="text-[10px] mt-1 m-0" style={{ color: '#878E88' }}>Se entiende: {acctCalc.usdtGross.toLocaleString('es-CO', { maximumFractionDigits: 6 })} USDT</p>}
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>USDT que llegaron</label>
@@ -2746,20 +2813,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               onChange={e => setAcctUsdtNet(e.target.value.replace(/[^\d.]/g, ''))}
                               className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
                               style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                            {acctUsdtNet && <p className="text-[10px] mt-1 m-0" style={{ color: '#878E88' }}>Se entiende: {acctCalc.usdtNet.toLocaleString('es-CO', { maximumFractionDigits: 6 })} USDT</p>}
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>A cómo vendí (COP/USDT)</label>
                             <input inputMode="decimal" placeholder="3900" value={acctSellRate}
-                              onChange={e => setAcctSellRate(e.target.value.replace(/[^\d.]/g, ''))}
+                              onChange={e => setAcctSellRate(e.target.value.replace(/[^\d.,]/g, ''))}
                               className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
                               style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                            {acctSellRate && <p className="text-[10px] mt-1 m-0" style={{ color: '#878E88' }}>Se entiende: {acctCalc.sellRate.toLocaleString('es-CO', { maximumFractionDigits: 6 })} COP por USDT</p>}
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold uppercase tracking-wide mb-1" style={{ color: '#878E88' }}>A cómo le pago (COP/USDT)</label>
                             <input inputMode="decimal" placeholder="3850" value={acctClientRate}
-                              onChange={e => setAcctClientRate(e.target.value.replace(/[^\d.]/g, ''))}
+                              onChange={e => setAcctClientRate(e.target.value.replace(/[^\d.,]/g, ''))}
                               className="w-full px-2.5 py-2 rounded-lg text-sm font-bold outline-none"
                               style={{ backgroundColor: '#0C0E0D', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)' }} />
+                            {acctClientRate && <p className="text-[10px] mt-1 m-0" style={{ color: '#878E88' }}>Se entiende: {acctCalc.clientRate.toLocaleString('es-CO', { maximumFractionDigits: 6 })} COP por USDT</p>}
                           </div>
                         </div>
 
@@ -2968,7 +3038,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
             const fechaCorta = (id: string) => { const x = cargues.find(c => String(c.t.id) === id); return x?.d ? x.d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
             const revertir = (t: any) => {
               const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
-              const monto = Math.round(Number(t.grossCop ?? t.amount) || 0);
+              // Lo ACREDITADO (neto), no el bruto: en Bre-B el bruto incluye la
+              // comisión, y revertir 10.000.000 de un cargue que acreditó
+              // 9.990.000 le quitaba 10.000 de más al cliente y el vínculo con el
+              // cargue (que exige el monto exacto) no se hacía (revisión del 6 nov).
+              const monto = Math.round(Number(t.acct?.creditedCop ?? t.amount) || 0);
+              // El vínculo va explícito: el descuento anula ESE cargue, y el
+              // crédito devuelve ESE descuento (sin comisión de recepción).
+              setCarguesReversaDe(esCredito ? String(t.id) : '');
+              setCarguesReversaDeAjuste(esCredito ? '' : String(t.id));
               setCarguesRail((t.rail ?? t.currency ?? 'COP') as any);
               setCarguesPaso(3); // cliente y cuenta ya los da el cargue que se revierte
               setCarguesDir(esCredito ? 'debit' : 'credit');
@@ -3040,9 +3118,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                 {a ? (
                                   <>
                                     <span style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(a.usdtGross).toLocaleString('es-CO')} USDT · venta {Number(a.sellRate).toLocaleString('es-CO')} · cliente {Number(a.clientRate).toLocaleString('es-CO')}</span>
-                                    <p style={{ margin: '2px 0 0', fontWeight: 700, color: Number(a.utilityCop) >= 0 ? '#4ADE80' : '#F87171' }} title="Porcentaje sobre el monto acreditado al cliente">
-                                      utilidad {fmt(a.utilityCop)} COP{pctUtilidad(a.utilityCop, a.creditedCop ?? t.amount) ? ` · ${pctUtilidad(a.utilityCop, a.creditedCop ?? t.amount)}` : ''}
-                                    </p>
+                                    {(() => {
+                                      // Sin el 0,10 % de Bre-B (costo de Mouv), igual que Tesorería y Lincoin.
+                                      const u = Number(a.utilityCop) - (String(t.currency ?? t.rail ?? '').toUpperCase() === 'COP_BREB' ? (Number(a.feeCopBreb) || 0) : 0);
+                                      return (
+                                        <p style={{ margin: '2px 0 0', fontWeight: 700, color: u >= 0 ? '#4ADE80' : '#F87171' }} title="Porcentaje sobre el monto acreditado al cliente">
+                                          utilidad {fmt(u)} COP{pctUtilidad(u, a.creditedCop ?? t.amount) ? ` · ${pctUtilidad(u, a.creditedCop ?? t.amount)}` : ''}
+                                        </p>
+                                      );
+                                    })()}
                                   </>
                                 ) : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
                               </td>
@@ -4402,7 +4486,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               </button>
                           ))}
                           {/* Este sí mueve plata: sale de la bolsa por Bre-B. */}
-                          <button onClick={() => setLinForm(f => f && ({ ...f, tipo: 'enviar', descripcion: f.descripcion || `Utilidad de ${mesLargo}`, llaveId: f.llaveId || (linLlaves ?? [])[0]?.id || '' }))} className="col-span-2"
+                          {/* Enviar sale solo de Mouv o Finity: si venía elegida una
+                              bolsa de Coinsenda, el selector mostraba "Mouv" pero el
+                              proveedor seguía en Coinsenda y el servidor lo rechazaba
+                              (revisión del 6 nov). */}
+                          <button onClick={() => setLinForm(f => f && ({ ...f, tipo: 'enviar', proveedor: f.proveedor === 'Mouv' || f.proveedor === 'Finity' ? f.proveedor : 'Mouv', descripcion: f.descripcion || `Utilidad de ${mesLargo}`, llaveId: f.llaveId || (linLlaves ?? [])[0]?.id || '' }))} className="col-span-2"
                               style={{ textAlign: 'left', padding: '8px 10px', borderRadius: 10, cursor: 'pointer', color: '#F4F4F2', background: linForm.tipo === 'enviar' ? 'rgba(74,222,128,0.10)' : 'transparent', border: linForm.tipo === 'enviar' ? '1.5px solid #4ADE80' : '1px solid rgba(255,255,255,0.14)' }}>
                               <span className="inline-flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 700 }}><ArrowUpCircle size={13} style={{ color: '#4ADE80' }} /> Enviar a la empresa · Bre-B</span>
                               <span style={{ display: 'block', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>Sale de verdad de la bolsa por Bre-B a una llave de Lincoin y queda como retiro de utilidad</span>
@@ -5297,15 +5385,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     // Lo que ya volvió al cliente (la conciliación o un admin): cuánto, cuándo
     // y por qué. Un rechazo devuelto ya no pide nada; se distingue de un
     // fallo que sí hay que mirar.
-    const devolucion = (t: any): { monto: number; cuando: any; auto: boolean; despuesDePagado: boolean } | null => {
+    // `verificar`: el servidor marcó el reembolso como INCIERTO (se perdió la
+    // respuesta: el saldo pudo o no volver) o lo dejó en revisión. Antes eso
+    // salía en verde como "DEVUELTO AL CLIENTE" y nadie lo revisaba (revisión
+    // del 6 nov). "Ya la devolví" (reembolsoExterno) cuenta como hecho a mano.
+    const devolucion = (t: any): { monto: number; cuando: any; auto: boolean; despuesDePagado: boolean; verificar: boolean } | null => {
       const rd = t.raw_data ?? {};
       if (!(t.refunded ?? rd.refunded)) return null;
       return {
         monto: Number(t.refundCop ?? rd.refundCop ?? 0),
         cuando: rd.returnedAt ?? rd.reconciledAt ?? t.updatedAt ?? null,
-        auto: !(rd.manualReturn ?? t.manualReturn),
+        auto: !(rd.manualReturn ?? t.manualReturn) && !(rd.reembolsoExterno ?? t.reembolsoExterno),
         despuesDePagado: !!(rd.devueltoDespuesDeCompletado ?? t.devueltoDespuesDeCompletado),
+        verificar: !!(rd.reembolsoIncierto ?? t.reembolsoIncierto) || !!(rd.revisionManual ?? t.revisionManual),
       };
+    };
+    // Reembolso que el servidor intentó y no pudo hacer: sigue pendiente.
+    const reembolsoPendiente = (t: any) => {
+      const rd = t.raw_data ?? {};
+      return !(t.refunded ?? rd.refunded) && !!(rd.reembolsoPendiente ?? t.reembolsoPendiente);
     };
     // El error del proveedor llega como objeto {step, httpStatus, path, body}.
     // Mostrarlo como un JSON pegado y cortado obligaba a adivinar; se desglosa
@@ -5356,7 +5454,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><AlertTriangle size={18} className="text-red-500" /> Fallos de operaciones</h2>
             <p className="text-sm text-slate-500">Operaciones que necesitan una decisión: las que quedaron sin confirmar con el proveedor, y las que fallaron o fueron rechazadas con su error técnico real. Al cliente solo se le muestra un mensaje amable.</p>
           </div>
-          <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'caso' : 'casos'}</span>
+          <span title="Casos que piden una decisión: sin confirmar con el proveedor, reembolsos pendientes o por verificar. Los rechazos ya devueltos se listan abajo pero no cuentan." className="text-xs font-bold px-3 py-1.5 rounded-full bg-red-50 text-red-700 border border-red-200">{failuresCount} {failuresCount === 1 ? 'caso por resolver' : 'casos por resolver'}</span>
         </div>
 
         {/* PENDIENTES DE VERIFICAR — no son fallos.
@@ -5483,9 +5581,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{etiquetaRiel(t)}</span>
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">{String(t.status).toUpperCase()}</span>
-                      {devolucion(t) && (
+                      {devolucion(t) && (devolucion(t)!.verificar ? (
+                        <span title="El servidor no pudo confirmar si el saldo volvió: revisa el saldo del cliente antes de hacer nada" className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: 'rgba(251,191,36,0.12)', color: '#B45309', border: '1px solid rgba(251,191,36,0.4)' }}>
+                          REEMBOLSO POR VERIFICAR
+                        </span>
+                      ) : (
                         <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: 'rgba(74,222,128,0.12)', color: '#16A34A', border: '1px solid rgba(74,222,128,0.35)' }}>
                           DEVUELTO AL CLIENTE
+                        </span>
+                      ))}
+                      {reembolsoPendiente(t) && (
+                        <span title="La devolución automática falló: se reintenta sola o se resuelve con Devolver" className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ backgroundColor: 'rgba(251,191,36,0.12)', color: '#B45309', border: '1px solid rgba(251,191,36,0.4)' }}>
+                          REEMBOLSO PENDIENTE
                         </span>
                       )}
                       <span className="text-xs text-slate-400">{fmtDate(fechaDe(t))}</span>
@@ -5947,7 +6054,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         {orphanMsg && <p style={{ fontSize: 12, color: '#878E88', margin: '9px 0 0' }}>{orphanMsg}</p>}
                       </div>
                     )}
-                    <AdminClientes showToast={showToast} onSincronizarCripto={soloTesoreria ? undefined : handleSyncCrypto} onLiberarCorreo={() => setShowOrphanTool(v => !v)} sinBrasil={soloTesoreria} />
+                    <AdminClientes showToast={showToast} onLiberarCorreo={() => setShowOrphanTool(v => !v)} sinBrasil={soloTesoreria} />
                   </div>
                 )}
                 {activeTab === 'lincoin' && renderLincoin()}
@@ -5961,6 +6068,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </div>
                 ))}
                 {activeTab === 'cargues' && renderCargues()}
+                {stepUpCargue && (
+                  <div className="fixed inset-0 z-[95] flex items-center justify-center" style={{ padding: 16, background: 'rgba(0,0,0,0.72)' }}>
+                    <div style={{ width: 520, maxWidth: '100%', maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto' }}>
+                      <AdminStepUp
+                        userId={currentUser?.id ?? ''}
+                        motivo="Para aplicar el cargue"
+                        onListo={() => {
+                          setStepUpCargue(false);
+                          const pend = cargueEnEsperaRef.current;
+                          cargueEnEsperaRef.current = null;
+                          setCargueOtp('');
+                          if (pend) {
+                            setCarguesConfirm(pend);
+                            setCarguesMsg({ ok: true, text: 'Verificado. Escribe un código nuevo de la app y confirma el cargue.' });
+                          }
+                        }}
+                        onCancelar={() => { setStepUpCargue(false); cargueEnEsperaRef.current = null; }}
+                      />
+                    </div>
+                  </div>
+                )}
                 {activeTab === 'reports' && renderReports()}
                 {activeTab === 'config' && renderConfig()}
                 {activeTab === 'team' && <AdminEquipo />}
