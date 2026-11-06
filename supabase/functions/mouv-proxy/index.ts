@@ -2523,14 +2523,23 @@ serve(async (req: Request) => {
   // GitHub sin sus secretos: el 5 nov dos envíos rechazados por el banco se
   // devolvieron recién cuando el dueño entró al panel. Corre el mismo
   // barrido que reconcile_cuenta3 con todos=true.
+  //
+  // Lo mismo el VIGILANTE DE BRE-B (vigilar_breb → reconcile_breb con
+  // todos=true). La función de la base que lo llama (2026_vigilante_breb)
+  // pedía una 'service_key' guardada a mano en private_config que nadie
+  // guardó: corría cada minuto y no hacía nada. Ahora usa la misma clave que
+  // la base genera para sí misma (2026_zz32).
   let vigilanteCoinsenda = false
-  if (action === 'vigilar_coinsenda') {
+  let vigilanteBreb = false
+  if (action === 'vigilar_coinsenda' || action === 'vigilar_breb') {
     const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim()
-    vigilanteCoinsenda = (!!SERVICE_KEY && igualSeguro(bearer, SERVICE_KEY)) || await traeSecretoDeLaBase(req, db)
-    if (!vigilanteCoinsenda) return json(403, { error: 'forbidden' })
+    const autorizado = (!!SERVICE_KEY && igualSeguro(bearer, SERVICE_KEY)) || await traeSecretoDeLaBase(req, db)
+    if (!autorizado) return json(403, { error: 'forbidden' })
+    if (action === 'vigilar_coinsenda') vigilanteCoinsenda = true
+    else vigilanteBreb = true
   }
 
-  const caller = vigilanteCoinsenda
+  const caller = (vigilanteCoinsenda || vigilanteBreb)
     ? { ok: true, userId: null, admin: true, viaJwt: true, servicio: true }
     : await validCaller(req, payload)
   if (!caller.ok) return json(401, { error: 'unauthorized', message: 'Tu sesión expiró. Vuelve a iniciar sesión.' })
@@ -3191,7 +3200,7 @@ serve(async (req: Request) => {
     return json(200, { ok: true, checked: (filas?.length ?? 0) + completadasARevisar.length, results: out })
   }
 
-  if (action === 'reconcile_breb') {
+  if (action === 'reconcile_breb' || vigilanteBreb) {
     // Identidad PROBADA (JWT/admin) — mismo motivo que reconcile_ach (IDOR).
     // El cron y el workflow llaman con la llave de servicio y `todos`, sin
     // user_id: requireOwner les daba null y les contestaba 403. Ninguna de las
