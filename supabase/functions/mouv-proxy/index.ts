@@ -1383,7 +1383,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
         correo: cfgC.email ?? null,
       })
       if ('error' in dd) {
-        await logAudit(userId, 'coinsenda.prep_inscribir', { cuenta, rail, status: dd.status ?? null, error: dd.error })
+        await logAudit(userId, 'coinsenda.prep_inscribir', { cuenta, rail, status: dd.status ?? null, error: dd.error, banco: String(recipient.bankCode ?? ''), ...((dd as any).catalogo ? { catalogo: (dd as any).catalogo } : {}) })
         if ((dd as any).datos) return { ok: false, mensaje: `${dd.error} No salió nada: envíalo por ACH · Cuenta 1.` }
         return { ok: false, status: dd.status ?? null, crudo: dd.crudo, mensaje: fallaProveedor(dd.status) ? noDisponible : `La ${nombreCuenta(cuenta)} no pudo registrar la cuenta de este beneficiario, así que no salió nada. Envíalo por ACH · Cuenta 1.` }
       }

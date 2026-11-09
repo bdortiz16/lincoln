@@ -427,10 +427,42 @@ const claveCatalogo = (cat: Record<string, any> | null | undefined, prueba: (cla
   return null
 }
 const nombreBanco = (s: string) => sinTildes(s).replace(/\b(banco|bank|s\.?a\.?s?|colombia)\b/g, '').replace(/[^a-z0-9]/g, '')
+// Nombres con que los bancos aparecen en otros catálogos. Del lado de
+// Lincoin (izquierda, ya normalizado) a las formas que puede traer Coinsenda.
+const ALIAS_BANCO: Record<string, string[]> = {
+  cajasocial: ['bcsc', 'cajasocialbcsc', 'bcscsa'],
+  scotiabankcolpatria: ['colpatria', 'scotiabank'],
+  itau: ['itaucorpbanca', 'corpbanca'],
+  avvillas: ['av villas', 'avvilla'],
+}
+/** Los bancos del catálogo, como "clave · nombre visible", para el registro. */
+export function bancosCatalogo(prov: any): string[] {
+  const cat = prov?.info_needed?.bank_name
+  if (!cat || typeof cat !== 'object') return []
+  return Object.entries(cat).filter(([k]) => k !== 'ui_name' && k !== 'ui_type')
+    .map(([k, v]) => { const n = String((v as any)?.ui_name ?? '').trim(); return n && n !== k ? `${k} · ${n}` : k }).slice(0, 120)
+}
+// Tres pasos, del más seguro al menos: nombre igual, un alias conocido, o un
+// nombre que contiene al otro. El último solo si UN solo banco cumple: si
+// hay dos posibles no se adivina y el envío no arranca (mejor que mandarle
+// la plata a otro banco). 9 nov: «Banco Caja Social» no cruzaba porque el
+// nombre tenía que ser idéntico.
 export function bancoCoinsenda(prov: any, banco: string): string | null {
   const objetivo = nombreBanco(banco)
   if (!objetivo) return null
-  return claveCatalogo(prov?.info_needed?.bank_name, (k, n) => nombreBanco(k) === objetivo || (!!n && nombreBanco(n) === objetivo))
+  const cat = prov?.info_needed?.bank_name
+  const exacto = claveCatalogo(cat, (k, n) => nombreBanco(k) === objetivo || (!!n && nombreBanco(n) === objetivo))
+  if (exacto) return exacto
+  const alias = (ALIAS_BANCO[objetivo] ?? []).map(nombreBanco)
+  if (alias.length) {
+    const porAlias = claveCatalogo(cat, (k, n) => alias.includes(nombreBanco(k)) || (!!n && alias.includes(nombreBanco(n))))
+    if (porAlias) return porAlias
+  }
+  if (!cat || typeof cat !== 'object' || objetivo.length < 4) return null
+  const contiene = (x: string) => x.length >= 4 && (x.includes(objetivo) || objetivo.includes(x))
+  const posibles = Object.entries(cat).filter(([k, v]) => k !== 'ui_name' && k !== 'ui_type'
+    && (contiene(nombreBanco(sinTildes(k))) || contiene(nombreBanco(sinTildes(String((v as any)?.ui_name ?? ''))))))
+  return posibles.length === 1 ? posibles[0][0] : null
 }
 export function tipoCuentaCoinsenda(prov: any, bancoClave: string, tipo: string): string | null {
   const ahorros = /ahorro|saving/.test(sinTildes(tipo))
@@ -466,9 +498,11 @@ export function partirNombre(completo: string, empresa: boolean): { name: string
 /** La cuenta de banco inscrita en Coinsenda (la reusa si ya estaba). */
 export async function destinoBanco(cli: ClienteCoinsenda, prov: any, d: {
   banco: string; tipoCuenta: string; numero: string; docTipo: string; docNumero: string; titular: string; correo?: string | null
-}): Promise<{ id: string; nuevo: boolean } | { error: string; status?: number; crudo?: any; datos?: boolean }> {
+}): Promise<{ id: string; nuevo: boolean } | { error: string; status?: number; crudo?: any; datos?: boolean; catalogo?: string[] }> {
   const bancoK = bancoCoinsenda(prov, d.banco)
-  if (!bancoK) return { error: `El banco «${d.banco}» no está en el catálogo de la Cuenta ${cli.cuenta}.`, datos: true }
+  // Con la lista del catálogo en el registro se ve en seguida si el banco
+  // está con otro nombre (y se agrega a ALIAS_BANCO) o de verdad no está.
+  if (!bancoK) return { error: `El banco «${d.banco}» no está en el catálogo de la Cuenta ${cli.cuenta}.`, datos: true, catalogo: bancosCatalogo(prov) }
   const tipoK = tipoCuentaCoinsenda(prov, bancoK, d.tipoCuenta)
   if (!tipoK) return { error: `La Cuenta ${cli.cuenta} no acepta cuentas ${d.tipoCuenta} de ese banco.`, datos: true }
   const docK = tipoDocCoinsenda(prov, d.docTipo)
