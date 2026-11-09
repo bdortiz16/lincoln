@@ -1409,6 +1409,12 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       // ve antes), al cliente no se le dice que revise el beneficiario.
       const motivoCs = String(fallo.error ?? '')
       const sinFondosCs = /insufficient|insuficiente|not enough (funds|balance)|sin fondos|fondos insuficientes/i.test(`${motivoCs} ${motivoCreacion(fallo.crudo)}`)
+      // 9 nov: 8.700.000 COP por ACH · Cuenta 4 a Bancolombia. Coinsenda
+      // respondió withdraw_01 ("No eligible provider found… regulation_states,
+      // schedule, or amount limits"): ningún proveedor suyo acepta ese retiro
+      // (tope de monto, horario o restricción de la cuenta). El beneficiario
+      // estaba bien, pero al cliente se le decía que lo revisara.
+      const sinProveedorCs = /withdraw_01|no eligible provider/i.test(`${motivoCs} ${crudoTxt}`)
       if (!fallaProveedor(fallo.status)) {
         const limpio = (v: string) => v.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' } as Record<string, string>)[ch])
         const destinoTxt = rail === 'ACH'
@@ -1419,6 +1425,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       }
       return { ok: false, status: fallo.status, crudo: fallo.crudo, mensaje: fallaProveedor(fallo.status) ? noDisponible
         : sinFondosCs ? `La ${nombreCuenta(cuenta)} no está disponible temporalmente, así que no salió nada. Puedes enviarlo desde otra cuenta o intentarlo más tarde.`
+        : sinProveedorCs ? `La ${nombreCuenta(cuenta)} no puede enviar este monto en este momento, así que no salió nada. Envíalo por otra cuenta o en montos menores.`
         : `${etiquetaRiel} no aceptó este envío, así que no salió nada. Revisa los datos del beneficiario o envíalo por otra cuenta.` }
     }
     return { ok: true, retiroId: cr.id, billetera: bill.id, destino, proveedor: String(prov.id), costoProveedor: bruto - amount, montoProveedor: bruto, ...(titular ? { titular } : {}) }
