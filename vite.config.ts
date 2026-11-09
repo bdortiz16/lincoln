@@ -2,8 +2,23 @@ import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
     const env = loadEnv(mode, '.', '');
+    // SIN SUPABASE NO SE PUBLICA (9 nov): una compilación de Cloudflare salió
+    // sin VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY y lincoin.me quedó en
+    // "Modo offline": nadie podía ingresar. Antes la compilación pasaba igual
+    // y se publicaba. Ahora falla, y Cloudflare deja en línea la última
+    // versión buena. Para compilar a propósito sin Supabase (pruebas locales):
+    // PERMITIR_BUILD_SIN_SUPABASE=1 npm run build.
+    if (command === 'build' && mode === 'production' && env.PERMITIR_BUILD_SIN_SUPABASE !== '1') {
+      const faltan = [
+        !String(env.VITE_SUPABASE_URL ?? '').startsWith('https://') && 'VITE_SUPABASE_URL',
+        !String(env.VITE_SUPABASE_ANON_KEY ?? '').trim() && 'VITE_SUPABASE_ANON_KEY',
+      ].filter(Boolean);
+      if (faltan.length) {
+        throw new Error(`Faltan ${faltan.join(' y ')} en las variables de compilación (Cloudflare → Workers & Pages → lincoln → Settings → Build → Variables and secrets). Sin ellas la página sale en "Modo offline" y nadie puede ingresar, así que no se compila.`);
+      }
+    }
     return {
       server: {
         port: 3000,

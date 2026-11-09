@@ -101,6 +101,8 @@ npx tsc            # verificación de tipos (tsconfig ya trae noEmit)
 ```
 No hay suite de tests ni linter configurados. Para verificar un cambio, compila con `npm run build` y míralo en el navegador.
 
+`npm run build` **falla a propósito** si faltan `VITE_SUPABASE_URL` o `VITE_SUPABASE_ANON_KEY` (9 nov: una compilación de Cloudflare salió sin ellas y lincoin.me quedó en "Modo offline"). Para compilar sin `.env` solo para verificar: `PERMITIR_BUILD_SIN_SUPABASE=1 npm run build`. Nunca pongas esa variable en Cloudflare ni en Vercel.
+
 Variables locales en `.env` (ver `.env.example`): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, opcionales `VITE_SUPABASE_PERSONAS_URL/_ANON_KEY` (si faltan se usa el mismo proyecto), `VITE_TURNSTILE_SITE_KEY`. Todo lo que lleve prefijo `VITE_` queda en el bundle público: **nunca** metas ahí una llave de servidor ni una contraseña. Los secretos de servidor van en los secrets de Supabase Edge Functions.
 
 ### Stack y despliegue
