@@ -51,33 +51,68 @@ export function urlServicio(servicio: string, dominio: string): string {
 // aceptaba, y sin el schema no se sabía qué campo cambió. Devuelve el
 // requestBody del método con sus $ref de components resueltos (un nivel), en
 // texto y recortado; null si no se pudo leer. Nunca lanza.
+// El documento se guarda 10 min en memoria de la función: lo pide cada 465 de
+// schema y no cambia en minutos.
+const openapiCache = new Map<string, { doc: any; at: number }>()
+async function leerOpenapi(dominio: string, servicio: string): Promise<{ doc: any } | { error: string }> {
+  if (Deno.env.get('COINSENDA_URL_PRUEBA')) return { error: 'banco de pruebas: sin schema público' }
+  if (!DOMINIOS.has(dominio)) return { error: `dominio no permitido: ${dominio}` }
+  const clave = `${servicio}|${dominio}`
+  const c = openapiCache.get(clave)
+  if (c && Date.now() - c.at < 10 * 60_000) return { doc: c.doc }
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), 15_000)
+  try {
+    const r = await fetch(`https://${SUBDOMINIO[servicio] ?? servicio}.${dominio}/api-docs/openapi3.json`, { signal: ctrl.signal })
+    if (!r.ok) return { error: `openapi3.json respondió ${r.status}` }
+    const doc = await r.json()
+    openapiCache.set(clave, { doc, at: Date.now() })
+    return { doc }
+  } catch (e) { return { error: `no se pudo leer el schema: ${String((e as Error)?.message ?? e).slice(0, 120)}` } }
+  finally { clearTimeout(t) }
+}
+const operacionPost = (doc: any, ruta: string) => doc?.paths?.[ruta]?.post ?? doc?.paths?.[ruta.replace(/^\/api/, '')]?.post ?? null
+const resolverRefs = (doc: any, x: any, prof = 0): any => {
+  if (!x || typeof x !== 'object' || prof > 6) return x
+  const schemas = doc?.components?.schemas ?? {}
+  if (typeof x.$ref === 'string') return { $ref: x.$ref, ...resolverRefs(doc, schemas[x.$ref.split('/').pop()], prof + 1) }
+  if (Array.isArray(x)) return x.map((y) => resolverRefs(doc, y, prof + 1))
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(x)) out[k] = resolverRefs(doc, v, prof + 1)
+  return out
+}
+
 export async function esquemaMetodo(dominio: string, servicio: string, ruta: string): Promise<string | null> {
   try {
-    if (!DOMINIOS.has(dominio)) return null
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), 15_000)
-    let doc: any
-    try {
-      const r = await fetch(`https://${SUBDOMINIO[servicio] ?? servicio}.${dominio}/api-docs/openapi3.json`, { signal: ctrl.signal })
-      if (!r.ok) return `openapi3.json respondió ${r.status}`
-      doc = await r.json()
-    } finally { clearTimeout(t) }
-    const op = doc?.paths?.[ruta]?.post ?? doc?.paths?.[ruta.replace(/^\/api/, '')]?.post
+    const l = await leerOpenapi(dominio, servicio)
+    if ('error' in l) return l.error
+    const op = operacionPost(l.doc, ruta)
     if (!op) return `el schema no trae ${ruta}`
-    const schemas = doc?.components?.schemas ?? {}
-    const resolver = (x: any, prof = 0): any => {
-      if (!x || typeof x !== 'object' || prof > 4) return x
-      if (typeof x.$ref === 'string') {
-        const nombre = x.$ref.split('/').pop()
-        return { $ref: x.$ref, ...resolver(schemas[nombre], prof + 1) }
-      }
-      if (Array.isArray(x)) return x.map((y) => resolver(y, prof + 1))
-      const out: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(x)) out[k] = resolver(v, prof + 1)
-      return out
-    }
-    return JSON.stringify(resolver(op.requestBody ?? op.parameters ?? op)).slice(0, 4000)
+    return JSON.stringify(resolverRefs(l.doc, op.requestBody ?? op.parameters ?? op)).slice(0, 4000)
   } catch (e) { return `no se pudo leer el schema: ${String((e as Error)?.message ?? e).slice(0, 120)}` }
+}
+
+// Los campos que un POST acepta dentro de `data`, SOLO si el schema está
+// cerrado (additionalProperties: false); null si está abierto o no se pudo
+// leer (entonces no hay nada que quitar).
+export async function camposDelMetodo(dominio: string, servicio: string, ruta: string): Promise<Set<string> | null> {
+  try {
+    const l = await leerOpenapi(dominio, servicio)
+    if ('error' in l) return null
+    const op = operacionPost(l.doc, ruta)
+    const cuerpo = resolverRefs(l.doc, op?.requestBody?.content?.['application/json']?.schema)
+    const data = cuerpo?.properties?.data
+    if (!data || data.additionalProperties !== false || !data.properties || typeof data.properties !== 'object') return null
+    return new Set(Object.keys(data.properties))
+  } catch { return null }
+}
+
+// 465 remotequeryguard_7: el validador de schema rechazó el cuerpo ANTES de
+// procesarlo (no se creó ni se cambió nada).
+const rechazoDeSchema = (r: RespuestaCoinsenda) => {
+  if (r.status !== 465) return false
+  const e = r.data?.error && typeof r.data.error === 'object' ? r.data.error : (r.data ?? {})
+  return String(e.code ?? e.error_code ?? '') === 'remotequeryguard_7' || /does not match the method/i.test(String(e.message ?? e.error ?? ''))
 }
 
 // deno-lint-ignore no-explicit-any
@@ -214,8 +249,24 @@ export class ClienteCoinsenda {
       return this.http(url, { method: 'GET', headers })
     }
     // `recaptcha_response` va porque el SDK oficial lo pone en todo POST.
-    const body = { data: { country: 'international', recaptcha_response: 'BYPASS_RECAPTCHA_DEV', ...(opts.data ?? {}) } }
-    return this.http(url, { method: 'POST', headers, body: JSON.stringify(body) })
+    const data: Record<string, unknown> = { country: 'international', recaptcha_response: 'BYPASS_RECAPTCHA_DEV', ...(opts.data ?? {}) }
+    const r = await this.http(url, { method: 'POST', headers, body: JSON.stringify({ data }) })
+    // SCHEMA CERRADO (9 nov): Coinsenda pasó «crear retiro» a
+    // additionalProperties:false y desde entonces responde 465
+    // remotequeryguard_7 a todo cuerpo con un campo que no esté en su lista
+    // (antes los ignoraba; el 5 nov se creaban retiros con este mismo cuerpo).
+    // El rechazo es del validador, ANTES de procesar: no se creó nada. Se lee
+    // el schema público del método, se quitan los campos que no acepta (p. ej.
+    // recaptcha_response, que pone el SDK) y se reintenta UNA vez. Si el
+    // schema está abierto o no se puede leer, se devuelve el rechazo tal cual.
+    if (!rechazoDeSchema(r)) return r
+    const campos = await camposDelMetodo(this.dominio, servicio, ruta)
+    if (!campos) return r
+    const sobran = Object.keys(data).filter((k) => !campos.has(k))
+    if (!sobran.length) return r
+    const limpio = Object.fromEntries(Object.entries(data).filter(([k]) => campos.has(k)))
+    try { await this.db.from('audit_log').insert({ user_id: null, action: 'coinsenda.campos_quitados', metadata: { cuenta: this.cfg.cuenta, ruta, sobran, at: new Date().toISOString() } }) } catch { /* el registro es un extra */ }
+    return this.http(url, { method: 'POST', headers, body: JSON.stringify({ data: limpio }) })
   }
 }
 
