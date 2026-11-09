@@ -1392,7 +1392,10 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
     const cr = await crearRetiro(cli, { cuenta: bill.id, destino, proveedor: String(prov.id), monto: bruto })
     if (!cr.ok) {
       const fallo = cr as { status: number; error: string; crudo: any }
-      await logAudit(userId, 'coinsenda.prep_crear', { cuenta, rail, status: fallo.status, error: fallo.error, bruto })
+      // La respuesta ENTERA de Coinsenda (9 nov: un 465 "Payload does not match
+      // the method…" quedó recortado y no se sabía qué campo rechazó).
+      const crudoTxt = (() => { try { return JSON.stringify(fallo.crudo ?? null).slice(0, 2000) } catch { return String(fallo.crudo ?? '').slice(0, 2000) } })()
+      await logAudit(userId, 'coinsenda.prep_crear', { cuenta, rail, status: fallo.status, error: fallo.error, bruto, respuesta: crudoTxt })
       // Coinsenda rechazó CREAR el retiro (8 nov: 3.680.000 a un Nequi por
       // ACH · Cuenta 4). No queda fila ni aparece en Fallos, y el motivo real
       // solo estaba en audit_log: nadie se enteraba de por qué. Ahora le llega
