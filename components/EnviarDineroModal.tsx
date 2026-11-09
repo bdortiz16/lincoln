@@ -1484,7 +1484,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               if (k.categoria === 'medio') return { t: `AML · ${frena ? 'RIESGO MEDIO · EN REVISIÓN' : 'RIESGO MEDIO'}`, tono: 'ambar' };
                               if (k.categoria === 'bajo') return { t: 'AML · RIESGO BAJO', tono: 'verde' };
                               if (k.categoria === 'ninguno' || k.categoria === 'informativo') return { t: 'AML · SIN HALLAZGOS', tono: 'verde' };
-                              if (k.categoria === 'sin_validar' && k.documentoNoEncontrado === true) return { t: `AML · ${String(k.tipoDocumento ?? 'CC') === 'CC' ? 'CÉDULA NO ENCONTRADA' : 'DOCUMENTO NO ENCONTRADO'}`, tono: 'ambar' };
+                              if (k.categoria === 'sin_validar' && k.documentoNoEncontrado === true && !k.nombreReal) return { t: `AML · ${String(k.tipoDocumento ?? 'CC') === 'CC' ? 'CÉDULA NO ENCONTRADA' : 'DOCUMENTO NO ENCONTRADO'}`, tono: 'ambar' };
                               if (k.categoria === 'sin_validar') return { t: 'AML · SIN VALIDAR', tono: 'gris' };
                               return { t: 'AML · SIN RESULTADO', tono: 'gris' };
                           };

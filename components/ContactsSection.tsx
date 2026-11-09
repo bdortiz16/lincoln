@@ -677,7 +677,7 @@ export const ContactsSection: React.FC<{
         } else if (cat === 'medio') {
             tono = AMBAR; estado = k.operable === false ? 'EN REVISIÓN' : 'RIESGO MEDIO'; motivo = 'Riesgo medio';
             ayuda = 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';
-        } else if (cat === 'sin_validar' && k.documentoNoEncontrado === true) {
+        } else if (cat === 'sin_validar' && k.documentoNoEncontrado === true && !k.nombreReal) {
             // 9 nov: la Registraduría contestó que el número
             // no existe. La insignia decía solo "SIN VALIDAR" y nadie sabía
             // si era una falla del proveedor o qué había que hacer: casi
@@ -689,7 +689,11 @@ export const ContactsSection: React.FC<{
             // Un documento que la Registraduría no validó no se puede
             // categorizar: no se sabe de quién son esos antecedentes.
             estado = 'SIN VALIDAR';
-            ayuda = 'No se pudo validar el documento. Revisa que el número esté correcto.';
+            // Con nombre oficial el documento existe (Sarblock no confirmó su
+            // estado): pedirle al cliente que revise el número lo confunde.
+            ayuda = k.nombreReal
+                ? 'La Registraduría devolvió el nombre de este documento, pero no confirmó su estado. No se encontraron antecedentes. No impide transferirle.'
+                : 'No se pudo validar el documento. Revisa que el número esté correcto.';
         } else if (cat === 'bajo') {
             tono = VERDE; estado = 'RIESGO BAJO';
             ayuda = 'Hallazgos menores. Se puede operar con esta persona.';
@@ -2925,6 +2929,7 @@ export const ContactsSection: React.FC<{
                                     : k.documentoVigente === false ? `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}. No se le puede transferir.`
                                     : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'
                                     : cat === 'medio' ? 'La consulta encontró hallazgos de riesgo medio. Queda en revisión de cumplimiento y por ahora no se le puede transferir.'
+                                    : cat === 'sin_validar' && k.nombreReal ? 'La Registraduría devolvió el nombre de este documento, pero no confirmó su estado. No se encontraron antecedentes. No impide transferirle.'
                                     : cat === 'sin_validar' && k.documentoNoEncontrado === true ? `La Registraduría no encontró el documento ${String(detail.docNumber ?? '')}: casi siempre es un número mal escrito. Confírmalo con el beneficiario y, si está mal, borra el beneficiario e inscríbelo con el número correcto. No impide transferirle.`
                                     : cat === 'sin_validar' ? 'No se pudo validar el documento contra la Registraduría, así que no se sabe de quién son los antecedentes. Revisa que el número esté correcto. No impide transferirle.'
                                     : cat === 'bajo' ? 'La consulta encontró hallazgos menores. Se puede operar con esta persona.'

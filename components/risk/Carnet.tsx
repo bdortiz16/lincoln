@@ -32,7 +32,7 @@ const NIVELES: Record<string, Nivel> = {
 // Mismo criterio que el veredicto de la pantalla (RiskCliente).
 export function nivelDe(c: any): Nivel {
   const f = c?.ficha;
-  if (c?.estado === 'no_verificado' || (f?.documentoNoEncontrado && !f?.hallazgo)) return NIVELES.sin_verificar;
+  if (c?.estado === 'no_verificado' || (f?.documentoNoEncontrado && !f?.nombreReal && !f?.hallazgo)) return NIVELES.sin_verificar;
   if (f?.nombreCoincide === false) return NIVELES.revisar;
   if (c?.operable === false || f?.operable === false || c?.categoria === 'alto' || f?.categoria === 'alto' || c?.grupo === 'alto') return NIVELES.alto;
   if (c?.categoria === 'medio' || f?.categoria === 'medio' || c?.grupo === 'medio') return NIVELES.medio;

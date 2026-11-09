@@ -54,11 +54,11 @@ type Tono = { t: string; c: string; corto: string; txt: string };
 const veredicto = (f: any, nombre: string, estado?: string): Tono => {
   if (!f) return { t: '—', c: C.sub, corto: '—', txt: '' };
   // La Registraduría no encontró el documento: no hubo revisión real.
-  if (estado === 'no_verificado' || (f.documentoNoEncontrado && !f.hallazgo)) return { t: 'No se pudo verificar', corto: 'Sin verificar', c: C.sub, txt: 'No encontramos ese documento en la Registraduría. Revisa el tipo y el número.' + (estado === 'no_verificado' ? ' Te devolvimos la consulta.' : '') };
+  if (estado === 'no_verificado' || (f.documentoNoEncontrado && !f.nombreReal && !f.hallazgo)) return { t: 'No se pudo verificar', corto: 'Sin verificar', c: C.sub, txt: 'No encontramos ese documento en la Registraduría. Revisa el tipo y el número.' + (estado === 'no_verificado' ? ' Te devolvimos la consulta.' : '') };
   if (f.nombreCoincide === false) return { t: 'El nombre no corresponde', corto: 'Revisar', c: C.rojo, txt: f.bloqueo };
   if (f.operable === false || f.categoria === 'alto') return { t: 'Riesgo alto', corto: 'Alto', c: C.rojo, txt: 'No se recomienda operar con esta persona.' };
   if (f.categoria === 'medio') return { t: 'Riesgo medio', corto: 'Medio', c: C.ambar, txt: 'Hay hallazgos que conviene revisar antes de operar.' };
-  if (f.categoria === 'sin_validar') return { t: 'Identidad sin validar', corto: 'Revisar', c: C.ambar, txt: 'No se pudo contrastar el documento con la fuente oficial.' };
+  if (f.categoria === 'sin_validar') return { t: 'Identidad sin validar', corto: 'Revisar', c: C.ambar, txt: f.nombreReal ? 'La Registraduría devolvió el nombre de este documento, pero no confirmó su estado. Sin hallazgos en listas.' : 'No se pudo contrastar el documento con la fuente oficial.' };
   return { t: f.categoria === 'bajo' ? 'Riesgo bajo' : 'Sin hallazgos', corto: 'Bajo', c: C.verde, txt: `Se puede operar con ${nombre || 'esta persona'}.` };
 };
 export const GRUPO: Record<string, { t: string; c: string }> = { alto: { t: 'Alto', c: C.rojo }, medio: { t: 'Medio', c: C.ambar }, bajo: { t: 'Bajo', c: C.verde } };

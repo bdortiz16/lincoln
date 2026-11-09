@@ -92,6 +92,15 @@ Deno.test('documento no encontrado en la Registraduría: se marca y no es riesgo
   assertEquals(f.categoria, 'sin_validar');
 });
 
+Deno.test('NOT_FOUND pero con nombre oficial: el documento existe, queda sin validar', () => {
+  const f = traducir(check({
+    identity: { validated: false, vitalStatus: 'NOT_FOUND', declaredName: null, verifiedName: 'ADA LOVELACE', spoofSuspected: false, nameSimilarity: null },
+  }), benef);
+  assertEquals(f.documentoNoEncontrado, undefined);
+  assertEquals(f.categoria, 'sin_validar');
+  assertEquals(f.operable, true);
+});
+
 Deno.test('PEP: medio, sigue operable (la revisión la decide la config)', () => {
   const f = traducir(check({
     summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, hasPepResult: true, matchedLists: 1, unavailableLists: 0 },

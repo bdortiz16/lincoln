@@ -218,7 +218,11 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const soloFuenteCaida = /provider_error|unavailable/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0 && Number(s.totalHits ?? 0) === 0;
   // La Registraduría no encontró el documento: no se sabe de quién son los
   // antecedentes (suele ser un tipo o número mal escrito).
-  const documentoNoEncontrado = String(id?.vitalStatus ?? '').toUpperCase() === 'NOT_FOUND' || undefined;
+  // Ojo: Sarblock puede decir NOT_FOUND y a la vez traer el nombre oficial
+  // del documento (9 nov: verifiedName lleno, vitalStatus NOT_FOUND). Si trajo
+  // el nombre, el documento existe: lo que no se confirmó fue su estado. Eso
+  // no es "no encontrado" (que le dice al cliente que lo escribió mal).
+  const documentoNoEncontrado = (String(id?.vitalStatus ?? '').toUpperCase() === 'NOT_FOUND' && !id?.verifiedName) || undefined;
   let categoria = ignorarSarblock ? ('ninguno' as Ficha['categoria']) : (CATEGORIA[String(s.riskLevel ?? '')] ?? undefined);
   // La decisión explícita de Sarblock manda sobre su nivel: BLOCK es alto y
   // HOLD_FOR_REVIEW es al menos medio.
