@@ -1493,9 +1493,20 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
     // y mandar la plata a otra.
     const accFila = accDe(fila)
     const docFila = String(fila?.account_holder_id_number ?? fila?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
-    const otraCuenta = (accFila && accDigits && accFila !== accDigits) || (docFila && docPedido && docFila !== docPedido && !docFila.startsWith(docPedido) && !docPedido.startsWith(docFila))
+    // Ceros a la izquierda no cambian el número: "0123" y "123" son la misma
+    // cuenta / el mismo documento según quién los guarde.
+    const sinCeros = (v: string) => v.replace(/^0+/, '')
+    const cuentaDistinta = !!(accFila && accDigits && sinCeros(accFila) !== sinCeros(accDigits))
+    const dF = sinCeros(docFila), dP = sinCeros(docPedido)
+    const docDistinto = !!(dF && dP && dF !== dP && !dF.startsWith(dP) && !dP.startsWith(dF))
+    const otraCuenta = cuentaDistinta || docDistinto
     if (otraCuenta) {
-      await logAudit(userId, 'finity.payout.destino_no_coincide', { destId, accPedido: accDigits.slice(-4), accFila: accFila.slice(-4) })
+      // 9 nov: dos bloqueos con los mismos últimos 4 dígitos (7192 / 7192) y
+      // sin decir QUÉ no coincidía. Ahora se anota el campo, los largos y los
+      // últimos dígitos de cada lado (nunca el número completo).
+      await logAudit(userId, 'finity.payout.destino_no_coincide', { destId, motivo: cuentaDistinta ? (docDistinto ? 'cuenta_y_documento' : 'cuenta') : 'documento',
+        accPedido: accDigits.slice(-4), accFila: accFila.slice(-4), largoAccPedido: accDigits.length, largoAccFila: accFila.length,
+        docPedido: docPedido.slice(-3), docFila: docFila.slice(-3), largoDocPedido: docPedido.length, largoDocFila: docFila.length })
       return { bloqueo: { estado: 'otra_cuenta', message: 'La cuenta destino no coincide con el beneficiario verificado. Vuelve a inscribirlo.' } }
     }
     const textos = [fila.verification_status, fila.estado, fila.state, fila.status]
