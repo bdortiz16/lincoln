@@ -1393,7 +1393,25 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
     if (!cr.ok) {
       const fallo = cr as { status: number; error: string; crudo: any }
       await logAudit(userId, 'coinsenda.prep_crear', { cuenta, rail, status: fallo.status, error: fallo.error, bruto })
-      return { ok: false, status: fallo.status, crudo: fallo.crudo, mensaje: fallaProveedor(fallo.status) ? noDisponible : `${etiquetaRiel} no aceptó este envío, así que no salió nada. Revisa los datos del beneficiario o envíalo por otra cuenta.` }
+      // Coinsenda rechazó CREAR el retiro (8 nov: 3.680.000 a un Nequi por
+      // ACH · Cuenta 4). No queda fila ni aparece en Fallos, y el motivo real
+      // solo estaba en audit_log: nadie se enteraba de por qué. Ahora le llega
+      // al equipo por correo con lo que respondió Coinsenda. Y si el motivo es
+      // la billetera de Lincoin sin fondos (la lectura del saldo no siempre lo
+      // ve antes), al cliente no se le dice que revise el beneficiario.
+      const motivoCs = String(fallo.error ?? '')
+      const sinFondosCs = /insufficient|insuficiente|not enough (funds|balance)|sin fondos|fondos insuficientes/i.test(`${motivoCs} ${motivoCreacion(fallo.crudo)}`)
+      if (!fallaProveedor(fallo.status)) {
+        const limpio = (v: string) => v.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' } as Record<string, string>)[ch])
+        const destinoTxt = rail === 'ACH'
+          ? `banco ${limpio(String(recipient.bankCode ?? '?'))} · ${limpio(String(recipient.accountType ?? ''))} ${enmascarar(String(recipient.accountNumber ?? ''))}`
+          : `la llave ${enmascarar(String(recipient.key ?? ''))}`
+        await avisarAdminBreb2(`c${cuenta}_crear_${rail}_${fallo.status}`, `${etiquetaRiel}: Coinsenda no aceptó crear un envío`,
+          `Un cliente intentó enviar ${amount.toLocaleString('es-CO')} COP (${bruto.toLocaleString('es-CO')} COP con el costo de Coinsenda) por ${etiquetaRiel} a ${destinoTxt}. Coinsenda respondió: <b>${limpio(motivoCs)}</b>. No salió nada y no se descontó nada del saldo del cliente.`)
+      }
+      return { ok: false, status: fallo.status, crudo: fallo.crudo, mensaje: fallaProveedor(fallo.status) ? noDisponible
+        : sinFondosCs ? `La ${nombreCuenta(cuenta)} no está disponible temporalmente, así que no salió nada. Puedes enviarlo desde otra cuenta o intentarlo más tarde.`
+        : `${etiquetaRiel} no aceptó este envío, así que no salió nada. Revisa los datos del beneficiario o envíalo por otra cuenta.` }
     }
     return { ok: true, retiroId: cr.id, billetera: bill.id, destino, proveedor: String(prov.id), costoProveedor: bruto - amount, montoProveedor: bruto, ...(titular ? { titular } : {}) }
   } catch (e) {
