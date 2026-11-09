@@ -3,7 +3,7 @@
 //   ~/.deno/bin/deno test pruebas/sarblock/
 import { assert, assertEquals, assertRejects } from 'jsr:@std/assert@1';
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia } from './cliente.ts';
-import { traducir, fichaLanzada, hayQueReintentar } from './traductor.ts';
+import { traducir, fichaLanzada, hayQueReintentar, rejuzgar } from './traductor.ts';
 import { firmar, verificarCallback } from './firma.ts';
 
 // ── Fuentes de ejemplo (tal cual la documentación) ──────────────────────
@@ -486,7 +486,7 @@ Deno.test('otra persona: bloquea y el motivo queda escrito como hallazgo', () =>
 });
 
 Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a Sarblock', async () => {
-  const { rejuzgar } = await import('./traductor.ts');
+
   const vieja = { ...traducir(check({ identity: { validated: true, declaredName: 'JEISY URREA', verifiedName: 'JEISSY TATIANA URREA RAMIREZ', spoofSuspected: true, nameSimilarity: 0.39 },
     summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: 'identity_spoof_suspected', matchedLists: 0, unavailableLists: 0 } }), { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' }),
     criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
