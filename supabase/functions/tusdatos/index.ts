@@ -2097,7 +2097,7 @@ Deno.serve(async (req: Request) => {
               pais: u.country ?? u.raw_data?.country ?? null,
               desde: u.created_at ?? null,
             },
-            documento: doc, tipoDocumento: f.tipoDocumento ?? 'CC',
+            documento: doc, tipoDocumento: f.tipoDocumento ?? 'CC', proveedor: f.proveedor ?? null,
             nombreInscrito: f.nombreInscrito ?? null, nombreReal: f.nombreReal ?? f.nombre ?? null,
             nombreCoincide: f.nombreCoincide ?? null,
             nombreIncompleto: f.nombreIncompleto === true,

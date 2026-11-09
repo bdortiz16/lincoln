@@ -270,12 +270,22 @@ async function conCupo<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // ── Lanzar ──────────────────────────────────────────────────────────────
-async function lanzar(uid: string, d: { documento: string; tipoDocumento: string; nombre?: string }, c: Config, esAdmin: boolean) {
+async function lanzar(uid: string, d: { documento: string; tipoDocumento: string; nombre?: string }, c: Config, esAdmin: boolean, forzar = false) {
   const sujeto = sujetoDe(d.tipoDocumento, d.documento, d.nombre)
   if (!sujeto) return { ok: false, motivo: 'Tipo de documento no soportado, o empresa sin razón social.' }
   const doc = sujeto.idNumber
   const raw = await leerRaw(uid)
   const previa = raw?.tusdatos?.beneficiarios?.[doc]
+  // RECONSULTA FORZADA (solo Cumplimiento, solo identidad sin validar).
+  // 9 nov: Sarblock devolvió NOT_FOUND con el nombre oficial lleno. Para
+  // volver a preguntar no había camino: la ficha terminada, el padrón (90
+  // días) y la clave de idempotencia del día devolvían siempre el mismo
+  // resultado. Se limita a 'sin_validar' porque cada una se paga y es el
+  // único caso en que otra consulta puede dar algo distinto (la fuente de
+  // identidad pudo fallar esa vez).
+  const forzada = forzar && esAdmin && previa?.estado === 'finalizado' && previa?.categoria === 'sin_validar'
+  if (forzar && !forzada) return { ok: false, motivo: 'Solo se puede volver a consultar un beneficiario con la identidad sin validar.' }
+  if (forzada) await auditar('sarblock.reconsulta_forzada', { userId: uid, documento: doc, identidadAnterior: previa?.sarblock?.identity ?? null })
   // Documento que Sarblock rechaza seguro (una cédula de 11 dígitos): no se
   // llama. La ficha queda en 'documento_invalido', que el envío sigue
   // frenando ("sin resultado no sale plata") pero que ya no se reintenta, y
@@ -291,7 +301,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   // Ya consultado (por Sarblock o por TusDatos) y no archivado: no se paga
   // otra vez. 'documento_invalido' se vuelve a mirar: si el rechazo fue por
   // otra regla de Sarblock, se intenta otra vez cuando alguien lo pide.
-  if (previa && previa.estado !== 'error' && previa.estado !== 'archivado' && previa.estado !== 'documento_invalido') {
+  if (!forzada && previa && previa.estado !== 'error' && previa.estado !== 'archivado' && previa.estado !== 'documento_invalido') {
     // Se volvió a inscribir con OTRO nombre (p. ej. para corregirlo): el
     // nombre se compara otra vez contra el oficial desde la consulta ya
     // pagada, sin llamar a Sarblock. Antes la ficha quedaba con el nombre
@@ -330,7 +340,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     await guardarFicha(uid, conDv, { ...vieja, estado: 'archivado', archivadoAt: new Date().toISOString(), motivoArchivo: `reemplazada por la consulta de Sarblock del NIT ${doc}` })
     await auditar('sarblock.ficha_con_dv_archivada', { userId: uid, documento: conDv, nit: doc })
   }
-  const enPadron = await padronBuscar(db, d.tipoDocumento, doc)
+  const enPadron = forzada ? null : await padronBuscar(db, d.tipoDocumento, doc)
   if (enPadron) {
     const ficha = fichaParaCuenta(enPadron.ficha, d.nombre, { documento: doc, tipoDocumento: d.tipoDocumento, dePadron: true, padronAt: enPadron.consultado_at })
     await guardarFicha(uid, doc, conDecision(ficha, previa))
@@ -342,7 +352,10 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   }
   if (!esAdmin && await topeAgotado(uid, c)) return { ok: false, tope: true, motivo: 'Llegaste al máximo de verificaciones por hoy. Las que faltan se completan mañana.' }
   try {
-    const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: claveIdempotencia(uid, doc) })
+    // La clave es por día: forzada, con la del día Sarblock devolvería el
+    // mismo check de esta mañana. Se le agrega el momento.
+    const idem = forzada ? `${claveIdempotencia(uid, doc)}-f${Date.now().toString(36)}` : claveIdempotencia(uid, doc)
+    const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: idem })
     await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: d.tipoDocumento, nombre: d.nombre, checkId: r.id }) }, previa))
     await archivarLaConDv()
     await auditar('sarblock.lanzado', { userId: uid, documento: doc, checkId: r.id })
@@ -994,7 +1007,7 @@ Deno.serve(async (req) => {
       const c = await leerConfig()
       if (!c.activo || !enLaPrueba(c, uid)) return json({ ok: true, omitido: 'Sarblock no está activo para esta cuenta' })
       if (!yo.esAdmin && !docEnContactos(await leerRaw(uid), String(body.documento ?? ''))) return json({ ok: false, motivo: 'Ese documento no es de un beneficiario inscrito.' }, 403)
-      return json(await lanzar(uid, { documento: String(body.documento ?? ''), tipoDocumento: String(body.tipoDocumento ?? 'CC'), nombre: body.nombre }, c, yo.esAdmin))
+      return json(await lanzar(uid, { documento: String(body.documento ?? ''), tipoDocumento: String(body.tipoDocumento ?? 'CC'), nombre: body.nombre }, c, yo.esAdmin, body.forzar === true))
     }
 
     if (accion === 'verificar_pendientes') {

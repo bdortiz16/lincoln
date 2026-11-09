@@ -135,6 +135,23 @@ export const AdminCompliance: React.FC = () => {
 
   const reintentar = async (c: any) => {
     setMsg(null);
+    // Las fichas de Sarblock se reconsultan en Sarblock. Por TusDatos el
+    // "reintento" reusaba el padrón (90 días) y devolvía lo mismo: con
+    // identidad sin validar no había forma de volver a preguntar (9 nov).
+    if (c.proveedor === 'sarblock' && !c.esTitular) {
+      const r: any = await llamarFuncion('sarblock', {
+        action: 'verificar_beneficiario', userId: c.userId, documento: c.documento,
+        tipoDocumento: c.tipoDocumento ?? 'CC', nombre: c.nombreInscrito ?? undefined,
+        forzar: c.categoria === 'sin_validar',
+      }).catch(() => null);
+      const texto = r?.checkId ? 'Consulta enviada a Sarblock. El resultado llega en cerca de un minuto; mientras tanto no se le puede transferir.'
+        : r?.yaExistia ? 'Ya tiene un resultado vigente; no se volvió a consultar.'
+        : r?.ok ? 'Consulta actualizada.'
+        : (r?.motivo ?? r?.error ?? 'No se pudo volver a consultar.');
+      setMsg({ ok: !!r?.ok && !r?.yaExistia, texto });
+      if (r?.ok) cargar();
+      return;
+    }
     const r = await call({ action: 'reintentar', userId: c.userId, documento: c.esTitular ? '' : c.documento });
     setMsg({ ok: !!r?.ok, texto: r?.ok ? 'Consulta relanzada.' : (r?.motivo ?? 'No se pudo relanzar.') });
     if (r?.ok) cargar();
