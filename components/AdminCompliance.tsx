@@ -109,13 +109,21 @@ export const AdminCompliance: React.FC = () => {
   // página, tapado por la ventana, y parecía que Aprobar no hacía nada.
   const [errDecision, setErrDecision] = useState<string | null>(null);
 
+  // El texto y el filtro van al servidor: la bandeja trae solo 300 casos, y
+  // buscando solo dentro de esos un beneficiario real "no existía" (9 nov:
+  // 667 de riesgo medio, 196 a la vista).
   const cargar = async () => {
     setBusy(true);
-    const d = await call({ action: 'compliance' }).catch(() => null);
+    const t = q.trim();
+    const d = await call({ action: 'compliance', ...(t.length >= 3 ? { q: t } : {}), ...(filtro !== 'todo' && filtro !== 'en_orden' ? { alerta: filtro } : {}) }).catch(() => null);
     setDatos(d ?? { error: 'Sin respuesta.' });
     setBusy(false);
   };
-  useEffect(() => { cargar(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => {
+    const id = setTimeout(() => { cargar(); }, q.trim() ? 450 : 0);
+    return () => clearTimeout(id);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [q, filtro]);
 
   const verPdf = async (c: any) => {
     if (!c.reportId) return;

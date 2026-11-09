@@ -2019,6 +2019,18 @@ Deno.serve(async (req: Request) => {
       const ordenAlerta = (a: any, b: any) => (peso[a.alerta] ?? 9) - (peso[b.alerta] ?? 9) || String(b.at ?? '').localeCompare(String(a.at ?? ''))
       let conAlerta: any[] = []
       const enOrden: any[] = []
+      // BÚSQUEDA Y FILTRO EN EL SERVIDOR (9 nov). La bandeja devuelve solo 300
+      // casos y el buscador de la pantalla buscaba dentro de esos: con 667 de
+      // riesgo medio, un beneficiario real "no existía". Ahora el
+      // texto y el filtro se aplican sobre TODOS los casos antes de recortar,
+      // y la búsqueda también encuentra los que están en orden.
+      const qBusca = String(body.q ?? '').trim().toLowerCase().slice(0, 80)
+      const alertaPedida = typeof body.alerta === 'string' && body.alerta ? String(body.alerta) : null
+      const buscando = qBusca.length >= 3 || !!alertaPedida
+      let seleccion: any[] = []
+      const coincideQ = (c: any) => qBusca.length < 3 || [c.nombreInscrito, c.nombreReal, c.documento, c.cliente?.nombre, c.cliente?.email, c.cliente?.documento]
+        .some(v => String(v ?? '').toLowerCase().includes(qBusca))
+      const pasaFiltro = (c: any) => !alertaPedida || c.alerta === alertaPedida
       const resumen = { total: 0, bloqueados: 0, nombreNoCoincide: 0, documentoNoVigente: 0, alto: 0, medio: 0, aprobados: 0, enCurso: 0, enOrden: 0 }
       const porClienteTop: any[] = []
       let casos: any[] = []
@@ -2036,6 +2048,7 @@ Deno.serve(async (req: Request) => {
           if (c.estado === 'procesando') resumen.enCurso++
           if (c.alerta) conAlerta.push(c)
           else { resumen.enOrden++; if (enOrden.length < 120) enOrden.push(c) }
+          if (buscando && pasaFiltro(c) && coincideQ(c) && (c.alerta || qBusca.length >= 3)) seleccion.push(c)
           const k = c.cliente.id
           const e = porCli.get(k) ?? { ...c.cliente, inscritos: 0, altos: 0, bloqueados: 0, nombreNoCoincide: 0 }
           e.inscritos++
@@ -2048,6 +2061,7 @@ Deno.serve(async (req: Request) => {
         // Solo se devuelven las 300 primeras: alcanza con guardar las 3.000
         // mejores en el mismo orden.
         if (conAlerta.length > 6000) conAlerta = conAlerta.sort(ordenAlerta).slice(0, 3000)
+        if (seleccion.length > 6000) seleccion = seleccion.sort(ordenAlerta).slice(0, 3000)
         if (porClienteTop.length > 2000) { porClienteTop.sort((a, b) => (b.altos - a.altos) || (b.bloqueados - a.bloqueados)); porClienteTop.length = 500 }
         casos = []
       }
@@ -2130,7 +2144,8 @@ Deno.serve(async (req: Request) => {
         // Los aprobados por cumplimiento ya no cuentan como pendientes.
         resumen,
         truncado,
-        casos: conAlerta.slice(0, 300),
+        casos: buscando ? seleccion.sort(ordenAlerta).slice(0, 300) : conAlerta.slice(0, 300),
+        ...(buscando ? { busqueda: { q: qBusca || null, alerta: alertaPedida, encontrados: seleccion.length } } : {}),
         // Los que están en orden van aparte y recortados: la bandeja es para
         // lo que hay que mirar, no para el archivo.
         enOrden: enOrden.slice(0, 120),
