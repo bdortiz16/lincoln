@@ -35,12 +35,12 @@ import { setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
-import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuzgar, CRITERIO } from './traductor.ts'
+import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
-import { razonSocialPorNit } from '../_shared/rues.ts'
+import { razonSocialPorNit, matriculaVigentePorNit } from '../_shared/rues.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import * as K from './cartera.ts'
 
@@ -424,7 +424,8 @@ async function recoger(uid: string) {
       // texto tal cual nunca daba igual. Cada lectura reescribía la ficha y
       // el padrón (visto el 2026-10-28: 555 escrituras en 6 h, dos fichas).
       if (enCursoAun && check.aggregateOutcome === f.sarblock?.aggregateOutcome && estable(check.catalog) === estable(f.sarblock?.catalog)) continue
-      const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}) }
+      const ruesTraslado = terminado(check) ? await trasladoVigente(check, f.tipoDocumento, doc) : null
+      const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, ruesTraslado }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}) }
       await guardarFicha(uid, doc, conDecision(nueva, f))
       // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
       await padronGuardar(db, f.tipoDocumento, doc, nueva, uid, 'sarblock')
@@ -549,6 +550,19 @@ async function empresaDe(uid: string) {
 const vista = (r: any, cfg: R.ConfigRisk, empresa?: { nombre: string; nit: string }) =>
   ({ ...R.fila(r), grupo: R.grupoDe(r), vence: R.vencimiento(cfg, r.at), ...(empresa ? { empresa } : {}) })
 
+// Si lo único que encontró Sarblock es una matrícula cancelada por traslado
+// de domicilio, se busca en el RUES la matrícula nueva. Con ella vigente, el
+// traductor no cuenta ese hallazgo (9 nov: empresa trasladada de
+// Dosquebradas a Pereira, marcada riesgo alto). Sin respuesta del RUES: null,
+// y el hallazgo cuenta como siempre.
+async function trasladoVigente(check: any, tipo: string, doc: string): Promise<RuesTraslado | null> {
+  if (String(tipo).toUpperCase() !== 'NIT' || !soloTrasladoRues(check?.catalog ?? [])) return null
+  const m = await matriculaVigentePorNit(doc).catch(() => null)
+  if (!m) { await auditar('sarblock.traslado_no_confirmado', { documento: doc }); return null }
+  await auditar('sarblock.traslado_confirmado', { documento: doc, camara: m.camara, matricula: m.matricula, renovado: m.renovado })
+  return { ...m, verificadoAt: new Date().toISOString() }
+}
+
 // La razón social de un NIT en el RUES, con 30 min de memoria: la pantalla
 // la pide mientras se escribe y el servidor otra vez al consultar.
 const razonesVistas = new Map<string, { r: Awaited<ReturnType<typeof razonSocialPorNit>>; at: number }>()
@@ -567,7 +581,8 @@ async function razonSocialRues(documento: string) {
 // (risk_resultado) y el barrido. Solo cierra quien la pasa de "consultando":
 // dos cierres al tiempo no devuelven dos veces.
 async function cerrarConsultaRisk(cq: any, check: any) {
-  const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined })
+  const ruesTraslado = terminado(check) ? await trasladoVigente(check, cq.tipo_documento, cq.documento) : null
+  const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined, ruesTraslado })
   // Una persona cuyo documento la Registraduría no encontró, sin ninguna
   // coincidencia: no hubo revisión real (no se sabe de quién serían los
   // antecedentes). Queda "no verificado" y se le devuelve la consulta.
@@ -726,6 +741,27 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
         filas: filas.map(f => esConsultas
           ? { ...vista(f, cfg), cliente: f.user_id, empresa: empresas[f.user_id] ?? f.user_id }
           : { id: f.id, at: f.at, por: f.por, tipoDocumento: f.tipo_documento, documento: f.documento, nombre: f.nombre, resultado: f.resultado, consultaId: f.consulta_id, cliente: f.user_id, empresa: empresas[f.user_id] ?? f.user_id }) }
+    }
+    // Una consulta YA cerrada con la matrícula cancelada por traslado como
+    // único hallazgo: se confirma la matrícula nueva en el RUES y se vuelve a
+    // juzgar desde el catálogo guardado (no llama a Sarblock). También el
+    // padrón, para que nadie más la reciba como riesgo alto.
+    if (accion === 'admin_risk_traslado') {
+      const { data: r } = await db.from('risk_consultas').select('*').eq('id', String(body.consultaId ?? '')).maybeSingle()
+      const f = (r as any)?.ficha
+      if (!r || !f?.sarblock?.catalog) return { ok: false, motivo: 'No existe esa consulta o no tiene el resultado guardado.' }
+      if (!soloTrasladoRues(f.sarblock.catalog)) return { ok: false, motivo: 'El hallazgo de esta consulta no es solo una matrícula cancelada por traslado.' }
+      const tr = await trasladoVigente({ catalog: f.sarblock.catalog }, (r as any).tipo_documento, (r as any).documento)
+      if (!tr) return { ok: false, motivo: 'El RUES no muestra una matrícula vigente para este NIT. Se mantiene el resultado.' }
+      const nueva = rejuzgar({ ...f, ruesTraslado: tr }, { documento: (r as any).documento, tipoDocumento: (r as any).tipo_documento, nombre: (r as any).nombre_escrito ?? undefined })
+      if (!nueva) return { ok: false, motivo: 'No se pudo volver a juzgar.' }
+      const cambio = { ficha: nueva, categoria: nueva.categoria ?? null, operable: nueva.operable ?? null, riesgos: R.tiposDeRiesgo(nueva), despachos: R.despachos(nueva), actualizado_at: new Date().toISOString() }
+      // Todas las consultas de ese documento, no solo la abierta.
+      await db.from('risk_consultas').update(cambio).eq('tipo_documento', (r as any).tipo_documento).eq('documento', (r as any).documento).eq('estado', 'lista')
+      await padronGuardar(db, (r as any).tipo_documento, (r as any).documento, nueva, (r as any).user_id, 'manual')
+      await auditar('sarblock.traslado_rejuzgado', { por: yo.userId, consultaId: (r as any).id, documento: (r as any).documento, antes: (r as any).categoria ?? null, ahora: nueva.categoria ?? null, camara: tr.camara, matricula: tr.matricula })
+      const { data: r2 } = await db.from('risk_consultas').select('*').eq('id', (r as any).id).maybeSingle()
+      return { ok: true, consulta: vista(r2 ?? r, cfg, await empresaDe((r as any).user_id)) }
     }
     if (accion === 'admin_risk_ver') {
       const { data: r } = await db.from('risk_consultas').select('*').eq('id', String(body.consultaId ?? '')).maybeSingle()

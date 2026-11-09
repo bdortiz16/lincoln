@@ -289,3 +289,30 @@ export async function razonSocialPorNit(nitConOSinDv: string): Promise<{ razonSo
   }
   return { razonSocial: null, estado: null, fuente: null, diagnostico: notas.join(' ‖ ') }
 }
+
+// ── ¿Tiene una matrícula VIGENTE? (traslado de domicilio) ───────────────
+// Una empresa que se muda de ciudad cancela su matrícula en la cámara vieja
+// ("cancelada por traslado de domicilio") y abre otra en la nueva. Sarblock
+// llegó a revisar la vieja y marcarla riesgo alto (9 nov: matrícula de
+// Dosquebradas cancelada por traslado, activa en Pereira y renovada).
+// Vigente = no cancelada y renovada este año o el anterior. Solo datos
+// abiertos de Confecámaras; si no responden, null (no se da por buena).
+export async function matriculaVigentePorNit(nit: string): Promise<{ camara: string | null; matricula: string | null; estado: string | null; renovado: string | null } | null> {
+  const base = String(nit ?? '').replace(/\D/g, '')
+  if (base.length < 9) return null
+  const r = await socrata('c82u-588k', base.slice(0, 9)).catch(() => ({ ok: false }) as const)
+  if (!r.ok) return null
+  const ano = new Date().getUTCFullYear()
+  const vigente = (r as any).regs.find((x: Record<string, unknown>) => {
+    const estado = String(x.estado_matricula ?? '')
+    const renovado = Number(String(x.ultimo_ano_renovado ?? '').slice(0, 4))
+    return estado && !/cancelad/i.test(estado) && Number.isFinite(renovado) && renovado >= ano - 1
+  })
+  if (!vigente) return null
+  return {
+    camara: vigente.camara_comercio ? String(vigente.camara_comercio) : null,
+    matricula: vigente.matricula ? String(vigente.matricula) : null,
+    estado: vigente.estado_matricula ? String(vigente.estado_matricula) : null,
+    renovado: vigente.ultimo_ano_renovado ? String(vigente.ultimo_ano_renovado) : null,
+  }
+}

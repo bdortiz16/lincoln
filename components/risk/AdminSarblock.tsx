@@ -220,7 +220,24 @@ export const AdminSarblock: React.FC = () => {
   const [clientes, setClientes] = useState<{ uid: string; nombre: string }[]>([]);
   const [detalle, setDetalle] = useState<any>(null);
   useEffect(() => { llamar('admin_risk_resumen').then(r => r?.ok && setClientes(r.clientes ?? [])); }, []);
-  const abrir = async (id: string) => { const r = await llamar('admin_risk_ver', { consultaId: id }); if (r?.ok) setDetalle(r.consulta); };
+  const abrir = async (id: string) => { setMsgTraslado(null); const r = await llamar('admin_risk_ver', { consultaId: id }); if (r?.ok) setDetalle(r.consulta); };
+  // Matrícula cancelada por traslado de domicilio como ÚNICO hallazgo (y aún
+  // sin la matrícula nueva confirmada): se ofrece revisarla en el RUES.
+  const [msgTraslado, setMsgTraslado] = useState<{ ok: boolean; t: string } | null>(null);
+  const [revisandoTraslado, setRevisandoTraslado] = useState(false);
+  const esTraslado = (c: any) => {
+    const cat: any[] = c?.ficha?.sarblock?.catalog ?? [];
+    const m = cat.filter(e => e?.matched === true);
+    return !c?.ficha?.ruesTraslado && m.length === 1 && m[0]?.code === 'co_rues' && /traslado de domicilio/i.test(String(m[0]?.statusReason ?? ''));
+  };
+  const revisarTraslado = async () => {
+    if (!detalle?.id || revisandoTraslado) return;
+    setRevisandoTraslado(true); setMsgTraslado(null);
+    const r = await llamar('admin_risk_traslado', { consultaId: detalle.id });
+    setRevisandoTraslado(false);
+    if (r?.ok) { setDetalle(r.consulta); setMsgTraslado({ ok: true, t: 'Confirmado en el RUES: la empresa tiene matrícula vigente en otra cámara. Ya no cuenta como hallazgo.' }); }
+    else setMsgTraslado({ ok: false, t: r?.motivo ?? 'No se pudo revisar en el RUES.' });
+  };
 
   return (
     <div style={{ fontFamily: "'Archivo', system-ui, sans-serif", color: C.texto }}>
@@ -253,6 +270,16 @@ export const AdminSarblock: React.FC = () => {
           <div style={{ padding: '12px 20px', fontSize: 12.5, color: C.sub, borderBottom: `1px solid ${C.borde}` }}>
             Consultada por <b style={{ color: C.texto }}>{detalle.por || 'usuario'}</b> de {detalle.empresa?.nombre || 'la empresa'} · {hace(detalle.at)}{detalle.deCache ? ' · salió del padrón' : ''}
           </div>
+          {esTraslado(detalle) && (
+            <div style={{ padding: '12px 20px', borderBottom: `1px solid ${C.borde}`, fontSize: 12.5, color: C.sub, lineHeight: 1.5 }}>
+              El único hallazgo es una matrícula cancelada por traslado de domicilio: la empresa pudo mudarse de cámara.
+              <button onClick={revisarTraslado} disabled={revisandoTraslado}
+                style={{ display: 'block', marginTop: 8, padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: revisandoTraslado ? 'default' : 'pointer', border: `1px solid ${C.borde}`, background: 'transparent', color: C.texto, fontFamily: 'inherit', opacity: revisandoTraslado ? 0.55 : 1 }}>
+                {revisandoTraslado ? 'Revisando en el RUES…' : 'Verificar traslado en el RUES'}
+              </button>
+            </div>
+          )}
+          {msgTraslado && <p style={{ padding: '10px 20px 0', margin: 0, fontSize: 12, color: msgTraslado.ok ? '#4ADE80' : '#F87171' }}>{msgTraslado.t}</p>}
           <Resultado consulta={detalle} compacto />
         </>}
       </Panel>

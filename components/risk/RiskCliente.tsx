@@ -153,6 +153,10 @@ export const Resultado: React.FC<{ consulta: any; compacto?: boolean; acciones?:
         </div>
         <p style={{ fontSize: 13.5, color: C.texto, margin: '6px 0 12px', lineHeight: 1.5 }}>{v.txt}{nombre && consulta.at ? <span style={{ color: C.sub }}> · consultada {hace(consulta.at)}</span> : null}</p>
         {f?.nombreIncompleto && <p style={{ fontSize: 12, color: C.sub, margin: '-6px 0 12px' }}>Escrito como “{consulta.nombreEscrito}”: es el mismo nombre, incompleto.</p>}
+        {/* Matrícula vieja cancelada por traslado: se dice por qué no cuenta. */}
+        {f?.ruesTraslado && <p style={{ fontSize: 12, color: C.sub, margin: '-6px 0 12px', lineHeight: 1.5 }}>
+          El RUES muestra una matrícula cancelada por traslado de domicilio: la empresa se mudó de cámara. Tiene matrícula vigente en {f.ruesTraslado.camara ?? 'otra cámara'}{f.ruesTraslado.matricula ? ` (n.º ${f.ruesTraslado.matricula}` : ''}{f.ruesTraslado.renovado ? `, renovada ${f.ruesTraslado.renovado})` : f.ruesTraslado.matricula ? ')' : ''}, así que no cuenta como hallazgo.
+        </p>}
       </div>
       <div style={{ padding: compacto ? '14px 20px' : '16px 24px', display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 12.5, color: C.sub }}>
         <span><b style={{ color: C.texto }}>{limpias}</b> sin novedad</span>

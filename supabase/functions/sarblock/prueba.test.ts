@@ -101,6 +101,18 @@ Deno.test('NOT_FOUND pero con nombre oficial: el documento existe, queda sin val
   assertEquals(f.operable, true);
 });
 
+Deno.test('matrícula cancelada por traslado: con la nueva vigente en el RUES no es hallazgo', () => {
+  const rues = { code: 'co_rues', label: 'Validación Empresa RUES', category: 'IDENTITY', status: 'MATCH', matched: true, matchCount: 1, isRestrictive: false, statusReason: 'Matrícula cancelada por traslado de domicilio', hits: [] };
+  const c = check({ summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, matchedLists: 1, unavailableLists: 0 }, catalog: [rues] });
+  const d = { documento: '900000001', tipoDocumento: 'NIT', nombre: 'EMPRESA S.A.S.' };
+  assertEquals(traducir(c, d).categoria, 'alto');
+  const f = traducir(c, { ...d, ruesTraslado: { camara: 'PEREIRA', matricula: '1' } });
+  assertEquals(f.categoria, 'ninguno');
+  assertEquals(f.hallazgos, []);
+  assertEquals(f.sarblock?.catalog.length, 1);
+  assertEquals(rejuzgar(f, d)?.categoria, 'ninguno');
+});
+
 Deno.test('PEP: medio, sigue operable (la revisión la decide la config)', () => {
   const f = traducir(check({
     summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, hasPepResult: true, matchedLists: 1, unavailableLists: 0 },

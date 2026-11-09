@@ -16,6 +16,19 @@
 
 import { compararNombres } from './nombres.ts';
 
+// ── Matrícula cancelada por TRASLADO de domicilio ───────────────────────
+// La empresa no se cerró: se mudó de cámara. Si es lo ÚNICO que encontró
+// Sarblock, devuelve esa entrada; si hay cualquier otra coincidencia, null
+// (no se tapa nada más). Solo se ignora con la matrícula nueva confirmada en
+// el RUES (d.ruesTraslado), que trae quien llama: el traductor no sale a red.
+export function soloTrasladoRues(catalogo: any[]): any | null {
+  const coinciden = (Array.isArray(catalogo) ? catalogo : []).filter(e => e?.matched === true);
+  if (coinciden.length !== 1) return null;
+  const e = coinciden[0];
+  return e?.code === 'co_rues' && /traslado de domicilio/i.test(String(e?.statusReason ?? '')) ? e : null;
+}
+export type RuesTraslado = { camara: string | null; matricula: string | null; estado?: string | null; renovado?: string | null; verificadoAt?: string };
+
 export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string; fuente: string };
 
 // Qué versión de la matriz decidió esta ficha. Si la matriz cambia, se sabe
@@ -108,6 +121,7 @@ export type Ficha = {
   hallazgo?: boolean;
   categoria?: 'alto' | 'medio' | 'bajo' | 'ninguno' | 'sin_validar';
   documentoNoEncontrado?: boolean   // la Registraduría no encontró el documento
+  ruesTraslado?: RuesTraslado       // matrícula cancelada por traslado, con la nueva vigente
   incompleta?: boolean              // alguna fuente no respondió (resultado parcial)
   operable?: boolean;
   bloqueo?: string;
@@ -154,7 +168,7 @@ const CATEGORIA: Record<string, Ficha['categoria']> = {
   CRITICAL: 'alto', HIGH: 'alto', MEDIUM: 'medio', LOW: 'bajo', NONE: 'ninguno',
 };
 
-export function traducir(check: any, d: { documento: string; tipoDocumento: string; nombre?: string }): Ficha {
+export function traducir(check: any, d: { documento: string; tipoDocumento: string; nombre?: string; ruesTraslado?: RuesTraslado | null }): Ficha {
   const base: Ficha = {
     proveedor: 'sarblock', documento: d.documento, tipoDocumento: d.tipoDocumento,
     estado: 'procesando', jobid: String(check?.id ?? ''), nombreInscrito: d.nombre || undefined,
@@ -168,7 +182,12 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
 
   const s = check.summary ?? {};
   const id = check.identity ?? null;
-  const catalogo: any[] = Array.isArray(check.catalog) ? check.catalog : [];
+  const catalogoCompleto: any[] = Array.isArray(check.catalog) ? check.catalog : [];
+  // Traslado de domicilio confirmado: esa entrada no cuenta como hallazgo.
+  // El catálogo completo se guarda igual (abajo, en `sarblock`).
+  const entradaTraslado = d.ruesTraslado ? soloTrasladoRues(catalogoCompleto) : null;
+  const traslado = entradaTraslado && !check?.summary?.shouldBlock ? d.ruesTraslado! : null;
+  const catalogo: any[] = traslado ? catalogoCompleto.filter(e => e !== entradaTraslado) : catalogoCompleto;
 
   // ── Matriz de riesgo de Lincoin (aprobada el 2026-10-27) ──────────────
   // Sarblock solo bloquea por listas restrictivas: para él la Rama Judicial,
@@ -210,7 +229,9 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   // Si lo único que Sarblock objetó fue la identidad y nosotros la
   // aceptamos (nombre incompleto), su nivel y su "revisar" no aplican.
   const soloIdentidad = /spoof/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0;
-  const ignorarSarblock = soloIdentidad && !suplantacion;
+  // Y si lo único fue la matrícula cancelada por traslado (con la nueva
+  // vigente en el RUES), su HIGH / HOLD_FOR_REVIEW tampoco.
+  const ignorarSarblock = (soloIdentidad || !!traslado) && !suplantacion;
   const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
   // "Revisar" solo porque una fuente no respondió, sin ninguna coincidencia:
   // no es un hallazgo. Antes subía a riesgo medio una consulta limpia pero
@@ -258,7 +279,8 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     validado: id ? id.validated === true : undefined,
     ...(documentoNoEncontrado ? { documentoNoEncontrado } : {}),
     ...(check.aggregateOutcome === 'PARTIAL' ? { incompleta: true } : {}),
-    hallazgo: Number(s.matchedLists ?? coinciden.length) > 0,
+    hallazgo: traslado ? coinciden.length > 0 : Number(s.matchedLists ?? coinciden.length) > 0,
+    ...(traslado ? { ruesTraslado: traslado } : {}),
     categoria,
     operable,
     bloqueo,
@@ -277,7 +299,8 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
       screeningRecordId: check.screeningRecordId ?? null,
       catalogVersion: check.catalogVersion ?? null,
       aggregateOutcome: check.aggregateOutcome ?? null,
-      summary: s, identity: id, catalog: catalogo,
+      // El catálogo COMPLETO (con la entrada del traslado): rejuzgar sale de acá.
+      summary: s, identity: id, catalog: catalogoCompleto,
     },
   };
 }
@@ -312,5 +335,5 @@ export function rejuzgar(f: any, d: { documento: string; tipoDocumento: string; 
   if (!s?.catalog) return null;
   const check = { id: s.checkId, status: 'COMPLETED', aggregateOutcome: s.aggregateOutcome, screeningRecordId: s.screeningRecordId,
     catalogVersion: s.catalogVersion, summary: s.summary, identity: s.identity, catalog: s.catalog, completedAt: f.at };
-  return { ...traducir(check, d), ...(f.lanzadoAt ? { lanzadoAt: f.lanzadoAt } : {}) };
+  return { ...traducir(check, { ...d, ruesTraslado: f.ruesTraslado ?? null }), ...(f.lanzadoAt ? { lanzadoAt: f.lanzadoAt } : {}) };
 }
