@@ -677,6 +677,14 @@ export const ContactsSection: React.FC<{
         } else if (cat === 'medio') {
             tono = AMBAR; estado = k.operable === false ? 'EN REVISIÓN' : 'RIESGO MEDIO'; motivo = 'Riesgo medio';
             ayuda = 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';
+        } else if (cat === 'sin_validar' && k.documentoNoEncontrado === true) {
+            // 9 nov: la Registraduría contestó que el número
+            // no existe. La insignia decía solo "SIN VALIDAR" y nadie sabía
+            // si era una falla del proveedor o qué había que hacer: casi
+            // siempre es un número mal escrito y lo arregla quien lo inscribió.
+            tono = AMBAR;
+            estado = String(k.tipoDocumento ?? 'CC') === 'CC' ? 'CÉDULA NO ENCONTRADA' : 'DOCUMENTO NO ENCONTRADO';
+            ayuda = 'La Registraduría no encontró este número. Confírmalo con el beneficiario: si está mal escrito, borra el beneficiario e inscríbelo con el número correcto. No impide transferirle.';
         } else if (cat === 'sin_validar') {
             // Un documento que la Registraduría no validó no se puede
             // categorizar: no se sabe de quién son esos antecedentes.
@@ -2917,6 +2925,7 @@ export const ContactsSection: React.FC<{
                                     : k.documentoVigente === false ? `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}. No se le puede transferir.`
                                     : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'
                                     : cat === 'medio' ? 'La consulta encontró hallazgos de riesgo medio. Queda en revisión de cumplimiento y por ahora no se le puede transferir.'
+                                    : cat === 'sin_validar' && k.documentoNoEncontrado === true ? `La Registraduría no encontró el documento ${String(detail.docNumber ?? '')}: casi siempre es un número mal escrito. Confírmalo con el beneficiario y, si está mal, borra el beneficiario e inscríbelo con el número correcto. No impide transferirle.`
                                     : cat === 'sin_validar' ? 'No se pudo validar el documento contra la Registraduría, así que no se sabe de quién son los antecedentes. Revisa que el número esté correcto. No impide transferirle.'
                                     : cat === 'bajo' ? 'La consulta encontró hallazgos menores. Se puede operar con esta persona.'
                                     : cat === 'ninguno' || cat === 'informativo' ? 'No se encontraron antecedentes. Se puede operar con esta persona.'
