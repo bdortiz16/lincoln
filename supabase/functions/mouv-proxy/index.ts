@@ -29,7 +29,7 @@ import { equipoPermite } from '../_shared/equipo.ts'
 import { requireMfaSession, sessionIdOf } from '../_shared/admin-auth.ts'
 import { cuentaCoinsendaDe, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { leerTarifasEnvio, tarifaFija } from '../_shared/tarifas-envio.ts'
-import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro } from '../_shared/coinsenda.ts'
+import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro, esquemaMetodo } from '../_shared/coinsenda.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
 import { nombreCuenta } from '../_shared/nombre-cuenta.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
@@ -1391,11 +1391,16 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
     }
     const cr = await crearRetiro(cli, { cuenta: bill.id, destino, proveedor: String(prov.id), monto: bruto })
     if (!cr.ok) {
-      const fallo = cr as { status: number; error: string; crudo: any }
+      const fallo = cr as { status: number; error: string; crudo: any; enviado?: Record<string, unknown> }
       // La respuesta ENTERA de Coinsenda (9 nov: un 465 "Payload does not match
-      // the method…" quedó recortado y no se sabía qué campo rechazó).
+      // the method…" quedó recortado y no se sabía qué campo rechazó). Si es
+      // el validador de schema (remotequeryguard_7), también lo que se mandó y
+      // la regla pública del método: con eso se ve qué campo no cuadra.
       const crudoTxt = (() => { try { return JSON.stringify(fallo.crudo ?? null).slice(0, 2000) } catch { return String(fallo.crudo ?? '').slice(0, 2000) } })()
-      await logAudit(userId, 'coinsenda.prep_crear', { cuenta, rail, status: fallo.status, error: fallo.error, bruto, respuesta: crudoTxt })
+      const deSchema = /remotequeryguard_7|does not match the method/i.test(`${fallo.error} ${crudoTxt}`)
+      const esquema = deSchema ? await esquemaMetodo(cfgC.dominio ?? 'coinsenda.com', 'withdraw', '/withdraws/add-new-withdraw-public') : null
+      await logAudit(userId, 'coinsenda.prep_crear', { cuenta, rail, status: fallo.status, error: fallo.error, bruto, respuesta: crudoTxt,
+        ...(deSchema ? { enviado: fallo.enviado ?? null, esquema } : {}) })
       // Coinsenda rechazó CREAR el retiro (8 nov: 3.680.000 a un Nequi por
       // ACH · Cuenta 4). No queda fila ni aparece en Fallos, y el motivo real
       // solo estaba en audit_log: nadie se enteraba de por qué. Ahora le llega

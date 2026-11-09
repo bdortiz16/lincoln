@@ -44,6 +44,42 @@ export function urlServicio(servicio: string, dominio: string): string {
   return `https://${SUBDOMINIO[servicio] ?? servicio}.${dominio}${servicio === 'auth' ? '/auth' : '/api'}`
 }
 
+// El schema PÚBLICO con que Coinsenda valida un método (sin sesión):
+// https://<servicio>.<dominio>/api-docs/openapi3.json. Se usa para entender
+// un 465 remotequeryguard_7 ("Payload does not match the method"): el 9 nov
+// la Cuenta 4 rechazó así un retiro con el mismo formato que el 5 nov sí
+// aceptaba, y sin el schema no se sabía qué campo cambió. Devuelve el
+// requestBody del método con sus $ref de components resueltos (un nivel), en
+// texto y recortado; null si no se pudo leer. Nunca lanza.
+export async function esquemaMetodo(dominio: string, servicio: string, ruta: string): Promise<string | null> {
+  try {
+    if (!DOMINIOS.has(dominio)) return null
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 15_000)
+    let doc: any
+    try {
+      const r = await fetch(`https://${SUBDOMINIO[servicio] ?? servicio}.${dominio}/api-docs/openapi3.json`, { signal: ctrl.signal })
+      if (!r.ok) return `openapi3.json respondió ${r.status}`
+      doc = await r.json()
+    } finally { clearTimeout(t) }
+    const op = doc?.paths?.[ruta]?.post ?? doc?.paths?.[ruta.replace(/^\/api/, '')]?.post
+    if (!op) return `el schema no trae ${ruta}`
+    const schemas = doc?.components?.schemas ?? {}
+    const resolver = (x: any, prof = 0): any => {
+      if (!x || typeof x !== 'object' || prof > 4) return x
+      if (typeof x.$ref === 'string') {
+        const nombre = x.$ref.split('/').pop()
+        return { $ref: x.$ref, ...resolver(schemas[nombre], prof + 1) }
+      }
+      if (Array.isArray(x)) return x.map((y) => resolver(y, prof + 1))
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(x)) out[k] = resolver(v, prof + 1)
+      return out
+    }
+    return JSON.stringify(resolver(op.requestBody ?? op.parameters ?? op)).slice(0, 4000)
+  } catch (e) { return `no se pudo leer el schema: ${String((e as Error)?.message ?? e).slice(0, 120)}` }
+}
+
 // deno-lint-ignore no-explicit-any
 export async function configCoinsenda(db: any, cuenta: CuentaCoinsenda): Promise<ConfigCoinsenda> {
   const { data } = await db.from('private_config').select('value').eq('key', claveConfig(cuenta)).maybeSingle()
@@ -417,13 +453,14 @@ export async function destinoBanco(cli: ClienteCoinsenda, prov: any, d: {
 }
 
 /** Crea el retiro. Nace 'pending': todavía no mueve plata. */
-export async function crearRetiro(cli: ClienteCoinsenda, x: { cuenta: string; destino: string; proveedor: string; monto: number }): Promise<{ ok: true; id: string; estado: string; crudo: any } | { ok: false; status: number; error: string; crudo: any }> {
-  const r = await cli.pedir('withdraw', 'POST', '/withdraws/add-new-withdraw-public', { data: {
-    account_id: x.cuenta, amount: String(Math.round(x.monto)), withdraw_account_id: x.destino, withdraw_provider_id: x.proveedor,
-  } })
+export async function crearRetiro(cli: ClienteCoinsenda, x: { cuenta: string; destino: string; proveedor: string; monto: number }): Promise<{ ok: true; id: string; estado: string; crudo: any } | { ok: false; status: number; error: string; crudo: any; enviado: Record<string, unknown> }> {
+  const enviado = { account_id: x.cuenta, amount: String(Math.round(x.monto)), withdraw_account_id: x.destino, withdraw_provider_id: x.proveedor }
+  const r = await cli.pedir('withdraw', 'POST', '/withdraws/add-new-withdraw-public', { data: enviado })
   const w = objetoDe(r)
   if (exitoso(r) && w?.id) return { ok: true, id: String(w.id), estado: String(w.state ?? 'pending'), crudo: w }
-  return { ok: false, status: r.status, error: describirFallo(r, 'crear el retiro'), crudo: r.data ?? r.error ?? null }
+  // `enviado` (sin llaves ni sesión: solo ids y monto) para comparar con el
+  // schema cuando Coinsenda dice que no cuadra.
+  return { ok: false, status: r.status, error: describirFallo(r, 'crear el retiro'), crudo: r.data ?? r.error ?? null, enviado }
 }
 
 export type DesenlaceConfirmar = 'salio' | 'aceptado' | 'rechazado' | 'no_salio' | 'desconocido'
