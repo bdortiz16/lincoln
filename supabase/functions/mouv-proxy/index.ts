@@ -1454,14 +1454,23 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
   bloqueo: null | { estado: 'rechazada' | 'en_proceso' | 'otra_cuenta'; message: string }
 }> {
   try {
-    const lista = await finityCall('external_accounts', userId)
-    const filas: any[] = lista?.data?.data ?? lista?.data?.results ?? (Array.isArray(lista?.data) ? lista.data : [])
+    const filasDe = (l: any): any[] => l?.data?.data ?? l?.data?.results ?? (Array.isArray(l?.data) ? l.data : [])
     const idDe = (r: any) => String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '')
     const accDe = (r: any) => String(r?.account_number ?? r?.account?.account_number ?? '').replace(/\D/g, '')
     // Primero por id; si no, por el número de cuenta COMPLETO. Nunca por los
     // últimos dígitos: dos cuentas pueden terminar igual.
-    const fila = (destId ? filas.find(r => idDe(r) === destId) : null)
-      ?? (accDigits ? filas.find(r => accDe(r) === accDigits) : null)
+    const buscar = (fs: any[]) => (destId ? fs.find(r => idDe(r) === destId) : null)
+      ?? (accDigits ? fs.find(r => accDe(r) === accDigits) : null)
+    let lista = await finityCall('external_accounts', userId)
+    let filas: any[] = filasDe(lista)
+    let fila = buscar(filas)
+    // La lista puede venir de la copia de 45 s de finity-proxy, sin la cuenta
+    // recién inscrita (9 nov: un beneficiario nuevo salió como "no coincide").
+    // Antes de bloquear, se pide fresca.
+    if (!fila && destId) {
+      const fresca = await finityCall('external_accounts', userId, { fresca: true })
+      if (fresca?.ok !== false && filasDe(fresca).length) { lista = fresca; filas = filasDe(fresca); fila = buscar(filas) }
+    }
     // Un id de destino que la lista de Finity SÍ trajo pero no contiene no es
     // "no se pudo verificar": es un id que no corresponde. El id lo guarda el
     // contacto, que el cliente puede escribir en su raw_data; dejarlo pasar
@@ -1470,7 +1479,11 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
     // cuenta se inscribe en el mismo envío.
     const listaLeida = lista?.ok !== false && filas.length > 0
     if (!fila && destId && listaLeida) {
-      await logAudit(userId, 'finity.payout.destino_desconocido', { destId, cuenta: accDigits.slice(-4) })
+      // Cuántas filas trajo y qué claves tiene la respuesta: si el aliado
+      // pagina la lista, aquí se ve (una cuenta válida fuera de la primera
+      // página saldría como desconocida).
+      await logAudit(userId, 'finity.payout.destino_desconocido', { destId, cuenta: accDigits.slice(-4), filas: filas.length,
+        claves: lista?.data && typeof lista.data === 'object' && !Array.isArray(lista.data) ? Object.keys(lista.data).slice(0, 12) : null })
       return { bloqueo: { estado: 'otra_cuenta', message: 'La cuenta destino no coincide con el beneficiario verificado. Vuelve a inscribirlo.' } }
     }
     if (!fila) return { bloqueo: null }

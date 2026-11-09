@@ -800,7 +800,7 @@ Deno.serve(async (req) => {
       // La lista es UNA sola (Finity es una cuenta de empresa): se sirve de
       // caché 45 s para todos. Antes cada navegador abierto la pedía cada
       // 15 s, cientos de llamadas por hora a la misma ruta de Finity.
-      const lista = await listaCuentasFinity()
+      const lista = await listaCuentasFinity(caller.internal && payload?.fresca === true)
       // Un CLIENTE recibe solo SUS cuentas. La lista de Finity es una sola para
       // toda la empresa: antes se devolvía entera y cualquier sesión veía
       // nombre, documento y número de cuenta de los beneficiarios de todos los
@@ -1675,8 +1675,14 @@ function idDeCuenta(d: any): string | null {
 //   · un 403/429 pone en pausa TODAS las creaciones 30 min (system_config),
 //     y se avisa a los admins una sola vez.
 let listaCache: { at: number; ok: boolean; status: number; path: string; data: any } | null = null
-async function listaCuentasFinity(): Promise<{ ok: boolean; status: number; path: string; data: any; cache: boolean }> {
-  if (listaCache && Date.now() - listaCache.at < 45_000) return { ...listaCache, cache: true }
+// `forzar` (solo llamadas internas): sin la copia de 45 s. Inscribir o borrar
+// una cuenta limpia la copia SOLO de la instancia que atendió esa llamada;
+// otra instancia puede seguir con la lista vieja, sin la cuenta recién
+// inscrita (9 nov: «La cuenta destino no coincide con el beneficiario
+// verificado» a un beneficiario nuevo). mouv-proxy la pide fresca antes de
+// bloquear un envío por una cuenta que no aparece.
+async function listaCuentasFinity(forzar = false): Promise<{ ok: boolean; status: number; path: string; data: any; cache: boolean }> {
+  if (!forzar && listaCache && Date.now() - listaCache.at < 45_000) return { ...listaCache, cache: true }
   const { res, path } = await finityTry('externalAccounts')
   const data = await res.json().catch(() => null)
   if (res.ok) listaCache = { at: Date.now(), ok: true, status: res.status, path, data }
