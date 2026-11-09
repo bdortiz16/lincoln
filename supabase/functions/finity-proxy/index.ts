@@ -1028,10 +1028,24 @@ Deno.serve(async (req) => {
         if (res.status !== 404 && res.status !== 405) break
       }
       const data = last ? await last.res.json().catch(() => null) : null
-      // 404 = ya no existe en Finity → tratamos el borrado como idempotente/ok.
-      const okDel = !!last && (last.res.ok || last.res.status === 404)
-      await logAudit(caller.userId!, 'finity.external_account.delete', { status: last?.res.status, path: last?.path, finityId: eaId, ok: okDel })
-      return json(200, { ok: okDel, deletedInFinity: okDel, status: last?.res.status, path: last?.path, data })
+      // Un 404 NO prueba que se borró. 9 nov: todas las rutas de borrado
+      // respondieron 404, se dio por «des-inscrita en el banco», y al volver a
+      // inscribirla Finity devolvió la MISMA cuenta (con la cédula errada del
+      // titular): el 404 era de la ruta, no de la cuenta. Ahora, tras un 404,
+      // se mira la lista fresca: solo si la cuenta ya no está, se da por borrada.
+      let okDel = !!last && last.res.ok
+      let sigueEnFinity: boolean | null = null
+      if (last && last.res.status === 404) {
+        const lista = await listaCuentasFinity(true).catch(() => null)
+        if (lista?.ok) {
+          sigueEnFinity = filasDe(lista.data).some((r: any) => String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '') === eaId)
+          okDel = !sigueEnFinity
+        }
+      }
+      if (okDel) listaCache = null
+      await logAudit(caller.userId!, 'finity.external_account.delete', { status: last?.res.status, path: last?.path, finityId: eaId, ok: okDel, sigueEnFinity })
+      return json(200, { ok: okDel, deletedInFinity: okDel, status: last?.res.status, path: last?.path, data,
+        ...(!okDel ? { message: 'El banco no permitió des-inscribir esta cuenta: sigue registrada allá con los datos anteriores. Si hay que corregir el titular, se pide al equipo de Lincoin.' } : {}) })
     }
 
     if (action === 'create_withdrawal') {

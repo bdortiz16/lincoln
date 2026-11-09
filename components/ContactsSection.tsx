@@ -1561,6 +1561,9 @@ export const ContactsSection: React.FC<{
                 });
                 if (r?.deletedInFinity || r?.deletedInMouv) setNotice({ ok: true, text: 'Contacto eliminado — también des-inscrito en el banco.' });
                 else if (r?.reason === 'still_used') setNotice({ ok: true, text: 'Contacto eliminado de tu lista. La cuenta sigue inscrita porque otro usuario también la tiene.' });
+                // Que no diga «eliminado» a secas cuando la cuenta sigue en el
+                // banco con los datos viejos: reinscribirla la reusa tal cual.
+                else if (r?.message) setNotice({ ok: false, text: `Contacto eliminado de tu lista. ${r.message}` });
                 else setNotice({ ok: true, text: 'Contacto eliminado.' });
             } catch { setNotice({ ok: true, text: 'Contacto eliminado de tu lista.' }); }
         } else {
