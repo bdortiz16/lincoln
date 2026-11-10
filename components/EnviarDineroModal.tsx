@@ -359,19 +359,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // veía un precio y se le cobraba otro. Los números de aquí quedan solo de
   // respaldo mientras llega la respuesta.
   const [tarifasSrv, setTarifasSrv] = useState<Record<string, number> | null>(null);
-  // Rutas que el servidor pausó sola (p. ej. Bre-B · Cuenta 2 sin fondos en el
-  // aliado, 10 nov): se muestran apagadas para no dejar llegar al final del
-  // envío y recibir «no está disponible».
-  const [pausasSrv, setPausasSrv] = useState<Record<string, { hasta: string }>>({});
   useEffect(() => {
       if (!isSendModalOpen || !currentUser?.id) return;
       let vivo = true;
       callMouvProxy({ action: 'limite_envio', user_id: currentUser.id, userId: currentUser.id })
-          .then((r: any) => {
-              if (!vivo || !r?.ok) return;
-              if (r.tarifas && typeof r.tarifas === 'object') setTarifasSrv(r.tarifas);
-              setPausasSrv(r.pausas && typeof r.pausas === 'object' ? r.pausas : {});
-          })
+          .then((r: any) => { if (vivo && r?.ok && r.tarifas && typeof r.tarifas === 'object') setTarifasSrv(r.tarifas); })
           .catch(() => {});
       return () => { vivo = false; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1201,15 +1193,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // Beneficiario ya elegido que sigue en validación: por
                           // ACH · Cuenta 1 todavía no le llega; por la 3 o la 4 sí.
                           const contactoEnValidacion = sinValidarAch(sendContact);
-                          const pausada = (key: string) => {
-                              const ruta = key === 'breb2' ? 'BREB2' : null;
-                              const h = ruta ? Date.parse(String(pausasSrv[ruta]?.hasta ?? '')) : NaN;
-                              return Number.isFinite(h) && h > Date.now();
-                          };
-                          const selOk = !!selMeta && !pausada(selMeta.key) && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee
+                          const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee
                               && !(sendMethodSel === 'ach' && contactoEnValidacion);
                           const brebSel = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' || sendMethodSel === 'brebX';
-                          const brebAlcanza = BREB_CUENTAS.some(c => !pausada(c.key) && getBalance(c.rail) >= amtStep2 + c.fee);
+                          const brebAlcanza = BREB_CUENTAS.some(c => getBalance(c.rail) >= amtStep2 + c.fee);
                           // Una sola cuenta Bre-B habilitada: se elige al tocar Bre-B,
                           // sin preguntar "¿desde qué cuenta?".
                           const brebUnica = BREB_CUENTAS.length === 1 ? BREB_CUENTAS[0] : null;
@@ -1277,19 +1264,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                               if (!c) return brebProx.includes(nB) ? filaProxima(`Bre-B · ${nombreCuenta(nB)}`) : null;
                                               const bal = getBalance(c.rail);
                                               const need = amtStep2 + c.fee;
-                                              const enPausa = pausada(c.key);
-                                              const enough = !enPausa && bal >= need;
+                                              const enough = bal >= need;
                                               const sel = sendMethodSel === c.key;
-                                              if (enPausa) return (
-                                                  <div key={c.key} aria-disabled="true" className="w-full flex items-center gap-3"
-                                                      style={{ padding: '11px 14px', borderRadius: 11, opacity: 0.6, cursor: 'not-allowed', border: '1px solid rgba(255,255,255,0.1)', background: 'transparent' }}>
-                                                      <span className="flex-1 min-w-0">
-                                                          <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>Bre-B · {nombreCuenta(c.n)}</span>
-                                                          <span style={{ display: 'block', fontSize: 11.5, marginTop: 2, color: '#878E88' }}>No disponible en este momento · usa otra cuenta o ACH</span>
-                                                      </span>
-                                                      <span style={{ border: '1px solid rgba(251,191,36,0.32)', color: '#FBBF24', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999, whiteSpace: 'nowrap' }}>NO DISPONIBLE</span>
-                                                  </div>
-                                              );
                                               return (
                                                   <button key={c.key} type="button" onClick={() => { if (enough) setSendMethodSel(c.key); }}
                                                       className="w-full flex items-center gap-3 text-left transition-colors"

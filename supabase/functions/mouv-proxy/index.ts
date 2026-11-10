@@ -1789,29 +1789,6 @@ const motivoCreacion = (c: any): string => {
   try { return (typeof m === 'string' ? m : JSON.stringify(m ?? '')).slice(0, 200) } catch { return '' }
 }
 
-// ── PAUSA AUTOMÁTICA DE UNA RUTA ────────────────────────────────────────
-// 10 nov: la billetera Bre-B de la Cuenta 2 se quedó sin fondos y cada cliente
-// que lo intentaba (7,8 M, 1,5 M…) pasaba por todo el envío para recibir al
-// final «la Cuenta 2 no está disponible». Cuando el aliado dice que no hay
-// fondos, la ruta se PAUSA sola unos minutos: el envío contesta de una vez y
-// la pantalla la muestra apagada. Vence sola: pasado el tiempo se vuelve a
-// probar (si ya la recargaron, sale; si no, se pausa otra vez).
-const PAUSA_RUTA_MIN = Number(Deno.env.get('PAUSA_RUTA_MIN') ?? '') || 20
-async function pausarRuta(ruta: string, motivo: string, minutos = PAUSA_RUTA_MIN): Promise<void> {
-  try {
-    const hasta = new Date(Date.now() + minutos * 60_000).toISOString()
-    await db.from('system_config').upsert({ key: `pausa_ruta:${ruta}`, value: JSON.stringify({ hasta, motivo, at: new Date().toISOString() }) }, { onConflict: 'key' })
-    await logAudit(null, 'ruta.pausada', { ruta, motivo, hasta })
-  } catch { /* sin pausa: el envío sigue diciendo el motivo como antes */ }
-}
-async function pausaRuta(ruta: string): Promise<{ hasta: string; motivo: string } | null> {
-  try {
-    const { data } = await db.from('system_config').select('value').eq('key', `pausa_ruta:${ruta}`).maybeSingle()
-    const v = (data as any)?.value ? JSON.parse((data as any).value) : null
-    return v?.hasta && Date.parse(v.hasta) > Date.now() ? { hasta: String(v.hasta), motivo: String(v.motivo ?? '') } : null
-  } catch { return null }
-}
-
 async function finityPrepararBreb(userId: string, recipient: Record<string, any>, amountCop: number, nombresEsperados: string[]): Promise<ResultadoBreb2 & { creada?: any }> {
   const monto = Math.round(amountCop)   // pesos enteros, igual que los retiros ACH
   // EL TIPO DE LLAVE LO DICE EL DIRECTORIO BRE-B, no el formulario. La
@@ -1865,7 +1842,6 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
       diagnostico = 'cupo'
       mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
       await avisarSinFondos(await finityCopDisponible(userId).catch(() => null))
-      await pausarRuta('BREB2', 'sin_fondos')
     } else if (rechazoPorDatos && monto > 5000 && intentos.length) {
       const base = intentos[0]
       const p = await finityCall('breb_crear', userId, { data: { amount: 5000, key_type: base.tipo, key_value: base.valor } })
@@ -1890,7 +1866,6 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
         diagnostico = 'cupo'
         mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
         await avisarSinFondos(null)
-        await pausarRuta('BREB2', 'sin_fondos')
       } else if (rechazoPorDatos) {
         diagnostico = 'llave'
         mensaje = 'La Bre-B · Cuenta 2 no reconoce esa llave, así que no salió nada. Pídele al beneficiario que te confirme su llave exacta, o envíalo por Bre-B · Cuenta 1 o por ACH.'
@@ -2848,11 +2823,7 @@ serve(async (req: Request) => {
     // número fijo distinto al que cobra el servidor.
     const rutas = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH', 'ACH3', 'ACH4']
     const tarifas = Object.fromEntries(await Promise.all(rutas.map(async r => [r, await tarifaEnvio(r)] as const)))
-    // Rutas en pausa: la pantalla las muestra apagadas en vez de dejar que el
-    // cliente llegue al final del envío para enterarse.
-    const pausaB2 = await pausaRuta('BREB2')
-    const pausas = pausaB2 ? { BREB2: { hasta: pausaB2.hasta } } : {}
-    return json(200, { ok: true, achMax: t.max, achMaxPersona: tPersona.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: tarifas.BREB2, tarifas, pausas })
+    return json(200, { ok: true, achMax: t.max, achMaxPersona: tPersona.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: tarifas.BREB2, tarifas })
   }
 
   // ── ping / balance: saldo de la wallet COMPARTIDA — SOLO ADMIN ──
@@ -4806,16 +4777,6 @@ serve(async (req: Request) => {
     if (caller.servicio || !caller.viaJwt || String(userId) !== String(caller.userId ?? '')) {
       await logAudit(caller.userId ?? null, 'mouv.payout_ajeno_denegado', { action, objetivo: userId, admin: caller.admin, servicio: !!caller.servicio })
       return json(403, { error: 'forbidden', message: 'Los envíos salen solo con el código del titular de la cuenta.' })
-    }
-    // Ruta en pausa (sin fondos en el aliado): se contesta de una vez, antes
-    // de debitar o llamar a nadie.
-    if (brebFinity) {
-      const pausa = await pausaRuta('BREB2')
-      if (pausa) {
-        await logAudit(userId, 'ruta.pausada.rechazo', { ruta: 'BREB2', hasta: pausa.hasta })
-        return json(503, { error: 'ruta_pausada', ruta: 'BREB2', hasta: pausa.hasta,
-          message: 'Bre-B · Cuenta 2 no está disponible en este momento. Envíalo por Bre-B · Cuenta 1 o por ACH. No se descontó nada de tu saldo.' })
-      }
     }
     // Las Cuentas 3 y 4 solo salen si el dueño las activó en Admin → Coinsenda.
     if (cuentaCs && !(await cuentaCoinsendaActiva(cuentaCs, rail === 'BREB' ? 'breb' : 'ach'))) {
