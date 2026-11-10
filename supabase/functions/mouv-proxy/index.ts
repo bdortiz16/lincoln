@@ -1840,7 +1840,7 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
     if (sinFondosBreb2(ultimo)) {
       // Lo dice el proveedor: no hace falta adivinar con la prueba de 5.000.
       diagnostico = 'cupo'
-      mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
+      mensaje = 'Bre-B · Cuenta 2 no está disponible de momento. Intenta en unos minutos.'
       await avisarSinFondos(await finityCopDisponible(userId).catch(() => null))
     } else if (rechazoPorDatos && monto > 5000 && intentos.length) {
       const base = intentos[0]
@@ -1852,7 +1852,7 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
         rastro.push({ saldoCuenta2: disponible })
         if (disponible != null && disponible < monto + 5000) {
           diagnostico = 'cupo'
-          mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
+          mensaje = 'Bre-B · Cuenta 2 no está disponible de momento. Intenta en unos minutos.'
           await avisarAdminBreb2('cupo', 'Bre-B Cuenta 2: la bolsa de Finity no cubre los envíos',
             `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity lo rechazó. Con el mínimo (5.000) la misma llave sí pasa, y el saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP. Hay que fondear la cuenta Finity: de esa misma bolsa salen también los envíos ACH.`)
         } else {
@@ -1864,7 +1864,7 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
       } else if (sinFondosBreb2(p)) {
         // Ni el mínimo pasa porque la billetera está vacía: no es la llave.
         diagnostico = 'cupo'
-        mensaje = 'La Cuenta 2 no está disponible temporalmente. Puedes enviarlo por Bre-B desde la Cuenta 1, o por ACH.'
+        mensaje = 'Bre-B · Cuenta 2 no está disponible de momento. Intenta en unos minutos.'
         await avisarSinFondos(null)
       } else if (rechazoPorDatos) {
         diagnostico = 'llave'
