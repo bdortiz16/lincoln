@@ -356,6 +356,8 @@ const emptyForm = {
     country: 'Colombia',
     name: '', docType: 'CC', docNumber: '', bank: '',
     accountType: 'savings' as 'savings' | 'checking', accountNumber: '',
+    // Doble digitación (10 nov): el número se escribe otra vez, sin pegar.
+    accountNumberConfirm: '',
     accountKind: 'bank' as 'bank' | 'wallet',
     walletCoin: 'USDT' as 'USDT' | 'USDC',
     walletNetwork: 'TRC-20' as 'TRC-20' | 'BEP-20',
@@ -1053,7 +1055,9 @@ export const ContactsSection: React.FC<{
     const normAccount = (v: string, isWallet: boolean) =>
         isWallet ? v.trim().toLowerCase() : v.replace(/\D/g, '');
 
-    const saveContact = async () => {
+    // `numeroConfirmado`: el cliente ya vio la cuenta completa en la ventana
+    // de confirmación y dijo que es la correcta.
+    const saveContact = async (numeroConfirmado?: boolean) => {
         if (!currentUser?.id || saving) return;
         let f = form;
 
@@ -1147,6 +1151,32 @@ export const ContactsSection: React.FC<{
             const nd = f.accountNumber.replace(/\D/g, '');
             if (nd.length < 6 || nd.length > 20) { setNotice({ ok: false, text: 'El número de cuenta debe tener entre 6 y 20 dígitos, sin guiones ni espacios.' }); return; }
             f = { ...f, accountNumber: nd };
+        }
+        // ── DOBLE DIGITACIÓN DEL NÚMERO DE CUENTA ─────────────────────────
+        // 4 nov: 2.000.000 por ACH salieron a la cuenta …4304 cuando la del
+        // beneficiario era …4309: un dígito mal escrito. Por ACH nadie compara
+        // el número con el titular (ni nosotros, ni el aliado, ni ACH): la plata
+        // llega a quien tenga ese número. Mientras no haya validación de
+        // titularidad con el banco, se escribe dos veces (sin pegar) y se
+        // confirma viendo el número completo.
+        const normNum = (v: string) => f.country === 'Colombia' ? String(v ?? '').replace(/\D/g, '') : String(v ?? '').replace(/[\s-]/g, '')
+        if (normNum(f.accountNumberConfirm) !== normNum(f.accountNumber)) {
+            setNotice({ ok: false, text: f.accountNumberConfirm.trim()
+                ? 'Los dos números de cuenta no coinciden. Revísalos dígito por dígito.'
+                : 'Escribe otra vez el número de cuenta en «Confirma el número de cuenta».' });
+            return;
+        }
+        if (numeroConfirmado !== true) {
+            const num = normNum(f.accountNumber);
+            const agrupado = num.replace(/(\d{4})(?=\d)/g, '$1 ');
+            setConfirmar({
+                titulo: '¿El número de cuenta es correcto?',
+                cuerpo: `${f.bank} · ${f.accountType === 'checking' ? 'Corriente' : 'Ahorros'}\n${agrupado}\nA nombre de ${f.name.trim()} · ${f.docType} ${f.docNumber.trim()}\n\nRevísalo dígito por dígito con el beneficiario. Si un número está mal, la plata le llega a otra persona y recuperarla depende del banco.`,
+                okLabel: 'Sí, es correcto',
+                tono: 'normal',
+                onOk: () => { void saveContact(true); },
+            });
+            return;
         }
         if (f.country === 'Colombia' && f.docType !== 'NIT' && esNitEmpresa(f.docNumber)) { setNotice({ ok: false, text: NIT_COMO_CEDULA }); return; }
         // Un NIT va completo: 10 dígitos, con el de verificación, y que cuadre.
@@ -1511,7 +1541,7 @@ export const ContactsSection: React.FC<{
     // la pantalla, no dice a QUIÉN se va a borrar y en iOS aparece pegado
     // arriba, encima de otra fila. Para una acción que no se deshace, la
     // ventana tiene que decir el nombre y verse como el resto del producto.
-    const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; onOk: () => void } | null>(null);
+    const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; onOk: () => void; okLabel?: string; tono?: 'peligro' | 'normal' } | null>(null);
     useEffect(() => {
         if (!confirmar) return;
         const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setConfirmar(null); };
@@ -2217,7 +2247,21 @@ export const ContactsSection: React.FC<{
                         </div>
                         <div>
                             <label style={LBL}>Número de cuenta</label>
-                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: fm.country === 'Colombia' ? e.target.value.replace(/\D/g, '').slice(0, 20) : e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" style={INP} />
+                            <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: fm.country === 'Colombia' ? e.target.value.replace(/\D/g, '').slice(0, 20) : e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" autoComplete="off" style={INP} />
+                        </div>
+                        <div>
+                            <label style={LBL}>Confirma el número de cuenta</label>
+                            {/* Sin pegar: copiar y pegar repite el mismo error. */}
+                            <input value={form.accountNumberConfirm}
+                                onChange={e => setForm(fm => ({ ...fm, accountNumberConfirm: fm.country === 'Colombia' ? e.target.value.replace(/\D/g, '').slice(0, 20) : e.target.value.replace(/[^\d-]/g, '') }))}
+                                onPaste={e => e.preventDefault()} onDrop={e => e.preventDefault()}
+                                inputMode="numeric" autoComplete="off" placeholder="Escríbelo otra vez, sin pegar"
+                                style={{ ...INP, ...(form.accountNumberConfirm && form.accountNumberConfirm !== form.accountNumber ? { borderColor: 'rgba(248,113,113,0.5)' } : {}) }} />
+                            {form.accountNumberConfirm && form.accountNumberConfirm !== form.accountNumber && (
+                                <p style={{ fontSize: 11.5, color: '#F87171', marginTop: 5 }}>
+                                    {form.accountNumber.startsWith(form.accountNumberConfirm) ? 'Sigue escribiendo…' : 'No coincide con el número de cuenta.'}
+                                </p>
+                            )}
                         </div>
                         {form.country === 'Colombia' && (
                             <>
@@ -2270,7 +2314,7 @@ export const ContactsSection: React.FC<{
                             </button>
                         ) : (
                             <button
-                                onClick={saveContact}
+                                onClick={() => { void saveContact(); }}
                                 disabled={saving}
                                 className="lincoin-btn-white transition-colors"
                                 style={{ flex: 1.5, fontWeight: 700, fontSize: 14, padding: '13px 0', borderRadius: 10, border: 'none', opacity: saving ? 0.45 : 1 }}
@@ -3257,22 +3301,38 @@ export const ContactsSection: React.FC<{
                         className="w-full animate-in zoom-in-95 duration-200"
                         style={{ maxWidth: 400, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 18, overflow: 'hidden', fontFamily: "'Archivo', system-ui, sans-serif" }}>
                         <div style={{ padding: '24px 24px 20px' }}>
+                            {confirmar.tono !== 'normal' && (
                             <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.24)', display: 'grid', placeItems: 'center', marginBottom: 14 }}>
                                 <Trash2 size={18} color="#F87171" />
                             </div>
+                            )}
                             <p style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2', lineHeight: 1.3 }}>{confirmar.titulo}</p>
+                            {confirmar.tono === 'normal' ? (() => {
+                                // Confirmación de la cuenta: el número va grande y
+                                // en monoespaciada para leerlo dígito por dígito.
+                                const [banco, numero, titular, , ...resto] = confirmar.cuerpo.split('\n');
+                                return (<>
+                                    <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 12 }}>{banco}</p>
+                                    <p style={{ fontSize: 22, fontWeight: 800, color: '#F4F4F2', marginTop: 4, letterSpacing: '1px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflowWrap: 'anywhere' }}>{numero}</p>
+                                    <p style={{ fontSize: 12.5, color: '#F4F4F2', marginTop: 6 }}>{titular}</p>
+                                    <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 12, lineHeight: 1.6 }}>{resto.join(' ')}</p>
+                                </>);
+                            })() : (
                             <p style={{ fontSize: 13, color: '#878E88', marginTop: 8, lineHeight: 1.6 }}>{confirmar.cuerpo}</p>
+                            )}
                         </div>
                         <div className="flex items-center" style={{ gap: 9, padding: '0 24px 22px' }}>
                             <button onClick={() => setConfirmar(null)}
                                 className="hover:bg-white/[0.09] transition-colors"
                                 style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)', color: '#F4F4F2', fontSize: 13.5, fontWeight: 600 }}>
-                                Cancelar
+                                {confirmar.tono === 'normal' ? 'Corregir' : 'Cancelar'}
                             </button>
                             <button onClick={() => { const fn = confirmar.onOk; setConfirmar(null); fn(); }}
-                                className="transition-colors"
-                                style={{ flex: 1, height: 44, borderRadius: 10, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.34)', color: '#F87171', fontSize: 13.5, fontWeight: 700 }}>
-                                Eliminar
+                                className={confirmar.tono === 'normal' ? 'lincoin-btn-white transition-colors' : 'transition-colors'}
+                                style={confirmar.tono === 'normal'
+                                    ? { flex: 1, height: 44, borderRadius: 10, border: 'none', fontSize: 13.5, fontWeight: 700 }
+                                    : { flex: 1, height: 44, borderRadius: 10, background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.34)', color: '#F87171', fontSize: 13.5, fontWeight: 700 }}>
+                                {confirmar.okLabel ?? 'Eliminar'}
                             </button>
                         </div>
                     </div>
