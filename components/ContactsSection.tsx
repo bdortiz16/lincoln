@@ -356,8 +356,6 @@ const emptyForm = {
     country: 'Colombia',
     name: '', docType: 'CC', docNumber: '', bank: '',
     accountType: 'savings' as 'savings' | 'checking', accountNumber: '',
-    // Doble digitación (10 nov): el número se escribe otra vez, sin pegar.
-    accountNumberConfirm: '',
     accountKind: 'bank' as 'bank' | 'wallet',
     walletCoin: 'USDT' as 'USDT' | 'USDC',
     walletNetwork: 'TRC-20' as 'TRC-20' | 'BEP-20',
@@ -1152,20 +1150,15 @@ export const ContactsSection: React.FC<{
             if (nd.length < 6 || nd.length > 20) { setNotice({ ok: false, text: 'El número de cuenta debe tener entre 6 y 20 dígitos, sin guiones ni espacios.' }); return; }
             f = { ...f, accountNumber: nd };
         }
-        // ── DOBLE DIGITACIÓN DEL NÚMERO DE CUENTA ─────────────────────────
+        // ── CONFIRMAR EL NÚMERO DE CUENTA ─────────────────────────────────
         // 4 nov: 2.000.000 por ACH salieron a la cuenta …4304 cuando la del
         // beneficiario era …4309: un dígito mal escrito. Por ACH nadie compara
         // el número con el titular (ni nosotros, ni el aliado, ni ACH): la plata
         // llega a quien tenga ese número. Mientras no haya validación de
-        // titularidad con el banco, se escribe dos veces (sin pegar) y se
-        // confirma viendo el número completo.
+        // titularidad con el banco, se confirma viendo el número completo.
+        // (El campo para escribirlo dos veces se quitó el 10 nov a pedido del
+        // equipo; queda la ventana de confirmación.)
         const normNum = (v: string) => f.country === 'Colombia' ? String(v ?? '').replace(/\D/g, '') : String(v ?? '').replace(/[\s-]/g, '')
-        if (normNum(f.accountNumberConfirm) !== normNum(f.accountNumber)) {
-            setNotice({ ok: false, text: f.accountNumberConfirm.trim()
-                ? 'Los dos números de cuenta no coinciden. Revísalos dígito por dígito.'
-                : 'Escribe otra vez el número de cuenta en «Confirma el número de cuenta».' });
-            return;
-        }
         if (numeroConfirmado !== true) {
             const num = normNum(f.accountNumber);
             const agrupado = num.replace(/(\d{4})(?=\d)/g, '$1 ');
@@ -2248,20 +2241,6 @@ export const ContactsSection: React.FC<{
                         <div>
                             <label style={LBL}>Número de cuenta</label>
                             <input value={form.accountNumber} onChange={e => setForm(fm => ({ ...fm, accountNumber: fm.country === 'Colombia' ? e.target.value.replace(/\D/g, '').slice(0, 20) : e.target.value.replace(/[^\d-]/g, '') }))} inputMode="numeric" autoComplete="off" style={INP} />
-                        </div>
-                        <div>
-                            <label style={LBL}>Confirma el número de cuenta</label>
-                            {/* Sin pegar: copiar y pegar repite el mismo error. */}
-                            <input value={form.accountNumberConfirm}
-                                onChange={e => setForm(fm => ({ ...fm, accountNumberConfirm: fm.country === 'Colombia' ? e.target.value.replace(/\D/g, '').slice(0, 20) : e.target.value.replace(/[^\d-]/g, '') }))}
-                                onPaste={e => e.preventDefault()} onDrop={e => e.preventDefault()}
-                                inputMode="numeric" autoComplete="off" placeholder="Escríbelo otra vez, sin pegar"
-                                style={{ ...INP, ...(form.accountNumberConfirm && form.accountNumberConfirm !== form.accountNumber ? { borderColor: 'rgba(248,113,113,0.5)' } : {}) }} />
-                            {form.accountNumberConfirm && form.accountNumberConfirm !== form.accountNumber && (
-                                <p style={{ fontSize: 11.5, color: '#F87171', marginTop: 5 }}>
-                                    {form.accountNumber.startsWith(form.accountNumberConfirm) ? 'Sigue escribiendo…' : 'No coincide con el número de cuenta.'}
-                                </p>
-                            )}
                         </div>
                         {form.country === 'Colombia' && (
                             <>
