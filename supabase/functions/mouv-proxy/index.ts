@@ -1414,6 +1414,9 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       // schedule, or amount limits"): ningún proveedor suyo acepta ese retiro
       // (tope de monto, horario o restricción de la cuenta). El beneficiario
       // estaba bien, pero al cliente se le decía que lo revisara.
+      // 11 nov: no es un tope de monto (la misma cuenta completó 32–50 M
+      // minutos antes y después); es intermitente del lado de Coinsenda, así
+      // que al cliente se le dice que la cuenta no está disponible de momento.
       const sinProveedorCs = /withdraw_01|no eligible provider/i.test(`${motivoCs} ${crudoTxt}`)
       if (!fallaProveedor(fallo.status)) {
         const limpio = (v: string) => v.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' } as Record<string, string>)[ch])
@@ -1425,7 +1428,7 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       }
       return { ok: false, status: fallo.status, crudo: fallo.crudo, mensaje: fallaProveedor(fallo.status) ? noDisponible
         : sinFondosCs ? `La ${nombreCuenta(cuenta)} no está disponible temporalmente, así que no salió nada. Puedes enviarlo desde otra cuenta o intentarlo más tarde.`
-        : sinProveedorCs ? `La ${nombreCuenta(cuenta)} no puede enviar este monto en este momento, así que no salió nada. Envíalo por otra cuenta o en montos menores.`
+        : sinProveedorCs ? `La ${nombreCuenta(cuenta)} no está disponible de momento, así que no salió nada. Intenta en unos minutos o envíalo por otra cuenta.`
         : `${etiquetaRiel} no aceptó este envío, así que no salió nada. Revisa los datos del beneficiario o envíalo por otra cuenta.` }
     }
     return { ok: true, retiroId: cr.id, billetera: bill.id, destino, proveedor: String(prov.id), costoProveedor: bruto - amount, montoProveedor: bruto, ...(titular ? { titular } : {}) }
