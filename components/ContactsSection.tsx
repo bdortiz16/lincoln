@@ -304,6 +304,9 @@ const BANKS_CO = [
     'Bancolombia', 'Banco de Bogotá', 'Davivienda', 'BBVA Colombia',
     'Banco de Occidente', 'Banco Popular', 'Scotiabank Colpatria',
     'Banco AV Villas', 'Banco Agrario', 'Banco Caja Social', 'Itaú',
+    // 12 nov: tenían código ACH (abajo) pero no salían en la lista.
+    'Banco Falabella', 'Banco Pichincha', 'Bancoomeva', 'GNB Sudameris',
+    'Citibank', 'Coopcentral',
     'Nequi', 'Daviplata', 'Nu Colombia', 'Lulo Bank', 'Movii', 'Otro',
 ];
 
