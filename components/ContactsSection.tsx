@@ -3035,8 +3035,12 @@ export const ContactsSection: React.FC<{
                                             // Plegado se muestran solo los ALTOS: son la
                                             // razón del bloqueo y es lo que hay que leer.
                                             // Los medios quedan detrás del botón.
-                                            const visibles = verHallazgos ? grupos : altos;
-                                            const ocultos = grupos.length - altos.length;
+                                            // Sin ningún alto, plegar dejaba la caja vacía
+                                            // (12 nov: un BDME solo, "Ver detalle · 1"):
+                                            // entonces los medios salen de una vez.
+                                            const abierto = verHallazgos || altos.length === 0;
+                                            const visibles = abierto ? grupos : altos;
+                                            const ocultos = altos.length === 0 ? 0 : grupos.length - altos.length;
                                             return (
                                                 <div style={{ marginTop: 9, background: '#121413', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '11px 12px' }}>
                                                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
@@ -3048,7 +3052,7 @@ export const ContactsSection: React.FC<{
                                                             </button>
                                                         )}
                                                     </div>
-                                                    <div style={{ maxHeight: verHallazgos ? 240 : undefined, overflowY: verHallazgos ? 'auto' : undefined }}>
+                                                    <div style={{ maxHeight: abierto ? 240 : undefined, overflowY: abierto ? 'auto' : undefined }}>
                                                         {visibles.map((h: any, i: number) => (
                                                             <div key={`${h.codigo}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 8 }}>
                                                                 <span style={{
@@ -3072,7 +3076,7 @@ export const ContactsSection: React.FC<{
                                                             {altos.length > 0 ? 'Y ' : ''}{ocultos} tipo{ocultos === 1 ? '' : 's'} de hallazgo de riesgo medio.
                                                         </p>
                                                     )}
-                                                    {verHallazgos && total > k.hallazgos.length && (
+                                                    {abierto && total > k.hallazgos.length && (
                                                         <p style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)', margin: '9px 0 0' }}>
                                                             El reporte completo trae {total} en total.
                                                         </p>
