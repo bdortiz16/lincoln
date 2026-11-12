@@ -388,6 +388,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
 
 // ── Recoger ─────────────────────────────────────────────────────────────
 const MAX_REINTENTOS = 3
+const MAX_RELANZAMIENTOS_FUENTE = 2
 // JSON con las llaves en orden, para comparar sin que importe el orden.
 const estable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
   x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : x)
@@ -424,6 +425,27 @@ async function recoger(uid: string) {
         if (e instanceof ErrorSarblock && e.status === 429) break
         error = String((e as Error)?.message ?? e).slice(0, 300)
       }
+      // Sarblock no deja reintentar ese check gratis ("No hay fuentes
+      // elegibles para reintento gratuito", 33 documentos el 12 nov): se
+      // lanza una consulta NUEVA, que sí gasta un crédito. Autorizado por
+      // Lincoin el 12 nov. Tope de 2 por ficha para no gastar sin fin.
+      const relanzadas = Number(f.relanzamientosFuente ?? 0)
+      if (error && /no hay fuentes elegibles/i.test(error) && relanzadas < MAX_RELANZAMIENTOS_FUENTE) {
+        const sujeto = sujetoDe(f.tipoDocumento, doc, f.nombreInscrito)
+        if (sujeto) {
+          try {
+            // Con la clave del día Sarblock devolvería el mismo check.
+            const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}` })
+            await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, checkId: r.id }), relanzamientosFuente: relanzadas + 1 }, f))
+            await auditar('sarblock.relanzado_por_fuente', { userId: uid, documento: doc, checkAnterior: f.jobid, checkId: r.id, relanzamiento: relanzadas + 1 })
+            reintentados++
+            continue
+          } catch (e) {
+            if (e instanceof ErrorSarblock && e.status === 429) break
+            await auditar('sarblock.relanzado_por_fuente_fallido', { userId: uid, documento: doc, checkAnterior: f.jobid, motivo: String((e as Error)?.message ?? e).slice(0, 300) })
+          }
+        }
+      }
       await guardarFicha(uid, doc, { ...f, reintentoFuenteAt: ahora, reintentosFuente: n })
       await auditar('sarblock.reintento_fuente', { userId: uid, documento: doc, checkId: f.jobid, intento: n, error })
       reintentados++
@@ -446,7 +468,10 @@ async function recoger(uid: string) {
       // el padrón (visto el 2026-10-28: 555 escrituras en 6 h, dos fichas).
       if (enCursoAun && check.aggregateOutcome === f.sarblock?.aggregateOutcome && estable(check.catalog) === estable(f.sarblock?.catalog)) continue
       const ruesTraslado = terminado(check) ? await trasladoVigente(check, f.tipoDocumento, doc) : null
-      const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, ruesTraslado }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}) }
+      const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, ruesTraslado }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}),
+        // Se conserva cuántas consultas pagas se lanzaron por la fuente: sin
+        // esto el tope se borraba al cerrar y se relanzaba sin fin.
+        ...(f.relanzamientosFuente ? { relanzamientosFuente: f.relanzamientosFuente } : {}) }
       await guardarFicha(uid, doc, conDecision(nueva, f))
       // Al padrón: este crédito ya se pagó, que no lo pague nadie más.
       await padronGuardar(db, f.tipoDocumento, doc, nueva, uid, 'sarblock')
