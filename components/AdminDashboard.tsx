@@ -98,6 +98,7 @@ import { AdminCupos } from './AdminCupos';
 import { AdminSirel } from './AdminSirel';
 import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
+import { AdminApiExterna } from './AdminApiExterna';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
@@ -273,7 +274,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 // clave interna en inglés ("Clients", "Treasury"…).
 // Las dos secciones que agrupan varias pantallas. El orden es el de las
 // pestañas: primero la pantalla que da el panorama, después el detalle.
-const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team'];
+const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team', 'apiExterna'];
 // 'kumplo' salió el 2026-10-30: Kumplo se retiró de Lincoin.
 const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'sirel'];
 
@@ -293,6 +294,7 @@ const TAB_TITLES: Record<string, string> = {
 const SUBTAB_TITLES: Record<string, string> = {
   security: 'Cuentas y accesos',
   compliance: 'Bandeja de casos',
+  apiExterna: 'API externa',
 };
 
 
@@ -638,7 +640,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const primeraTabColaborador = ORDEN_TABS_COLABORADOR.find(t => puedeVerTab(t)) ?? 'overview';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda'>(soloTesoreria ? 'cargues' : esColaborador ? primeraTabColaborador as any : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda' | 'apiExterna'>(soloTesoreria ? 'cargues' : esColaborador ? primeraTabColaborador as any : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -6120,6 +6122,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 {activeTab === 'otcConfig' && <AdminContabilidad key={entradaConta} />}
                 {activeTab === 'coinsenda' && <AdminCoinsenda soloTablero={!esDueno} />}
                 {activeTab === 'otcCierres' && <AdminOtcCierres />}
+                {activeTab === 'apiExterna' && <AdminApiExterna />}
                 {activeTab === 'fallos' && renderFallos()}
                 {activeTab === 'auditoria' && renderAuditoria()}
             </div>
