@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.sarblock]
 verify_jwt = false
+
+[functions.api-empresas]
+verify_jwt = false
