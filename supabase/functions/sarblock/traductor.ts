@@ -36,7 +36,13 @@ export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string;
 // v3 (2026-10-30): un "pedir revisión" de Sarblock que solo se debe a una
 // fuente caída, sin ninguna coincidencia, ya no sube a riesgo medio; y se
 // marca cuando la Registraduría no encontró el documento.
-export const CRITERIO = 'lincoin-v3-2026-10-30';
+// v4 (2026-11-12): si lo único que encontró Sarblock es el Boletín de
+// Deudores Morosos del Estado (BDME), su nivel no aplica: es deuda fiscal,
+// no riesgo LAFT. Queda en medio (con aviso) y no bloquea.
+export const CRITERIO = 'lincoin-v4-2026-11-12';
+
+// Una entrada del catálogo que es el BDME de la Contaduría.
+export const esBdme = (e: any) => /bdme|deudores?\s+morosos/i.test(`${e?.code ?? ''} ${e?.label ?? ''}`);
 
 export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string };
 
@@ -54,6 +60,8 @@ const limpio = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim();
 //   Prensa adversa EXTREMO/ALTO con certeza CONFIRMADA/PROBABLE    → alto
 //   Rama Judicial: parte pasiva en civil, familia, laboral…       → medio
 //   PEP · fuente que pide revisión · prensa de menor gravedad     → medio
+const isRestrictivaAlguna = (es: any[]) => es.some(e => e?.isRestrictive === true);
+
 export function reglasLincoin(catalogo: any[]): Motivo[] {
   const out: Motivo[] = [];
   for (const e of catalogo) {
@@ -231,7 +239,11 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const soloIdentidad = /spoof/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0;
   // Y si lo único fue la matrícula cancelada por traslado (con la nueva
   // vigente en el RUES), su HIGH / HOLD_FOR_REVIEW tampoco.
-  const ignorarSarblock = (soloIdentidad || !!traslado) && !suplantacion;
+  // Y si lo único fue el BDME (deudor moroso del Estado), tampoco: la matriz
+  // lo deja en medio. Decisión de cumplimiento del 2026-11-12.
+  const soloBdme = coinciden.length > 0 && coinciden.every(esBdme) && !isRestrictivaAlguna(coinciden)
+    && s.shouldBlock !== true && String(s.action ?? '') !== 'BLOCK';
+  const ignorarSarblock = (soloIdentidad || !!traslado || soloBdme) && !suplantacion;
   const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
   // "Revisar" solo porque una fuente no respondió, sin ninguna coincidencia:
   // no es un hallazgo. Antes subía a riesgo medio una consulta limpia pero
