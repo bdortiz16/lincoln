@@ -257,6 +257,37 @@ async function panel(req: Request): Promise<Response> {
     return json(200, { ok: true })
   }
 
+  // Prueba desde el panel: el servidor firma con la generación vigente de la
+  // credencial y pasa la consulta por el MISMO camino que una externa
+  // (firma, nonce, tope, registro). Sin IP, así que no dispara "IP nueva".
+  // No rota: no le cambia nada al sistema externo.
+  if (accion === 'probar') {
+    if (!CLAVE) return json(500, { ok: false, error: 'Falta configurar API_SECRETOS_KEY en Supabase.' })
+    const { data: cred } = await db.from('api_credenciales').select('*').eq('id', String(body.credencial_id ?? '')).maybeSingle()
+    if (!cred) return json(404, { ok: false, error: 'No existe esa credencial.' })
+    if (cred.estado !== 'activa') return json(400, { ok: false, error: 'La credencial está revocada.' })
+    const { data: gens } = await db.from('api_secretos').select('generacion, expira_at, reemplazado_at, secreto_cifrado')
+      .eq('credencial_id', cred.id).is('reemplazado_at', null).order('generacion', { ascending: false }).limit(1)
+    const gen = (gens ?? [])[0] as any
+    if (!gen || Date.parse(gen.expira_at) <= Date.now()) return json(400, { ok: false, error: 'La credencial no tiene un secreto vigente (venció sin rotar).' })
+    const id = String(body.id ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+    const url = new URL(`https://interno/functions/v1/api-empresas${id ? `?id=${id}` : ''}`)
+    const hora = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const nonce = `panel-${crypto.randomUUID()}`
+    const secreto = await descifrar(CLAVE, gen.secreto_cifrado)
+    const firma = await firmar(secreto, await textoAFirmar('GET', url.pathname, url.searchParams, hora, nonce, ''))
+    const inicio = Date.now()
+    const r = await apiFirmada(new Request(url, { headers: {
+      'x-llave-id': cred.llave_id, 'x-generacion': String(gen.generacion), 'x-hora': hora,
+      'x-nonce': nonce, 'x-firma': firma, 'x-dispositivo': 'prueba-panel-admin', 'user-agent': 'panel-lincoin',
+    } }), url)
+    await auditar('api.prueba_panel', { credencial: cred.llave_id, id_consultado: id || null, status: r.status }, v.userId)
+    const texto = await r.text()
+    let cuerpo: unknown = texto
+    try { cuerpo = JSON.parse(texto) } catch { /* texto plano */ }
+    return json(200, { ok: true, status: r.status, duracion_ms: Date.now() - inicio, generacion: gen.generacion, cuerpo })
+  }
+
   if (accion === 'registro') {
     let q = db.from('api_consultas').select('*').order('at', { ascending: false }).limit(200)
     if (body.credencial_id) q = q.eq('credencial_id', String(body.credencial_id))

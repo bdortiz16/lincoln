@@ -294,7 +294,7 @@ const TAB_TITLES: Record<string, string> = {
 const SUBTAB_TITLES: Record<string, string> = {
   security: 'Cuentas y accesos',
   compliance: 'Bandeja de casos',
-  apiExterna: 'API externa',
+  apiExterna: 'API Keys',
 };
 
 
