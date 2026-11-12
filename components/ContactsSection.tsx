@@ -575,6 +575,11 @@ export const ContactsSection: React.FC<{
         if (est !== 'finalizado') return amlCorre;
         // Cumplimiento lo revisó y lo aprobó: el servidor lo deja pasar.
         if (k.aprobadoManual === true) return false;
+        // Cerrada sin una fuente (casi siempre la Rama Judicial): el servidor
+        // espera esa respuesta (mouv-proxy, fuentesPendientes), así que aquí
+        // Enviar tampoco se ofrece. Antes la insignia decía VERIFICANDO y el
+        // botón seguía activo.
+        if (Number(k.fuentesEnCurso ?? 0) > 0) return amlCorre;
         return k.operable === false
             || String(k.categoria ?? '') === 'alto'
             || k.nombreCoincide === false
@@ -588,6 +593,7 @@ export const ContactsSection: React.FC<{
         if (!k) return false;
         // Un documento inválido no se arregla esperando: eso es un bloqueo.
         const e = String(k.estado ?? '');
+        if (e === 'finalizado' && Number(k.fuentesEnCurso ?? 0) > 0 && k.aprobadoManual !== true) return true;
         return e !== 'finalizado' && e !== 'documento_invalido';
     };
     // No poder ENVIAR y no poder BORRAR son cosas distintas.
