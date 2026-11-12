@@ -5136,15 +5136,27 @@ serve(async (req: Request) => {
               const soloEstos: string[] = Array.isArray(tdCfg?.soloEstosUsuarios) ? tdCfg.soloEstosUsuarios : []
               const cubierta = soloEstos.length === 0 || soloEstos.includes(userId)
               const estadoF = String(f?.estado ?? '')
-              const esperando = cubierta && estadoF !== 'finalizado' && estadoF !== 'sin_autorizacion'
+              // Un veredicto con fuentes todavía "en curso" tampoco es un
+              // veredicto: Sarblock cierra el check con la fuente pendiente y
+              // la completa después. El 12 nov un envío de 28 M salió con un
+              // "medio" provisional y, media hora después, la Rama Judicial
+              // trajo un proceso penal (riesgo alto). Se espera mientras la
+              // ficha se siga releyendo (24 h, igual que el barrido).
+              const fuentesPendientes = estadoF === 'finalizado' && f?.proveedor === 'sarblock'
+                && Number(f?.fuentesEnCurso ?? 0) > 0
+                && Date.now() - (Date.parse(String(f?.lanzadoAt ?? f?.at ?? '')) || 0) < 24 * 3600_000
+              const esperando = cubierta && ((estadoF !== 'finalizado' && estadoF !== 'sin_autorizacion') || fuentesPendientes)
               if (esperando) {
                 await logAudit(userId, 'tusdatos.envio_en_espera', {
-                  documento: docDest, estado: estadoF || 'sin_consulta',
+                  documento: docDest, estado: fuentesPendientes ? 'fuentes_en_curso' : (estadoF || 'sin_consulta'),
+                  ...(fuentesPendientes ? { fuentesEnCurso: Number(f?.fuentesEnCurso) } : {}),
                 })
                 return json(409, {
                   error: 'aml_pendiente',
                   message: estadoF === 'documento_invalido'
                     ? String(f?.detalle ?? 'El documento de este beneficiario no es válido. Borra el beneficiario e inscríbelo con el número correcto.')
+                    : fuentesPendientes
+                    ? 'Estamos terminando de verificar los antecedentes de este beneficiario: una de las fuentes todavía no responde. Inténtalo de nuevo en unos minutos.'
                     : estadoF === 'procesando' || !estadoF
                     ? 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.'
                     : 'La verificación de antecedentes de este beneficiario no ha terminado. Se está reintentando; inténtalo de nuevo en unos minutos.',

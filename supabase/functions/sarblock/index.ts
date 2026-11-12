@@ -151,7 +151,12 @@ const fichaQueManda = (a: any, b: any) =>
 // ¿Es el mismo nombre escrito? (sin tildes, mayúsculas ni signos). Ojo: esto
 // no decide si el nombre corresponde al documento —eso es compararNombres—,
 // solo si el cliente escribió lo mismo que la ficha ya tiene.
-const claveNombre = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()
+// La sigla societaria tampoco cuenta: "CONSTRUCTORA X" y "CONSTRUCTORA X
+// S.A.S" son el mismo nombre escrito. Con dos contactos del mismo NIT, uno
+// con sigla y otro sin ella, cada llamada rejuzgaba la ficha con el otro
+// nombre: el 12 nov se reescribió cada 15 s durante horas.
+const SIGLA_FINAL = /(?:\s+(?:S\s?A\s?S|S\s?A|LTDA|S\s?EN\s?C(?:\s?S)?|E\s?S\s?P|BIC|Y\s?CIA))+$/
+const claveNombre = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim().replace(SIGLA_FINAL, '').trim()
 const mismoNombre = (a: unknown, b: unknown) => claveNombre(a) === claveNombre(b)
 
 // Solo de SUS beneficiarios inscritos se pueden pedir antecedentes desde la
