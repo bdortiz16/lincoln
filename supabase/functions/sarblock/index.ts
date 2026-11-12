@@ -35,7 +35,7 @@ import { setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
-import { traducir, fichaLanzada, terminado, hayQueReintentar, releerFicha, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
+import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
@@ -411,8 +411,24 @@ async function recoger(uid: string) {
     }
     // Lo que sigue procesando, y lo que se cerró con fuentes que Sarblock
     // todavía esperaba (el mismo check se completa solo; leerlo es gratis).
-    const enCursoAun = releerFicha(f)
+    const paso = pasoFuentePendiente(f)
+    const enCursoAun = paso !== null
     if (f?.proveedor !== 'sarblock' || !f.jobid || (f.estado !== 'procesando' && !enCursoAun)) continue
+    if (paso === 'esperar') continue
+    if (paso === 'reintentar') {
+      // Retry gratis del mismo check: no gasta crédito ni lanza otro.
+      const ahora = new Date().toISOString()
+      const n = Number(f.reintentosFuente ?? 0) + 1
+      let error: string | null = null
+      try { await cliente().reintentarFuentes(f.jobid) } catch (e) {
+        if (e instanceof ErrorSarblock && e.status === 429) break
+        error = String((e as Error)?.message ?? e).slice(0, 300)
+      }
+      await guardarFicha(uid, doc, { ...f, reintentoFuenteAt: ahora, reintentosFuente: n })
+      await auditar('sarblock.reintento_fuente', { userId: uid, documento: doc, checkId: f.jobid, intento: n, error })
+      reintentados++
+      continue
+    }
     try {
       const sb = cliente()
       const check = await sb.leerCheck(f.jobid)
@@ -1020,7 +1036,14 @@ Deno.serve(async (req) => {
       const desde = new Date(Date.now() - 24 * 3600_000).toISOString()
       const { data: filas } = await db.from('audit_log').select('metadata')
         .in('action', ['sarblock.lanzado', 'sarblock.consulta']).gte('created_at', desde).order('created_at', { ascending: false }).limit(1000)
-      const cuentas = [...new Set(((filas ?? []) as any[]).map(f => String(f?.metadata?.userId ?? '')).filter(Boolean))].slice(0, 25)
+      // También las cuentas con fichas que esperan una fuente, aunque la
+      // consulta sea vieja: sin esto, pasadas 24 h nadie las volvía a mirar.
+      const { data: conPendiente } = await db.from('users').select('id')
+        .filter('raw_data->tusdatos->>beneficiarios', 'like', '%fuentesEnCurso%').limit(200)
+      const cuentas = [...new Set([
+        ...((filas ?? []) as any[]).map(f => String(f?.metadata?.userId ?? '')),
+        ...((conPendiente ?? []) as any[]).map(u => String(u?.id ?? '')),
+      ].filter(Boolean))].slice(0, 40)
       const inicio = Date.now()
       let cerrados = 0
       for (const cu of cuentas) {

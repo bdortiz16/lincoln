@@ -320,7 +320,7 @@ Deno.test('KYC: cumplimiento pide más datos (REQUIRES_INFO con motivo)', async 
 });
 
 // ── Fuentes "en curso" (visto en la primera consulta real) ──────────────
-import { enCurso, releerFicha } from './traductor.ts';
+import { enCurso, releerFicha, pasoFuentePendiente } from './traductor.ts';
 const policiaEnCurso = { ...policiaCaida, retryable: false, statusReason: 'Consulta en curso en la fuente oficial: el resultado se añadirá al llegar' };
 
 Deno.test('fuente en curso: no se reintenta, la ficha queda para releer', () => {
@@ -333,8 +333,25 @@ Deno.test('fuente en curso: no se reintenta, la ficha queda para releer', () => 
   assertEquals(f.operable, true);       // blockReason sin shouldBlock no bloquea
   assertEquals(f.bloqueo, undefined);
   assert(releerFicha({ ...f, lanzadoAt: new Date().toISOString() }));
-  // Pasadas 24 h se da por perdida y no se relee más.
-  assertEquals(releerFicha({ ...f, lanzadoAt: new Date(Date.now() - 25 * 3600e3).toISOString() }), false);
+  // Ya no se da por perdida a las 24 h: el envío espera, así que se insiste.
+  assert(releerFicha({ ...f, lanzadoAt: new Date(Date.now() - 25 * 3600e3).toISOString() }));
+});
+
+Deno.test('fuente pendiente: lee la primera hora, luego retry gratis cada hora', () => {
+  const f = { ...traducir(check({ aggregateOutcome: 'PARTIAL', catalog: [policiaEnCurso] }), benef), jobid: 'chk-1' };
+  const t0 = Date.parse('2026-11-12T12:00:00Z');
+  const lanzada = { ...f, lanzadoAt: new Date(t0).toISOString() };
+  assertEquals(pasoFuentePendiente(lanzada, t0 + 10 * 60e3), 'leer');
+  assertEquals(pasoFuentePendiente(lanzada, t0 + 2 * 3600e3), 'reintentar');
+  const reintentada = { ...lanzada, reintentoFuenteAt: new Date(t0 + 2 * 3600e3).toISOString() };
+  assertEquals(pasoFuentePendiente(reintentada, t0 + 2 * 3600e3 + 5 * 60e3), 'leer');
+  assertEquals(pasoFuentePendiente(reintentada, t0 + 2 * 3600e3 + 40 * 60e3), 'esperar');
+  assertEquals(pasoFuentePendiente(reintentada, t0 + 3 * 3600e3), 'reintentar');
+  // Días después sigue insistiendo.
+  assertEquals(pasoFuentePendiente(lanzada, t0 + 10 * 24 * 3600e3), 'reintentar');
+  // Completa: nada que hacer.
+  const completa = { ...traducir(check({ catalog: [{ ...policiaEnCurso, status: 'CLEAR', statusReason: null }] }), benef), jobid: 'chk-1', lanzadoAt: lanzada.lanzadoAt };
+  assertEquals(pasoFuentePendiente(completa, t0 + 2 * 3600e3), null);
 });
 
 Deno.test('ficha vieja sin fuentesEnCurso: se deduce del catálogo guardado', () => {

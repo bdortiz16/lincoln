@@ -312,13 +312,29 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
 export const enCurso = (check: any) =>
   (Array.isArray(check?.catalog) ? check.catalog : []).filter((e: any) => e?.status === 'UNAVAILABLE' && e?.retryable !== true).length;
 
-// Una ficha cerrada que hay que volver a leer: quedó con fuentes en curso y
-// no ha pasado tanto tiempo como para darlas por perdidas.
-export const VENTANA_EN_CURSO_MS = 24 * 3600 * 1000;
-export const releerFicha = (f: any, ahora = Date.now()) =>
+// Una ficha cerrada que hay que volver a leer: quedó con fuentes en curso.
+// Ya no se da por perdida a las 24 h: sin la fuente (casi siempre la Rama
+// Judicial) el envío no sale, así que se insiste hasta que llegue.
+export const releerFicha = (f: any) =>
   f?.proveedor === 'sarblock' && f.estado === 'finalizado' && !!f.jobid
-  && Number(f.fuentesEnCurso ?? enCurso({ catalog: f.sarblock?.catalog })) > 0
-  && ahora - Date.parse(String(f.lanzadoAt ?? f.at ?? 0)) < VENTANA_EN_CURSO_MS;
+  && Number(f.fuentesEnCurso ?? enCurso({ catalog: f.sarblock?.catalog })) > 0;
+
+// Qué hacer con una ficha que tiene fuentes en curso. Sarblock (12 nov): la
+// fuente oficial a veces no está disponible; el retry manual del check es
+// GRATIS y no vence, aunque la fuente diga retryable=false. Su retry
+// automático solo mira las últimas 24 h.
+//   · la primera hora: leer en cada vuelta (suele completarse sola);
+//   · después: un retry gratis cada hora, y leer en los 20 min siguientes.
+export const REINTENTO_FUENTE_MS = 60 * 60 * 1000;
+export function pasoFuentePendiente(f: any, ahora = Date.now()): 'leer' | 'reintentar' | 'esperar' | null {
+  if (!releerFicha(f)) return null;
+  const edad = ahora - (Date.parse(String(f.lanzadoAt ?? f.at ?? '')) || 0);
+  if (edad < REINTENTO_FUENTE_MS) return 'leer';
+  const ultimo = Date.parse(String(f.reintentoFuenteAt ?? '')) || 0;
+  if (ahora - ultimo >= REINTENTO_FUENTE_MS) return 'reintentar';
+  if (ahora - ultimo < 20 * 60 * 1000) return 'leer';
+  return 'esperar';
+}
 
 // ¿Vale la pena un retry? Solo si quedaron fuentes caídas recuperables. Es
 // gratis y sobre el mismo check, hasta tres lotes.
