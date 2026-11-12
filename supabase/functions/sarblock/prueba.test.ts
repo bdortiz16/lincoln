@@ -65,7 +65,7 @@ Deno.test('OFAC: alto, no operable, con el motivo', () => {
   assert(f.bloqueo?.startsWith('Riesgo alto: Coincidencia en lista restrictiva: OFAC SDN'));
   assertEquals(f.altos, 1);
   assertEquals(f.hallazgos?.[0], { nivel: 'alto', codigo: 'lista_restrictiva', texto: 'Coincidencia en lista restrictiva: OFAC SDN (Ada Lovelace)', fuente: 'OFAC SDN' });
-  assertEquals(f.criterio, 'lincoin-v4-2026-11-12');
+  assertEquals(f.criterio, 'lincoin-v3-2026-10-30');
 });
 
 Deno.test('revisión solo por una fuente caída, sin coincidencias: NO es riesgo medio', () => {
@@ -103,7 +103,7 @@ Deno.test('NOT_FOUND pero con nombre oficial: el documento existe, queda sin val
 
 Deno.test('matrícula cancelada por traslado: con la nueva vigente en el RUES no es hallazgo', () => {
   const rues = { code: 'co_rues', label: 'Validación Empresa RUES', category: 'IDENTITY', status: 'MATCH', matched: true, matchCount: 1, isRestrictive: false, statusReason: 'Matrícula cancelada por traslado de domicilio', hits: [] };
-  const c = check({ summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, matchedLists: 1, unavailableLists: 0 }, identity: null, catalog: [rues] });
+  const c = check({ summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, matchedLists: 1, unavailableLists: 0 }, catalog: [rues] });
   const d = { documento: '900000001', tipoDocumento: 'NIT', nombre: 'EMPRESA S.A.S.' };
   assertEquals(traducir(c, d).categoria, 'alto');
   const f = traducir(c, { ...d, ruesTraslado: { camara: 'PEREIRA', matricula: '1' } });
@@ -111,20 +111,6 @@ Deno.test('matrícula cancelada por traslado: con la nueva vigente en el RUES no
   assertEquals(f.hallazgos, []);
   assertEquals(f.sarblock?.catalog.length, 1);
   assertEquals(rejuzgar(f, d)?.categoria, 'ninguno');
-});
-
-Deno.test('BDME solo: Sarblock dice HIGH pero queda medio y operable', () => {
-  const bdme = { code: 'co_bdme', label: 'Contaduría — Deudores morosos del Estado', category: 'COLOMBIA', status: 'MATCH', matched: true, matchCount: 1, isRestrictive: false, statusReason: 'Deudor moroso del Estado (BDME)', hits: [] };
-  const c = check({ summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, matchedLists: 1, unavailableLists: 0 }, identity: null, catalog: [bdme] });
-  const d = { documento: '900000002', tipoDocumento: 'NIT', nombre: 'EMPRESA S.A.S.' };
-  const f = traducir(c, d);
-  assertEquals(f.categoria, 'medio');
-  assertEquals(f.operable, true);
-  assertEquals(rejuzgar(f, d)?.categoria, 'medio');
-  // Con BLOCK explícito de Sarblock, sí bloquea.
-  const b = traducir(check({ summary: { action: 'BLOCK', riskLevel: 'HIGH', shouldBlock: true, matchedLists: 1, unavailableLists: 0 }, identity: null, catalog: [bdme] }), d);
-  assertEquals(b.categoria, 'alto');
-  assertEquals(b.operable, false);
 });
 
 Deno.test('PEP: medio, sigue operable (la revisión la decide la config)', () => {
@@ -506,7 +492,7 @@ Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a S
     criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
   const nueva = rejuzgar(vieja, { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
   assertEquals(nueva?.operable, true);
-  assertEquals(nueva?.criterio, 'lincoin-v4-2026-11-12');
+  assertEquals(nueva?.criterio, 'lincoin-v3-2026-10-30');
 });
 
 // ── Lincoin Risk prepago ────────────────────────────────────────────────
