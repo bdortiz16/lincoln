@@ -3948,12 +3948,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     return base + hash;
   }
 
-  const renderTxDetail = () => {
-    if (!selectedTx) return null;
+  // Con `accion`, no pinta nada: arma el comprobante del movimiento dado y lo
+  // comparte o lo descarga. Lo usa la pantalla "Envío en camino" para dar el
+  // comprobante sin salir de ella, con el MISMO dibujo que el detalle.
+  const renderTxDetail = (txArg?: any, accion?: 'compartir' | 'descargar'): any => {
+    const sel = txArg ?? selectedTx;
+    if (!sel) return null;
     // La versión FRESCA del movimiento: si la lista se refrescó mientras el
     // detalle estaba abierto (p. ej. llegó el motivo del rechazo), se muestra
     // lo nuevo, no la copia con la que se abrió.
-    const tx = (movements || []).find((m: any) => String(m.id) === String(selectedTx.id)) ?? selectedTx;
+    const tx = (movements || []).find((m: any) => String(m.id) === String(sel.id)) ?? sel;
     const dt = tx.createdAt ? new Date(tx.createdAt) : null;
     const dateStr = dt ? dt.toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' }) : (tx.date || '');
     const timeStr = dt ? dt.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -4398,6 +4402,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
         showToast('Comprobante descargado');
       } catch { showToast('No se pudo generar el comprobante', 4000, 'error'); }
     };
+    if (accion) return accion === 'compartir' ? shareReceipt() : downloadReceipt();
 
     // ── Datos derivados para el rediseño dark ──
     const truncMid = (s: string, head = 8, tail = 6) => { const v = String(s || ''); return v.length > head + tail + 1 ? `${v.slice(0, head)}…${v.slice(-tail)}` : v; };
@@ -5815,6 +5820,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           movements={movements}
           onIrA={(v: string) => setActiveView(v as any)}
           onVerMovimiento={(tx: any) => setSelectedTx(tx)}
+          onComprobante={(tx: any, accion: 'compartir' | 'descargar') => { renderTxDetail(tx, accion); }}
           mfaFactorId={mfaFactorId}
           mfaTotpSecret={mfaTotpSecret}
           onMoverEntreCuentas={() => { setSelectedWalletCode('COP'); setBrebMoveOpen(true); setActiveView('wallet-detail'); }}

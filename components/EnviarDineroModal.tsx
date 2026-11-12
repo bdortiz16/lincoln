@@ -49,6 +49,8 @@ type Props = {
   /** Cambiar de pantalla en el panel que lo aloja (p. ej. a Ajustes). */
   onIrA: (vista: string) => void;
   onVerMovimiento?: (tx: any) => void;
+  /** Compartir o descargar el comprobante de un movimiento sin abrir su detalle. */
+  onComprobante?: (tx: any, accion: 'compartir' | 'descargar') => void;
   /** Personas: su COP vive en un solo saldo; el riel lo cubre el servidor. */
   saldoUnificado?: boolean;
   mfaFactorId?: string;
@@ -85,7 +87,7 @@ export const prefillDeContacto = (c: any): EnviarPrefill => {
 };
 
 export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function EnviarDineroModal(props, ref) {
-  const { showToast, mfaEnrolled, displayBalance, callGasfree, refreshGasfreeBal, movements, onIrA, onVerMovimiento, saldoUnificado = false, mfaFactorId, mfaTotpSecret, onMoverEntreCuentas, metodos } = props;
+  const { showToast, mfaEnrolled, displayBalance, callGasfree, refreshGasfreeBal, movements, onIrA, onVerMovimiento, onComprobante, saldoUnificado = false, mfaFactorId, mfaTotpSecret, onMoverEntreCuentas, metodos } = props;
   const { currentUser, getBalance: getBalanceCtx, requestWithdrawal, sendCuypayPayment, getAllUsers, verificarCodigo2fa, refreshData } = useDatabase();
   // Modelo Comisión de facturación: cada envío pide el ordenante.
   const cuE: any = currentUser ?? {};
@@ -2153,6 +2155,85 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const at = sendResult?.at ? new Date(sendResult.at) : new Date();
                           const dateLabel = `Hoy, ${at.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' })} · ${at.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`;
                           const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 2px', borderTop: '1px solid rgba(255,255,255,0.06)' };
+                          // Movimiento para el comprobante (ver, compartir, descargar).
+                          const armarReceiptTx = () => {
+                          // Abrir el detalle real del envío (con descarga de comprobante
+                          // funcional) en vez de cerrar y mandar a Movimientos.
+                          // Estado REAL para el comprobante: se busca el movimiento real
+                          // por su referencia del proveedor; si aún no sincroniza, se usa
+                          // el estado por riel (USDT y Bre-B confirman al instante; ACH
+                          // queda "Procesando" hasta que el banco liquide). Antes se ponía
+                          // 'Completado' fijo — el comprobante decía Completado con el pago
+                          // aún en proceso.
+                          const realMov: any = sendResult?.providerRef
+                              ? movements.find((m: any) => m?.providerRef === sendResult.providerRef || m?.raw_data?.providerRef === sendResult.providerRef)
+                              : null;
+                          // NUNCA 'Completado' por defecto. Acá seguía puesto para
+                          // wallet y Bre-B, y es falso: el servidor deja toda
+                          // dispersión en 'Procesando' al enviar, justamente porque
+                          // el 200 del proveedor sólo significa "aceptada" y puede
+                          // terminar DEVUELTA minutos después.
+                          //
+                          // Un comprobante que dice Completado sin que nadie lo
+                          // haya confirmado es lo peor que puede emitir esto: el
+                          // cliente se lo manda al beneficiario como prueba de un
+                          // pago que quizá no ocurrió. Si todavía no encontramos el
+                          // movimiento real, lo cierto es 'Procesando'.
+                          const receiptStatus = realMov?.status || 'Procesando';
+                          const receiptTx = {
+                              // El id REAL del movimiento si ya apareció; el inventado solo si no hay nada.
+                              id: realMov?.id ?? (sendResult?.providerRef || `TX-${Date.now()}`),
+                              type: isWalletSend ? 'send' : 'dispersion',
+                              amount: amt,
+                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS >= 3 ? railCuenta(cuentaBS) : 'COP_BREB') : (isCop ? (cuentaAS >= 3 ? railCuenta(cuentaAS) : 'COP_ACH') : sendForm.destinationCurrency)),
+                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : cuentaAS >= 3 ? { cuentaAch: cuentaAS } : {}) } : {}),
+                              status: receiptStatus,
+                              createdAt: sendResult?.at || new Date().toISOString(),
+                              beneficiary: name,
+                              bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
+                              account: acctRaw,
+                              documentType: dR.docType,
+                              documentNumber: dR.docNumber,
+                              providerRef: sendResult?.providerRef || '',
+                              reason: sendForm.reason,
+                              feeCop,
+                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: dR.brebKeyType, documentType: dR.docType, documentNumber: dR.docNumber, accountType: dR.accountType },
+                          };
+                              return receiptTx;
+                          };
+                          // "Copiar": el resumen completo en texto, para pegarlo en un
+                          // chat. Dice "En proceso" mientras el banco no confirme, igual
+                          // que el comprobante: no es prueba de que el dinero llegó.
+                          const copiarResumen = () => {
+                              const rt: any = armarReceiptTx();
+                              const enProceso = rt.status !== 'Completado';
+                              const tipoCta = !isBrebS && dR.accountType ? String(dR.accountType).charAt(0).toUpperCase() + String(dR.accountType).slice(1).toLowerCase() : '';
+                              const lineas = [
+                                  'Comprobante Lincoin',
+                                  `Monto: ${isCop && !isWalletSend ? `${formatMoney(amt, 'COP')} COP` : `${Number(amt || 0).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${displayCurrency(sendForm.destinationCurrency)}`}`,
+                                  `Beneficiario: ${name}`,
+                                  ...(dR.docNumber ? [`Documento: ${[dR.docType, dR.docNumber].filter(Boolean).join(' ')}`] : []),
+                                  ...(isWalletSend ? [`Wallet: ${acctRaw}`]
+                                      : isBrebS ? [`Llave Bre-B: ${acctRaw}`]
+                                      : [`Banco: ${dR.bank || 'ACH'}`, ...(tipoCta ? [`Tipo de cuenta: ${tipoCta}`] : []), `Cuenta: ${acctRaw}`]),
+                                  `Método: ${isWalletSend ? 'TRC-20' : isBrebS ? 'Bre-B' : 'ACH'}`,
+                                  ...(sendForm.reason ? [`Motivo: ${sendForm.reason}`] : []),
+                                  `Estado: ${enProceso ? 'En proceso (pendiente de confirmación del banco)' : rt.status}`,
+                                  `Fecha: ${at.toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' })} · ${at.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`,
+                                  ...(ref ? [`Referencia: ${ref}`] : []),
+                                  'www.lincoin.me',
+                              ];
+                              navigator.clipboard?.writeText(lineas.join('\n')).then(() => showToast('Resumen copiado')).catch(() => showToast('No se pudo copiar'));
+                          };
+                          // Compartir / Descargar: el MISMO comprobante del detalle del
+                          // movimiento, sin salir de esta pantalla. Si el panel no lo
+                          // ofrece, se abre el detalle (que tiene los dos botones).
+                          const comprobante = (accion: 'compartir' | 'descargar') => {
+                              const rt = armarReceiptTx();
+                              if (onComprobante) { onComprobante(rt, accion); return; }
+                              closeSendModal();
+                              setSelectedTx(rt);
+                          };
                           return (
                           <div className="animate-in zoom-in-95 duration-300">
                               {/* 1. Cabecera de éxito/fallo */}
@@ -2221,52 +2302,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               <div className="flex" style={{ gap: 9, marginTop: 16 }}>
                                   {ok ? (
                                       <>
-                                      <button onClick={() => {
-                                          // Abrir el detalle real del envío (con descarga de comprobante
-                                          // funcional) en vez de cerrar y mandar a Movimientos.
-                                          // Estado REAL para el comprobante: se busca el movimiento real
-                                          // por su referencia del proveedor; si aún no sincroniza, se usa
-                                          // el estado por riel (USDT y Bre-B confirman al instante; ACH
-                                          // queda "Procesando" hasta que el banco liquide). Antes se ponía
-                                          // 'Completado' fijo — el comprobante decía Completado con el pago
-                                          // aún en proceso.
-                                          const realMov: any = sendResult?.providerRef
-                                              ? movements.find((m: any) => m?.providerRef === sendResult.providerRef || m?.raw_data?.providerRef === sendResult.providerRef)
-                                              : null;
-                                          // NUNCA 'Completado' por defecto. Acá seguía puesto para
-                                          // wallet y Bre-B, y es falso: el servidor deja toda
-                                          // dispersión en 'Procesando' al enviar, justamente porque
-                                          // el 200 del proveedor sólo significa "aceptada" y puede
-                                          // terminar DEVUELTA minutos después.
-                                          //
-                                          // Un comprobante que dice Completado sin que nadie lo
-                                          // haya confirmado es lo peor que puede emitir esto: el
-                                          // cliente se lo manda al beneficiario como prueba de un
-                                          // pago que quizá no ocurrió. Si todavía no encontramos el
-                                          // movimiento real, lo cierto es 'Procesando'.
-                                          const receiptStatus = realMov?.status || 'Procesando';
-                                          const receiptTx = {
-                                              // El id REAL del movimiento si ya apareció; el inventado solo si no hay nada.
-                                              id: realMov?.id ?? (sendResult?.providerRef || `TX-${Date.now()}`),
-                                              type: isWalletSend ? 'send' : 'dispersion',
-                                              amount: amt,
-                                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS >= 3 ? railCuenta(cuentaBS) : 'COP_BREB') : (isCop ? (cuentaAS >= 3 ? railCuenta(cuentaAS) : 'COP_ACH') : sendForm.destinationCurrency)),
-                                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : cuentaAS >= 3 ? { cuentaAch: cuentaAS } : {}) } : {}),
-                                              status: receiptStatus,
-                                              createdAt: sendResult?.at || new Date().toISOString(),
-                                              beneficiary: name,
-                                              bank: sendContact?.bank || sendForm.bankName || (isBrebS ? 'Bre-B' : 'ACH'),
-                                              account: acctRaw,
-                                              documentType: dR.docType,
-                                              documentNumber: dR.docNumber,
-                                              providerRef: sendResult?.providerRef || '',
-                                              reason: sendForm.reason,
-                                              feeCop,
-                                              recipient: { holderName: name, key: isBrebS ? acctRaw : undefined, accountNumber: !isBrebS ? acctRaw : undefined, keyType: dR.brebKeyType, documentType: dR.docType, documentNumber: dR.docNumber, accountType: dR.accountType },
-                                          };
-                                          closeSendModal();
-                                          setSelectedTx(receiptTx as any);
-                                      }} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
+                                      <button onClick={copiarResumen} title="Copiar resumen" aria-label="Copiar resumen" className="transition-colors hover:bg-white/[0.09]" style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
+                                          <Copy size={15} strokeWidth={1.7} style={{ color: '#F4F4F2' }} />
+                                      </button>
+                                      <button onClick={() => comprobante('compartir')} title="Compartir comprobante" aria-label="Compartir comprobante" className="transition-colors hover:bg-white/[0.09]" style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 10, display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
+                                          <Share2 size={15} strokeWidth={1.7} style={{ color: '#F4F4F2' }} />
+                                      </button>
+                                      <button onClick={() => comprobante('descargar')} className="flex items-center justify-center transition-colors hover:bg-white/[0.09]" style={{ flex: 1, gap: 7, padding: '12px 0', borderRadius: 10, fontSize: 13.5, fontWeight: 700, color: '#F4F4F2', background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.11)' }}>
                                           <Download size={14} strokeWidth={1.7} /> Comprobante
                                       </button>
                                       {/* lincoin-btn-white (con !important) — un hover:bg-[#E…] aquí
