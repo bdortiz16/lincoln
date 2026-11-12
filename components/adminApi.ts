@@ -117,6 +117,7 @@ export const FUNCIONES: { id: string; nombre: string; que: string }[] = [
   { id: 'reportes',     nombre: 'Reportes',     que: 'Reportes y descargas.' },
   { id: 'contabilidad', nombre: 'Contabilidad', que: 'Tablero contable y facturación.' },
   { id: 'cumplimiento', nombre: 'Cumplimiento', que: 'KYC, operadores, cupos y riesgo.' },
+  { id: 'api',          nombre: 'API Keys',     que: 'Credenciales de la API externa de saldos: crear, revocar, documentación y pruebas.' },
 ];
 
 export const PAISES: { code: string; nombre: string }[] = [

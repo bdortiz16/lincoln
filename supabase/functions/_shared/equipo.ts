@@ -59,7 +59,7 @@ export const PERMISOS_POR_ROL: Record<Rol, Set<string>> = {
 // Seguridad y Configuración no son casillas: siguen siendo del dueño.
 export const FUNCIONES_VALIDAS = [
   'dashboard', 'clientes', 'billetera', 'tesoreria', 'lincoin', 'otc',
-  'coinsenda', 'fallos', 'reportes', 'contabilidad', 'cumplimiento',
+  'coinsenda', 'fallos', 'reportes', 'contabilidad', 'cumplimiento', 'api',
 ] as const
 export type Funcion = typeof FUNCIONES_VALIDAS[number]
 
@@ -79,6 +79,9 @@ export const PERMISOS_POR_FUNCION: Record<Funcion, string[]> = {
   // 'cumplimiento' ya era exactamente lo de esta sección (KYC, cupos,
   // límites, auditoría, monitoreo).
   cumplimiento: ['fn.cumplimiento', 'cumplimiento'],
+  // API Keys (función api-empresas): crear y revocar credenciales de la API
+  // externa de saldos, ver su registro y probarla.
+  api:          ['fn.api'],
 }
 
 // Lo que llega del navegador se limpia: solo funciones conocidas, sin

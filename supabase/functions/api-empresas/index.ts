@@ -19,7 +19,7 @@
 // ══════════════════════════════════════════════════════════════════
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { verificarAdminConMfa, igualSeguro } from '../_shared/admin-auth.ts'
-import { accesoDe } from '../_shared/equipo.ts'
+import { accesoDe, permisosDe } from '../_shared/equipo.ts'
 import {
   textoAFirmar, firmar, horaValida, generarSecreto, generarLlaveId, cifrar, descifrar,
   evaluarGeneracion, VIDA_MS, NONCE_MS, type Gen,
@@ -218,7 +218,14 @@ async function panel(req: Request): Promise<Response> {
   const v = await verificarAdminConMfa(db, req)
   if (!v.ok) return json(v.status, { ok: false, error: v.error })
   const acceso = await accesoDe(db, v.userId, v.email, Deno.env.get('VITE_ADMIN_EMAIL') ?? Deno.env.get('ADMIN_EMAIL') ?? null)
-  if (acceso.desactivado || acceso.rol !== 'dueno') return json(403, { ok: false, error: 'Solo el dueño puede administrar la API externa.' })
+  // El dueño, o un colaborador con la casilla "API Keys" (fn.api).
+  const permisos = permisosDe(acceso)
+  if (acceso.desactivado || !(permisos.has('*') || permisos.has('fn.api'))) return json(403, { ok: false, error: 'No tienes acceso a API Keys. Pídele al dueño que te active esa sección en Equipo.' })
+  // Igual que en admin-data: al colaborador se le EXIGE tener el 2FA activo.
+  if (acceso.rol === 'colaborador') {
+    const { data: u } = await db.from('users').select('raw_data').eq('id', v.userId).maybeSingle()
+    if (!(u as any)?.raw_data?.mfaEnabled) return json(403, { ok: false, error: 'Activa la verificación en dos pasos para usar API Keys.' })
+  }
   const body = await req.json().catch(() => ({})) as Record<string, any>
   const accion = String(body.action ?? '')
 

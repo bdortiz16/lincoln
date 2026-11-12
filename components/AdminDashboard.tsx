@@ -143,9 +143,10 @@ const FUNCION_DE_TAB: Record<string, string> = {
   reports: 'reportes', otcConfig: 'contabilidad',
   compliance: 'cumplimiento', operadores: 'cumplimiento', cupos: 'cumplimiento',
   risk: 'cumplimiento', sarblock: 'cumplimiento', tusdatos: 'cumplimiento', sirel: 'cumplimiento',
+  apiExterna: 'api',
 };
 // Orden en que se busca la primera pestaña del colaborador al entrar.
-const ORDEN_TABS_COLABORADOR = ['overview', 'cargues', 'clients', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos', 'reports', 'otcConfig', 'compliance'];
+const ORDEN_TABS_COLABORADOR = ['overview', 'cargues', 'clients', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos', 'reports', 'otcConfig', 'compliance', 'apiExterna'];
 
 interface SystemAlert {
     id: string;
@@ -5918,7 +5919,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         </>, hay: ['reports', 'otcConfig'].some(puedeVerTab) },
                         { key: 'cumplimiento', title: 'Control', items: <>
                             {it('compliance', <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo(operadoresPend > 0 ? 'operadores' : cuposPend > 0 ? 'cupos' : 'compliance')} />)}
-                        </>, hay: puedeVerTab('compliance') },
+                            {it('apiExterna', <AdminSidebarItem icon={Shield} label="API Keys" active={activeTab === 'apiExterna'} onClick={() => navTo('apiExterna')} />)}
+                        </>, hay: ['compliance', 'apiExterna'].some(puedeVerTab) },
                     ].filter(g => g.hay);
                     // Rol Tesorería: solo Clientes y Tesorería. Lo demás ni
                     // se ofrece (el servidor igual se lo negaría).
@@ -5989,7 +5991,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                     los enlaces directos que alguien ya tenga guardados siguen
                     funcionando y entran con su pestaña marcada. */}
                 {(GRUPO_SEG.includes(activeTab) || GRUPO_CUMP.includes(activeTab)) && (() => {
-                    const tabs = GRUPO_SEG.includes(activeTab) ? GRUPO_SEG : GRUPO_CUMP;
+                    // El colaborador con "API Keys" entra a Seguridad solo por esa
+                    // pestaña: las demás de Seguridad siguen siendo del dueño.
+                    const tabs = GRUPO_SEG.includes(activeTab) ? GRUPO_SEG.filter(puedeVerTab) : GRUPO_CUMP;
                     return (
                         <div className="flex flex-wrap gap-1.5 mb-5">
                             {tabs.map(t => {
