@@ -48,6 +48,7 @@ const ALERTA: Record<string, { texto: string; explica: string; fuerte?: boolean 
   sin_validar: { texto: 'SIN VALIDAR', explica: 'No se pudo validar el documento, así que no se sabe de quién son los antecedentes. No bloquea.' },
   consulta_fallida: { texto: 'CONSULTA FALLIDA', explica: 'La consulta no se completó. No bloquea; conviene volver a lanzarla.' },
   sin_autorizacion: { texto: 'SIN AUTORIZACIÓN', explica: 'El titular del documento no autoriza la consulta de su información. Es un derecho suyo y no bloquea.' },
+  fuente_pendiente: { texto: 'FUENTE PENDIENTE', fuerte: true, explica: 'La consulta cerró sin la respuesta de una fuente (casi siempre la Rama Judicial). No se le puede transferir hasta que responda. Si no responde, revísala por fuera y decide aquí.' },
   en_curso: { texto: 'EN CURSO', explica: 'La consulta está corriendo. Suele tardar cerca de un minuto.' },
   aprobado_manual: { texto: 'APROBADO', explica: 'Cumplimiento lo revisó y lo aprobó contra este veredicto: se le puede transferir. Si una consulta nueva cambia el resultado, vuelve a la bandeja.' },
 };
@@ -254,6 +255,7 @@ export const AdminCompliance: React.FC = () => {
     { k: 'nombre_no_coincide', n: r.nombreNoCoincide ?? 0, t: 'Identidad no corresponde' },
     { k: 'riesgo_alto', n: r.alto ?? 0, t: 'Riesgo alto' },
     { k: 'riesgo_medio', n: r.medio ?? 0, t: 'Riesgo medio en revisión' },
+    { k: 'fuente_pendiente', n: r.fuentePendiente ?? 0, t: 'Fuente pendiente' },
     { k: 'en_curso', n: r.enCurso ?? 0, t: 'En curso (reintento)' },
     { k: 'en_orden', n: r.enOrden ?? 0, t: 'En orden', ok: true },
   ];
@@ -263,6 +265,7 @@ export const AdminCompliance: React.FC = () => {
     { k: 'nombre_no_coincide', t: 'Nombre incorrecto' },
     { k: 'riesgo_alto', t: 'Riesgo alto' },
     { k: 'riesgo_medio', t: 'Riesgo medio' },
+    { k: 'fuente_pendiente', t: 'Fuente pendiente' },
     { k: 'en_curso', t: 'En curso' },
     { k: 'aprobado_manual', t: 'Aprobados' },
   ];

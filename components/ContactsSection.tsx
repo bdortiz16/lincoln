@@ -677,6 +677,11 @@ export const ContactsSection: React.FC<{
         } else if (cat === 'alto') {
             tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'RIESGO ALTO'; motivo = 'Riesgo alto';
             ayuda = 'Hallazgos de riesgo alto. No se puede transferir a esta persona.';
+        } else if (Number(k.fuentesEnCurso ?? 0) > 0) {
+            // Cerró sin una fuente de antecedentes (casi siempre la judicial):
+            // el envío espera. Decía "RIESGO BAJO" y no dejaba transferir.
+            tono = AMBAR; estado = 'VERIFICANDO'; motivo = 'Falta una fuente';
+            ayuda = 'Falta la respuesta de una de las fuentes de antecedentes. Mientras tanto no se le puede transferir; se completa sola o la revisa el equipo de cumplimiento.';
         } else if (cat === 'medio') {
             tono = AMBAR; estado = k.operable === false ? 'EN REVISIÓN' : 'RIESGO MEDIO'; motivo = 'Riesgo medio';
             ayuda = 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';

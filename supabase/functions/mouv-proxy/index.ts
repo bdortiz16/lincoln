@@ -5140,11 +5140,13 @@ serve(async (req: Request) => {
               // veredicto: Sarblock cierra el check con la fuente pendiente y
               // la completa después. El 12 nov un envío de 28 M salió con un
               // "medio" provisional y, media hora después, la Rama Judicial
-              // trajo un proceso penal (riesgo alto). Se espera mientras la
-              // ficha se siga releyendo (24 h, igual que el barrido).
+              // trajo un proceso penal (riesgo alto). Sin la parte legal no
+              // sale plata, sin plazo: si la fuente no vuelve nunca, decide
+              // Cumplimiento desde la bandeja ("FUENTE PENDIENTE") y su
+              // aprobación vale contra este mismo veredicto.
               const fuentesPendientes = estadoF === 'finalizado' && f?.proveedor === 'sarblock'
                 && Number(f?.fuentesEnCurso ?? 0) > 0
-                && Date.now() - (Date.parse(String(f?.lanzadoAt ?? f?.at ?? '')) || 0) < 24 * 3600_000
+                && !aprobacionAmlVigente(f)
               const esperando = cubierta && ((estadoF !== 'finalizado' && estadoF !== 'sin_autorizacion') || fuentesPendientes)
               if (esperando) {
                 await logAudit(userId, 'tusdatos.envio_en_espera', {

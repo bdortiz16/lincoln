@@ -2031,7 +2031,7 @@ Deno.serve(async (req: Request) => {
       const coincideQ = (c: any) => qBusca.length < 3 || [c.nombreInscrito, c.nombreReal, c.documento, c.cliente?.nombre, c.cliente?.email, c.cliente?.documento]
         .some(v => String(v ?? '').toLowerCase().includes(qBusca))
       const pasaFiltro = (c: any) => !alertaPedida || c.alerta === alertaPedida
-      const resumen = { total: 0, bloqueados: 0, nombreNoCoincide: 0, documentoNoVigente: 0, alto: 0, medio: 0, aprobados: 0, enCurso: 0, enOrden: 0 }
+      const resumen = { total: 0, bloqueados: 0, nombreNoCoincide: 0, documentoNoVigente: 0, alto: 0, medio: 0, aprobados: 0, enCurso: 0, fuentePendiente: 0, enOrden: 0 }
       const porClienteTop: any[] = []
       let casos: any[] = []
       const plegar = () => {
@@ -2046,6 +2046,7 @@ Deno.serve(async (req: Request) => {
           if (vigente && c.categoria === 'medio') resumen.medio++
           if (c.alerta === 'aprobado_manual') resumen.aprobados++
           if (c.estado === 'procesando') resumen.enCurso++
+          if (c.alerta === 'fuente_pendiente') resumen.fuentePendiente++
           if (c.alerta) conAlerta.push(c)
           else { resumen.enOrden++; if (enOrden.length < 120) enOrden.push(c) }
           if (buscando && pasaFiltro(c) && coincideQ(c) && (c.alerta || qBusca.length >= 3)) seleccion.push(c)
@@ -2090,6 +2091,9 @@ Deno.serve(async (req: Request) => {
               : f.documentoVigente === false ? 'documento_no_vigente'
                 : cat === 'alto' ? 'riesgo_alto'
                   : cat === 'medio' ? 'riesgo_medio'
+                    // Cerrada sin una fuente (casi siempre la Rama Judicial):
+                    // los envíos esperan; si no vuelve, decide Cumplimiento.
+                    : est === 'finalizado' && Number(f.fuentesEnCurso ?? 0) > 0 ? 'fuente_pendiente'
                     : cat === 'sin_validar' ? 'sin_validar'
                       : est === 'sin_autorizacion' ? 'sin_autorizacion'
                         : est === 'procesando' ? 'en_curso'
