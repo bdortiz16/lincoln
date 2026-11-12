@@ -46,7 +46,14 @@ https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/api-empresas
 {
   "generado_at": "2026-11-12T22:00:00.000Z",
   "empresas": [
-    { "id": "JERO123", "nombre": "Jero SAS", "clientes": 12, "total_cop": 45800000 }
+    {
+      "id": "JERO123",
+      "nombre": "JERO S.A.S",
+      "saldos": { "COP": 0, "COP_BREB": 0, "COP_ACH": 1922593, "COP_C3": 155578292, "COP_C4": 5158592 },
+      "total_cop": 162659477,
+      "clientes": 2,
+      "total_clientes_cop": 0
+    }
   ]
 }
 ```
@@ -55,9 +62,13 @@ https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/api-empresas
 
 ```json
 {
-  "empresa": { "id": "JERO123", "nombre": "Jero SAS" },
+  "empresa": {
+    "id": "JERO123",
+    "nombre": "JERO S.A.S",
+    "saldos": { "COP": 0, "COP_BREB": 0, "COP_ACH": 1922593, "COP_C3": 155578292, "COP_C4": 5158592 },
+    "total_cop": 162659477
+  },
   "generado_at": "2026-11-12T22:00:00.000Z",
-  "totales": { "COP": 150, "por_cuenta": { "COP_ACH": 100, "COP_C3": 50 } },
   "clientes": [
     {
       "id_lincoin": "ANA001",
@@ -69,16 +80,30 @@ https://wqleypebmfiaygrurnrc.supabase.co/functions/v1/api-empresas
       "usado_mes": 1200,
       "vinculado_at": "2026-11-01T00:00:00Z"
     }
-  ]
+  ],
+  "totales_clientes": { "COP": 150, "por_cuenta": { "COP_ACH": 100, "COP_C3": 50 } }
 }
 ```
 
-- `saldos` y `totales.por_cuenta` traen solo las cuentas en pesos (COP) que
-  tenga el cliente. `COP_ACH` es la cuenta ACH, `COP_BREB` es Bre-B,
-  `COP_C3` es la Cuenta 3 y `COP_C4` es la Cuenta 4.
-- `tipo` puede ser `persona` o `empresa`.
-- `tope_mensual` puede ser `null` si el cliente no tiene tope.
-- `usado_mes` es lo enviado en el mes en curso, según la hora de Colombia.
+- **`saldos` de la empresa:** son los saldos propios de la empresa en Lincoin.
+  Siempre vienen las cinco cuentas, con 0 si una está vacía:
+
+  | Clave | Cuenta |
+  |---|---|
+  | `COP` | Saldo Lincoin |
+  | `COP_BREB` | Bre-B |
+  | `COP_ACH` | ACH |
+  | `COP_C3` | Cuenta 3 |
+  | `COP_C4` | Cuenta 4 |
+
+- **`total_cop`:** la suma de las cinco cuentas de la empresa.
+- **`clientes`:** los operadores aprobados de la empresa (sus propios
+  clientes vinculados en Lincoin), cada uno con sus saldos.
+  `totales_clientes` es la suma de los saldos de esos clientes. Si la empresa
+  no tiene operadores, `clientes` viene vacío.
+- **`tope_mensual`:** puede ser `null` si el cliente no tiene tope.
+- **`usado_mes`:** lo que el cliente ha enviado en el mes en curso, según
+  la hora de Colombia.
 
 ---
 
@@ -248,7 +273,7 @@ async function rotar() {
 (async () => {
   const lista = await llamar('GET', RUTA_API);
   const detalle = await llamar('GET', RUTA_API, new URLSearchParams({ id: 'JERO123' }));
-  console.log(lista.empresas.length, detalle.clientes.length);
+  console.log(lista.empresas.length, detalle.empresa.saldos);
 })();
 setInterval(() => rotar().catch(console.error), 60 * 60 * 1000);
 ```

@@ -49,11 +49,12 @@ const Documentacion: React.FC = () => {
         <p style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: 0 }}>API de saldos por empresa</p>
         <button style={btn} onClick={descargar}>Descargar guía completa (.md)</button>
       </div>
-      <P>Solo lectura. Un sistema externo consulta, de todas las empresas, los saldos de sus clientes (operadores aprobados). Cada consulta va firmada y el secreto rota cada hora.</P>
+      <P>Solo lectura. Un sistema externo consulta los saldos de cada empresa en Lincoin (y los de sus operadores aprobados, si tiene). Cada consulta va firmada y el secreto rota cada hora.</P>
+      <P>Saldos de la empresa (siempre las cinco): <code>COP</code> Saldo Lincoin · <code>COP_BREB</code> Bre-B · <code>COP_ACH</code> ACH · <code>COP_C3</code> Cuenta 3 · <code>COP_C4</code> Cuenta 4. Más <code>total_cop</code>.</P>
 
       <H>Endpoints</H>
       <Codigo>{`GET  ${BASE_API}              → todas las empresas
-GET  ${BASE_API}?id=JERO123   → detalle de una empresa y sus clientes
+GET  ${BASE_API}?id=JERO123   → saldos de una empresa (y sus operadores)
 POST ${BASE_API}/rotar        → nueva generación del secreto (cada hora)`}</Codigo>
 
       <H>Encabezados de cada consulta</H>

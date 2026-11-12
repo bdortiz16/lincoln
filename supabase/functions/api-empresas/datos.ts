@@ -17,11 +17,26 @@ export type Cliente = {
   tope_mensual: number | null; usado_mes: number; vinculado_at: string | null
 }
 export type DetalleEmpresa = {
-  empresa: { id: string; nombre: string }
+  empresa: { id: string; nombre: string; saldos: Record<string, number>; total_cop: number }
   generado_at: string
-  totales: { COP: number; por_cuenta: Record<string, number> }
   clientes: Cliente[]
+  totales_clientes: { COP: number; por_cuenta: Record<string, number> }
 }
+
+// Las cuentas en pesos de un cliente, como en la Billetera del panel:
+// COP = Saldo Lincoin, COP_BREB = Bre-B, COP_ACH = ACH, COP_C3 = Cuenta 3,
+// COP_C4 = Cuenta 4. Siempre van las cinco (0 si no tiene), para que quien
+// consume la API reciba siempre la misma forma.
+export const CUENTAS_COP = ['COP', 'COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4'] as const
+
+export function saldosEmpresa(balances: Record<string, unknown> | null | undefined): Record<string, number> {
+  const s = saldosCop(balances)
+  const out: Record<string, number> = {}
+  for (const k of CUENTAS_COP) out[k] = s[k] ?? 0
+  for (const [k, v] of Object.entries(s)) if (!(k in out)) out[k] = v
+  return out
+}
+const sumar = (s: Record<string, number>) => Object.values(s).reduce((a, v) => a + v, 0)
 
 export function saldosCop(balances: Record<string, unknown> | null | undefined): Record<string, number> {
   const out: Record<string, number> = {}
@@ -55,11 +70,12 @@ export function armarDetalle(empresa: any, operadores: Map<string, Operador>, us
     })
   }
   const COP = Object.values(porCuenta).reduce((s, v) => s + v, 0)
+  const saldos = saldosEmpresa(empresa?.balances)
   return {
-    empresa: { id: codigoDe(empresa), nombre: nombreEmpresa(empresa) },
+    empresa: { id: codigoDe(empresa), nombre: nombreEmpresa(empresa), saldos, total_cop: sumar(saldos) },
     generado_at: ahora.toISOString(),
-    totales: { COP, por_cuenta: porCuenta },
     clientes,
+    totales_clientes: { COP, por_cuenta: porCuenta },
   }
 }
 
@@ -71,7 +87,8 @@ export function armarResumen(empresa: any, operadores: Map<string, Operador>) {
     clientes++
     total += Object.values(saldosCop(op.balances)).reduce((s, v) => s + v, 0)
   }
-  return { id: codigoDe(empresa), nombre: nombreEmpresa(empresa), clientes, total_cop: total }
+  const saldos = saldosEmpresa(empresa?.balances)
+  return { id: codigoDe(empresa), nombre: nombreEmpresa(empresa), saldos, total_cop: sumar(saldos), clientes, total_clientes_cop: total }
 }
 
 export const idsAutorizados = (empresa: any): string[] => autorizadas(empresa).map(a => String(a.id))
@@ -106,9 +123,9 @@ export async function usadoMes(db: any, ids: string[]): Promise<Record<string, n
 
 export async function leerEmpresas(db: any): Promise<any[]> {
   const out: any[] = []
-  await leerPorPaginas(() => db.from('users').select('id, email, full_name, company_name, raw_data->ownReferralCode, raw_data->personasAutorizadas').eq('role', 'business'), {
+  await leerPorPaginas(() => db.from('users').select('id, email, full_name, company_name, balances, raw_data->ownReferralCode, raw_data->personasAutorizadas').eq('role', 'business'), {
     alLote: (lote) => {
-      for (const f of lote) out.push({ id: f.id, email: f.email, full_name: f.full_name, company_name: f.company_name, raw_data: { ownReferralCode: f.ownReferralCode, personasAutorizadas: f.personasAutorizadas } })
+      for (const f of lote) out.push({ id: f.id, email: f.email, full_name: f.full_name, company_name: f.company_name, balances: f.balances ?? {}, raw_data: { ownReferralCode: f.ownReferralCode, personasAutorizadas: f.personasAutorizadas } })
     },
   })
   return out
