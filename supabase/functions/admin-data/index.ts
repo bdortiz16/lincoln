@@ -1971,6 +1971,30 @@ async function verifySelfOrAdmin(req: Request, userId: string): Promise<boolean>
   return !!u && u.id === String(userId)
 }
 
+// El pedido del código del correo del panel (ingreso y reenvío) con una
+// sesión que no es la de esa cuenta. Antes respondía un 401 seco: la pantalla
+// no lo mostraba, seguía en "Verificación 1 de 2" esperando un correo que
+// nunca se pidió, y no quedaba rastro (13 nov: «llegan todos menos el del
+// admin»). Pasa cuando el panel y la app de clientes comparten el navegador
+// —entrar a una cuenta de cliente en otra pestaña reemplaza la sesión— o
+// cuando el token venció con la pestaña en segundo plano. Ahora dice cuál de
+// los dos es, y el de otra cuenta se anota (el anónimo no, para que nadie
+// llene la auditoría desde afuera).
+async function sesionParaCodigo(req: Request, userId: string): Promise<Response | null> {
+  const yo = await usuarioDelToken(req)
+  if (yo && yo.id === String(userId)) return null
+  if (yo) {
+    await auditAdmin(req, 'auth.email_2fa_sesion_ajena', { userId: String(userId) })
+    return json({ ok: false, error: 'sesion_ajena', message: 'La sesión guardada en este navegador es de otra cuenta (por ejemplo, una cuenta de cliente abierta en otra pestaña), así que no se envió el código. Toca «Cancelar» y vuelve a entrar con tu correo y tu contraseña.' }, 401)
+  }
+  return json({ ok: false, error: 'sesion_invalida', message: 'Tu sesión en este navegador venció o no es válida, así que no se envió el código. Toca «Cancelar» y vuelve a entrar con tu correo y tu contraseña.' }, 401)
+}
+// Lo que ve el titular cuando el freno no dejó salir otro código. Antes la
+// pantalla decía "Código reenviado" igual, y esperaba un correo que no venía.
+const msgCodigoFrenado = (freno: unknown) => freno === 'ip'
+  ? 'Se pidieron demasiados códigos desde esta conexión en los últimos 10 minutos y no se mandó otro. Espera unos minutos y toca «Reenviar código».'
+  : 'Ya se envió un código hace menos de 30 segundos y no se mandó otro. Revisa tu correo (también la carpeta de spam); si no llega, espera medio minuto y toca «Reenviar código».'
+
 // Un admin actuando sobre la cuenta de OTRO desde las acciones de autoservicio
 // pasa por los mismos candados que el resto del panel: miembro activo, el
 // permiso de su rol, sesión con 2FA, cuenta sin bloqueo y lista blanca de
@@ -2262,7 +2286,7 @@ Deno.serve(async (req: Request) => {
       // a qué dirección se envió — quien está entrando ya debería saberlo, y
       // mostrarlo le confirmaría el correo a quien no es el dueño.
       if (selfServiceBody.action === 'mfa_start_login' && selfServiceBody.userId) {
-        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const sinSesion = await sesionParaCodigo(req, String(selfServiceBody.userId)); if (sinSesion) return sinSesion }
         { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad. Revisa el correo del titular para desbloquearla.' }, 423)
@@ -2278,9 +2302,13 @@ Deno.serve(async (req: Request) => {
         if (r?.ok) {
           // Frenado = NO salió correo (vale el anterior, si llegó). Se anota:
           // el 13 nov el freno respondía "listo" sin enviar y no quedaba rastro.
-          if (r.throttled) await auditAdmin(req, 'auth.email_2fa_frenado', { userId: String(selfServiceBody.userId) })
+          // Y el envío que SÍ salió también, con la dirección enmascarada y el
+          // id del proveedor: ese día no había cómo saber si un código salió ni
+          // hacia dónde, y se buscaba a ciegas en Resend.
+          if (r.throttled) await auditAdmin(req, 'auth.email_2fa_frenado', { userId: String(selfServiceBody.userId), freno: r.freno ?? null })
+          else await auditAdmin(req, 'auth.email_2fa_enviado', { userId: String(selfServiceBody.userId), para: r.to ?? null, idProveedor: r.idProveedor ?? null })
           const pasos = (await passkeysDe(String(selfServiceBody.userId))).length ? 3 : 2
-          return json({ ok: true, throttled: !!r.throttled, pasos })
+          return json({ ok: true, throttled: !!r.throttled, pasos, ...(r.throttled ? { message: msgCodigoFrenado(r.freno) } : {}) })
         }
         // Con el código HTTP y lo que dijo el proveedor de correo (13 nov):
         // antes solo quedaba "send_failed" y no se sabía si era la llave, el
@@ -2296,7 +2324,7 @@ Deno.serve(async (req: Request) => {
 
       // Reenviar el código del correo si no llegó.
       if (selfServiceBody.action === 'mfa_resend_email' && selfServiceBody.userId) {
-        if (!(await verifySelfOrAdmin(req, selfServiceBody.userId))) return json({ error: 'No autorizado' }, 401)
+        { const sinSesion = await sesionParaCodigo(req, String(selfServiceBody.userId)); if (sinSesion) return sinSesion }
         { const den = await accessDeniedAdmin(req, String(selfServiceBody.userId)); if (den) return json({ ok: false, error: 'access_denied', message: den }, 403) }
         if (await adminLock(String(selfServiceBody.userId))) {
           return json({ ok: false, error: 'account_locked', message: 'La cuenta está bloqueada por seguridad.' }, 423)
@@ -2309,8 +2337,12 @@ Deno.serve(async (req: Request) => {
         // Reenviar también deja rastro si no salió correo (13 nov: con el botón
         // "Reenviar código" los fallos y los frenos no quedaban en ninguna parte).
         if (!r?.ok) await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta', status: r?.status ?? null, detalle: r?.detalle ?? null, reenvio: true })
-        else if (r.throttled) await auditAdmin(req, 'auth.email_2fa_frenado', { userId: String(selfServiceBody.userId), reenvio: true })
-        return json({ ok: !!r?.ok, throttled: !!r?.throttled, message: r?.message ?? null })
+        else if (r.throttled) await auditAdmin(req, 'auth.email_2fa_frenado', { userId: String(selfServiceBody.userId), freno: r.freno ?? null, reenvio: true })
+        else await auditAdmin(req, 'auth.email_2fa_enviado', { userId: String(selfServiceBody.userId), para: r.to ?? null, idProveedor: r.idProveedor ?? null, reenvio: true })
+        // La pantalla decía "Código reenviado" también cuando el freno no dejó
+        // salir nada: el titular esperaba un correo que nunca iba a llegar.
+        return json({ ok: !!r?.ok, throttled: !!r?.throttled,
+          message: r?.throttled ? msgCodigoFrenado(r.freno) : r?.ok ? 'Código reenviado. Revisa tu correo (también la carpeta de spam).' : (r?.message ?? 'No se pudo reenviar el código. Intenta de nuevo en un momento.') })
       }
 
       // ¿Esta SESIÓN ya superó el 2FA? Lo decide el servidor, no una marca

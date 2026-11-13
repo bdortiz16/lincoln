@@ -173,7 +173,7 @@ interface DatabaseContextType {
   mfaPasos: number;
   loginConPasskey: () => Promise<User | null>;
   completeEmailLogin: (code: string) => Promise<User | null>;
-  resendEmailCode: () => Promise<boolean>;
+  resendEmailCode: () => Promise<{ ok: boolean; mensaje: string }>;
   startEmailStep: (userId: string) => Promise<boolean>;
   cancelMFALogin: () => void;
   /** Motivo del último cierre de sesión (últimos 15 s), para explicarlo en el Login. */
@@ -217,6 +217,12 @@ const EN_PANEL = typeof window !== 'undefined'
 // A quién pertenece un token de sesión (el `sub` del JWT). Solo para no
 // mandar el código de una cuenta con la sesión de OTRA; el servidor igual lo
 // verifica con la firma.
+// La clave con que supabase-js guarda la sesión de un proyecto:
+// sb-<ref>-auth-token, con <ref> el primer pedazo del dominio del proyecto.
+const claveSesionProyecto = (url: string): string | null => {
+  try { const ref = new URL(url).hostname.split('.')[0]; return ref ? `sb-${ref}-auth-token` : null; } catch { return null; }
+};
+
 const subDelToken = (token: string | null): string | null => {
   try {
     const p = String(token ?? '').split('.')[1];
@@ -1115,7 +1121,14 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // Never returns the anon key — the apikey header handles anon auth separately.
   const getStoredToken = (): string | null => {
     try {
-      const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+      // Primero la sesión de ESTE proyecto. Con la primera clave 'sb-…' que
+      // apareciera, un navegador con la sesión guardada de otro proyecto
+      // (uno anterior, uno de pruebas) mandaba ese token y el servidor
+      // respondía "no autorizado" sin que la pantalla dijera nada.
+      const propia = claveSesionProyecto(SUPABASE_URL_FOR_FN);
+      const k = (propia && localStorage.getItem(propia) != null)
+        ? propia
+        : Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
       if (k) { const d = JSON.parse(localStorage.getItem(k) || '{}'); if (d.access_token) return d.access_token; }
     } catch {}
     return null;
@@ -1918,25 +1931,53 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   // de 25 s no vuelve a pedir nada.
   const ultimoEnvioRef = useRef<{ uid: string; at: number } | null>(null);
 
+  // Pide el código del correo del panel (ingreso o reenvío). Si el servidor
+  // dice que la sesión no sirve, se renueva el token UNA vez y se reintenta:
+  // con la pestaña en segundo plano el navegador congela la renovación
+  // automática y el token guardado puede estar vencido. Si la sesión es de
+  // OTRA cuenta (una de cliente abierta en otra pestaña la reemplaza), no se
+  // pide nada: el servidor lo rechazaría igual.
+  const pedirCodigoPanel = async (action: 'mfa_start_login' | 'mfa_resend_email', userId: string): Promise<any> => {
+    const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN;
+    const llamar = () => {
+      const token = getStoredToken();
+      return fetch(`${SURL}/functions/v1/admin-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
+        body: JSON.stringify({ action, userId }),
+      }).then(async x => ({ http: x.status, ...((await x.json().catch(() => null)) ?? {}) })).catch(() => null);
+    };
+    const ajena = { ok: false, error: 'sesion_ajena', message: 'La sesión guardada en este navegador es de otra cuenta (por ejemplo, una cuenta de cliente abierta en otra pestaña), así que no se envió el código. Toca «Cancelar» y vuelve a entrar con tu correo y tu contraseña.' };
+    if (!sesionEsDe(userId)) return ajena;
+    let r: any = await llamar();
+    if (r?.http === 401 && r?.error !== 'sesion_ajena' && isSupabaseConfigured) {
+      try { await Promise.race([supabase.auth.refreshSession(), new Promise(res => setTimeout(res, 6000))]); } catch { /* sigue con lo que haya */ }
+      if (!sesionEsDe(userId)) return ajena;
+      r = await llamar();
+    }
+    return r;
+  };
+
   const startEmailStep = async (userId: string): Promise<boolean> => {
     const ya = ultimoEnvioRef.current;
     if (ya && ya.uid === userId && Date.now() - ya.at < 25_000) return true;
     ultimoEnvioRef.current = { uid: userId, at: Date.now() };
     try {
-      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
-      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'mfa_start_login', userId }),
-      }).then(x => x.json()).catch(() => null);
+      const r = await pedirCodigoPanel('mfa_start_login', userId);
       if (!r?.ok) {
+        // Sin código no hay nada que esperar: se permite volver a pedirlo ya.
+        ultimoEnvioRef.current = null;
         if (r?.error === 'account_locked') setAccountLocked(true);
-        setMfaError2(r?.message ?? 'No se pudo iniciar la verificación.');
+        // Este mensaje SÍ se ve en el paso del correo (mfaErrorDetail). Antes
+        // no se mostraba en ninguna parte: la pantalla seguía en
+        // "Verificación 1 de 2" esperando un correo que nunca se pidió.
+        setMfaError2(r?.message ?? 'No se pudo enviar el código al correo. Toca «Reenviar código».');
         return false;
       }
+      if (r.throttled && r.message) setMfaError2(r.message);
       setMfaPasos(Number(r.pasos) === 3 ? 3 : 2);
       return true;
-    } catch { setMfaError2('No se pudo iniciar la verificación.'); return false; }
+    } catch { ultimoEnvioRef.current = null; setMfaError2('No se pudo enviar el código al correo. Toca «Reenviar código».'); return false; }
   };
 
   // Intenta capturar una imagen de la cámara para adjuntarla a la alerta de
@@ -2113,17 +2154,21 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
   };
 
 
-  const resendEmailCode = async (): Promise<boolean> => {
-    if (!pendingMFAProfile) return false;
+  // Devuelve el mensaje para la pantalla, no solo sí/no: decía "Código
+  // reenviado" también cuando el freno no dejó salir nada, y "Espera un
+  // momento" cuando el problema era la sesión (13 nov).
+  const resendEmailCode = async (): Promise<{ ok: boolean; mensaje: string }> => {
+    if (!pendingMFAProfile) return { ok: false, mensaje: 'Vuelve a entrar con tu correo y tu contraseña.' };
     try {
-      const SURL = SUPABASE_URL_FOR_FN, SKEY = SUPABASE_ANON_FOR_FN, token = getStoredToken();
-      const r = await fetch(`${SURL}/functions/v1/admin-data`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: token ? `Bearer ${token}` : `Bearer ${SKEY}` },
-        body: JSON.stringify({ action: 'mfa_resend_email', userId: pendingMFAProfile.id }),
-      }).then(x => x.json()).catch(() => null);
-      return !!r?.ok;
-    } catch { return false; }
+      const r = await pedirCodigoPanel('mfa_resend_email', pendingMFAProfile.id);
+      if (r?.error === 'account_locked') setAccountLocked(true);
+      const enviado = !!r?.ok && !r?.throttled;
+      if (enviado) setMfaError2(null);
+      return {
+        ok: enviado,
+        mensaje: r?.message ?? (r?.ok ? 'Código reenviado. Revisa tu correo (también la carpeta de spam).' : 'No se pudo reenviar el código. Intenta de nuevo en un momento.'),
+      };
+    } catch { return { ok: false, mensaje: 'No se pudo reenviar el código. Intenta de nuevo en un momento.' }; }
   };
 
   // Cuenta los fallos de ESTA pantalla para saber cuándo intentar la foto.

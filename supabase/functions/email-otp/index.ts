@@ -207,7 +207,9 @@ Deno.serve(async (req) => {
     if (action === 'send') {
       const claveCorreo = await sha256(`otp|${String(userId ?? email ?? '').trim().toLowerCase()}`)
       const freno = await frenoEnvio(clientIp, claveCorreo)
-      if (freno) return json(200, { ok: true, throttled: true, esperaSegundos: 30, message: 'Ya te enviamos un código. Revisa tu correo.' })
+      // Al servidor se le dice CUÁL freno fue (por IP o por cuenta), para que
+      // el panel le diga al titular qué esperar y quede en la auditoría.
+      if (freno) return json(200, { ok: true, throttled: true, esperaSegundos: 30, message: 'Ya te enviamos un código. Revisa tu correo.', ...(servicio ? { freno } : {}) })
       await anotarEnvio(clientIp, claveCorreo)
     }
 
@@ -218,6 +220,13 @@ Deno.serve(async (req) => {
     // cuenta. Respuesta UNIFORME: si no hay usuario, respondemos igual que
     // el camino de éxito (sin enviar nada) y salimos.
     if (!user) {
+      // El SERVIDOR pide siempre por el id de una cuenta que acaba de validar:
+      // si no aparece, es un error de verdad y se dice (a él no hay a quién
+      // ocultarle nada). Antes respondía "enviado" sin enviar.
+      if (servicio && action === 'send') {
+        console.error(`[otp] cuenta ${String(userId ?? '').slice(0, 8)} no encontrada en users`)
+        return json(200, { ok: false, error: 'user_not_found', message: 'No se encontró la cuenta para enviar el código.' })
+      }
       if (action === 'verify') return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
       if (action === 'is_trusted') return json(200, { ok: true, trusted: false, hasta: null })
       // Mismo shape que el camino de éxito (incluye `to` enmascarado del
@@ -241,7 +250,7 @@ Deno.serve(async (req) => {
       if (prev?.sentAt && Date.now() - Number(prev.sentAt) < 30000) {
         const hace = Math.round((Date.now() - Number(prev.sentAt)) / 1000)
         console.log(`[otp] ${quien}: frenado, el anterior salio hace ${hace}s`)
-        return json(200, { ok: true, throttled: true, esperaSegundos: 30 - hace, message: 'Ya te enviamos un código. Revisa tu correo.' })
+        return json(200, { ok: true, throttled: true, esperaSegundos: 30 - hace, message: 'Ya te enviamos un código. Revisa tu correo.', ...(servicio ? { freno: 'cuenta' } : {}) })
       }
       const code = codigoNuevo() // 6 dígitos
       const codeHash = await hmacCodigo(String(user.id), code)
@@ -333,8 +342,11 @@ Deno.serve(async (req) => {
         return json(200, { ok: false, error: 'send_failed', status: res.status, message: 'No se pudo enviar el código. Intenta de nuevo en un momento.',
           ...(servicio ? { detalle: t.slice(0, 300) } : {}) })
       }
-      console.log(`[otp] ${quien}: enviado`)
-      return json(200, { ok: true, sent: true, to: quien })
+      // El id que da el proveedor: con él se encuentra ESE correo en Resend
+      // (13 nov: había que buscar a ojo entre todos los envíos del día).
+      const idProveedor = String((await res.json().catch(() => null))?.id ?? '') || null
+      console.log(`[otp] ${quien}: enviado${idProveedor ? ` · ${idProveedor}` : ''}`)
+      return json(200, { ok: true, sent: true, to: quien, ...(servicio ? { idProveedor } : {}) })
     }
 
     if (action === 'verify') {

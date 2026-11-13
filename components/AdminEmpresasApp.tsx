@@ -163,7 +163,7 @@ if (typeof window !== 'undefined' &&
 }
 
 const AdminEmpresasInner: React.FC = () => {
-    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, mfaPasos, mfaCuenta } = useDatabase();
+    const { currentUser, isAuthLoading, loginUser, logoutUser, mfaPending, getMfaError, getLoginError, completeMFALogin, isPasswordRecovery, setNewPassword, cancelMFALogin, emailStepPending, completeEmailLogin, resendEmailCode, accountLocked, passkeyPending, loginConPasskey, mfaPasos, mfaCuenta, mfaErrorDetail } = useDatabase();
     const esColaboradores = esColaboradoresAhora();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -407,12 +407,16 @@ const AdminEmpresasInner: React.FC = () => {
                                 placeholder="123 456"
                                 className="w-full px-3 py-3 rounded-xl border border-slate-200 text-center font-mono text-lg tracking-widest focus:border-[#4ADE80] outline-none"
                             />
-                            {mfaError && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError}</p>}
+                            {/* Si el envío del código falló al ARRANCAR el paso (sesión de otra
+                                cuenta, vencida, freno), el motivo vive en el contexto y no en
+                                mfaError: antes no se mostraba y la pantalla esperaba un correo
+                                que nunca se pidió (13 nov). El reenvío muestra su propio aviso. */}
+                            {(mfaError ?? (resendMsg ? null : mfaErrorDetail)) && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-2.5">{mfaError ?? mfaErrorDetail}</p>}
                             {resendMsg && <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-2.5">{resendMsg}</p>}
                             <button type="submit" disabled={verifying || emailCode.length !== 6} style={{ color: '#FFFFFF' }} className="w-full py-3 rounded-xl bg-[#0C0E0D] hover:bg-[#161A17] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-colors">
                                 <Lock size={14} /> {verifying ? 'Verificando…' : 'Continuar'}
                             </button>
-                            <button type="button" onClick={async () => { setResendMsg('Enviando…'); const ok = await resendEmailCode(); setResendMsg(ok ? 'Código reenviado.' : 'No se pudo reenviar. Espera un momento.'); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
+                            <button type="button" onClick={async () => { setResendMsg('Enviando…'); const r = await resendEmailCode(); if (r.ok) setMfaError(null); setResendMsg(r.mensaje); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 underline">
                                 Reenviar código
                             </button>
                             <button type="button" onClick={() => { cancelMFALogin(); setEmailCode(''); setMfaCode(''); setMfaError(null); setResendMsg(null); setPassword(''); setUseBackup(false); }} className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800">

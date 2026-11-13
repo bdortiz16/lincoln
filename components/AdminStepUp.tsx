@@ -97,7 +97,7 @@ export const AdminStepUp: React.FC<Props> = ({ userId, motivo, onListo, onCancel
     if (!falta?.length || falta[0] !== 'email' || correoEnviado) return;
     setCorreoEnviado(true);
     call({ action: 'mfa_start_login', userId })
-      .then(d => setAviso(d?.ok ? 'Te enviamos un código.' : (d?.message ?? 'No se pudo enviar el código.')))
+      .then(d => setAviso(d?.ok && !d?.throttled ? 'Te enviamos un código.' : (d?.message ?? 'No se pudo enviar el código.')))
       .catch(() => setAviso('No se pudo enviar el código.'));
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [falta, correoEnviado]);
@@ -194,7 +194,7 @@ export const AdminStepUp: React.FC<Props> = ({ userId, motivo, onListo, onCancel
             {busy ? 'Verificando…' : 'Continuar'}
           </button>
           {paso === 'email' && (
-            <button onClick={async () => { setAviso('Enviando…'); const d = await call({ action: 'mfa_resend_email', userId }).catch(() => null); setAviso(d?.ok ? 'Código reenviado.' : 'No se pudo reenviar. Espera un momento.'); }}
+            <button onClick={async () => { setAviso('Enviando…'); const d = await call({ action: 'mfa_resend_email', userId }).catch(() => null); setAviso(d?.message ?? (d?.ok ? 'Código reenviado.' : 'No se pudo reenviar. Espera un momento.')); }}
               style={{ width: '100%', marginTop: 6, background: 'none', border: 'none', color: C.sub, fontSize: 11.5, fontWeight: 600, textDecoration: 'underline', cursor: 'pointer', fontFamily: FONT }}>
               Reenviar código
             </button>
