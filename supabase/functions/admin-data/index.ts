@@ -2269,13 +2269,16 @@ Deno.serve(async (req: Request) => {
         }
         const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'x-ip-cliente': ipOf(req) ?? '' },
           body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
         }).then(x => x.json()).catch(() => null)
         // Cuántos pasos tiene este ingreso: 2 normalmente, 3 si la cuenta
         // tiene llave. La pantalla lo necesita para no mentirle al titular
         // diciendo "2 de 2" cuando todavía le falta uno.
         if (r?.ok) {
+          // Frenado = NO salió correo (vale el anterior, si llegó). Se anota:
+          // el 13 nov el freno respondía "listo" sin enviar y no quedaba rastro.
+          if (r.throttled) await auditAdmin(req, 'auth.email_2fa_frenado', { userId: String(selfServiceBody.userId) })
           const pasos = (await passkeysDe(String(selfServiceBody.userId))).length ? 3 : 2
           return json({ ok: true, throttled: !!r.throttled, pasos })
         }
@@ -2300,7 +2303,7 @@ Deno.serve(async (req: Request) => {
         }
         const r = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'x-ip-cliente': ipOf(req) ?? '' },
           body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
         }).then(x => x.json()).catch(() => null)
         return json({ ok: !!r?.ok, throttled: !!r?.throttled, message: r?.message ?? null })
@@ -3303,7 +3306,7 @@ Deno.serve(async (req: Request) => {
           if (!codigoCorreo) {
             const env = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+              headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'x-ip-cliente': ipOf(req) ?? '' },
               body: JSON.stringify({ action: 'send', userId: uidS, proposito: 'activar_2fa' }),
             }).then(x => x.json()).catch(() => null)
             return json({

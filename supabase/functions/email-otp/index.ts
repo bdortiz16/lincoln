@@ -191,8 +191,16 @@ Deno.serve(async (req) => {
     if (!servicio && propositoClave === 'activar_2fa') propositoClave = 'login'
     const proposito = PROPOSITOS[propositoClave]
 
-    // IP del cliente, la que pone el proxy de la plataforma.
-    const clientIp = ipDe(req)
+    // IP del cliente, la que pone el proxy de la plataforma. Cuando llama el
+    // SERVIDOR (admin-data, para los códigos del panel), esa IP es la del
+    // propio Supabase, la misma para todos: el freno de 15 envíos cada 10 min
+    // por IP sumaba a todo el panel junto y, al pasarse, respondía "ya te
+    // enviamos un código" SIN enviar nada (13 nov: «llegan todos menos el del
+    // admin»; en Resend no aparecía ningún envío). Ahora admin-data manda la IP
+    // real de quien pidió el código; si no la manda, no se frena por IP (el
+    // freno por cuenta de 30 s sigue). También sirve para que el correo diga
+    // desde dónde se pidió, no la ubicación del servidor.
+    const clientIp = servicio ? (req.headers.get('x-ip-cliente') ?? '').trim() : ipDe(req)
 
     // Freno de envíos ANTES de mirar si la cuenta existe: así responde igual
     // para un correo con cuenta que para uno sin cuenta.
