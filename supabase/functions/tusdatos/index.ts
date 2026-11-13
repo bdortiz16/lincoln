@@ -2093,7 +2093,7 @@ Deno.serve(async (req: Request) => {
                   : cat === 'medio' ? 'riesgo_medio'
                     // Cerrada sin una fuente (casi siempre la Rama Judicial):
                     // los envíos esperan; si no vuelve, decide Cumplimiento.
-                    : est === 'finalizado' && Number(f.fuentesEnCurso ?? 0) > 0 ? 'fuente_pendiente'
+                    : est === 'finalizado' && (Number(f.fuentesEnCurso ?? 0) > 0 || f.incompleta === true || f.sarblock?.aggregateOutcome === 'PARTIAL') ? 'fuente_pendiente'
                     : cat === 'sin_validar' ? 'sin_validar'
                       : est === 'sin_autorizacion' ? 'sin_autorizacion'
                         : est === 'procesando' ? 'en_curso'

@@ -5144,8 +5144,11 @@ serve(async (req: Request) => {
               // sale plata, sin plazo: si la fuente no vuelve nunca, decide
               // Cumplimiento desde la bandeja ("FUENTE PENDIENTE") y su
               // aprobación vale contra este mismo veredicto.
+              // También aggregateOutcome = PARTIAL: "quedaron consultas sin
+              // realizarse" (Sarblock, 12 nov). Misma regla: fichaIncompleta
+              // en sarblock/traductor.ts.
               const fuentesPendientes = estadoF === 'finalizado' && f?.proveedor === 'sarblock'
-                && Number(f?.fuentesEnCurso ?? 0) > 0
+                && (Number(f?.fuentesEnCurso ?? 0) > 0 || f?.incompleta === true || f?.sarblock?.aggregateOutcome === 'PARTIAL')
                 && !aprobacionAmlVigente(f)
               const esperando = cubierta && ((estadoF !== 'finalizado' && estadoF !== 'sin_autorizacion') || fuentesPendientes)
               if (esperando) {

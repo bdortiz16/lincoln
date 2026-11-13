@@ -533,6 +533,9 @@ export const ContactsSection: React.FC<{
         .normalize('NFD').replace(/[̀-ͯ]/g, '')
         .toUpperCase().replace(/[.'`´]/g, '').replace(/[^A-Z0-9\s]/g, ' ')
         .split(/\s+/).filter(x => x.length > 1 && !RELLENO_NOMBRE.has(x)).join(' ');
+    // Le falta alguna fuente: una "en curso" o Sarblock dijo PARTIAL. Misma
+    // regla que el servidor (fichaIncompleta en sarblock/traductor.ts).
+    const faltaFuente = (k: any) => Number(k?.fuentesEnCurso ?? 0) > 0 || k?.incompleta === true || k?.sarblock?.aggregateOutcome === 'PARTIAL';
     const amlDe = (c: Partial<MouvContact>) => {
         if (!amlActivo) return null;
         const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
@@ -579,7 +582,7 @@ export const ContactsSection: React.FC<{
         // espera esa respuesta (mouv-proxy, fuentesPendientes), así que aquí
         // Enviar tampoco se ofrece. Antes la insignia decía VERIFICANDO y el
         // botón seguía activo.
-        if (Number(k.fuentesEnCurso ?? 0) > 0) return amlCorre;
+        if (faltaFuente(k)) return amlCorre;
         return k.operable === false
             || String(k.categoria ?? '') === 'alto'
             || k.nombreCoincide === false
@@ -593,7 +596,7 @@ export const ContactsSection: React.FC<{
         if (!k) return false;
         // Un documento inválido no se arregla esperando: eso es un bloqueo.
         const e = String(k.estado ?? '');
-        if (e === 'finalizado' && Number(k.fuentesEnCurso ?? 0) > 0 && k.aprobadoManual !== true) return true;
+        if (e === 'finalizado' && faltaFuente(k) && k.aprobadoManual !== true) return true;
         return e !== 'finalizado' && e !== 'documento_invalido';
     };
     // No poder ENVIAR y no poder BORRAR son cosas distintas.
@@ -683,7 +686,7 @@ export const ContactsSection: React.FC<{
         } else if (cat === 'alto') {
             tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'RIESGO ALTO'; motivo = 'Riesgo alto';
             ayuda = 'Hallazgos de riesgo alto. No se puede transferir a esta persona.';
-        } else if (Number(k.fuentesEnCurso ?? 0) > 0) {
+        } else if (Number(k.fuentesEnCurso ?? 0) > 0 || k.incompleta === true || k.sarblock?.aggregateOutcome === 'PARTIAL') {
             // Cerró sin una fuente de antecedentes (casi siempre la judicial):
             // el envío espera. Decía "RIESGO BAJO" y no dejaba transferir.
             tono = AMBAR; estado = 'VERIFICANDO'; motivo = 'Falta una fuente';

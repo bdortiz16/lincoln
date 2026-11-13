@@ -49,6 +49,16 @@ const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const SB_KEY = Deno.env.get('SARBLOCK_ORG_API_KEY') ?? ''
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
+// ── Callback de Sarblock ────────────────────────────────────────────────
+// Recomendación de Sarblock (12 nov): en vez de sondear cada check, que
+// ellos avisen cuando termina (docs: guides/callbacks). Solo se pide si el
+// secreto de firma está configurado (Sarblock → Organización → API →
+// Signing secret, y aquí SARBLOCK_CALLBACK_SECRET). El barrido sigue de
+// respaldo: un aviso se puede perder.
+const CB_SECRETO = Deno.env.get('SARBLOCK_CALLBACK_SECRET') ?? ''
+const CB_SECRETO_ANTERIOR = Deno.env.get('SARBLOCK_CALLBACK_SECRET_ANTERIOR') ?? ''
+const callbackUrl = (): string | undefined => CB_SECRETO && SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/sarblock` : undefined
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-webhook-secret',
@@ -360,7 +370,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     // La clave es por día: forzada, con la del día Sarblock devolvería el
     // mismo check de esta mañana. Se le agrega el momento.
     const idem = forzada ? `${claveIdempotencia(uid, doc)}-f${Date.now().toString(36)}` : claveIdempotencia(uid, doc)
-    const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: idem })
+    const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: idem, callbackUrl: callbackUrl() })
     await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: d.tipoDocumento, nombre: d.nombre, checkId: r.id }) }, previa))
     await archivarLaConDv()
     await auditar('sarblock.lanzado', { userId: uid, documento: doc, checkId: r.id })
@@ -392,13 +402,16 @@ const MAX_RELANZAMIENTOS_FUENTE = 2
 // JSON con las llaves en orden, para comparar sin que importe el orden.
 const estable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
   x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : x)
-async function recoger(uid: string) {
+// soloCheck: lo pide el callback de Sarblock para UN check — se lee ya,
+// aunque le tocara esperar, y no se recorre nada más (Sarblock corta a 8 s).
+async function recoger(uid: string, soloCheck?: string) {
   // En pausa por el cupo, lo automático espera a la próxima vuelta.
   if (await enPausa()) return { ok: true, cerrados: 0, reintentados: 0, pausado: true }
   const raw = await leerRaw(uid)
   const fichas: Record<string, any> = raw?.tusdatos?.beneficiarios ?? {}
   let cerrados = 0, reintentados = 0
   for (const [doc, f] of Object.entries(fichas)) {
+    if (soloCheck && String(f?.jobid ?? '') !== soloCheck) continue
     // Una ficha juzgada con una versión anterior de la matriz se vuelve a
     // juzgar con la vigente, desde lo que ya se pagó: gratis y sin esperar.
     if (f?.proveedor === 'sarblock' && f.estado === 'finalizado' && f.criterio !== CRITERIO && f.sarblock?.catalog) {
@@ -412,7 +425,8 @@ async function recoger(uid: string) {
     }
     // Lo que sigue procesando, y lo que se cerró con fuentes que Sarblock
     // todavía esperaba (el mismo check se completa solo; leerlo es gratis).
-    const paso = pasoFuentePendiente(f)
+    const paso0 = pasoFuentePendiente(f)
+    const paso = soloCheck && paso0 ? 'leer' : paso0
     const enCursoAun = paso !== null
     if (f?.proveedor !== 'sarblock' || !f.jobid || (f.estado !== 'procesando' && !enCursoAun)) continue
     if (paso === 'esperar') continue
@@ -421,21 +435,25 @@ async function recoger(uid: string) {
       const ahora = new Date().toISOString()
       const n = Number(f.reintentosFuente ?? 0) + 1
       let error: string | null = null
+      let noElegible = false
       try { await cliente().reintentarFuentes(f.jobid) } catch (e) {
         if (e instanceof ErrorSarblock && e.status === 429) break
         error = String((e as Error)?.message ?? e).slice(0, 300)
+        // 409 SCREENING_RETRY_NOT_ELIGIBLE (docs): nada reintentable, un
+        // retry ya corriendo, o los tres lotes gratis gastados.
+        noElegible = (e instanceof ErrorSarblock && e.status === 409) || /no hay fuentes elegibles/i.test(error)
       }
       // Sarblock no deja reintentar ese check gratis ("No hay fuentes
       // elegibles para reintento gratuito", 33 documentos el 12 nov): se
       // lanza una consulta NUEVA, que sí gasta un crédito. Autorizado por
       // Lincoin el 12 nov. Tope de 2 por ficha para no gastar sin fin.
       const relanzadas = Number(f.relanzamientosFuente ?? 0)
-      if (error && /no hay fuentes elegibles/i.test(error) && relanzadas < MAX_RELANZAMIENTOS_FUENTE) {
+      if (noElegible && relanzadas < MAX_RELANZAMIENTOS_FUENTE) {
         const sujeto = sujetoDe(f.tipoDocumento, doc, f.nombreInscrito)
         if (sujeto) {
           try {
             // Con la clave del día Sarblock devolvería el mismo check.
-            const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}` })
+            const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}`, callbackUrl: callbackUrl() })
             await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, checkId: r.id }), relanzamientosFuente: relanzadas + 1 }, f))
             await auditar('sarblock.relanzado_por_fuente', { userId: uid, documento: doc, checkAnterior: f.jobid, checkId: r.id, relanzamiento: relanzadas + 1 })
             reintentados++
@@ -1041,8 +1059,54 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
   return { ok: false, error: `Acción desconocida: ${accion}` }
 }
 
+async function hmacHex(secreto: string, texto: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(secreto), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  return [...new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(texto)))].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+function igualTiempoConstante(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b)
+  let d = x.length ^ y.length
+  for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
+
+// Aviso de Sarblock: check.completed | check.failed. Firma v1 = HMAC-SHA256
+// (secreto, "<timestamp>.<cuerpo crudo>"), timestamp ≤ 300 s. Se responde 2xx
+// rápido; si algo falla, Sarblock reintenta (5 intentos) y el barrido cubre.
+async function callbackSarblock(req: Request): Promise<Response> {
+  if (!CB_SECRETO) return json({ error: 'callback no configurado' }, 404)
+  const crudo = await req.text()
+  const firma = (req.headers.get('x-sarblock-signature') ?? '').trim()
+  const ts = (req.headers.get('x-sarblock-timestamp') ?? '').trim()
+  const edad = Math.abs(Math.floor(Date.now() / 1000) - Number(ts))
+  if (!Number.isFinite(edad) || edad > 300) return json({ error: 'firma' }, 401)
+  let valida = false
+  for (const s of [CB_SECRETO, CB_SECRETO_ANTERIOR].filter(Boolean)) {
+    if (igualTiempoConstante(`v1=${await hmacHex(s, `${ts}.${crudo}`)}`, firma)) { valida = true; break }
+  }
+  if (!valida) {
+    await auditar('sarblock.callback_firma_invalida', { evento: req.headers.get('x-sarblock-event'), entrega: req.headers.get('x-sarblock-delivery-id') })
+    return json({ error: 'firma' }, 401)
+  }
+  const ev = (() => { try { return JSON.parse(crudo) } catch { return {} } })() as Record<string, any>
+  const checkId = String(ev.checkId ?? '')
+  if (!checkId) return json({ ok: true })
+  // ¿De quién es el check? Lo dice el audit del lanzamiento.
+  const { data: fila } = await db.from('audit_log').select('metadata')
+    .in('action', ['sarblock.lanzado', 'sarblock.relanzado_por_fuente'])
+    .filter('metadata->>checkId', 'eq', checkId).order('created_at', { ascending: false }).limit(1).maybeSingle()
+  const uid = String((fila as any)?.metadata?.userId ?? '')
+  let r: any = null
+  if (uid) { try { r = await recoger(uid, checkId) } catch (e) { console.warn('[sarblock] callback', String((e as Error)?.message ?? e)) } }
+  await auditar('sarblock.callback', { checkId, evento: req.headers.get('x-sarblock-event'), entrega: req.headers.get('x-sarblock-delivery-id'), aggregateOutcome: ev.aggregateOutcome ?? null, userId: uid || null, cerrados: r?.cerrados ?? null })
+  return json({ ok: true })
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
+  if (req.headers.get('x-sarblock-signature')) {
+    try { return await callbackSarblock(req) } catch (e) { console.warn('[sarblock] callback', String((e as Error)?.message ?? e)); return json({ error: 'error' }, 500) }
+  }
   try {
     const yo = await quienLlama(req)
     const body = await req.json().catch(() => ({})) as Record<string, any>

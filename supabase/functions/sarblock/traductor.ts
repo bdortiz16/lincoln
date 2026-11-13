@@ -315,9 +315,18 @@ export const enCurso = (check: any) =>
 // Una ficha cerrada que hay que volver a leer: quedó con fuentes en curso.
 // Ya no se da por perdida a las 24 h: sin la fuente (casi siempre la Rama
 // Judicial) el envío no sale, así que se insiste hasta que llegue.
-export const releerFicha = (f: any) =>
-  f?.proveedor === 'sarblock' && f.estado === 'finalizado' && !!f.jobid
-  && Number(f.fuentesEnCurso ?? enCurso({ catalog: f.sarblock?.catalog })) > 0;
+// Una ficha cerrada a la que le faltan fuentes: alguna sigue "en curso", o
+// Sarblock dijo aggregateOutcome = PARTIAL ("quedaron consultas sin
+// realizarse", recomendación de Sarblock del 12 nov). Mientras sea así el
+// envío espera y se sigue insistiendo. Misma regla en mouv-proxy, en la
+// bandeja (tusdatos) y en la insignia de contactos.
+export const fichaIncompleta = (f: any): boolean =>
+  f?.proveedor === 'sarblock' && f.estado === 'finalizado' && (
+    Number(f.fuentesEnCurso ?? enCurso({ catalog: f.sarblock?.catalog })) > 0
+    || f.incompleta === true
+    || f.sarblock?.aggregateOutcome === 'PARTIAL'
+  );
+export const releerFicha = (f: any) => fichaIncompleta(f) && !!f.jobid;
 
 // Qué hacer con una ficha que tiene fuentes en curso. Sarblock (12 nov): la
 // fuente oficial a veces no está disponible; el retry manual del check es

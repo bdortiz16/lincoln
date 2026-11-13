@@ -320,7 +320,7 @@ Deno.test('KYC: cumplimiento pide más datos (REQUIRES_INFO con motivo)', async 
 });
 
 // ── Fuentes "en curso" (visto en la primera consulta real) ──────────────
-import { enCurso, releerFicha, pasoFuentePendiente } from './traductor.ts';
+import { enCurso, releerFicha, pasoFuentePendiente, fichaIncompleta } from './traductor.ts';
 const policiaEnCurso = { ...policiaCaida, retryable: false, statusReason: 'Consulta en curso en la fuente oficial: el resultado se añadirá al llegar' };
 
 Deno.test('fuente en curso: no se reintenta, la ficha queda para releer', () => {
@@ -558,4 +558,16 @@ Deno.test('risk: tipos de riesgo y despachos solo de parte pasiva', () => {
   assertEquals(Risk.tiposDeRiesgo({ hallazgos: [] }), ['ninguno']);
   assertEquals(Risk.tiposDeRiesgo({ hallazgos: [], nombreCoincide: false }), ['identidad']);
   assertEquals(Risk.despachos(ficha), ['JUZGADO 003 DE FAMILIA DE MANIZALES']);
+});
+
+Deno.test('PARTIAL: una fuente caída reintentable también deja la ficha incompleta', () => {
+  // retryable: true no cuenta como "en curso", pero Sarblock dice PARTIAL:
+  // quedaron consultas sin hacer (docs: aggregateOutcome). Sin esto el envío pasaba.
+  const f = { ...traducir(check({ aggregateOutcome: 'PARTIAL', summary: { action: 'MONITOR', riskLevel: 'LOW', shouldBlock: false, blockReason: null, matchedLists: 0, unavailableLists: 1 }, catalog: [policiaCaida] }), benef), jobid: 'chk-9', lanzadoAt: new Date().toISOString() };
+  assertEquals(f.fuentesEnCurso, undefined);
+  assert(fichaIncompleta(f));
+  assert(releerFicha(f));
+  assertEquals(pasoFuentePendiente(f), 'leer');
+  const completa = { ...traducir(check({ aggregateOutcome: 'COMPLETED', catalog: [{ ...policiaCaida, status: 'CLEAR', statusReason: null, retryable: false }] }), benef), jobid: 'chk-9' };
+  assertEquals(fichaIncompleta(completa), false);
 });
