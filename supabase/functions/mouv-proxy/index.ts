@@ -2589,7 +2589,10 @@ serve(async (req: Request) => {
     const vistas = new Set<string>()
     // Sin la Cuenta 3/4: su providerRef es un retiro de Coinsenda.
     const recientesFinity = ((recientesC ?? []) as any[]).filter(t => String(t?.raw_data?.proveedor ?? '') !== 'coinsenda').slice(0, 20)
-    const vivas = [...((nuevas ?? []) as any[]), ...((viejas ?? []) as any[]), ...recientesFinity].filter(t => !vistas.has(t.id) && !!vistas.add(t.id))
+    // Orden: los en curso más nuevos, luego los completados recientes (donde
+    // llegan las devoluciones) y al final los en curso más viejos. La vuelta
+    // tiene tope de 90 s: puestos al final, los completados no se alcanzaban.
+    const vivas = [...((nuevas ?? []) as any[]).slice(0, 10), ...recientesFinity, ...((nuevas ?? []) as any[]).slice(10), ...((viejas ?? []) as any[])].filter(t => !vistas.has(t.id) && !!vistas.add(t.id))
     let tardias: any[] = []
     if (payload?.barrido === true) {
       // Devoluciones TARDÍAS sobre envíos ya Completados (ACH y Bre-B ·
