@@ -2944,11 +2944,31 @@ serve(async (req: Request) => {
       out.push({ id: tx.id, result: motivo ? 'motivo_anotado' : 'sin_motivo', motivo: motivo ?? null, diag: diag ?? null })
     }
     if (txIdPedido) return json(200, { ok: true, checked: sinMotivo.length, results: out })
-    for (const tx of (rows ?? []) as any[]) {
-      if (!String(tx?.raw_data?.providerRef ?? '')) continue
-      out.push(await conciliarFilaFinity(tx, 'reconcile_ach'))
+    // "Sincronizar" desde el panel (admin) relee también los envíos que ya
+    // figuran COMPLETADOS en los últimos 3 días. Finity puede rechazarlos
+    // después (13 nov: 29,3 M a BBVA "Completado" aquí y "Rechazado" en su
+    // portal), y el vigilante los repasa por turnos entre miles: podían pasar
+    // horas con la plata del cliente descontada. conciliarFilaFinity mira el
+    // rechazo primero y devuelve monto + comisión (idempotente).
+    let completadas: any[] = []
+    if (caller.admin && !caller.servicio) {
+      const { data } = await db.from('transactions')
+        .select('id, user_id, amount, currency, status, raw_data, created_at')
+        .eq('type', 'dispersion').eq('user_id', userId).eq('status', 'Completado').eq('currency', 'COP_ACH')
+        .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
+        .filter('raw_data->>refunded', 'is', null)
+        .gte('created_at', new Date(Date.now() - 3 * 86_400_000).toISOString())
+        .order('created_at', { ascending: false }).limit(25)
+      completadas = (data ?? []) as any[]
     }
-    return json(200, { ok: true, checked: (rows ?? []).length, results: out })
+    const inicioConc = Date.now()
+    for (const tx of [...((rows ?? []) as any[]), ...completadas]) {
+      if (Date.now() - inicioConc > 100_000) break
+      if (!String(tx?.raw_data?.providerRef ?? '')) continue
+      out.push(await conciliarFilaFinity(tx, completadas.includes(tx) ? 'reconcile_ach_admin_completada' : 'reconcile_ach'))
+    }
+    if (completadas.length) await logAudit(caller.userId ?? null, 'finity.revision_completadas_admin', { userId, revisadas: completadas.length, devueltas: out.filter(r => r.result === 'refunded').map(r => r.id) })
+    return json(200, { ok: true, checked: (rows ?? []).length + completadas.length, results: out })
   }
 
   // ── Conciliación Bre-B (Mouv) SIN webhook ─────────────────────────
