@@ -2049,6 +2049,9 @@ function aprobacionAmlVigente(f: any): boolean {
 //
 // El rechazo se mira PRIMERO: una devolución tardía llega sobre un envío que
 // ya figuraba completado, y es justo la que no puede quedar sin reembolsar.
+// Cuánto tiempo tiene que seguir "completado" en Finity un envío ACH antes de
+// mostrarlo Completado al cliente (variable FINITY_CONFIRMACION_ACH_MIN).
+const CONFIRMACION_ACH_MS = (Number(Deno.env.get('FINITY_CONFIRMACION_ACH_MIN') ?? '120') || 120) * 60_000
 const RE_FINITY_FALLO = /FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR|VENCID|UNSUCCESS/
 // APPROVED / APROBADO no van: es "aprobada para procesar", no "pagada" (así lo
 // trata también finity-proxy). Marcarla Completado antes de tiempo la sacaba
@@ -2185,9 +2188,26 @@ async function conciliarFilaFinity(tx: any, origen: string, avisoFallo = false):
   if (v.veredicto === 'completado') {
     if (tx.status === 'Completado') { await marcarRevisionFinity(tx); return { id: tx.id, result: 'sigue_completado' } }
     if (avisoFallo) { await marcarRevisionFinity(tx); return { id: tx.id, result: 'aviso_contradice', providerStatus: s, estados: v.senales } }
+    // "Completado" de Finity NO es "pagado" en ACH: el banco destino todavía
+    // puede devolverlo (13 nov: 29,3 M a BBVA, completado a las 11:00 y
+    // rechazado después; el cliente lo vio Completado). Por ACH se espera a
+    // que Finity lo siga dando por completado CONFIRMACION_ACH_MS después de
+    // la primera vez; mientras tanto sigue "En curso". Bre-B · Cuenta 2 es
+    // inmediato y no espera.
+    const esBreb = String(rd.rail ?? '') === 'BREB' || rd.cuentaBreb != null
+    const ahoraIso = new Date().toISOString()
+    if (!esBreb) {
+      const desde = Date.parse(String(rd.finityCompletoDesde ?? '')) || 0
+      if (!desde || Date.now() - desde < CONFIRMACION_ACH_MS) {
+        await db.from('transactions').update({
+          raw_data: { ...rd, finityCompletoDesde: rd.finityCompletoDesde ?? ahoraIso, providerStatus: s, estadosProveedor: v.senales, ultimaRevisionFinity: ahoraIso },
+        }).eq('id', tx.id).eq('status', 'Procesando').filter('raw_data->>refunded', 'is', null)
+        return { id: tx.id, result: 'completado_por_confirmar', desde: rd.finityCompletoDesde ?? ahoraIso }
+      }
+    }
     await db.from('transactions').update({
       status: 'Completado',
-      raw_data: { ...rd, providerStatus: s, estadosProveedor: v.senales, reconciledAt: new Date().toISOString() },
+      raw_data: { ...rd, providerStatus: s, estadosProveedor: v.senales, reconciledAt: ahoraIso },
     }).eq('id', tx.id).eq('status', 'Procesando')
     return { id: tx.id, result: 'completed' }
   }
@@ -2550,8 +2570,23 @@ serve(async (req: Request) => {
       baseVivas().order('created_at', { ascending: false }).limit(25),
       baseVivas().order('created_at', { ascending: true }).limit(15),
     ])
+    // Los COMPLETADOS de las últimas 48 h, en CADA vuelta (cada 2 min), los
+    // que llevan más de 10 min sin mirarse. Es cuando el banco suele
+    // devolver. Antes solo los miraba el barrido de cada 20 min, de a 60
+    // entre miles de 15 días: a cada uno le tocaba casi una vez al día.
+    const hace10m = new Date(ahora - 10 * 60_000).toISOString()
+    const { data: recientesC } = await db.from('transactions')
+      .select('id, user_id, amount, currency, status, raw_data, created_at')
+      .eq('type', 'dispersion').eq('status', 'Completado').eq('currency', 'COP_ACH')
+      .not('raw_data->>providerRef', 'is', null)
+      .filter('raw_data->>refunded', 'is', null)
+      .or(`raw_data->>ultimaRevisionFinity.is.null,raw_data->>ultimaRevisionFinity.lt."${hace10m}"`)
+      .gte('created_at', new Date(ahora - 48 * 3600_000).toISOString())
+      .order('created_at', { ascending: false }).limit(30)
     const vistas = new Set<string>()
-    const vivas = [...((nuevas ?? []) as any[]), ...((viejas ?? []) as any[])].filter(t => !vistas.has(t.id) && !!vistas.add(t.id))
+    // Sin la Cuenta 3/4: su providerRef es un retiro de Coinsenda.
+    const recientesFinity = ((recientesC ?? []) as any[]).filter(t => String(t?.raw_data?.proveedor ?? '') !== 'coinsenda').slice(0, 20)
+    const vivas = [...((nuevas ?? []) as any[]), ...((viejas ?? []) as any[]), ...recientesFinity].filter(t => !vistas.has(t.id) && !!vistas.add(t.id))
     let tardias: any[] = []
     if (payload?.barrido === true) {
       // Devoluciones TARDÍAS sobre envíos ya Completados (ACH y Bre-B ·
