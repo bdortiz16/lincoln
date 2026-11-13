@@ -332,17 +332,20 @@ export const releerFicha = (f: any) => fichaIncompleta(f) && !!f.jobid;
 // fuente oficial a veces no está disponible; el retry manual del check es
 // GRATIS y no vence, aunque la fuente diga retryable=false. Su retry
 // automático solo mira las últimas 24 h.
-//   · la primera hora: leer en cada vuelta (suele completarse sola);
-//   · después: un retry gratis cada hora, y leer en los 20 min siguientes.
-export const REINTENTO_FUENTE_MS = 60 * 60 * 1000;
+//   · los primeros 10 min: leer en cada vuelta (suele completarse sola);
+//   · después: un retry gratis cada 20 min, leyendo en cada vuelta entre
+//     uno y otro. Antes el primero era a la hora, y las fichas que esperaban
+//     la Rama Judicial tardaban 30–40 min (13 nov). Sarblock subió el límite
+//     a 120 req/min, y el retry no cuesta.
+export const PRIMER_REINTENTO_MS = 10 * 60 * 1000;
+export const REINTENTO_FUENTE_MS = 20 * 60 * 1000;
 export function pasoFuentePendiente(f: any, ahora = Date.now()): 'leer' | 'reintentar' | 'esperar' | null {
   if (!releerFicha(f)) return null;
   const edad = ahora - (Date.parse(String(f.lanzadoAt ?? f.at ?? '')) || 0);
-  if (edad < REINTENTO_FUENTE_MS) return 'leer';
+  if (edad < PRIMER_REINTENTO_MS) return 'leer';
   const ultimo = Date.parse(String(f.reintentoFuenteAt ?? '')) || 0;
   if (ahora - ultimo >= REINTENTO_FUENTE_MS) return 'reintentar';
-  if (ahora - ultimo < 20 * 60 * 1000) return 'leer';
-  return 'esperar';
+  return 'leer';
 }
 
 // ¿Vale la pena un retry? Solo si quedaron fuentes caídas recuperables. Es

@@ -337,16 +337,16 @@ Deno.test('fuente en curso: no se reintenta, la ficha queda para releer', () => 
   assert(releerFicha({ ...f, lanzadoAt: new Date(Date.now() - 25 * 3600e3).toISOString() }));
 });
 
-Deno.test('fuente pendiente: lee la primera hora, luego retry gratis cada hora', () => {
+Deno.test('fuente pendiente: lee 10 min, luego retry gratis cada 20 min', () => {
   const f = { ...traducir(check({ aggregateOutcome: 'PARTIAL', catalog: [policiaEnCurso] }), benef), jobid: 'chk-1' };
   const t0 = Date.parse('2026-11-12T12:00:00Z');
   const lanzada = { ...f, lanzadoAt: new Date(t0).toISOString() };
-  assertEquals(pasoFuentePendiente(lanzada, t0 + 10 * 60e3), 'leer');
-  assertEquals(pasoFuentePendiente(lanzada, t0 + 2 * 3600e3), 'reintentar');
-  const reintentada = { ...lanzada, reintentoFuenteAt: new Date(t0 + 2 * 3600e3).toISOString() };
-  assertEquals(pasoFuentePendiente(reintentada, t0 + 2 * 3600e3 + 5 * 60e3), 'leer');
-  assertEquals(pasoFuentePendiente(reintentada, t0 + 2 * 3600e3 + 40 * 60e3), 'esperar');
-  assertEquals(pasoFuentePendiente(reintentada, t0 + 3 * 3600e3), 'reintentar');
+  assertEquals(pasoFuentePendiente(lanzada, t0 + 5 * 60e3), 'leer');
+  assertEquals(pasoFuentePendiente(lanzada, t0 + 11 * 60e3), 'reintentar');
+  const reintentada = { ...lanzada, reintentoFuenteAt: new Date(t0 + 11 * 60e3).toISOString() };
+  assertEquals(pasoFuentePendiente(reintentada, t0 + 20 * 60e3), 'leer');
+  assertEquals(pasoFuentePendiente(reintentada, t0 + 30 * 60e3), 'leer');
+  assertEquals(pasoFuentePendiente(reintentada, t0 + 31 * 60e3), 'reintentar');
   // Días después sigue insistiendo.
   assertEquals(pasoFuentePendiente(lanzada, t0 + 10 * 24 * 3600e3), 'reintentar');
   // Completa: nada que hacer.
