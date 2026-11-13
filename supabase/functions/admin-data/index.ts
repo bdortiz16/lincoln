@@ -2306,6 +2306,10 @@ Deno.serve(async (req: Request) => {
           headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'x-ip-cliente': ipOf(req) ?? '' },
           body: JSON.stringify({ action: 'send', userId: String(selfServiceBody.userId) }),
         }).then(x => x.json()).catch(() => null)
+        // Reenviar también deja rastro si no salió correo (13 nov: con el botón
+        // "Reenviar código" los fallos y los frenos no quedaban en ninguna parte).
+        if (!r?.ok) await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta', status: r?.status ?? null, detalle: r?.detalle ?? null, reenvio: true })
+        else if (r.throttled) await auditAdmin(req, 'auth.email_2fa_frenado', { userId: String(selfServiceBody.userId), reenvio: true })
         return json({ ok: !!r?.ok, throttled: !!r?.throttled, message: r?.message ?? null })
       }
 
