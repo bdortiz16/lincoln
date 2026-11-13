@@ -1372,7 +1372,7 @@ const ReviewModal: React.FC<{
         if (isBeneficiaryBlock && parsedMeta?.beneficiary_id) {
             // La solicitud es por un TERCERO bloqueado: aprobar = LEVANTAR el
             // bloqueo (is_active + limpiar block_*). NO tocamos kyc_status —
-            // el estado KYC es la verdad de Didit, dimensión aparte del
+            // el estado KYC es una dimensión aparte del
             // bloqueo. Rechazar tampoco lo toca: el tercero sigue bloqueado.
             if (status === 'approved') {
                 const benPatch: Record<string, any> = {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
@@ -6,8 +6,16 @@ import { ExchangeRateProvider } from './context/ExchangeRateContext';
 import { SystemConfigProvider } from './context/SystemConfigContext';
 import { DatabaseProvider } from './context/DatabaseContext';
 import { ThemeProvider } from './context/ThemeContext';
-import { PersonasAdminApp } from './components/AdminPersonas/PersonasAdminApp';
-import { AdminEmpresasApp } from './components/AdminEmpresasApp';
+import { lazyNamed } from './lib/lazyRetry';
+import { registrarSW } from './components/pushLincoin';
+
+// Service worker: lo único que hace es recibir notificaciones push con la app
+// cerrada. No cachea nada a propósito — ver public/sw.js.
+registrarSW();
+
+// Los paneles de admin se descargan solo en sus rutas: un cliente no los baja.
+const PersonasAdminApp = lazyNamed(() => import('./components/AdminPersonas/PersonasAdminApp'), 'PersonasAdminApp');
+const AdminEmpresasApp = lazyNamed(() => import('./components/AdminEmpresasApp'), 'AdminEmpresasApp');
 
 // Hidden admin URL: /admin-personas — runs in TOTAL isolation,
 // no Empresas providers, no Empresas auth.
@@ -23,6 +31,20 @@ const isEmpresasAdminRoute =
   typeof window !== 'undefined' &&
   !isPersonasAdminRoute &&
   (window.location.pathname === '/admin-empresas' || window.location.pathname === '/admin');
+
+// /colaboradores: el mismo panel aislado, con la entrada del equipo interno
+// (correo que asignó el dueño + 2FA obligatorio). Las secciones las decide el
+// servidor según las funciones de cada colaborador.
+const isColaboradoresRoute =
+  typeof window !== 'undefined' &&
+  /^\/colaboradores\/?$/.test(window.location.pathname);
+
+// /desbloquear: la página del enlace del correo de bloqueo. Va sola, sin
+// providers ni sesión: quien está bloqueado justamente no puede entrar.
+const DesbloquearCuenta = lazyNamed(() => import('./components/DesbloquearCuenta'), 'DesbloquearCuenta');
+const isDesbloquearRoute =
+  typeof window !== 'undefined' &&
+  /^\/desbloquear\/?$/.test(window.location.pathname);
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -66,10 +88,13 @@ const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      {isPersonasAdminRoute ? (
+      <Suspense fallback={<div style={{ minHeight: '100vh', background: '#070808' }} />}>
+      {isDesbloquearRoute ? (
+        <DesbloquearCuenta />
+      ) : isPersonasAdminRoute ? (
         // 🔒 Admin Personas: independiente, sin providers de Empresas
         <PersonasAdminApp />
-      ) : isEmpresasAdminRoute ? (
+      ) : isEmpresasAdminRoute || isColaboradoresRoute ? (
         // 🏢🔒 Admin Empresas: login propio + AdminDashboard, sin pasar
         // por la landing ni el routing por roles de App.tsx
         <AdminEmpresasApp />
@@ -85,6 +110,7 @@ root.render(
           </SystemConfigProvider>
         </ThemeProvider>
       )}
+      </Suspense>
     </ErrorBoundary>
   </React.StrictMode>
 );

@@ -31,7 +31,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
     const handleLogin = async () => {
         setError(null);
         if (!isSupabasePersonasConfigured) {
-            setError('Supabase Personas no está configurado. Revisa VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY en Vercel.');
+            setError('Supabase Personas no está configurado. Revisa VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY en las variables de compilación del hosting (Cloudflare → Worker lincoln).');
             return;
         }
         if (!email.trim() || !password) {
@@ -84,7 +84,7 @@ export const PersonasAdminLogin: React.FC<PersonasAdminLoginProps> = ({ onLoginS
                     <div className="flex items-center gap-2 mb-3">
                         <Terminal size={14} color={TEAL} />
                         <span style={{ color: TEAL, fontSize: '11px', letterSpacing: '0.2em' }}>
-                            LINCOIN · INTERNAL
+                            Lincoin · INTERNAL
                         </span>
                     </div>
                     <h1 className="text-white font-bold" style={{ fontSize: '20px', letterSpacing: '-0.01em' }}>

@@ -12,7 +12,7 @@ const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 // Remitente: idealmente no-reply@lincoin.me (dominio verificado en Resend).
 const FROM_EMAIL   = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
-const APP_URL      = (Deno.env.get('APP_BASE_URL') || 'https://lincoln-psi.vercel.app').replace(/\/+$/, '')
+const APP_URL      = (Deno.env.get('APP_BASE_URL') || 'https://lincoin.me').replace(/\/+$/, '')
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
 
 const CORS = {
@@ -23,20 +23,99 @@ const CORS = {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
-// Hash SHA-256 del código (no se guarda el código en claro).
+// Hash SHA-256 (solo para leer códigos emitidos antes del cambio a HMAC).
 async function sha256(s: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
+// El código se guarda como HMAC con una llave que solo tiene el servidor. Con
+// un SHA-256 simple, quien leyera raw_data.otp (el propio titular puede leer
+// su fila) sacaba el código probando el millón de combinaciones en segundos.
+async function hmacCodigo(userId: string, code: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(`email-otp|${SERVICE_KEY}`), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(`${userId}:${code}`)))
+  return Array.from(sig).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+function igualesHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let d = 0
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return d === 0
+}
+// Código de 6 dígitos con el generador criptográfico (Math.random no lo es).
+function codigoNuevo(): string {
+  const n = new Uint32Array(1)
+  crypto.getRandomValues(n)
+  return String(100000 + (n[0] % 900000))
+}
+
+// Comparación en tiempo constante para la llave de servicio.
+function igualSeguro(a: string, b: string): boolean {
+  const x = new TextEncoder().encode(String(a ?? ''))
+  const y = new TextEncoder().encode(String(b ?? ''))
+  let d = x.length ^ y.length
+  const n = Math.max(x.length, y.length)
+  for (let i = 0; i < n; i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+  return d === 0
+}
+
+// Para qué es el código. Sale en el correo: si alguien con la contraseña
+// intenta activar el 2FA con su propio celular, el titular recibe un correo
+// que lo dice con todas las letras, no un "intento de ingreso" genérico.
+const PROPOSITOS: Record<string, { asunto: string; intro: string }> = {
+  login: { asunto: 'es tu código de Lincoin', intro: 'Alguien está intentando iniciar sesión en tu cuenta Lincoin. Usa este código para continuar:' },
+  activar_2fa: { asunto: 'es tu código para activar la verificación en dos pasos', intro: 'Alguien está activando la verificación en dos pasos (2FA) en tu cuenta Lincoin. Si eres tú, usa este código para confirmarlo:' },
+  desactivar_2fa: { asunto: 'es tu código para desactivar la verificación en dos pasos', intro: 'Alguien está desactivando la verificación en dos pasos (2FA) de tu cuenta Lincoin. Si eres tú, usa este código para confirmarlo:' },
+}
 
 function findUser(email?: string, userId?: string) {
   if (userId) return db.from('users').select('id, email, full_name, raw_data').eq('id', userId).maybeSingle()
-  return db.from('users').select('id, email, full_name, raw_data').ilike('email', String(email ?? '')).maybeSingle()
+  // Comparación sin mayúsculas pero SIN comodines: con '%' o '_' en el correo,
+  // ilike encontraba cuentas ajenas por patrón (enumeración de correos).
+  const e = String(email ?? '').trim().toLowerCase()
+  if (!e || /[%*\\,()]/.test(e)) return Promise.resolve({ data: null, error: null } as any)
+  return db.from('users').select('id, email, full_name, raw_data').ilike('email', e.replace(/_/g, '\\_')).maybeSingle()
+}
+
+// La IP la pone el proxy de la plataforma: el primer valor de X-Forwarded-For
+// lo escribe el cliente.
+function ipDe(req: Request): string {
+  const directa = (req.headers.get('cf-connecting-ip') ?? req.headers.get('x-real-ip') ?? '').trim()
+  if (directa) return directa
+  const saltos = (req.headers.get('x-forwarded-for') ?? '').split(',').map(x => x.trim()).filter(Boolean)
+  return saltos.length ? saltos[saltos.length - 1] : ''
+}
+const escHtml = (v: unknown) => String(v ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+
+// Freno de envíos por IP y por correo, para TODOS los correos (existan o no).
+// Sin él, cualquiera podía inundar buzones ajenos y gastar la cuota de envío;
+// y como el freno de 30 s solo existía para cuentas reales, repetir la
+// petición decía si el correo tenía cuenta. Se lleva en audit_log.
+const MAX_ENVIOS_IP_10M = 15
+async function frenoEnvio(ip: string, claveCorreo: string): Promise<'ip' | 'correo' | null> {
+  try {
+    const hace10 = new Date(Date.now() - 10 * 60_000).toISOString()
+    const hace30s = new Date(Date.now() - 30_000).toISOString()
+    if (ip) {
+      const { count } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+        .eq('action', 'otp.send').gte('created_at', hace10).eq('metadata->>ip', ip)
+      if ((count ?? 0) >= MAX_ENVIOS_IP_10M) return 'ip'
+    }
+    const { count: c2 } = await db.from('audit_log').select('id', { count: 'exact', head: true })
+      .eq('action', 'otp.send').gte('created_at', hace30s).eq('metadata->>correo', claveCorreo)
+    if ((c2 ?? 0) >= 1) return 'correo'
+  } catch { /* sin registro no se frena a nadie por error */ }
+  return null
+}
+async function anotarEnvio(ip: string, claveCorreo: string) {
+  try { await db.from('audit_log').insert({ user_id: null, action: 'otp.send', metadata: { ip: ip || null, correo: claveCorreo, at: new Date().toISOString() } }) } catch { /* */ }
 }
 
 // Espacio fino cada 3 dígitos para leer mejor el código (482 916).
 const spacedCode = (c: string) => c.replace(/(\d{3})(\d{3})/, '$1 $2')
-const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?: string; time?: string; userId?: string }) => `
+const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?: string; time?: string; userId?: string; intro?: string }) => `
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
 <body style="margin:0;padding:0;background:#F0EFEB">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0EFEB"><tr><td align="center" style="padding:28px 14px">
@@ -47,14 +126,14 @@ const otpEmailHtml = (code: string, name: string, meta: { device?: string; loc?:
     <td align="right" style="font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">Correo de seguridad</td>
   </tr></table>
   <p style="font-family:'Archivo',Arial,sans-serif;font-size:19px;font-weight:800;color:#15181A;margin:26px 0 10px">Tu código de acceso</p>
-  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 20px">Hola${name ? `, ${name}` : ''}. Alguien está intentando iniciar sesión en tu cuenta Lincoin. Usa este código para continuar:</p>
+  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 20px">Hola${name ? `, ${escHtml(name)}` : ''}. ${meta.intro ?? PROPOSITOS.login.intro}</p>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="background:#F4F4F1;border-radius:10px;padding:22px">
     <span style="font-family:'Courier New',monospace;font-size:32px;font-weight:800;letter-spacing:10px;color:#15181A">${spacedCode(code)}</span>
   </td></tr></table>
   <p style="font-family:Arial,sans-serif;font-size:12.5px;color:#5C625E;text-align:center;margin:12px 0 22px">Vence en <b style="color:#15181A">10 minutos</b> · Un solo uso</p>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;font-size:12.5px">
-    ${meta.device ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Dispositivo</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${meta.device}</td></tr>` : ''}
-    ${meta.loc ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Ubicación aproximada</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${meta.loc}</td></tr>` : ''}
+    ${meta.device ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Dispositivo</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${escHtml(meta.device)}</td></tr>` : ''}
+    ${meta.loc ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Ubicación aproximada</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${escHtml(meta.loc)}</td></tr>` : ''}
     <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Hora</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${meta.time ?? new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' }) + ' (GMT-5)'}</td></tr>
   </table>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px"><tr><td style="background:#F4F4F1;border-radius:10px;padding:16px">
@@ -71,7 +150,7 @@ const footerHtml = (why: string) => `
     <p style="font-family:Arial,sans-serif;font-size:11.5px;color:#5C625E;font-weight:600;margin:0 0 10px">
       <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Centro de ayuda</a> · <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Seguridad</a> · <a href="${APP_URL}" style="color:#5C625E;text-decoration:none">Preferencias de correo</a>
     </p>
-    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">${why} Lincoin no es un banco. Los criptoactivos no están cubiertos por fondos de garantía de depósitos. El dólar digital (USDT) se mantiene 1:1 con dólares y la custodia opera sobre infraestructura GasFree/Fireblocks. © 2026 Lincoin.</p>
+    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">${why} Lincoin es una pasarela de pagos para empresas en Colombia; no es un banco. © 2026 Lincoin.</p>
   </td></tr></table>`
 
 Deno.serve(async (req) => {
@@ -79,9 +158,60 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}))
     const action = String(body.action ?? '')
-    const email = body.email ? String(body.email).trim() : undefined
-    const userId = body.userId ? String(body.userId) : undefined
+    if (!['send', 'verify', 'is_trusted'].includes(action)) return json(400, { error: 'bad_action' })
+
+    // ── QUIÉN PIDE EL CÓDIGO ─────────────────────────────────────────────
+    // Esto se llamaba con la llave pública y un userId o un correo en el
+    // cuerpo: cualquiera podía mandarle códigos a una cuenta ajena, gastarle
+    // los intentos de su código (y dejar al titular con "demasiados
+    // intentos") o validar uno a nombre de otro. Ahora:
+    //   · el servidor (admin-data, con la llave de servicio) pide por la
+    //     cuenta que diga el cuerpo;
+    //   · desde el navegador, solo por la cuenta de la SESIÓN que llama —
+    //     lo que diga el cuerpo se ignora.
+    // Todos los usos del navegador son con la sesión ya abierta (la puerta
+    // del ingreso, desactivar el 2FA), así que no se pierde ninguno.
+    const tokenLlamada = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim()
+    const servicio = !!tokenLlamada && !!SERVICE_KEY && igualSeguro(tokenLlamada, SERVICE_KEY)
+    let propioId: string | null = null
+    if (!servicio && tokenLlamada) {
+      try { const { data: { user: yo } } = await db.auth.getUser(tokenLlamada); propioId = yo?.id ?? null } catch { propioId = null }
+    }
+    if (!servicio && !propioId) return json(401, { ok: false, error: 'unauthorized', message: 'Tu sesión venció. Vuelve a iniciar sesión.' })
+    const email = servicio && body.email ? String(body.email).trim() : undefined
+    const userId = servicio ? (body.userId ? String(body.userId) : undefined) : String(propioId)
     if (!email && !userId) return json(400, { error: 'missing_identity' })
+    // El PROPÓSITO queda guardado con el código y se exige al verificarlo
+    // cuando quien verifica lo dice. Antes cualquier código vigente servía
+    // para todo: con la contraseña de alguien se pedía uno "para entrar", se
+    // le convencía de leerlo y se usaba para inscribir OTRA app 2FA (y con
+    // eso sacar plata), sin que saliera el correo de "están activando tu 2FA"
+    // (revisión del 6 nov). El de activar 2FA solo lo pide el servidor.
+    let propositoClave = PROPOSITOS[String(body.proposito ?? '')] ? String(body.proposito) : 'login'
+    if (!servicio && propositoClave === 'activar_2fa') propositoClave = 'login'
+    const proposito = PROPOSITOS[propositoClave]
+
+    // IP del cliente, la que pone el proxy de la plataforma. Cuando llama el
+    // SERVIDOR (admin-data, para los códigos del panel), esa IP es la del
+    // propio Supabase, la misma para todos: el freno de 15 envíos cada 10 min
+    // por IP sumaba a todo el panel junto y, al pasarse, respondía "ya te
+    // enviamos un código" SIN enviar nada (13 nov: «llegan todos menos el del
+    // admin»; en Resend no aparecía ningún envío). Ahora admin-data manda la IP
+    // real de quien pidió el código; si no la manda, no se frena por IP (el
+    // freno por cuenta de 30 s sigue). También sirve para que el correo diga
+    // desde dónde se pidió, no la ubicación del servidor.
+    const clientIp = servicio ? (req.headers.get('x-ip-cliente') ?? '').trim() : ipDe(req)
+
+    // Freno de envíos ANTES de mirar si la cuenta existe: así responde igual
+    // para un correo con cuenta que para uno sin cuenta.
+    if (action === 'send') {
+      const claveCorreo = await sha256(`otp|${String(userId ?? email ?? '').trim().toLowerCase()}`)
+      const freno = await frenoEnvio(clientIp, claveCorreo)
+      // Al servidor se le dice CUÁL freno fue (por IP o por cuenta), para que
+      // el panel le diga al titular qué esperar y quede en la auditoría.
+      if (freno) return json(200, { ok: true, throttled: true, esperaSegundos: 30, message: 'Ya te enviamos un código. Revisa tu correo.', ...(servicio ? { freno } : {}) })
+      await anotarEnvio(clientIp, claveCorreo)
+    }
 
     const { data: user } = await findUser(email, userId)
     // SEGURIDAD (pentest H3): NO revelar si el correo tiene cuenta o no.
@@ -90,35 +220,102 @@ Deno.serve(async (req) => {
     // cuenta. Respuesta UNIFORME: si no hay usuario, respondemos igual que
     // el camino de éxito (sin enviar nada) y salimos.
     if (!user) {
+      // El SERVIDOR pide siempre por el id de una cuenta que acaba de validar:
+      // si no aparece, es un error de verdad y se dice (a él no hay a quién
+      // ocultarle nada). Antes respondía "enviado" sin enviar.
+      if (servicio && action === 'send') {
+        console.error(`[otp] cuenta ${String(userId ?? '').slice(0, 8)} no encontrada en users`)
+        return json(200, { ok: false, error: 'user_not_found', message: 'No se encontró la cuenta para enviar el código.' })
+      }
       if (action === 'verify') return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
+      if (action === 'is_trusted') return json(200, { ok: true, trusted: false, hasta: null })
       // Mismo shape que el camino de éxito (incluye `to` enmascarado del
       // correo que ENVIÓ el cliente) para no dar pistas de existencia.
       return json(200, { ok: true, sent: true, to: maskEmail(String(email ?? '')) })
     }
     const raw = (user.raw_data ?? {}) as Record<string, any>
 
-    // IP del cliente (Deno Deploy/Supabase la reenvía en x-forwarded-for).
-    const clientIp = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim()
-      || req.headers.get('x-real-ip') || ''
-
     if (action === 'send') {
-      if (!RESEND_KEY) return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
+      // Todo lo que impide que salga un correo se REGISTRA. Hoy no se
+      // registraba nada: cuando no llegaba el código no había forma de saber
+      // si era la llave, el proveedor o una condición de acá adentro, y se
+      // terminaba adivinando. Los registros van con el correo enmascarado.
+      const quien = maskEmail(String(user.email ?? ''))
+      if (!RESEND_KEY) {
+        console.error(`[otp] ${quien}: falta RESEND_API_KEY en el entorno`)
+        return json(200, { ok: false, error: 'email_not_configured', message: 'Falta RESEND_API_KEY.' })
+      }
       // Rate-limit suave: no reenviar si se emitió hace < 30 s.
       const prev = raw.otp
       if (prev?.sentAt && Date.now() - Number(prev.sentAt) < 30000) {
-        return json(200, { ok: true, throttled: true, message: 'Ya te enviamos un código. Revisa tu correo.' })
+        const hace = Math.round((Date.now() - Number(prev.sentAt)) / 1000)
+        console.log(`[otp] ${quien}: frenado, el anterior salio hace ${hace}s`)
+        return json(200, { ok: true, throttled: true, esperaSegundos: 30 - hace, message: 'Ya te enviamos un código. Revisa tu correo.', ...(servicio ? { freno: 'cuenta' } : {}) })
       }
-      const code = String(Math.floor(100000 + Math.random() * 900000)) // 6 dígitos
-      const codeHash = await sha256(code)
-      const otp = { codeHash, expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, sentAt: Date.now() }
-      await db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
+      const code = codigoNuevo() // 6 dígitos
+      const codeHash = await hmacCodigo(String(user.id), code)
+      // ── LOS CÓDIGOS QUE ESTE REEMPLAZA ──────────────────────────────────
+      // Cada envío deja sin valor al anterior, pero el correo anterior sigue en
+      // la bandeja (y con otro asunto, así que el correo no los agrupa). Pasó
+      // el 2026-11-05 con la primera colaboradora: un ingreso en
+      // /admin-empresas mandó un código, el de /colaboradores mandó otro, ella
+      // escribió el primero —que SÍ le llegó a su correo— y contó como "código
+      // incorrecto"; con dos, el panel se bloqueó. Se guarda la huella de los
+      // reemplazados (los que no han vencido, máximo 3) solo para poder decir
+      // "ese ya fue reemplazado, usa el último": NO sirven para entrar.
+      const ahoraMs = Date.now()
+      const reemplazados = [
+        ...(prev?.codeHash && Number(prev.expiresAt ?? 0) > ahoraMs ? [{ h: String(prev.codeHash), v: Number(prev.v ?? 1), exp: Number(prev.expiresAt) }] : []),
+        ...(Array.isArray(prev?.reemplazados) ? prev.reemplazados : []),
+      ].filter((r: any) => r && typeof r.h === 'string' && Number(r.exp ?? 0) > ahoraMs).slice(0, 3)
+      const otp = { codeHash, v: 2, expiresAt: ahoraMs + 10 * 60 * 1000, attempts: 0, sentAt: ahoraMs, proposito: propositoClave, ...(reemplazados.length ? { reemplazados } : {}) }
+
+      // ── UN SOLO CÓDIGO POR VEZ, AUNQUE LLEGUEN DOS PETICIONES JUNTAS ────
+      // El freno de 30 s de arriba mira `prev`, que se leyó al empezar. Dos
+      // peticiones simultáneas leían las dos el MISMO estado anterior, las dos
+      // pasaban el freno, las dos escribían y las dos mandaban correo. Llegaban
+      // dos códigos con un segundo de diferencia y solo servía el segundo —el
+      // que sobreescribió—, así que el titular probaba el primero y le decía
+      // "código incorrecto".
+      //
+      // La escritura ahora exige que el estado anterior SIGA siendo el que se
+      // leyó. Solo una puede cumplirlo: la otra no encuentra fila, no manda
+      // correo y responde como si estuviera frenada.
+      //
+      // Los TRES estados posibles, cada uno con su condición. Antes eran dos,
+      // y el tercero —un otp guardado SIN sentAt— no encajaba en ninguna: la
+      // condición exigía que raw_data->otp fuera null, y no lo era, así que
+      // no coincidía ninguna fila y la cuenta se quedaba SIN PODER RECIBIR
+      // CÓDIGOS PARA SIEMPRE, respondiendo "ya te enviamos uno" sin enviar
+      // nada. La rama de abajo es además lo que DESTRABA a las cuentas que ya
+      // quedaron así: en el próximo intento coinciden y vuelven a funcionar
+      // solas, sin tocar la base a mano.
+      let claim = db.from('users').update({ raw_data: { ...raw, otp } }).eq('id', user.id)
+      if (prev?.sentAt) {
+        claim = claim.filter('raw_data->otp->>sentAt', 'eq', String(prev.sentAt))
+      } else if (prev) {
+        claim = claim.is('raw_data->otp->>sentAt', null)
+      } else {
+        claim = claim.is('raw_data->otp', null)
+      }
+      const { data: gane, error: errClaim } = await claim.select('id')
+      // Este NO es el freno de 30 s, aunque antes respondía lo mismo. Que los
+      // dos casos dijeran "ya te enviamos un código" fue justo lo que escondió
+      // durante horas una cuenta que no podía emitir ninguno. Se distinguen.
+      if (!gane?.length) {
+        console.error(`[otp] ${quien}: no se pudo reclamar el turno` +
+          ` · otp guardado=${JSON.stringify(prev ?? null).slice(0, 120)}` +
+          (errClaim ? ` · error=${errClaim.message}` : ''))
+        return json(200, { ok: false, error: 'claim_failed', message: 'No pudimos emitir el código. Probá de nuevo en un momento.' })
+      }
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: `Lincoin <${FROM_EMAIL}>`, to: [user.email],
-          subject: `${spacedCode(code)} es tu código de Lincoin`,
+          subject: `${spacedCode(code)} ${proposito.asunto}`,
           html: otpEmailHtml(code, String(user.full_name ?? '').split(' ')[0] ?? '', {
+            intro: proposito.intro,
             device: deviceFromUA(req.headers.get('user-agent') ?? ''),
             loc: await approxLocation(clientIp),
             time: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'medium', timeStyle: 'short' }) + ' (GMT-5)',
@@ -128,32 +325,166 @@ Deno.serve(async (req) => {
       })
       if (!res.ok) {
         const t = await res.text().catch(() => '')
-        return json(200, { ok: false, error: 'send_failed', status: res.status, detail: t.slice(0, 200) })
+        console.error(`[otp] ${quien}: Resend rechazo el envio · HTTP ${res.status} · ${t.slice(0, 300)}`)
+        // El turno ya se reclamó arriba, así que quedó guardado un código que
+        // el titular NUNCA recibió: el próximo intento caería en el freno de
+        // 30 s y le diría "revisa tu correo" — un correo que no existe. Se
+        // deshace la marca de envío. Queda `failedAt` en vez de borrar el
+        // objeto: sin `sentAt`, el próximo intento vuelve a reclamar turno de
+        // inmediato, y además queda el rastro de que hubo un fallo.
+        await db.from('users')
+          .update({ raw_data: { ...raw, otp: { failedAt: Date.now() } } })
+          .eq('id', user.id)
+          .filter('raw_data->otp->>sentAt', 'eq', String(otp.sentAt))
+        // Al servidor (admin-data) se le pasa lo que dijo el proveedor, para
+        // que quede en la auditoría (13 nov: "no llegan los códigos del admin"
+        // y el motivo solo estaba en los logs de la función). Al navegador no.
+        return json(200, { ok: false, error: 'send_failed', status: res.status, message: 'No se pudo enviar el código. Intenta de nuevo en un momento.',
+          ...(servicio ? { detalle: t.slice(0, 300) } : {}) })
       }
-      return json(200, { ok: true, sent: true, to: maskEmail(String(user.email ?? '')) })
+      // El id que da el proveedor: con él se encuentra ESE correo en Resend
+      // (13 nov: había que buscar a ojo entre todos los envíos del día).
+      const idProveedor = String((await res.json().catch(() => null))?.id ?? '') || null
+      console.log(`[otp] ${quien}: enviado${idProveedor ? ` · ${idProveedor}` : ''}`)
+      return json(200, { ok: true, sent: true, to: quien, ...(servicio ? { idProveedor } : {}) })
     }
 
     if (action === 'verify') {
       const code = String(body.code ?? '').trim()
       if (!/^\d{6}$/.test(code)) return json(200, { ok: false, error: 'bad_code' })
       const otp = raw.otp
-      if (!otp?.codeHash) return json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
+      // Sin hash guardado hay dos casos distintos, y conviene distinguirlos:
+      // nunca se pidió un código, o este YA SE USÓ. Decir "solicita uno nuevo"
+      // cuando el código acaba de funcionar en otra pestaña confunde al dueño
+      // de la cuenta y no le aclara nada a nadie más.
+      if (!otp?.codeHash) {
+        return otp?.usedAt
+          ? json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
+          : json(200, { ok: false, error: 'no_code', message: 'Solicita un código nuevo.' })
+      }
       if (Date.now() > Number(otp.expiresAt)) return json(200, { ok: false, error: 'expired', message: 'El código venció. Pide uno nuevo.' })
+      // Si quien verifica dice para qué es, el código tiene que ser de ESO
+      // (sin cobrar intento: no es adivinar). Los de antes no traen propósito
+      // y cuentan como de ingreso.
+      if (body.proposito && String(otp.proposito ?? 'login') !== String(body.proposito)) {
+        return json(200, { ok: false, error: 'wrong_purpose', message: 'Ese código es para otra operación. Pide uno nuevo desde aquí.' })
+      }
       if (Number(otp.attempts ?? 0) >= 5) return json(200, { ok: false, error: 'too_many', message: 'Demasiados intentos. Pide un código nuevo.' })
-      const ok = (await sha256(code)) === otp.codeHash
+      // EL INTENTO SE COBRA ANTES DE MIRAR EL CÓDIGO. Antes se comparaba
+      // primero y se sumaba después, condicionado al valor leído: con diez
+      // peticiones en paralelo las diez se evaluaban y solo UNA lograba subir
+      // el contador — diez códigos probados por el precio de un intento. Ahora
+      // cada petición tiene que ganar su turno (subir attempts de N a N+1)
+      // para que su código se evalúe; la que no lo gana no prueba nada.
+      const previo = Number(otp.attempts ?? 0)
+      const otpConIntento = { ...otp, attempts: previo + 1 }
+      const { data: turno } = await db.from('users')
+        .update({ raw_data: { ...raw, otp: otpConIntento } })
+        .eq('id', user.id)
+        .eq('raw_data->otp->>attempts', String(previo))
+        .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
+        .select('id')
+      // Sin turno no se evaluó ningún código: otra petición con este mismo
+      // código (un doble toque, o la red reintentando el POST) está en curso.
+      // Antes respondía 'invalid', y quien llama lo contaba como un código
+      // equivocado —uno de los dos fallos que bloquean el panel— por un
+      // código que estaba bien. No da ventaja a nadie: aquí no se probó nada.
+      if (!turno?.length) return json(200, { ok: false, error: 'busy', message: 'Estamos verificando tu código. Espera un momento.' })
+      const esperado = Number(otp.v) === 2 ? await hmacCodigo(String(user.id), code) : await sha256(code)
+      const ok = igualesHex(esperado, String(otp.codeHash))
       if (!ok) {
-        await db.from('users').update({ raw_data: { ...raw, otp: { ...otp, attempts: Number(otp.attempts ?? 0) + 1 } } }).eq('id', user.id)
+        // ¿Es uno de los que reemplazó el último envío? Entonces quien lo
+        // escribe tiene el correo: se equivocó de correo, no adivinó. No
+        // abre nada; solo se dice cuál usar. (El intento ya quedó cobrado.)
+        const vivos: any[] = Array.isArray(otp.reemplazados) ? otp.reemplazados.filter((r: any) => Number(r?.exp ?? 0) > Date.now()) : []
+        for (const r of vivos) {
+          const h = Number(r.v) === 2 ? await hmacCodigo(String(user.id), code) : await sha256(code)
+          if (igualesHex(h, String(r.h))) {
+            return json(200, { ok: false, error: 'superseded', message: 'Ese código ya fue reemplazado por uno más nuevo. Usa el del último correo que te llegó.' })
+          }
+        }
         return json(200, { ok: false, error: 'invalid', message: 'Código incorrecto.' })
       }
-      // Éxito: se limpia el OTP.
-      const { otp: _drop, ...rest } = raw
-      await db.from('users').update({ raw_data: rest }).eq('id', user.id)
+
+      // ── CONSUMO DE UN SOLO USO, ATÓMICO ─────────────────────────────────
+      // El borrado por sí solo NO alcanzaba: entre leer el código y borrarlo
+      // hay una ventana, y dos peticiones con el MISMO código que llegan a la
+      // vez —un doble toque en "Continuar", o alguien reenviando la petición—
+      // leían las dos el código todavía puesto, las dos daban por buena la
+      // verificación, y las dos borraban. Un código, dos usos.
+      //
+      // Ahora el borrado lleva la condición de que el hash SIGA siendo el
+      // mismo. La base solo puede cumplirla una vez: la primera petición lo
+      // quita, y la segunda no encuentra fila que actualizar. Gana una sola,
+      // sin importar cuántas lleguen juntas.
+      //
+      // Se deja la marca 'usedAt' en vez de borrar el objeto entero, para
+      // poder responder "ese código ya se usó" en lugar de un genérico.
+      //
+      // ── DISPOSITIVO DE CONFIANZA, EN LA MISMA ESCRITURA ─────────────────
+      // "Confiar en este dispositivo 30 días" vivía SOLO en el navegador: una
+      // fecha en localStorage. Cualquier cosa que limpie el almacenamiento la
+      // borraba y el código volvía a pedirse en cada ingreso; y al revés,
+      // escribiendo esa fecha a mano se saltaba el paso. Ahora la confianza la
+      // guarda el SERVIDOR: el navegador solo conserva un identificador sin
+      // valor por sí mismo, que si no está en la lista de acá no abre nada.
+      //
+      // VA EN ESTA MISMA ESCRITURA, no en una segunda. Cuando era una segunda
+      // pasaban dos cosas, las dos malas: partía de `raw`, que se leyó al
+      // ENTRAR a la petición, así que pisaba lo que acababa de dejar el
+      // reclamo de acá arriba; y al reconstruir el objeto otp se le quedaba
+      // fuera `sentAt`. Sin `sentAt`, el envío del código no encontraba fila
+      // que reclamar y la cuenta quedaba SIN PODER RECIBIR CÓDIGOS, mientras
+      // respondía "ya te enviamos uno". Marcar "confiar en este dispositivo"
+      // era lo que dejaba la cuenta inservible. Una sola escritura no puede
+      // pisarse a sí misma.
+      const dev = String(body.deviceId ?? '').trim().slice(0, 64)
+      const confiar = body.trust === true && /^[A-Za-z0-9_-]{16,64}$/.test(dev)
+
+      // Se parte de la fila con el intento ya cobrado (lo que quedó escrito).
+      const rawNuevo: Record<string, any> = {
+        ...raw,
+        otp: { usedAt: Date.now(), sentAt: otp.sentAt ?? null },
+      }
+      if (confiar) {
+        const previos: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
+        const vivos = previos.filter(d => d && d.id !== dev && Number(d.exp ?? 0) > Date.now())
+        const nuevo = {
+          id: dev,
+          exp: Date.now() + 30 * 86400_000,
+          desde: new Date().toISOString(),
+          agente: deviceFromUA(req.headers.get('user-agent') ?? ''),
+        }
+        // Tope de 10: una cuenta con veinte dispositivos "de confianza" no
+        // tiene ninguno. Se quedan los más recientes.
+        rawNuevo.trustedDevices = [nuevo, ...vivos].slice(0, 10)
+      }
+
+      const { data: reclamado } = await db.from('users')
+        .update({ raw_data: rawNuevo })
+        .eq('id', user.id)
+        .filter('raw_data->otp->>codeHash', 'eq', String(otp.codeHash))
+        .select('id')
+      if (!reclamado?.length) {
+        return json(200, { ok: false, error: 'used', message: 'Ese código ya se usó. Pide uno nuevo.' })
+      }
       return json(200, { ok: true, verified: true, userId: user.id })
+    }
+
+    // ¿Este dispositivo ya pasó el código? Lo decide el servidor, no el
+    // navegador. Se responde solo sí o no: nada que un cliente pueda fingir.
+    if (action === 'is_trusted') {
+      const dev = String(body.deviceId ?? '').trim().slice(0, 64)
+      if (!/^[A-Za-z0-9_-]{16,64}$/.test(dev)) return json(200, { ok: true, trusted: false })
+      const lista: any[] = Array.isArray(raw.trustedDevices) ? raw.trustedDevices : []
+      const hit = lista.find(d => d && d.id === dev && Number(d.exp ?? 0) > Date.now())
+      return json(200, { ok: true, trusted: !!hit, hasta: hit?.exp ?? null })
     }
 
     return json(400, { error: 'bad_action' })
   } catch (e) {
-    return json(500, { error: 'internal', message: (e as Error)?.message ?? String(e) })
+    console.error('[otp] error interno:', (e as Error)?.message ?? e)
+    return json(500, { error: 'internal', message: 'No se pudo completar la verificación. Intenta de nuevo.' })
   }
 })
 
