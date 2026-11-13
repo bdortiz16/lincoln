@@ -2050,8 +2050,11 @@ function aprobacionAmlVigente(f: any): boolean {
 // El rechazo se mira PRIMERO: una devolución tardía llega sobre un envío que
 // ya figuraba completado, y es justo la que no puede quedar sin reembolsar.
 // Cuánto tiempo tiene que seguir "completado" en Finity un envío ACH antes de
-// mostrarlo Completado al cliente (variable FINITY_CONFIRMACION_ACH_MIN).
-const CONFIRMACION_ACH_MS = (Number(Deno.env.get('FINITY_CONFIRMACION_ACH_MIN') ?? '120') || 120) * 60_000
+// mostrarlo Completado al cliente (variable FINITY_CONFIRMACION_ACH_MIN; sin
+// ella, 30 min). Las devoluciones de Finity llegan horas o días después
+// (oct–nov: de 3,5 h a 6 días), así que esperar más no las atrapa: eso lo
+// hace la relectura cada 2 min. Esto solo cubre el rechazo inmediato.
+const CONFIRMACION_ACH_MS = (Number(Deno.env.get('FINITY_CONFIRMACION_ACH_MIN') ?? '30') || 30) * 60_000
 const RE_FINITY_FALLO = /FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR|VENCID|UNSUCCESS/
 // APPROVED / APROBADO no van: es "aprobada para procesar", no "pagada" (así lo
 // trata también finity-proxy). Marcarla Completado antes de tiempo la sacaba
