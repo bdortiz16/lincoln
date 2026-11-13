@@ -35,7 +35,7 @@ import { setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
-import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
+import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, fichaIncompleta, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
@@ -396,6 +396,42 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   }
 }
 
+// Reintento de una ficha con fuentes pendientes. Primero el retry GRATIS del
+// mismo check; si Sarblock no lo permite (409: nada reintentable o los tres
+// lotes gastados), una consulta NUEVA, que gasta un crédito (autorizado por
+// Lincoin el 12 nov), hasta `maxRelanzar` por ficha. Lo usan el barrido y el
+// botón "Reintentar" de la bandeja.
+async function reintentarFuente(uid: string, doc: string, f: any, maxRelanzar: number, por: string | null = null): Promise<'limite' | 'reintento' | 'relanzada' | 'sin_cambio'> {
+  const ahora = new Date().toISOString()
+  const n = Number(f.reintentosFuente ?? 0) + 1
+  let error: string | null = null
+  let noElegible = false
+  try { await cliente().reintentarFuentes(f.jobid) } catch (e) {
+    if (e instanceof ErrorSarblock && e.status === 429) return 'limite'
+    error = String((e as Error)?.message ?? e).slice(0, 300)
+    noElegible = (e instanceof ErrorSarblock && e.status === 409) || /no hay fuentes elegibles/i.test(error)
+  }
+  const relanzadas = Number(f.relanzamientosFuente ?? 0)
+  if (noElegible && relanzadas < maxRelanzar) {
+    const sujeto = sujetoDe(f.tipoDocumento, doc, f.nombreInscrito)
+    if (sujeto) {
+      try {
+        // Con la clave del día Sarblock devolvería el mismo check.
+        const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}`, callbackUrl: callbackUrl() })
+        await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, checkId: r.id }), relanzamientosFuente: relanzadas + 1 }, f))
+        await auditar('sarblock.relanzado_por_fuente', { userId: uid, documento: doc, checkAnterior: f.jobid, checkId: r.id, relanzamiento: relanzadas + 1, por })
+        return 'relanzada'
+      } catch (e) {
+        if (e instanceof ErrorSarblock && e.status === 429) return 'limite'
+        await auditar('sarblock.relanzado_por_fuente_fallido', { userId: uid, documento: doc, checkAnterior: f.jobid, motivo: String((e as Error)?.message ?? e).slice(0, 300), por })
+      }
+    }
+  }
+  await guardarFicha(uid, doc, { ...f, reintentoFuenteAt: ahora, reintentosFuente: n })
+  await auditar('sarblock.reintento_fuente', { userId: uid, documento: doc, checkId: f.jobid, intento: n, error, por })
+  return error ? 'sin_cambio' : 'reintento'
+}
+
 // ── Recoger ─────────────────────────────────────────────────────────────
 const MAX_REINTENTOS = 3
 const MAX_RELANZAMIENTOS_FUENTE = 2
@@ -431,41 +467,8 @@ async function recoger(uid: string, soloCheck?: string) {
     if (f?.proveedor !== 'sarblock' || !f.jobid || (f.estado !== 'procesando' && !enCursoAun)) continue
     if (paso === 'esperar') continue
     if (paso === 'reintentar') {
-      // Retry gratis del mismo check: no gasta crédito ni lanza otro.
-      const ahora = new Date().toISOString()
-      const n = Number(f.reintentosFuente ?? 0) + 1
-      let error: string | null = null
-      let noElegible = false
-      try { await cliente().reintentarFuentes(f.jobid) } catch (e) {
-        if (e instanceof ErrorSarblock && e.status === 429) break
-        error = String((e as Error)?.message ?? e).slice(0, 300)
-        // 409 SCREENING_RETRY_NOT_ELIGIBLE (docs): nada reintentable, un
-        // retry ya corriendo, o los tres lotes gratis gastados.
-        noElegible = (e instanceof ErrorSarblock && e.status === 409) || /no hay fuentes elegibles/i.test(error)
-      }
-      // Sarblock no deja reintentar ese check gratis ("No hay fuentes
-      // elegibles para reintento gratuito", 33 documentos el 12 nov): se
-      // lanza una consulta NUEVA, que sí gasta un crédito. Autorizado por
-      // Lincoin el 12 nov. Tope de 2 por ficha para no gastar sin fin.
-      const relanzadas = Number(f.relanzamientosFuente ?? 0)
-      if (noElegible && relanzadas < MAX_RELANZAMIENTOS_FUENTE) {
-        const sujeto = sujetoDe(f.tipoDocumento, doc, f.nombreInscrito)
-        if (sujeto) {
-          try {
-            // Con la clave del día Sarblock devolvería el mismo check.
-            const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}`, callbackUrl: callbackUrl() })
-            await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, checkId: r.id }), relanzamientosFuente: relanzadas + 1 }, f))
-            await auditar('sarblock.relanzado_por_fuente', { userId: uid, documento: doc, checkAnterior: f.jobid, checkId: r.id, relanzamiento: relanzadas + 1 })
-            reintentados++
-            continue
-          } catch (e) {
-            if (e instanceof ErrorSarblock && e.status === 429) break
-            await auditar('sarblock.relanzado_por_fuente_fallido', { userId: uid, documento: doc, checkAnterior: f.jobid, motivo: String((e as Error)?.message ?? e).slice(0, 300) })
-          }
-        }
-      }
-      await guardarFicha(uid, doc, { ...f, reintentoFuenteAt: ahora, reintentosFuente: n })
-      await auditar('sarblock.reintento_fuente', { userId: uid, documento: doc, checkId: f.jobid, intento: n, error })
+      const r = await reintentarFuente(uid, doc, f, MAX_RELANZAMIENTOS_FUENTE)
+      if (r === 'limite') break
       reintentados++
       continue
     }
@@ -1374,6 +1377,30 @@ Deno.serve(async (req) => {
       const no = await exigirAdmin(req, yo); if (no) return no
       return json({ ok: true, saldo: saldoScreening(await cliente().consumo()) })
     }
+    // ── Reintentar desde la bandeja (Cumplimiento, admin o colaborador) ──
+    // Para las fichas pegadas en "Verificando": consultando, o cerradas con
+    // una fuente pendiente / PARTIAL. El botón "Reintentar consulta" de
+    // antes no servía para estas: la ficha ya tenía resultado y respondía
+    // "ya existía". A mano se permiten hasta 4 consultas nuevas por ficha.
+    if (accion === 'reintentar_fuente') {
+      const no = await exigirAdmin(req, yo); if (no) return no
+      const doc = soloDigitos(body.documento)
+      if (!uid || !doc) return json({ ok: false, error: 'Falta userId o documento' }, 400)
+      const f = (await leerRaw(uid))?.tusdatos?.beneficiarios?.[doc]
+      if (!f) return json({ ok: false, error: 'No hay consulta guardada para ese documento.' }, 404)
+      if (f.proveedor !== 'sarblock' || !f.jobid) return json({ ok: false, error: 'Esta consulta no es de Sarblock o no tiene id de check.' }, 400)
+      if (f.estado === 'procesando') {
+        const r = await recoger(uid, String(f.jobid))
+        await auditar('sarblock.reintento_manual', { por: yo.userId, userId: uid, documento: doc, accion: 'leer', cerrados: r?.cerrados ?? 0 })
+        return json({ ok: true, resultado: (r as any)?.cerrados ? 'cerrada' : 'sigue_consultando' })
+      }
+      if (!fichaIncompleta(f)) return json({ ok: false, error: 'Esta consulta ya está completa: no hay nada que reintentar.' }, 400)
+      const r = await reintentarFuente(uid, doc, f, 4, yo.userId)
+      await auditar('sarblock.reintento_manual', { por: yo.userId, userId: uid, documento: doc, accion: r })
+      if (r === 'limite') return json({ ok: false, error: 'Sarblock está al límite de consultas. Intenta en un minuto.' }, 429)
+      return json({ ok: true, resultado: r })
+    }
+
     if (accion === 'retraducir') {
       // Vuelve a juzgar con la matriz vigente las fichas guardadas de una
       // cuenta, desde el catálogo que ya se pagó: no llama a Sarblock.

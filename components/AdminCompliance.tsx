@@ -142,8 +142,48 @@ export const AdminCompliance: React.FC = () => {
   };
 
 
+  // Fichas pegadas en "Verificando": consultando, o cerradas con una fuente
+  // pendiente. Van por reintentar_fuente (retry gratis del mismo check y, si
+  // Sarblock no lo deja, una consulta nueva). verificar_beneficiario no
+  // servía: la ficha ya tenía resultado y respondía "ya existía".
+  const pegada = (c: any) => c.proveedor === 'sarblock' && !c.esTitular && (c.alerta === 'fuente_pendiente' || c.estado === 'procesando');
+  const TEXTO_REINTENTO: Record<string, string> = {
+    reintento: 'Se pidió de nuevo la fuente que faltaba (gratis). El resultado llega en unos minutos.',
+    relanzada: 'Sarblock no dejaba reintentar esa consulta: se lanzó una nueva (gasta un crédito). El resultado llega en unos minutos.',
+    sin_cambio: 'Sarblock no aceptó el reintento y esta ficha ya usó sus consultas nuevas. Revísala a mano y apruébala o mantenla bloqueada.',
+    cerrada: 'La consulta ya terminó: se actualizó el resultado.',
+    sigue_consultando: 'Sarblock todavía está consultando. Vuelve a intentar en unos minutos.',
+  };
+  const reintentarPegada = async (c: any) => {
+    const r: any = await llamarFuncion('sarblock', { action: 'reintentar_fuente', userId: c.userId, documento: c.documento }).catch(() => null);
+    return r;
+  };
+  const [reintentandoTodos, setReintentandoTodos] = useState<{ hechos: number; total: number } | null>(null);
+  const reintentarTodos = async () => {
+    const lista = visibles.filter(pegada);
+    if (!lista.length || reintentandoTodos) return;
+    setMsg(null);
+    let ok = 0, nuevas = 0, fallidas = 0;
+    setReintentandoTodos({ hechos: 0, total: lista.length });
+    for (let i = 0; i < lista.length; i++) {
+      const r = await reintentarPegada(lista[i]);
+      if (r?.ok) { ok++; if (r.resultado === 'relanzada') nuevas++; } else fallidas++;
+      setReintentandoTodos({ hechos: i + 1, total: lista.length });
+      if (r?.error && /límite/i.test(String(r.error))) break;
+    }
+    setReintentandoTodos(null);
+    setMsg({ ok: fallidas === 0, texto: `Reintentadas ${ok} de ${lista.length}${nuevas ? ` (${nuevas} con consulta nueva)` : ''}${fallidas ? ` · ${fallidas} no se pudieron` : ''}. Los resultados llegan en unos minutos.` });
+    cargar();
+  };
+
   const reintentar = async (c: any) => {
     setMsg(null);
+    if (pegada(c)) {
+      const r = await reintentarPegada(c);
+      setMsg({ ok: !!r?.ok && r?.resultado !== 'sin_cambio', texto: r?.ok ? (TEXTO_REINTENTO[r.resultado] ?? 'Reintento enviado.') : (r?.error ?? 'No se pudo reintentar.') });
+      if (r?.ok) cargar();
+      return;
+    }
     // Las fichas de Sarblock se reconsultan en Sarblock. Por TusDatos el
     // "reintento" reusaba el padrón (90 días) y devolvía lo mismo: con
     // identidad sin validar no había forma de volver a preguntar (9 nov).
@@ -341,6 +381,12 @@ export const AdminCompliance: React.FC = () => {
               {ch.t} <span style={{ color: C.dim }}>{cuenta(ch.k)}</span>
             </button>
           ))}
+          {(filtro === 'fuente_pendiente' || filtro === 'en_curso') && visibles.some(pegada) && (
+            <button onClick={reintentarTodos} disabled={!!reintentandoTodos} className="cmp-foco hover:opacity-90 transition-opacity"
+              style={{ fontSize: 11.5, fontWeight: 700, padding: '6px 12px', borderRadius: 999, border: 'none', background: C.text, color: '#0A0A0A', cursor: reintentandoTodos ? 'wait' : 'pointer' }}>
+              {reintentandoTodos ? `Reintentando ${reintentandoTodos.hechos}/${reintentandoTodos.total}…` : `Reintentar todos (${visibles.filter(pegada).length})`}
+            </button>
+          )}
           <div style={{ position: 'relative', flex: '1 1 200px', minWidth: 160 }}>
             <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.sub }} />
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Nombre, documento o cliente…" className="cmp-foco"
