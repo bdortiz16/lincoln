@@ -319,7 +319,11 @@ Deno.serve(async (req) => {
           .update({ raw_data: { ...raw, otp: { failedAt: Date.now() } } })
           .eq('id', user.id)
           .filter('raw_data->otp->>sentAt', 'eq', String(otp.sentAt))
-        return json(200, { ok: false, error: 'send_failed', status: res.status, message: 'No se pudo enviar el código. Intenta de nuevo en un momento.' })
+        // Al servidor (admin-data) se le pasa lo que dijo el proveedor, para
+        // que quede en la auditoría (13 nov: "no llegan los códigos del admin"
+        // y el motivo solo estaba en los logs de la función). Al navegador no.
+        return json(200, { ok: false, error: 'send_failed', status: res.status, message: 'No se pudo enviar el código. Intenta de nuevo en un momento.',
+          ...(servicio ? { detalle: t.slice(0, 300) } : {}) })
       }
       console.log(`[otp] ${quien}: enviado`)
       return json(200, { ok: true, sent: true, to: quien })

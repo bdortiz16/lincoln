@@ -2279,8 +2279,16 @@ Deno.serve(async (req: Request) => {
           const pasos = (await passkeysDe(String(selfServiceBody.userId))).length ? 3 : 2
           return json({ ok: true, throttled: !!r.throttled, pasos })
         }
-        await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta' })
-        return json({ ok: false, error: 'email_code_unavailable', message: 'No se pudo iniciar la verificación. Intenta de nuevo.' })
+        // Con el código HTTP y lo que dijo el proveedor de correo (13 nov):
+        // antes solo quedaba "send_failed" y no se sabía si era la llave, el
+        // límite de envíos del plan o el dominio.
+        await auditAdmin(req, 'auth.email_2fa_unavailable', { userId: String(selfServiceBody.userId), motivo: r?.error ?? 'sin respuesta', status: r?.status ?? null, detalle: r?.detalle ?? null })
+        const limite = r?.status === 429 || /quota|rate.?limit|limit/i.test(String(r?.detalle ?? ''))
+        return json({ ok: false, error: 'email_code_unavailable', message: r?.error === 'email_not_configured'
+          ? 'El correo de la plataforma no está configurado (falta la llave del proveedor). Avísale al equipo técnico.'
+          : limite
+          ? 'El servicio de correo llegó a su límite de envíos y no mandó el código. Intenta en unos minutos; si sigue, hay que revisar el plan del proveedor de correo.'
+          : 'No se pudo iniciar la verificación. Intenta de nuevo.' })
       }
 
       // Reenviar el código del correo si no llegó.
