@@ -2412,6 +2412,13 @@ Deno.serve(async (req: Request) => {
       const esTitular = !llave && String(td.documento ?? '').replace(/\D/g, '') === doc
       const previa = llave ? benefs[llave] : esTitular ? td : null
       if (!previa) return json({ error: 'No hay una consulta guardada para ese documento.' }, 404)
+      // Aprobar mientras la consulta corre no sirve: la aprobación se amarra
+      // al veredicto que se tiene a la vista (categoriaEntonces) y, sin
+      // categoría todavía, deja de valer apenas llega el resultado (14 nov,
+      // Suanny Ospina: aprobada 42 s después de relanzar, y siguió frenada).
+      if (fallo === 'aprobar' && String(previa.estado ?? '') !== 'finalizado') {
+        return json({ error: 'La consulta de antecedentes todavía está en curso. Espera el resultado (unos minutos) y apruébala después.' }, 409)
+      }
 
       const decision = {
         por: yo.userId ?? null, decision: fallo, motivo,
