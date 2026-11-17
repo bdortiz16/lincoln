@@ -187,7 +187,10 @@ export const AdminCompliance: React.FC = () => {
     // Las fichas de Sarblock se reconsultan en Sarblock. Por TusDatos el
     // "reintento" reusaba el padrón (90 días) y devolvía lo mismo: con
     // identidad sin validar no había forma de volver a preguntar (9 nov).
-    if (c.proveedor === 'sarblock' && !c.esTitular) {
+    // Todo beneficiario se reconsulta en Sarblock, también las fichas viejas
+    // de TusDatos que quedaron en error (oct): TusDatos ya no se usa y su
+    // reintento no hacía nada (17 nov: 6 beneficiarios frenados así).
+    if (!c.esTitular) {
       const r: any = await llamarFuncion('sarblock', {
         action: 'verificar_beneficiario', userId: c.userId, documento: c.documento,
         tipoDocumento: c.tipoDocumento ?? 'CC', nombre: c.nombreInscrito ?? undefined,
