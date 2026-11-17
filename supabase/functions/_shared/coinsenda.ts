@@ -312,14 +312,23 @@ const objetoDe = (r: RespuestaCoinsenda): any => {
 const numero = (v: unknown): number => { const n = Number(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n : NaN }
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
-/** La billetera COP de donde salen los envíos: la predeterminada, nunca la de la tarjeta. */
+/** La billetera COP de donde salen los envíos (y la que se muestra como bolsa):
+ *  la que TIENE la plata, nunca la de una tarjeta (card_mirror).
+ *
+ *  17 nov: la Cuenta 4 tiene dos billeteras COP, «Mi Billetera COP» (trade,
+ *  con 304 M) y «Mi Billetera Cop» (payment, en 0). La regla de antes
+ *  prefería 'payment' sobre 'trade' sin otra razón que el nombre, así que
+ *  tomaba la vacía: la bolsa salía en 0 («faltante 329 M» en la Billetera) y
+ *  cada envío de un cliente por la Cuenta 4 se cortaba por "sin fondos".
+ *  Ahora manda el disponible; la predeterminada y el tipo solo desempatan. */
 export async function billeteraCop(cli: ClienteCoinsenda): Promise<{ id: string; disponible: number; tipo: string; nombre: string } | { error: string }> {
   const uid = await cli.userId()
   const r = await cli.pedir('account', 'GET', '/users/{id}/accounts', { filter: { id: uid } })
   if (!exitoso(r)) return { error: describirFallo(r, 'leer las billeteras') }
   const cands = listaDe(r).filter(b => esCopC(b) && String(b?.type ?? '') !== 'card_mirror' && b?.enabled !== false && b?.visible !== false && b?.id)
-  const orden = (b: any) => (b?.default === true ? 0 : 2) + (String(b?.type) === 'payment' ? 0 : String(b?.type) === 'trade' ? 0.5 : 1)
-  const b = cands.sort((x, y) => orden(x) - orden(y))[0]
+  const disp = (b: any) => { const n = numero(b?.available); return Number.isFinite(n) ? n : -1 }
+  const desempate = (b: any) => (b?.default === true ? 0 : 2) + (String(b?.type) === 'payment' ? 0 : String(b?.type) === 'trade' ? 0.5 : 1)
+  const b = cands.sort((x, y) => (disp(y) - disp(x)) || (desempate(x) - desempate(y)))[0]
   if (!b) return { error: 'La cuenta de Coinsenda no tiene una billetera COP habilitada.' }
   return { id: String(b.id), disponible: numero(b.available), tipo: String(b.type ?? ''), nombre: String(b.name ?? '') }
 }
