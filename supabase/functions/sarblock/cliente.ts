@@ -125,9 +125,14 @@ export class ClienteSarblock {
   // ── Screening ─────────────────────────────────────────────────────────
   // Encola y responde 202 { id, status, purpose }. COBRA. El resultado se
   // lee con leerCheck: el contrato es asíncrono siempre.
-  crearCheck(d: { purpose: 'beneficiary' | 'customer_onboarding'; subject: Sujeto; callbackUrl?: string; idempotencia: string }) {
+  // minJudicialScore (Sarblock, 17 nov; campo habilitado solo para Lincoin,
+  // no está en la documentación): el check y su callback solo devuelven los
+  // procesos de Rama Judicial con score >= ese valor. Filtra homónimos.
+  // Recomendación de Sarblock: 0.7 (nombre idéntico como demandado o más).
+  crearCheck(d: { purpose: 'beneficiary' | 'customer_onboarding'; subject: Sujeto; callbackUrl?: string; idempotencia: string; minJudicialScore?: number }) {
     return this.llamar<{ id: string; status: string; purpose: string }>('POST', '/screening/checks', {
       purpose: d.purpose, subject: d.subject, ...(d.callbackUrl ? { callbackUrl: d.callbackUrl } : {}),
+      ...(d.minJudicialScore != null ? { minJudicialScore: d.minJudicialScore } : {}),
     }, d.idempotencia);
   }
   leerCheck(id: string) { return this.llamar<any>('GET', `/screening/checks/${encodeURIComponent(id)}`); }

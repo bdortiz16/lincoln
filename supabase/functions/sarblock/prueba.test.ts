@@ -571,3 +571,15 @@ Deno.test('PARTIAL: una fuente caída reintentable también deja la ficha incomp
   const completa = { ...traducir(check({ aggregateOutcome: 'COMPLETED', catalog: [{ ...policiaCaida, status: 'CLEAR', statusReason: null, retryable: false }] }), benef), jobid: 'chk-9' };
   assertEquals(fichaIncompleta(completa), false);
 });
+
+Deno.test('cliente: minJudicialScore viaja en el cuerpo del check (y no va si no se pide)', async () => {
+  const cuerpos: any[] = [];
+  const c = new ClienteSarblock('sb_org_prueba', async (_u: any, init: any) => {
+    cuerpos.push(JSON.parse(String(init?.body ?? '{}')));
+    return new Response(JSON.stringify({ id: 'chk', status: 'PENDING', purpose: 'BENEFICIARY' }), { status: 202 });
+  });
+  await c.crearCheck({ purpose: 'beneficiary', subject: sujetoDe('CC', '1')!, idempotencia: 'k1', minJudicialScore: 0.7 });
+  await c.crearCheck({ purpose: 'beneficiary', subject: sujetoDe('CC', '1')!, idempotencia: 'k2' });
+  assertEquals(cuerpos[0].minJudicialScore, 0.7);
+  assertEquals('minJudicialScore' in cuerpos[1], false);
+});

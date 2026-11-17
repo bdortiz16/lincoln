@@ -57,6 +57,12 @@ const db = createClient(SUPABASE_URL, SERVICE_KEY)
 // respaldo: un aviso se puede perder.
 const CB_SECRETO = Deno.env.get('SARBLOCK_CALLBACK_SECRET') ?? ''
 const CB_SECRETO_ANTERIOR = Deno.env.get('SARBLOCK_CALLBACK_SECRET_ANTERIOR') ?? ''
+// Umbral de Rama Judicial que se le pide a Sarblock (ver cliente.crearCheck).
+// SARBLOCK_MIN_JUDICIAL_SCORE lo cambia sin tocar código; sin ella, 0.7.
+const MIN_JUDICIAL_SCORE = (() => {
+  const v = Number(Deno.env.get('SARBLOCK_MIN_JUDICIAL_SCORE') ?? '0.7')
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : 0.7
+})()
 const callbackUrl = (): string | undefined => CB_SECRETO && SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/sarblock` : undefined
 
 const CORS = {
@@ -370,7 +376,7 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
     // La clave es por día: forzada, con la del día Sarblock devolvería el
     // mismo check de esta mañana. Se le agrega el momento.
     const idem = forzada ? `${claveIdempotencia(uid, doc)}-f${Date.now().toString(36)}` : claveIdempotencia(uid, doc)
-    const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: idem, callbackUrl: callbackUrl() })
+    const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: idem, callbackUrl: callbackUrl(), minJudicialScore: MIN_JUDICIAL_SCORE })
     await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: d.tipoDocumento, nombre: d.nombre, checkId: r.id }) }, previa))
     await archivarLaConDv()
     await auditar('sarblock.lanzado', { userId: uid, documento: doc, checkId: r.id })
@@ -417,7 +423,7 @@ async function reintentarFuente(uid: string, doc: string, f: any, maxRelanzar: n
     if (sujeto) {
       try {
         // Con la clave del día Sarblock devolvería el mismo check.
-        const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}`, callbackUrl: callbackUrl() })
+        const r = await cliente().crearCheck({ purpose: 'beneficiary', subject: sujeto, idempotencia: `${claveIdempotencia(uid, doc)}-r${Date.now().toString(36)}`, callbackUrl: callbackUrl(), minJudicialScore: MIN_JUDICIAL_SCORE })
         await guardarFicha(uid, doc, conDecision({ ...fichaLanzada({ documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, checkId: r.id }), relanzamientosFuente: relanzadas + 1 }, f))
         await auditar('sarblock.relanzado_por_fuente', { userId: uid, documento: doc, checkAnterior: f.jobid, checkId: r.id, relanzamiento: relanzadas + 1, por })
         return 'relanzada'
@@ -962,7 +968,7 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
         // customer_onboarding: la misma revisión y el mismo costo, y su
         // screeningRecordId sirve para dar de alta al consultado como
         // cliente en Sarblock sin pagar otra (cartera.ts).
-        const r = await conCupo(() => sb.crearCheck({ purpose: 'customer_onboarding', subject: sujeto, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
+        const r = await conCupo(() => sb.crearCheck({ purpose: 'customer_onboarding', subject: sujeto, minJudicialScore: MIN_JUDICIAL_SCORE, idempotencia: `risk-${uid}-${tipo}-${doc}-${new Date().toISOString().slice(0, 10)}` }))
         const { error } = await db.from('risk_consultas').insert({ ...base, check_id: r.id, estado: 'consultando' })
         if (error) throw new Error(error.message)
         await R.anotarBusqueda(db, uid, { por, tipoDocumento: tipo, documento: doc, nombre: nombre ?? null, resultado, consultaId: id })
