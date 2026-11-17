@@ -1451,6 +1451,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [linMes, setLinMes] = useState(() => hoyBog().slice(0, 7));
   const [linData, setLinData] = useState<any>(null);
   const [linCargando, setLinCargando] = useState(false);
+  // Un solo día dentro del mes (null = el mes entero). Se pide aparte: el
+  // tablero del mes sigue mandando en la gráfica por día y en Bolsas y envíos
+  // (el cierre de caja es del mes), y el del día en utilidades, clientes y
+  // movimientos. Antes solo se podía ver el mes completo.
+  const [linDia, setLinDia] = useState<string | null>(null);
+  const [linDiaData, setLinDiaData] = useState<any>(null);
   // Utilidad por cliente: buscador y si se ven todos o los primeros.
   const [linCliBusca, setLinCliBusca] = useState('');
   const [linCliTodos, setLinCliTodos] = useState(false);
@@ -1650,6 +1656,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     pedirAdmin({ action: 'caja_llaves_get' }).then(d => { if (vigente && d?.ok) setLinLlaves(d.llaves ?? []); }).catch(() => {});
     return () => { vigente = false; };
   }, [activeTab, linMes, linVer]);
+  useEffect(() => {
+    if (activeTab !== 'lincoin' || !linDia) return;
+    let vigente = true;
+    pedirAdmin({ action: 'lincoin_resumen', desde: linDia, hasta: linDia })
+      .then(d => { if (!vigente) return; if (d?.ok) setLinDiaData(d); else { showToast(d?.error ?? 'No se pudo cargar ese día.'); setLinDia(null); } })
+      .catch(() => { if (vigente) { showToast('No se pudo cargar ese día.'); setLinDia(null); } });
+    return () => { vigente = false; };
+  }, [activeTab, linDia, linVer]);
   // Los envíos a la empresa que siguen en camino se le preguntan al
   // proveedor al abrir el tablero (como mucho tres): así «En proceso» pasa
   // solo a «Llegó» o, si lo devolvieron, el retiro se anula.
@@ -4033,10 +4047,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           ingreso: { l: 'Ingreso externo', signo: 1, desc: 'Entró plata a la bolsa por fuera de Lincoin' },
           aporte: { l: 'Aporte de Lincoin', signo: 1, desc: 'Lincoin pone plata en la bolsa' },
       };
-      const fuentes: any[] = d?.fuentes ?? [];
+      // Con un día elegido, utilidades, clientes y movimientos salen de ese
+      // día (dd); la gráfica por día y Bolsas y envíos siguen con el mes (d).
+      const dd = linDia ? (linDiaData?.desde === linDia ? linDiaData : null) : d;
+      const cargandoDia = !!linDia && !dd;
+      const diaTxt = linDia ? new Date(`${linDia}T12:00:00`).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+      const periodoTxt = linDia ? diaTxt : linMes;
+      const fuentesMes: any[] = d?.fuentes ?? [];
+      const fuentes: any[] = dd?.fuentes ?? [];
       const utilidad = fuentes.reduce((a, f) => a + f.total, 0);
       const cargues = fuentes.reduce((a, f) => a + f.cargues, 0);
-      const movs: any[] = d?.movimientos ?? [];
+      const movsMes: any[] = d?.movimientos ?? [];
+      const movs: any[] = dd?.movimientos ?? [];
       const vivos = movs.filter(m => !m.anulado);
       const retiros = vivos.filter(m => m.tipo === 'retiro').reduce((a, m) => a + m.monto, 0);
       // Saldo por bolsa desde la apertura, con la bolsa y los saldos en vivo.
@@ -4136,11 +4158,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           <div className="flex items-end justify-between flex-wrap" style={{ gap: 12 }}>
               <div>
                   <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px', color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 15 }}>· caja propia</span></h2>
-                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#878E88' }}>{linCargando ? 'Actualizando…' : 'Lo que es de Lincoin dentro de las bolsas, de dónde salen sus utilidades y lo que se mueve por fuera'}</p>
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: '#878E88' }}>{linCargando || cargandoDia ? 'Actualizando…' : 'Lo que es de Lincoin dentro de las bolsas, de dónde salen sus utilidades y lo que se mueve por fuera'}</p>
               </div>
-              <div className="flex items-center" style={{ gap: 8 }}>
-                  <input type="month" value={linMes} max={hoyBog().slice(0, 7)} onChange={e => e.target.value && setLinMes(e.target.value)}
+              <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+                  <input type="month" value={linMes} max={hoyBog().slice(0, 7)} onChange={e => { if (e.target.value) { setLinMes(e.target.value); setLinDia(null); } }}
                       style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, fontWeight: 700, colorScheme: 'dark' as any }} />
+                  <select value={linDia ?? ''} onChange={e => setLinDia(e.target.value || null)} aria-label="Día"
+                      style={{ background: '#070808', border: `1px solid ${linDia ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`, borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, fontWeight: 700, colorScheme: 'dark' as any, cursor: 'pointer' }}>
+                      <option value="">Todo el mes</option>
+                      {[...dias].reverse().map(x => <option key={x} value={x}>{Number(x.slice(8))} de {mesCorto}</option>)}
+                  </select>
                   <button onClick={nuevo} className="inline-flex items-center" style={{ gap: 6, background: '#4ADE80', color: '#0C0E0D', border: 'none', borderRadius: 10, padding: '9px 14px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
                       <Plus size={15} /> Registrar movimiento
                   </button>
@@ -4149,8 +4176,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 
           <div className="grid grid-cols-2 xl:grid-cols-4" style={{ gap: 12 }}>
               {kpi('Saldo de Lincoin en bolsas', difs.length ? fmt(saldoLincoin) : '—', difs.length ? 'apertura + utilidad − retiros ± externos' : 'la caja abre hoy a las 23:59', '#4ADE80', 'bolsas')}
-              {kpi('Utilidad del periodo', fmt(utilidad), `de ${cargues} cargues`, '#F4F4F2', 'resumen')}
-              {kpi('Retiros de utilidad', fmt(retiros), `${vivos.filter(m => m.tipo === 'retiro').length} en el periodo`, '#F4F4F2', 'movimientos')}
+              {kpi(linDia ? `Utilidad del ${diaTxt}` : 'Utilidad del periodo', cargandoDia ? '…' : fmt(utilidad), cargandoDia ? 'cargando el día…' : `de ${cargues} cargues`, '#F4F4F2', 'resumen')}
+              {kpi('Retiros de utilidad', cargandoDia ? '…' : fmt(retiros), cargandoDia ? 'cargando el día…' : `${vivos.filter(m => m.tipo === 'retiro').length} ${linDia ? 'ese día' : 'en el periodo'}`, '#F4F4F2', 'movimientos')}
               {kpi('Diferencia sin explicar', difTotal == null ? '—' : signo(difTotal), difTotal == null ? (difs.length ? 'leyendo las bolsas…' : 'cuando abra la caja') : difTotal === 0 ? 'todo cuadra' : 'falta registrar algo', difTotal == null ? 'rgba(244,244,242,0.45)' : difTotal === 0 ? '#4ADE80' : '#FBBF24', 'bolsas')}
           </div>
 
@@ -4158,7 +4185,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           <div role="tablist" aria-label="Secciones de Lincoin" className="flex flex-wrap" style={{ gap: 6, padding: 4, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12 }}>
               {([
                   ['resumen', 'Resumen', ''],
-                  ['clientes', 'Por cliente', (d?.clientes ?? []).length ? `· ${(d?.clientes ?? []).length}` : ''],
+                  ['clientes', 'Por cliente', (dd?.clientes ?? []).length ? `· ${(dd?.clientes ?? []).length}` : ''],
                   ['bolsas', 'Bolsas y envíos', difTotal != null && difTotal !== 0 ? '· no cuadra' : ''],
                   ['movimientos', 'Movimientos', movs.length ? `· ${movs.length}` : ''],
               ] as [LinSeccion, string, string][]).map(([k, rot, extra]) => { const act = linSeccion === k; return (
@@ -4197,15 +4224,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               </div>
 
               <div style={CARD}>
-                  <p style={{ ...ROT, marginBottom: 12 }}>Utilidad por día</p>
+                  <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginBottom: 12 }}>
+                      <p style={ROT}>Utilidad por día</p>
+                      <span style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{linDia ? <>Viendo el {diaTxt} · <button onClick={() => setLinDia(null)} style={{ background: 'none', border: 'none', padding: 0, color: '#4ADE80', fontWeight: 700, cursor: 'pointer', fontSize: 11 }}>ver todo el mes</button></> : 'Toca un día para ver solo ese día'}</span>
+                  </div>
                   {!d?.porDia ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>{linCargando ? 'Cargando…' : '—'}</p> : <>
                       <div className="flex items-end" style={{ gap: 4, height: 170 }}>
                           {dias.map(x => {
                               const v = d.porDia[x] ?? {};
                               const neg = Object.values(v).some((y: any) => Number(y) < 0);
+                              const apagado = !!linDia && linDia !== x;
                               return (
-                                  <div key={x} title={`${Number(x.slice(8))} · ${fuentes.map(f => `${f.n} ${fmt(v[f.n] ?? 0)}`).join(' · ')}`} style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column-reverse' }}>
-                                      {fuentes.map(f => { const y = Math.max(0, Number(v[f.n] ?? 0)); return y ? <div key={f.n} style={{ height: `${(y / maxDia) * 100}%`, background: COLORES[f.n], borderRadius: 2, marginTop: 1 }} /> : null; })}
+                                  <div key={x} role="button" aria-label={`Ver el día ${Number(x.slice(8))}`} onClick={() => setLinDia(linDia === x ? null : x)}
+                                      title={`${Number(x.slice(8))} · ${fuentesMes.map(f => `${f.n} ${fmt(v[f.n] ?? 0)}`).join(' · ')}`}
+                                      style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column-reverse', cursor: 'pointer', opacity: apagado ? 0.3 : 1, borderBottom: linDia === x ? '2px solid #F4F4F2' : '2px solid transparent' }}>
+                                      {fuentesMes.map(f => { const y = Math.max(0, Number(v[f.n] ?? 0)); return y ? <div key={f.n} style={{ height: `${(y / maxDia) * 100}%`, background: COLORES[f.n], borderRadius: 2, marginTop: 1 }} /> : null; })}
                                       {neg && <div style={{ height: 3, background: '#F87171', borderRadius: 2 }} />}
                                   </div>
                               );
@@ -4213,7 +4246,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       </div>
                       <div className="flex justify-between" style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 5 }}><span>{dias[0]?.slice(8)}</span><span>{dias[dias.length - 1]?.slice(8)}</span></div>
                       <div className="flex flex-wrap" style={{ gap: 14, marginTop: 10 }}>
-                          {fuentes.map(f => <span key={f.n} className="inline-flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88' }}><span style={{ width: 9, height: 9, borderRadius: 3, background: COLORES[f.n] }} />{f.n}</span>)}
+                          {fuentesMes.map(f => <span key={f.n} className="inline-flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88' }}><span style={{ width: 9, height: 9, borderRadius: 3, background: COLORES[f.n] }} />{f.n}</span>)}
                           <span className="inline-flex items-center" style={{ gap: 6, fontSize: 11.5, color: '#878E88' }}><span style={{ width: 9, height: 3, background: '#F87171' }} />día con utilidad negativa</span>
                       </div>
                   </>}
@@ -4225,7 +4258,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           {linSeccion === 'clientes' && (<>
           {/* Cuánto le dejó cada cliente en el periodo. */}
           {(() => {
-              const clientes: any[] = d?.clientes ?? [];
+              const clientes: any[] = dd?.clientes ?? [];
               const q = linCliBusca.trim().toLowerCase();
               const filtrados = q ? clientes.filter(c => String(c.nombre).toLowerCase().includes(q)) : clientes;
               const visibles = linCliTodos || q ? filtrados : filtrados.slice(0, 15);
@@ -4234,7 +4267,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               return (
                   <div style={{ ...CARD, padding: 0 }}>
                       <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                          <p style={ROT}>Utilidad por cliente · {linMes}{clientes.length ? ` · ${clientes.length} clientes` : ''}</p>
+                          <p style={ROT}>Utilidad por cliente · {periodoTxt}{clientes.length ? ` · ${clientes.length} clientes` : ''}</p>
                           {clientes.length > 5 && (
                               <input value={linCliBusca} onChange={e => setLinCliBusca(e.target.value)} placeholder="Buscar cliente" aria-label="Buscar cliente"
                                   style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, outline: 'none', width: 220, maxWidth: '100%' }} />
@@ -4242,12 +4275,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       </div>
                       <div style={{ overflowX: 'auto' }}>
                           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-                              <thead><tr>{['CLIENTE', 'CARGUES', 'DE DÓNDE', 'UTILIDAD', '% DEL MES'].map((h, i) => (
+                              <thead><tr>{['CLIENTE', 'CARGUES', 'DE DÓNDE', 'UTILIDAD', linDia ? '% DEL DÍA' : '% DEL MES'].map((h, i) => (
                                   <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i >= 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>{h}</th>
                               ))}</tr></thead>
                               <tbody>
-                                  {!d && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{linCargando ? 'Cargando…' : '—'}</td></tr>}
-                                  {d && filtrados.length === 0 && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{q ? 'Ningún cliente con ese nombre.' : 'No hubo cargues en este mes.'}</td></tr>}
+                                  {!dd && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{linCargando || cargandoDia ? 'Cargando…' : '—'}</td></tr>}
+                                  {dd && filtrados.length === 0 && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{q ? 'Ningún cliente con ese nombre.' : `No hubo cargues ${linDia ? 'ese día' : 'en este mes'}.`}</td></tr>}
                                   {visibles.map(c => {
                                       const pct = positiva > 0 ? (Math.max(0, c.total) / positiva) * 100 : 0;
                                       return (
@@ -4357,7 +4390,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                           // Un envío a la empresa recién hecho ya resta en «Lincoin hoy»,
                                           // pero el proveedor tarda en descontarlo de la bolsa: no es un
                                           // movimiento que falte registrar.
-                                          const enCamino = movs.filter(m => !m.anulado && m.proveedor === c.proveedor && m.envio && ['enviando', 'en_proceso', 'por_confirmar'].includes(m.envio.estado)).reduce((a, m) => a + Number(m.monto), 0);
+                                          const enCamino = movsMes.filter(m => !m.anulado && m.proveedor === c.proveedor && m.envio && ['enviando', 'en_proceso', 'por_confirmar'].includes(m.envio.estado)).reduce((a, m) => a + Number(m.monto), 0);
                                           return enCamino > 0
                                               ? <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24', lineHeight: 1.45 }}>Hay {fmt(enCamino)} enviados a la empresa todavía en proceso: ya se restaron de «Lincoin hoy», pero la bolsa puede tardar en reflejarlo. Lee la bolsa de nuevo en unos minutos antes de registrar nada.</p>
                                               : <p style={{ margin: '5px 0 0', fontSize: 11, color: '#FBBF24' }}>Registra el movimiento que la explica (por ejemplo, un {c.dif < 0 ? 'egreso' : 'ingreso'} externo de {fmt(Math.abs(c.dif))}).</p>;
@@ -4427,14 +4460,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
 
           {linSeccion === 'movimientos' && (
           <div style={{ ...CARD, padding: 0 }}>
-              <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}><p style={ROT}>Movimientos de Lincoin · {linMes}</p></div>
+              <div style={{ padding: '14px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}><p style={ROT}>Movimientos de Lincoin · {periodoTxt}</p></div>
               <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
                       <thead><tr>{['FECHA', 'TIPO', 'BOLSA', 'DESCRIPCIÓN', 'SOPORTE', 'HECHO POR', 'MONTO', ''].map((h, i) => (
                           <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i === 6 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>{h}</th>
                       ))}</tr></thead>
                       <tbody>
-                          {movs.length === 0 && <tr><td colSpan={8} style={{ padding: 18, fontSize: 12.5, color: '#878E88' }}>No hay movimientos registrados en este mes.</td></tr>}
+                          {movs.length === 0 && <tr><td colSpan={8} style={{ padding: 18, fontSize: 12.5, color: '#878E88' }}>{cargandoDia ? 'Cargando…' : `No hay movimientos registrados ${linDia ? 'ese día' : 'en este mes'}.`}</td></tr>}
                           {movs.map(m => {
                               const t = TIPOS[m.tipo] ?? { l: m.tipo, signo: 1 };
                               return (
