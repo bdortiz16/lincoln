@@ -2054,7 +2054,9 @@ function aprobacionAmlVigente(f: any): boolean {
 // ella, 30 min). Las devoluciones de Finity llegan horas o días después
 // (oct–nov: de 3,5 h a 6 días), así que esperar más no las atrapa: eso lo
 // hace la relectura cada 2 min. Esto solo cubre el rechazo inmediato.
-const CONFIRMACION_ACH_MS = (Number(Deno.env.get('FINITY_CONFIRMACION_ACH_MIN') ?? '30') || 30) * 60_000
+// 17 nov: por decisión de Lincoin se vuelve a mostrar Completado apenas Finity
+// lo confirma (sin espera). Queda la variable por si se quiere activar.
+const CONFIRMACION_ACH_MS = Math.max(0, Number(Deno.env.get('FINITY_CONFIRMACION_ACH_MIN') ?? '0') || 0) * 60_000
 const RE_FINITY_FALLO = /FAILED|FALLID|REJECT|RECHAZ|CANCEL|ANUL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR|VENCID|UNSUCCESS/
 // APPROVED / APROBADO no van: es "aprobada para procesar", no "pagada" (así lo
 // trata también finity-proxy). Marcarla Completado antes de tiempo la sacaba
@@ -2199,7 +2201,7 @@ async function conciliarFilaFinity(tx: any, origen: string, avisoFallo = false):
     // inmediato y no espera.
     const esBreb = String(rd.rail ?? '') === 'BREB' || rd.cuentaBreb != null
     const ahoraIso = new Date().toISOString()
-    if (!esBreb) {
+    if (!esBreb && CONFIRMACION_ACH_MS > 0) {
       const desde = Date.parse(String(rd.finityCompletoDesde ?? '')) || 0
       if (!desde || Date.now() - desde < CONFIRMACION_ACH_MS) {
         await db.from('transactions').update({
