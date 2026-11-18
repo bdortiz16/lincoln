@@ -7,7 +7,7 @@ import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwt
 import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '../_shared/modelo-factura.ts'
 import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
-import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, type EnvioMes } from '../_shared/cupos.ts'
+import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
@@ -941,6 +941,17 @@ async function autoVincularPendientes(userIds: string[] | null, adminId: string 
 // ── Cupo mensual por beneficiario: el estado de cada contacto ─────────────
 // La misma cuenta que aplica mouv-proxy al enviar (_shared/cupos.ts).
 type EstadoCupo = { clave: string; claves: string[]; tipo: 'persona' | 'empresa'; cupo: number; usado: number; disponible: number; origen: 'general' | 'aprobado'; nombre: string; doc: string; destinos: string[] }
+// Los documentos de una solicitud de cupo, con un enlace firmado por una hora
+// (el bucket es privado: sin firma no abren).
+async function firmarDocsCupo(docs: unknown): Promise<any[]> {
+  const out: any[] = []
+  for (const d of (Array.isArray(docs) ? docs : []) as any[]) {
+    try { const { data } = await db.storage.from(BUCKET_CUPOS).createSignedUrl(String(d.path), 3600); out.push({ ...d, url: data?.signedUrl ?? null, nombreTipo: TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo }) }
+    catch { out.push({ ...d, url: null, nombreTipo: TIPOS_DOC_CUPO[d.tipo]?.nombre ?? d.tipo }) }
+  }
+  return out
+}
+
 function estadoCupoContacto(c: any, contactos: any[], envios: EnvioMes[], general: { persona: number; empresa: number }, aprobados: Map<string, number>): EstadoCupo {
   const doc = normDoc(c?.docNumber)
   const mismos = doc ? contactos.filter(x => normDoc(x?.docNumber) === doc) : [c]
@@ -1829,6 +1840,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   contabilidad_autovincular: ['plata.mover', 'fn.contabilidad'],
   // Cupos por beneficiario: los decide Cumplimiento.
   cupos_admin_get: 'cumplimiento',
+  cupo_detalle: 'cumplimiento',
   cupos_pendientes: 'cumplimiento',
   cupos_config_set: 'cumplimiento',
   cupo_resolver: 'cumplimiento',
@@ -5077,6 +5089,117 @@ Deno.serve(async (req: Request) => {
           solicitudes.push({ ...sx, cliente: quien(String(sx.user_id)), usadoHoy, documentos: await firmar(sx.documentos) })
         }
         return json({ ok: true, general, solicitudes, aprobados: aprobados.map(a => ({ ...a, cliente: quien(String(a.user_id)) })) })
+      }
+
+      // ── Detalle de un cupo: el cliente, el beneficiario y su historia ────
+      // Desde la lista de cupos no se podía ver nada más que el monto: para
+      // revisar un aumento había que ir a buscar al cliente a otra pestaña, y
+      // los documentos de una solicitud ya resuelta no se veían en ninguna
+      // parte. Acá va todo junto: quién es el cliente, el cupo que rige y lo
+      // usado en el mes (con la MISMA cuenta que corta el envío), cada
+      // solicitud con sus documentos, y las transferencias que el cliente le
+      // ha hecho a ese beneficiario (12 meses), con lo que no salió marcado.
+      if (body.action === 'cupo_detalle') {
+        const uid = String(body.userId ?? '')
+        if (!UUID_RE.test(uid)) return json({ ok: false, error: 'Cliente inválido.' }, 400)
+        const claveP = String(body.clave ?? '').trim().slice(0, 160)
+        const ids = await idsMismaPersona(uid)
+        const { data: cu } = await db.from('users')
+          .select('id, email, full_name, company_name, role, kyc_status, created_at, tax_id, balances, rdEmpresa:raw_data->>companyName, rdNit:raw_data->>taxId, rdPais:raw_data->>companyCountry, contactos:raw_data->mouvContacts')
+          .eq('id', uid).maybeSingle()
+        if (!cu) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+        const c = cu as any
+        const contactos: any[] = Array.isArray(c.contactos) ? c.contactos : []
+        const general = await cupoGeneral(db)
+        const aprobadosMap = await cuposAprobadosDe(uid)
+        let enviosMes: EnvioMes[] = []
+        try { enviosMes = await enviosDelMes(db, ids) } catch { enviosMes = [] }
+        // El beneficiario en la libreta del cliente: el contacto que tiene esa
+        // clave (por documento o por cualquiera de sus destinos).
+        const ct = contactos.find(x => clavesBeneficiario(normDoc(x?.docNumber), [x?.brebKey, x?.accountNumber]).includes(claveP))
+        let doc = claveP.startsWith('doc:') ? claveP.slice(4) : normDoc(body.doc)
+        let destinos: string[] = claveP.startsWith('dest:') ? [claveP.slice(5)] : []
+        let estado: EstadoCupo | null = null
+        if (ct) {
+          estado = estadoCupoContacto(ct, contactos, enviosMes, general, aprobadosMap)
+          doc = estado.doc || doc
+          destinos = Array.from(new Set([...estado.destinos.map(normDestino).filter(Boolean), ...destinos]))
+        } else if (doc) {
+          // Sin la ficha en la libreta, los destinos salen de sus contactos
+          // con ese documento (si los hay).
+          destinos = Array.from(new Set([...destinos, ...contactos.filter(x => normDoc(x?.docNumber) === doc).flatMap(x => [x?.brebKey, x?.accountNumber]).map(normDestino).filter(Boolean)]))
+        }
+        const claves = Array.from(new Set([...(claveP ? [claveP] : []), ...clavesBeneficiario(doc, destinos)]))
+        // Solicitudes de ese beneficiario (todas las cuentas de la persona y
+        // todas sus claves), con los documentos firmados por una hora.
+        let solicitudes: any[] = []
+        try {
+          const { data: sols } = await db.from('cupo_solicitudes').select('*').in('user_id', ids).in('beneficiario_clave', claves.length ? claves : ['-']).order('created_at', { ascending: false }).limit(50)
+          for (const sx of (sols ?? []) as any[]) solicitudes.push({ ...sx, documentos: await firmarDocsCupo(sx.documentos) })
+        } catch { solicitudes = [] }
+        // Transferencias a ese beneficiario: dispersiones de la persona en 12
+        // meses que coinciden por documento o por destino.
+        const desde = new Date(Date.now() - 365 * 86_400_000).toISOString()
+        const ds = new Set(destinos.map(normDestino).filter(Boolean))
+        const envios: any[] = []
+        let leidas = 0, cortado = false
+        for (let off = 0; ; off += 1000) {
+          if (off >= 20_000) { cortado = true; break }
+          const { data, error } = await db.from('transactions')
+            .select('id, amount, currency, status, created_at, reference, providerRef:raw_data->>providerRef, rail:raw_data->>rail, proveedor:raw_data->>proveedor, feeCop:raw_data->>feeCop, benefDoc:raw_data->>benefDoc, documentNumber:raw_data->>documentNumber, recDoc:raw_data->recipient->>documentNumber, account:raw_data->>account, recKey:raw_data->recipient->>key, recCuenta:raw_data->recipient->>accountNumber, recNombre:raw_data->recipient->>name, refunded:raw_data->refunded')
+            .in('user_id', ids).eq('type', 'dispersion').gte('created_at', desde)
+            .order('created_at', { ascending: false }).range(off, off + 999)
+          if (error) break
+          for (const t of (data ?? []) as any[]) {
+            const td = normDoc(t.benefDoc ?? t.documentNumber ?? t.recDoc)
+            const tx = normDestino(t.account ?? t.recKey ?? t.recCuenta)
+            if (!((doc && td === doc) || (tx && ds.has(tx)))) continue
+            const cur = String(t.currency ?? '').toUpperCase()
+            envios.push({
+              id: t.id, at: t.created_at, monto: Math.abs(Number(t.amount) || 0), estado: t.status,
+              devuelto: t.refunded === true,
+              riel: String(t.rail ?? '').toUpperCase() === 'BREB' || cur === 'COP_BREB' ? 'Bre-B' : 'ACH',
+              cuenta: cur === 'COP_C3' ? 'Cuenta 3' : cur === 'COP_C4' ? 'Cuenta 4' : cur === 'COP_BREB' ? 'Cuenta 1' : cur === 'COP_ACH' ? 'Cuenta 2' : cur || null,
+              proveedor: t.proveedor ?? null, comision: Number(t.feeCop) || null,
+              destino: t.account ?? t.recKey ?? t.recCuenta ?? null, nombre: t.recNombre ?? null,
+              ref: t.providerRef ?? t.reference ?? null,
+            })
+          }
+          leidas += (data ?? []).length
+          if (!data || data.length < 1000) break
+        }
+        const cuenta = (e: any) => !e.devuelto && !['Fallido', 'Rechazado'].includes(String(e.estado))
+        const porMes: Record<string, number> = {}
+        for (const e of envios) if (cuenta(e)) { const m = fechaBogota(String(e.at)).slice(0, 7); porMes[m] = (porMes[m] ?? 0) + e.monto }
+        const tipoBen = estado?.tipo ?? tipoCupo(String(body.tipo ?? '') === 'empresa' ? 'empresa' : 'persona', doc)
+        let aprobadoBen: number | null = null
+        for (const k of claves) { const n = aprobadosMap.get(k); if (n != null && (aprobadoBen == null || n > aprobadoBen)) aprobadoBen = n }
+        const cupoBen = estado?.cupo ?? cupoVigente(aprobadoBen, general[tipoBen])
+        const usadoBen = estado?.usado ?? usadoPara(enviosMes, doc, destinos)
+        const bal = (c.balances ?? {}) as Record<string, unknown>
+        return json({
+          ok: true,
+          cliente: {
+            id: c.id, nombre: String(c.company_name || c.rdEmpresa || c.full_name || c.email || '—'), email: c.email ?? null,
+            tipo: c.role === 'business' ? 'Empresa' : 'Operador', nit: String(c.tax_id || c.rdNit || '') || null,
+            kyc: c.kyc_status ?? null, pais: c.rdPais ?? null, desde: c.created_at ?? null,
+            saldoCop: Object.entries(bal).filter(([k]) => k.toUpperCase().startsWith('COP')).reduce((a, [, v]) => a + (Number(v) || 0), 0),
+            cuentas: ids.length,
+          },
+          beneficiario: {
+            nombre: estado?.nombre || String(body.nombre ?? '') || envios.find(e => e.nombre)?.nombre || null,
+            doc: doc || null, tipo: tipoBen, destinos: [...ds], enLibreta: !!ct,
+          },
+          cupo: { vigente: cupoBen, general: general[tipoBen], aprobado: aprobadoBen, usadoMes: usadoBen, disponible: Math.max(0, cupoBen - usadoBen) },
+          solicitudes,
+          envios: envios.slice(0, 300),
+          resumen: {
+            total: envios.filter(cuenta).reduce((a, e) => a + e.monto, 0),
+            cantidad: envios.filter(cuenta).length,
+            noSalieron: envios.filter(e => !cuenta(e)).length,
+            porMes, cortado, leidas,
+          },
+        })
       }
 
       if (body.action === 'cupos_config_set') {

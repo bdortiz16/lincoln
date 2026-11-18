@@ -6140,7 +6140,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 {/* Normativa de cupo mensual por beneficiario: pestaña propia
                     dentro de Cumplimiento, para que las solicitudes de aumento
                     no queden al fondo de la bandeja de casos. */}
-                {activeTab === 'cupos' && <div className="animate-in fade-in duration-300"><AdminCupos /></div>}
+                {activeTab === 'cupos' && <div className="animate-in fade-in duration-300"><AdminCupos onAbrirCliente={(id) => {
+                  // La ficha completa del cliente: Clientes lee ?cliente= al abrirse.
+                  try { const p = new URLSearchParams(window.location.search); p.set('cliente', id); window.history.replaceState({}, '', `${window.location.pathname}?${p.toString()}`); } catch { /* */ }
+                  setActiveTab('clients');
+                }} /></div>}
                 {activeTab === 'operadores' && <div className="animate-in fade-in duration-300"><AdminOperadores onCambio={() => setOperadoresVer(v => v + 1)} /></div>}
                 {activeTab === 'risk' && <div className="animate-in fade-in duration-300"><AdminLincoinRisk /></div>}
                 {/* Sarblock: ventas de Lincoin Risk, historiales de todas las
