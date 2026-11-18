@@ -772,6 +772,15 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
         // terminada está ahí. Si está por el NIT con DV, lanzar no ve ficha
         // previa, consulta de nuevo y archiva la vieja.
         const base = sujetoDe(tipo, clave, nombre)?.idNumber ?? doc
+        // Ya hay una consulta de Sarblock en curso para esa ficha (se tocó el
+        // botón otra vez antes de que volviera): no se paga otra; se va a
+        // buscar el resultado de la que ya salió.
+        const enVuelo = benefs[base]
+        if (enVuelo?.proveedor === 'sarblock' && enVuelo?.jobid && enVuelo?.estado === 'procesando') {
+          const rr: any = await recoger(uid, String(enVuelo.jobid)).catch(() => null)
+          const emp0 = await empresaDe(uid)
+          return { ok: true, enCurso: true, checkId: String(enVuelo.jobid), cerrada: Number(rr?.cerrados ?? 0) > 0, cuenta: uid, cuentaNombre: emp0.nombre || null }
+        }
         const forzar = benefs[base]?.estado === 'finalizado'
         const r: any = await lanzar(uid, { documento: clave, tipoDocumento: tipo, nombre }, c, true, forzar)
         const emp = await empresaDe(uid)

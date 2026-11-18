@@ -140,6 +140,28 @@ export const AdminLincoinRisk: React.FC = () => {
   // Se paga una consulta; el resultado actualiza la ficha del beneficiario en
   // la cuenta que la tiene y el padrón, y desde ahí el PDF sale completo.
   const [reconsultando, setReconsultando] = useState<string | null>(null);
+  // Consultas nuevas que todavía no vuelven de Sarblock: id de la persona →
+  // cuenta por la que se lanzó. El resultado lo recoge el servidor (aviso de
+  // Sarblock o el barrido), pero eso puede tardar unos minutos y la pantalla
+  // seguía mostrando la ficha vieja sin decir nada. Acá se le pide recoger
+  // cada 20 s y se actualiza sola cuando la ficha ya es de Sarblock.
+  const [enCurso, setEnCurso] = useState<Record<string, true>>({});
+  const vigilar = async (p: any, cuenta: string) => {
+    const id = `${p.tipoDocumento}:${p.documento}`;
+    setEnCurso(m => ({ ...m, [id]: true }));
+    let listo = false;
+    for (let i = 0; i < 15 && !listo; i++) {
+      await new Promise(res => setTimeout(res, 20_000));
+      await llamarFuncion('sarblock', { action: 'recoger_pendientes', userId: cuenta }, 60000).catch(() => null);
+      const r = await llamarFuncion('tusdatos', { action: 'risk', q: p.documento }).catch(() => null);
+      listo = !!(r?.personas ?? []).find((x: any) => `${x.tipoDocumento}:${x.documento}` === id && x.deSarblock);
+    }
+    setEnCurso(m => { const n = { ...m }; delete n[id]; return n; });
+    setAviso(listo
+      ? { ok: true, t: 'Llegó el resultado de Sarblock: la ficha ya tiene el detalle completo. Toca «Descargar PDF».' }
+      : { ok: false, t: 'Sarblock todavía no devuelve el resultado (algunas fuentes tardan). Se recoge solo: vuelve a mirar en unos minutos con «Actualizar».' });
+    cargar();
+  };
   const reconsultar = async (p: any) => {
     setConfirmar(null);
     const id = `${p.tipoDocumento}:${p.documento}`;
@@ -147,8 +169,15 @@ export const AdminLincoinRisk: React.FC = () => {
     const r = await llamarFuncion('sarblock', { action: 'admin_risk_reconsultar', tipoDocumento: p.tipoDocumento, documento: p.documento }, 60000).catch(() => null);
     setReconsultando(null);
     if (!r?.ok) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo volver a consultar.' }); return; }
+    if (r.enCurso && r.cuenta) {
+      // Ya estaba en curso: no se pagó otra consulta, se sigue esperando esa.
+      vigilar(p, String(r.cuenta));
+      setAviso({ ok: true, t: r.cerrada ? 'Llegó el resultado de Sarblock. Actualizando…' : 'La consulta en Sarblock ya estaba en curso (no se pagó otra). Esta pantalla se actualiza sola cuando llegue el resultado.' });
+      return;
+    }
+    if (r.checkId && r.cuenta) vigilar(p, String(r.cuenta));
     setAviso({ ok: true, t: r.checkId
-      ? `Consulta enviada a Sarblock${r.cuentaNombre ? ` por la cuenta de ${r.cuentaNombre}` : ''}. El resultado llega en uno o dos minutos: toca «Actualizar» y luego «Descargar PDF» para el reporte completo.`
+      ? `Consulta enviada a Sarblock${r.cuentaNombre ? ` por la cuenta de ${r.cuentaNombre}` : ''}. Esta pantalla se actualiza sola cuando llegue el resultado (uno a cinco minutos).`
       : r.yaExistia ? 'Esa ficha ya tenía un resultado vigente; no se volvió a consultar.'
       : 'Consulta actualizada. Toca «Actualizar» para ver el resultado.' });
   };
@@ -296,6 +325,7 @@ export const AdminLincoinRisk: React.FC = () => {
                     {p.vecesReutilizado > 0 && <> · <b style={{ color: C.green }}>reutilizado {p.vecesReutilizado} {p.vecesReutilizado === 1 ? 'vez' : 'veces'}</b></>}
                     {p.empresas > 1 && ` · ${p.empresas} empresas`}
                     {p.fuente === 'monitoreo' && ' · actualizado por monitoreo'}
+                    {enCurso[id] && <> · <b style={{ color: C.green }}>consultando en Sarblock…</b></>}
                   </span>
                 </span>
                 <span style={{
@@ -354,10 +384,10 @@ export const AdminLincoinRisk: React.FC = () => {
                     </div>
                     <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                       {(p.pdf === 'tusdatos' || p.pdf === 'resumen') && (
-                        <button onClick={() => setConfirmar({ tipo: 'reconsultar', p })} disabled={reconsultando !== null}
+                        <button onClick={() => setConfirmar({ tipo: 'reconsultar', p })} disabled={reconsultando !== null || !!enCurso[id]}
                           className="hover:bg-white/[0.09] transition-colors"
                           style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '7px 12px', borderRadius: 9, opacity: reconsultando === id ? 0.6 : 1 }}>
-                          <RefreshCw size={12} className={reconsultando === id ? 'animate-spin' : ''} /> {reconsultando === id ? 'Consultando…' : 'Consultar de nuevo con detalle completo'}
+                          <RefreshCw size={12} className={reconsultando === id || enCurso[id] ? 'animate-spin' : ''} /> {reconsultando === id ? 'Enviando…' : enCurso[id] ? 'Esperando a Sarblock…' : 'Consultar de nuevo con detalle completo'}
                         </button>
                       )}
                       {p.pdf && (
