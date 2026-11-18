@@ -84,8 +84,28 @@ function bloques(f: any): { key: string; nodo: React.ReactNode; espacio?: number
     </div>
   ) });
 
+  // Sin catálogo (consultas viejas del proveedor anterior, cuyo PDF ya no
+  // existe): el reporte sale de lo que quedó guardado — veredicto, nombre,
+  // documento y hallazgos —, sin el detalle fuente por fuente.
+  const resumido = cat.length === 0;
   const consultadas = cat.filter(e => e.consulted !== false && e.status !== 'SKIPPED' && e.status !== 'NOT_SCHEDULED').length;
-  out.push({ key: 'resumen', espacio: 18, nodo: (
+  if (resumido) {
+    out.push({ key: 'resumen', espacio: 18, nodo: (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        {[
+          { n: Number(f.altos ?? 0), l: 'Hallazgos altos', c: Number(f.altos ?? 0) > 0 ? T.rojo : undefined },
+          { n: Number(f.medios ?? 0), l: 'Hallazgos medios', c: Number(f.medios ?? 0) > 0 ? T.ambar : undefined },
+          { n: Number(f.bajos ?? 0), l: 'Hallazgos bajos' },
+          { n: f.documentoVigente === false ? 'No' : 'Sí', l: 'Documento vigente', c: f.documentoVigente === false ? T.rojo : undefined },
+        ].map(x => (
+          <div key={x.l} style={{ border: `1px solid ${T.borde}`, borderRadius: 10, padding: '11px 12px' }}>
+            <p style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.5px', margin: 0, color: x.c ?? T.texto }}>{x.n}</p>
+            <p style={{ fontSize: 10, color: T.sub, margin: '2px 0 0' }}>{x.l}</p>
+          </div>
+        ))}
+      </div>
+    ) });
+  } else out.push({ key: 'resumen', espacio: 18, nodo: (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
       {[
         { n: consultadas, l: 'Fuentes consultadas' },
@@ -105,9 +125,11 @@ function bloques(f: any): { key: string; nodo: React.ReactNode; espacio?: number
     <div>
       <Rotulo t="Identidad" />
       <Fila l="Nombre inscrito" v={id.declaredName || f.nombreInscrito || '—'} />
-      <Fila l="Nombre según la fuente oficial" v={id.verifiedName || '—'} c={f.nombreCoincide === false ? T.rojo : undefined} />
+      <Fila l="Nombre según la fuente oficial" v={id.verifiedName || f.nombreReal || '—'} c={f.nombreCoincide === false ? T.rojo : undefined} />
       <Fila l="Documento" v={`${f.tipoDocumento ?? ''} ${f.documento ?? ''}`.trim()} />
-      <Fila l="Documento validado" v={id.validated === true ? 'Sí' : id.validated === false ? 'No' : '—'} c={id.validated === false ? T.ambar : undefined} />
+      {resumido
+        ? <Fila l="Estado del documento" v={f.documentoVigente === false ? `No vigente${f.estadoDocumento ? ` · ${f.estadoDocumento}` : ''}` : 'Vigente'} c={f.documentoVigente === false ? T.rojo : undefined} />
+        : <Fila l="Documento validado" v={id.validated === true ? 'Sí' : id.validated === false ? 'No' : '—'} c={id.validated === false ? T.ambar : undefined} />}
       <Fila l="Similitud del nombre" v={typeof id.nameSimilarity === 'number' ? `${Math.round(id.nameSimilarity * 100)} %` : '—'} />
       <Fila l="Posible suplantación" v={id.spoofSuspected ? 'Sí' : 'No'} c={id.spoofSuspected ? T.rojo : undefined} />
     </div>
@@ -124,17 +146,27 @@ function bloques(f: any): { key: string; nodo: React.ReactNode; espacio?: number
     out.push({ key: `porque-${i}`, espacio: i === motivos.length - 1 ? 18 : 6, nodo: (
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
         <span style={{ flexShrink: 0, marginTop: 1, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.5px', borderRadius: 999, padding: '2px 7px',
-          border: `1px solid ${m.nivel === 'alto' ? 'rgba(197,48,48,0.4)' : 'rgba(183,121,31,0.4)'}`, color: m.nivel === 'alto' ? T.rojo : T.ambar }}>
-          {m.nivel === 'alto' ? 'ALTO' : 'MEDIO'}
+          border: `1px solid ${m.nivel === 'alto' ? 'rgba(197,48,48,0.4)' : m.nivel === 'bajo' ? T.borde : 'rgba(183,121,31,0.4)'}`, color: m.nivel === 'alto' ? T.rojo : m.nivel === 'bajo' ? T.sub : T.ambar }}>
+          {m.nivel === 'alto' ? 'ALTO' : m.nivel === 'bajo' ? 'BAJO' : 'MEDIO'}
         </span>
         <div style={{ fontSize: 11, lineHeight: 1.45 }}>
           <span style={{ color: T.texto }}>{m.texto}</span>
-          <span style={{ color: T.tenue }}> · {m.fuente}</span>
+          {m.fuente ? <span style={{ color: T.tenue }}> · {m.fuente}</span> : null}
         </div>
       </div>
     ) });
   });
   if (f.criterio) out.push({ key: 'criterio', espacio: 18, nodo: <p style={{ fontSize: 9.5, color: T.tenue, margin: 0 }}>Matriz de riesgo aplicada: {f.criterio}. Bloquea: listas restrictivas; proceso penal o de extinción de dominio como parte pasiva; antecedentes de Policía, Procuraduría o Contraloría; prensa adversa grave y confirmada. Revisión: procesos civiles, de familia o laborales como parte pasiva; PEP; prensa de menor gravedad.</p> });
+
+  if (resumido) {
+    out.push({ key: 'resumido', espacio: 18, nodo: (
+      <p style={{ fontSize: 10.5, color: T.sub, margin: 0, lineHeight: 1.55, border: `1px solid ${T.borde}`, borderRadius: 8, padding: '10px 12px', background: T.suave }}>
+        Esta consulta se hizo con el proveedor de verificación anterior. Su reporte original ya no está disponible, así que este resumen
+        se arma con lo que quedó guardado de la consulta: el veredicto, el nombre del documento y los hallazgos. No incluye el detalle fuente por fuente.
+      </p>
+    ) });
+    return out;
+  }
 
   // Detalle: coincidencias y también menciones que no cuentan (p. ej.
   // procesos como demandante), que quien revisa tiene que poder leer.
@@ -212,7 +244,7 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
             <Wordmark tam={26} />
             <div style={{ textAlign: 'right' }}>
               <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1.4px', color: T.sub, margin: 0 }}>REPORTE DE VERIFICACIÓN DE ANTECEDENTES</p>
-              <p style={{ fontSize: 10.5, color: T.sub, margin: '4px 0 0' }}>Consulta del {fecha(sb.completedAt ?? f.at)}</p>
+              <p style={{ fontSize: 10.5, color: T.sub, margin: '4px 0 0' }}>Consulta del {fecha(sb.completedAt ?? f.at ?? f.consultadoAt)}</p>
             </div>
           </div>
           <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.4px', margin: '18px 0 0' }}>{nombre}</p>
@@ -308,7 +340,9 @@ const cssDeLaFuente = () => {
 
 // Genera y descarga el PDF. Devuelve el número de páginas.
 export async function descargarReporteLincoin(f: any): Promise<number> {
-  if (!f?.sarblock?.catalog) throw new Error('Esta ficha no tiene el detalle de la verificación para armar el reporte.');
+  // Con catálogo (Sarblock) sale el reporte completo; sin él, el resumen de lo
+  // guardado (consultas viejas cuyo PDF original ya no existe).
+  if (!f?.sarblock?.catalog && !f?.categoria && !Array.isArray(f?.hallazgos)) throw new Error('Esta ficha no tiene el detalle de la verificación para armar el reporte.');
   const [{ toJpeg }, { jsPDF }, fontEmbedCSS] = await Promise.all([import('html-to-image'), import('jspdf'), cssDeLaFuente()]);
   const fuera = document.createElement('div');
   Object.assign(fuera.style, { position: 'fixed', left: '-20000px', top: '0', pointerEvents: 'none' });
@@ -323,7 +357,7 @@ export async function descargarReporteLincoin(f: any): Promise<number> {
       if (i > 0) pdf.addPage([ANCHO, ALTO], 'portrait');
       pdf.addImage(img, 'JPEG', 0, 0, ANCHO, ALTO);
     }
-    const dia = new Date(f.sarblock.completedAt ?? f.at ?? Date.now()).toISOString().slice(0, 10).replace(/-/g, '');
+    const dia = new Date(f.sarblock?.completedAt ?? f.at ?? f.consultadoAt ?? Date.now()).toISOString().slice(0, 10).replace(/-/g, '');
     pdf.save(`lincoin-verificacion-${String(f.documento ?? '').replace(/\D/g, '')}-${dia}.pdf`);
     return hojas.length;
   } finally {

@@ -1875,6 +1875,9 @@ Deno.serve(async (req: Request) => {
       // 202 = todavía se está armando. Ellos piden reintentar a los 10 s.
       if (r.status === 202) return json({ ok: false, enProceso: true, motivo: 'El PDF todavía se está generando. Vuelve a intentar en unos segundos.' })
       // Lo ve el cliente: sin el nombre del aliado.
+      // 410/404: el reporte ya no existe del lado del proveedor (vencen). Se
+      // dice así, no "intenta en unos minutos": reintentar no lo trae.
+      if (r.status === 410 || r.status === 404) return json({ ok: false, vencido: true, motivo: 'El reporte original de esa consulta ya no está disponible (venció).' })
       if (!r.ok) return json({ ok: false, motivo: `No se pudo obtener el PDF del reporte (${r.status}). Intenta de nuevo en unos minutos.` })
       const buf = new Uint8Array(await r.arrayBuffer())
       let bin = ''
@@ -2022,7 +2025,7 @@ Deno.serve(async (req: Request) => {
           // De dónde sale el PDF: el reporte con marca Lincoin se arma con la
           // ficha de Sarblock (trae el catálogo); el de TusDatos lo dan ellos
           // por el id del reporte. Sin ninguno de los dos, no hay PDF.
-          pdf: r.ficha?.sarblock?.catalog ? 'lincoin' : r.report_id ? 'tusdatos' : null,
+          pdf: r.ficha?.sarblock?.catalog ? 'lincoin' : r.report_id ? 'tusdatos' : r.categoria ? 'resumen' : null,
         })),
       })
     }
@@ -2037,7 +2040,7 @@ Deno.serve(async (req: Request) => {
       const tipo = RISK_TIPO(String(body.tipoDocumento ?? 'CC'))
       const doc = String(body.documento ?? '').trim()
       if (!doc) return json({ error: 'Falta el documento.' }, 400)
-      const { data: fila, error } = await db.from('risk_registry').select('doc_type, doc_number, ficha, empresas, consultado_at, report_id')
+      const { data: fila, error } = await db.from('risk_registry').select('doc_type, doc_number, ficha, empresas, consultado_at, report_id, nombre_real, categoria, operable, altos, medios, bajos, hallazgos, documento_vigente, estado_documento, job_id')
         .eq('doc_type', tipo).eq('doc_number', doc).maybeSingle()
       if (error) return json({ error: error.message }, 500)
       if (!fila) return json({ ok: false, error: 'Esa persona ya no está en el padrón.' }, 404)
@@ -2048,7 +2051,19 @@ Deno.serve(async (req: Request) => {
         if (u) empresa = { nombre: String((u as any).company_name || (u as any).rdEmpresa || (u as any).full_name || (u as any).name || ''), nit: String((u as any).tax_id || (u as any).rdNit || '') }
       }
       await auditar('tusdatos.risk_ficha_pdf', { adminId: yo.userId, tipo, documento: doc })
-      return json({ ok: true, ficha: (fila as any).ficha ?? null, reportId: (fila as any).report_id ?? null, empresa, consultadoAt: (fila as any).consultado_at ?? null })
+      // Sin ficha completa (consultas de TusDatos), lo guardado en las columnas
+      // alcanza para el reporte resumen: el PDF de ellos vence (410) y sin esto
+      // no quedaba ningún soporte de la consulta.
+      const fx = fila as any
+      const resumen = fx.ficha ? null : {
+        documento: fx.doc_number, tipoDocumento: fx.doc_type, nombreReal: fx.nombre_real ?? null,
+        categoria: fx.categoria ?? null, operable: fx.operable ?? null,
+        altos: fx.altos ?? 0, medios: fx.medios ?? 0, bajos: fx.bajos ?? 0,
+        hallazgos: Array.isArray(fx.hallazgos) ? fx.hallazgos : [],
+        documentoVigente: fx.documento_vigente ?? null, estadoDocumento: fx.estado_documento ?? null,
+        jobid: fx.job_id ?? fx.report_id ?? null,
+      }
+      return json({ ok: true, ficha: fx.ficha ?? null, resumen, reportId: fx.report_id ?? null, empresa, consultadoAt: fx.consultado_at ?? null })
     }
 
     if (accion === 'compliance') {

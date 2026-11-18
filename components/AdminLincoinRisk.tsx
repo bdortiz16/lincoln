@@ -123,7 +123,17 @@ export const AdminLincoinRisk: React.FC = () => {
       }
       if (p.pdf === 'tusdatos' && p.reportId) {
         const r = await llamarFuncion('tusdatos', { action: 'pdf', reportId: p.reportId }, 60000).catch(() => null);
-        if (!r?.ok || !r.pdf) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo obtener el PDF.' }); return; }
+        if (!r?.ok || !r.pdf) {
+          // El PDF del proveedor vence (410). En vez de quedarse sin soporte,
+          // se arma el reporte Lincoin resumido con lo que quedó guardado.
+          if (r?.enProceso) { setAviso({ ok: false, t: r.motivo ?? 'El PDF todavía se está generando. Vuelve a intentar en unos segundos.' }); return; }
+          const f = await llamarFuncion('tusdatos', { action: 'risk_ficha', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
+          if (!f?.ok || !f.resumen) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo obtener el PDF.' }); return; }
+          const { descargarReporteLincoin } = await import('./reporte/ReporteLincoin');
+          await descargarReporteLincoin({ ...f.resumen, ...(f.empresa?.nombre ? { empresa: f.empresa } : {}), consultadoAt: f.consultadoAt ?? p.consultadoAt, at: f.consultadoAt ?? p.consultadoAt });
+          setAviso({ ok: true, t: `${r?.vencido ? 'El reporte original ya venció' : 'No se pudo bajar el reporte original'}: se descargó el resumen con marca Lincoin hecho con lo que quedó guardado de la consulta.` });
+          return;
+        }
         // Se abre como archivo con su tipo, nunca escrito dentro de una página.
         const bytes = Uint8Array.from(atob(String(r.pdf)), ch => ch.charCodeAt(0));
         const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
@@ -131,6 +141,13 @@ export const AdminLincoinRisk: React.FC = () => {
         a.href = url; a.download = r.nombre ?? `antecedentes-${p.documento}.pdf`;
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        return;
+      }
+      if (p.pdf === 'resumen') {
+        const f = await llamarFuncion('tusdatos', { action: 'risk_ficha', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
+        if (!f?.ok || !f.resumen) { setAviso({ ok: false, t: f?.error ?? 'No se pudo leer la consulta.' }); return; }
+        const { descargarReporteLincoin } = await import('./reporte/ReporteLincoin');
+        await descargarReporteLincoin({ ...f.resumen, ...(f.empresa?.nombre ? { empresa: f.empresa } : {}), consultadoAt: f.consultadoAt ?? p.consultadoAt, at: f.consultadoAt ?? p.consultadoAt });
         return;
       }
       setAviso({ ok: false, t: 'Esta consulta no tiene PDF guardado.' });
