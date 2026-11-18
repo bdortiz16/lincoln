@@ -124,14 +124,16 @@ function bloques(f: any): { key: string; nodo: React.ReactNode; espacio?: number
   out.push({ key: 'identidad', espacio: 18, nodo: (
     <div>
       <Rotulo t="Identidad" />
-      <Fila l="Nombre inscrito" v={id.declaredName || f.nombreInscrito || '—'} />
+      {(!resumido || f.nombreInscrito) && <Fila l="Nombre inscrito" v={id.declaredName || f.nombreInscrito || '—'} />}
       <Fila l="Nombre según la fuente oficial" v={id.verifiedName || f.nombreReal || '—'} c={f.nombreCoincide === false ? T.rojo : undefined} />
       <Fila l="Documento" v={`${f.tipoDocumento ?? ''} ${f.documento ?? ''}`.trim()} />
       {resumido
         ? <Fila l="Estado del documento" v={f.documentoVigente === false ? `No vigente${f.estadoDocumento ? ` · ${f.estadoDocumento}` : ''}` : 'Vigente'} c={f.documentoVigente === false ? T.rojo : undefined} />
         : <Fila l="Documento validado" v={id.validated === true ? 'Sí' : id.validated === false ? 'No' : '—'} c={id.validated === false ? T.ambar : undefined} />}
-      <Fila l="Similitud del nombre" v={typeof id.nameSimilarity === 'number' ? `${Math.round(id.nameSimilarity * 100)} %` : '—'} />
-      <Fila l="Posible suplantación" v={id.spoofSuspected ? 'Sí' : 'No'} c={id.spoofSuspected ? T.rojo : undefined} />
+      {/* En el resumen (proveedor anterior) esto no se midió: decir "No" a la
+          suplantación sería afirmar algo que nadie revisó. */}
+      {!resumido && <Fila l="Similitud del nombre" v={typeof id.nameSimilarity === 'number' ? `${Math.round(id.nameSimilarity * 100)} %` : '—'} />}
+      {!resumido && <Fila l="Posible suplantación" v={id.spoofSuspected ? 'Sí' : 'No'} c={id.spoofSuspected ? T.rojo : undefined} />}
     </div>
   ) });
 
@@ -162,7 +164,9 @@ function bloques(f: any): { key: string; nodo: React.ReactNode; espacio?: number
     out.push({ key: 'resumido', espacio: 18, nodo: (
       <p style={{ fontSize: 10.5, color: T.sub, margin: 0, lineHeight: 1.55, border: `1px solid ${T.borde}`, borderRadius: 8, padding: '10px 12px', background: T.suave }}>
         Esta consulta se hizo con el proveedor de verificación anterior. Su reporte original ya no está disponible, así que este resumen
-        se arma con lo que quedó guardado de la consulta: el veredicto, el nombre del documento y los hallazgos. No incluye el detalle fuente por fuente.
+        se arma con lo que quedó guardado de la consulta: el veredicto, el nombre del documento y los hallazgos altos y medios
+        {Number(f.bajos ?? 0) > 0 ? ` (de los ${f.bajos} hallazgos bajos solo se guardó el conteo)` : ''}. No incluye el detalle fuente por fuente;
+        para tenerlo hay que volver a consultar a la persona.
       </p>
     ) });
     return out;
