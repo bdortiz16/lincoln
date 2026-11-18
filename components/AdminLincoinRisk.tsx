@@ -60,7 +60,7 @@ export const AdminLincoinRisk: React.FC = () => {
   const [borrando, setBorrando] = useState<string | null>(null);
   // Ventana propia para confirmar (antes: confirm()/prompt() del navegador,
   // que dicen "lincoin.me dice" y no se ven como el panel).
-  const [confirmar, setConfirmar] = useState<{ tipo: 'una'; p: any } | { tipo: 'todas' } | null>(null);
+  const [confirmar, setConfirmar] = useState<{ tipo: 'una'; p: any } | { tipo: 'todas' } | { tipo: 'reconsultar'; p: any } | null>(null);
   const [escrito, setEscrito] = useState('');
   const turno = useRef(0);
 
@@ -154,6 +154,23 @@ export const AdminLincoinRisk: React.FC = () => {
     } catch {
       setAviso({ ok: false, t: 'No se pudo generar el PDF. Vuelve a intentarlo.' });
     } finally { setPdfDe(null); }
+  };
+
+  // Volver a consultar en Sarblock una ficha vieja de TusDatos (sin detalle).
+  // Se paga una consulta; el resultado actualiza la ficha del beneficiario en
+  // la cuenta que la tiene y el padrón, y desde ahí el PDF sale completo.
+  const [reconsultando, setReconsultando] = useState<string | null>(null);
+  const reconsultar = async (p: any) => {
+    setConfirmar(null);
+    const id = `${p.tipoDocumento}:${p.documento}`;
+    setReconsultando(id);
+    const r = await llamarFuncion('sarblock', { action: 'admin_risk_reconsultar', tipoDocumento: p.tipoDocumento, documento: p.documento }, 60000).catch(() => null);
+    setReconsultando(null);
+    if (!r?.ok) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo volver a consultar.' }); return; }
+    setAviso({ ok: true, t: r.checkId
+      ? `Consulta enviada a Sarblock${r.cuentaNombre ? ` por la cuenta de ${r.cuentaNombre}` : ''}. El resultado llega en uno o dos minutos: toca «Actualizar» y luego «Descargar PDF» para el reporte completo.`
+      : r.yaExistia ? 'Esa ficha ya tenía un resultado vigente; no se volvió a consultar.'
+      : 'Consulta actualizada. Toca «Actualizar» para ver el resultado.' });
   };
 
   const borrarTodas = async () => {
@@ -355,6 +372,13 @@ export const AdminLincoinRisk: React.FC = () => {
                       )}
                     </div>
                     <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+                      {(p.pdf === 'tusdatos' || p.pdf === 'resumen') && (
+                        <button onClick={() => setConfirmar({ tipo: 'reconsultar', p })} disabled={reconsultando !== null}
+                          className="hover:bg-white/[0.09] transition-colors"
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '7px 12px', borderRadius: 9, opacity: reconsultando === id ? 0.6 : 1 }}>
+                          <RefreshCw size={12} className={reconsultando === id ? 'animate-spin' : ''} /> {reconsultando === id ? 'Consultando…' : 'Consultar de nuevo con detalle completo'}
+                        </button>
+                      )}
                       {p.pdf && (
                         <button onClick={() => descargarPdf(p)} disabled={pdfDe !== null}
                           className="hover:opacity-90 transition-opacity"
@@ -399,14 +423,29 @@ export const AdminLincoinRisk: React.FC = () => {
             style={{ width: '100%', maxWidth: 460, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: '20px 22px', fontFamily: FONT }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ width: 34, height: 34, borderRadius: 10, background: 'rgba(255,255,255,0.055)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
-                <Trash2 size={16} color={C.text} />
+                {confirmar.tipo === 'reconsultar' ? <RefreshCw size={16} color={C.text} /> : <Trash2 size={16} color={C.text} />}
               </span>
               <p style={{ fontSize: 16, fontWeight: 800, color: C.text, margin: 0 }}>
-                {confirmar.tipo === 'una' ? '¿Eliminar del padrón?' : '¿Eliminar todas las consultas?'}
+                {confirmar.tipo === 'una' ? '¿Eliminar del padrón?' : confirmar.tipo === 'reconsultar' ? '¿Consultar de nuevo con detalle completo?' : '¿Eliminar todas las consultas?'}
               </p>
             </div>
 
-            {confirmar.tipo === 'una' ? (
+            {confirmar.tipo === 'reconsultar' ? (
+              <>
+                <div style={{ marginTop: 14, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 11, padding: '11px 13px' }}>
+                  <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, overflowWrap: 'anywhere' }}>{confirmar.p.nombreReal || 'Sin nombre en el documento'}</p>
+                  <p style={{ fontSize: 11.5, color: C.sub, fontFamily: MONO, margin: '3px 0 0' }}>{confirmar.p.tipoDocumento} {confirmar.p.documento}</p>
+                </div>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
+                  Esta ficha es de la consulta vieja (TusDatos): solo quedó el resumen. Se le vuelve a consultar en Sarblock para tener el
+                  <b style={{ color: C.text }}> reporte completo, fuente por fuente</b>. <b style={{ color: C.text }}>Se paga una consulta de Sarblock.</b>
+                </p>
+                <p style={{ fontSize: 12.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>
+                  Se hace por la cuenta que la tiene entre sus beneficiarios{Array.isArray(confirmar.p.consultantes) && confirmar.p.consultantes[0] ? <> (primero se intenta <b style={{ color: C.text }}>{confirmar.p.consultantes[0].nombre}</b>)</> : null}.
+                  El resultado nuevo reemplaza el veredicto de ese beneficiario: si sale algo más grave, puede quedar bloqueado.
+                </p>
+              </>
+            ) : confirmar.tipo === 'una' ? (
               <>
                 <div style={{ marginTop: 14, background: C.elev, border: `1px solid ${C.border}`, borderRadius: 11, padding: '11px 13px' }}>
                   <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, overflowWrap: 'anywhere' }}>{confirmar.p.nombreReal || 'Sin nombre en el documento'}</p>
@@ -433,19 +472,19 @@ export const AdminLincoinRisk: React.FC = () => {
             )}
 
             <div style={{ display: 'flex', gap: 9, marginTop: 16 }}>
-              <button onClick={() => setConfirmar(null)} autoFocus={confirmar.tipo === 'una'}
+              <button onClick={() => setConfirmar(null)} autoFocus={confirmar.tipo !== 'todas'}
                 className="hover:bg-white/[0.09] transition-colors"
                 style={{ flex: 1, padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, cursor: 'pointer' }}>
                 Cancelar
               </button>
               {(() => {
-                const listo = confirmar.tipo === 'una' || escrito.trim() === 'ELIMINAR';
+                const listo = confirmar.tipo === 'una' || confirmar.tipo === 'reconsultar' || escrito.trim() === 'ELIMINAR';
                 return (
                   <button disabled={!listo}
-                    onClick={() => { if (confirmar.tipo === 'una') borrarUna(confirmar.p); else borrarTodas(); }}
+                    onClick={() => { if (confirmar.tipo === 'una') borrarUna(confirmar.p); else if (confirmar.tipo === 'reconsultar') reconsultar(confirmar.p); else borrarTodas(); }}
                     className="hover:opacity-90 transition-opacity"
                     style={{ flex: 1.3, padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 700, color: '#0A0A0A', background: C.text, border: 'none', opacity: listo ? 1 : 0.4, cursor: listo ? 'pointer' : 'not-allowed' }}>
-                    {confirmar.tipo === 'una' ? 'Eliminar' : 'Eliminar todas'}
+                    {confirmar.tipo === 'una' ? 'Eliminar' : confirmar.tipo === 'reconsultar' ? 'Consultar (se paga)' : 'Eliminar todas'}
                   </button>
                 );
               })()}

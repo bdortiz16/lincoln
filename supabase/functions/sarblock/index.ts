@@ -36,7 +36,7 @@ import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
 import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, fichaIncompleta, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
-import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron } from './padron.ts'
+import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron, tipoPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
@@ -304,8 +304,13 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   // resultado. Se limita a 'sin_validar' porque cada una se paga y es el
   // único caso en que otra consulta puede dar algo distinto (la fuente de
   // identidad pudo fallar esa vez).
-  const forzada = forzar && esAdmin && previa?.estado === 'finalizado' && previa?.categoria === 'sin_validar'
-  if (forzar && !forzada) return { ok: false, motivo: 'Solo se puede volver a consultar un beneficiario con la identidad sin validar.' }
+  // 18 nov: también una ficha terminada de la época de TusDatos. Su reporte
+  // vence y solo guardó el resumen (sin el detalle fuente por fuente), así
+  // que Cumplimiento no tenía cómo sustentar el veredicto. La pide un admin
+  // desde Lincoin Risk, sabiendo que se paga una consulta.
+  const tusdatosVieja = previa?.estado === 'finalizado' && previa?.proveedor !== 'sarblock'
+  const forzada = forzar && esAdmin && previa?.estado === 'finalizado' && (previa?.categoria === 'sin_validar' || tusdatosVieja)
+  if (forzar && !forzada) return { ok: false, motivo: 'Solo se puede volver a consultar un beneficiario con la identidad sin validar o con una consulta vieja sin detalle.' }
   if (forzada) await auditar('sarblock.reconsulta_forzada', { userId: uid, documento: doc, identidadAnterior: previa?.sarblock?.identity ?? null })
   // Documento que Sarblock rechaza seguro (una cédula de 11 dígitos): no se
   // llama. La ficha queda en 'documento_invalido', que el envío sigue
@@ -737,6 +742,43 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
         incluidas: Number(s.included ?? cr.planIncluded ?? 0), consumidas: Number(s.consumed ?? 0), reservadas: Number(s.reserved ?? 0),
         quedan: saldoScreening(u), adicionales: Math.max(0, saldoScreening(u) - Number(s.planRemaining ?? cr.planRemaining ?? 0)),
         enAml: aml.count ?? 0, enRisk: risk.count ?? 0 }
+    }
+    // Volver a consultar en Sarblock a una persona del padrón cuya ficha es
+    // de TusDatos (sin detalle). La consulta se hace por una de las cuentas
+    // que ya la consultaron Y la tienen entre sus beneficiarios (la primera
+    // que cumpla): el resultado actualiza su ficha y el padrón, y desde ahí
+    // el PDF sale completo. Se paga una consulta de Sarblock.
+    if (accion === 'admin_risk_reconsultar') {
+      const tipo = tipoPadron(String(body.tipoDocumento ?? 'CC'))
+      const doc = docPadron(String(body.documento ?? ''), tipo)
+      if (!doc) return { ok: false, motivo: 'Falta el documento.' }
+      const { data: fila } = await db.from('risk_registry').select('empresas, nombre_real, ficha').eq('doc_type', tipo).eq('doc_number', doc).maybeSingle()
+      if (!fila) return { ok: false, motivo: 'Esa persona ya no está en el padrón.' }
+      if ((fila as any).ficha?.sarblock?.catalog) return { ok: false, motivo: 'Esta consulta ya tiene el detalle completo: descarga el PDF.' }
+      const c = await leerConfig()
+      if (!c.activo) return { ok: false, motivo: 'Sarblock no está activo: no se puede consultar ahora.' }
+      const empresas: string[] = Array.isArray((fila as any).empresas) ? (fila as any).empresas.map((x: unknown) => String(x)) : []
+      for (const uid of empresas) {
+        if (!enLaPrueba(c, uid)) continue
+        const raw = await leerRaw(uid)
+        const benefs = (raw?.tusdatos?.beneficiarios ?? {}) as Record<string, any>
+        // La ficha puede estar por el documento base o por el NIT con dígito
+        // de verificación (las de la época de TusDatos).
+        const clave = Object.keys(benefs).find(k => docPadron(k, tipo) === doc && vigenteF(benefs[k]))
+        if (!clave) continue
+        const previa = benefs[clave]
+        const nombre = String(previa?.nombreInscrito || (fila as any).nombre_real || '').trim() || undefined
+        // lanzar busca la ficha por el documento base: se fuerza solo si la
+        // terminada está ahí. Si está por el NIT con DV, lanzar no ve ficha
+        // previa, consulta de nuevo y archiva la vieja.
+        const base = sujetoDe(tipo, clave, nombre)?.idNumber ?? doc
+        const forzar = benefs[base]?.estado === 'finalizado'
+        const r: any = await lanzar(uid, { documento: clave, tipoDocumento: tipo, nombre }, c, true, forzar)
+        const emp = await empresaDe(uid)
+        await auditar('risk.reconsulta_padron', { por: yo.userId, documento: doc, tipo, cuenta: uid, forzada: forzar, ok: !!r?.ok, checkId: r?.checkId ?? null, motivo: r?.motivo ?? null })
+        return { ...r, cuenta: uid, cuentaNombre: emp.nombre || null }
+      }
+      return { ok: false, motivo: 'Ninguna de las cuentas que la consultaron la tiene hoy entre sus beneficiarios: no hay a qué cuenta asociar la consulta nueva.' }
     }
     if (accion === 'admin_risk_config') {
       const nueva = R.normalizarConfig(cfg, body.config ?? {})
