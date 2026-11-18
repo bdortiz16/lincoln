@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Database, RefreshCw, Search, ChevronDown, Trash2 } from 'lucide-react';
+import { Database, RefreshCw, Search, ChevronDown, Trash2, FileDown } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 
 // ─────────────────────────────────────────────────────────────
@@ -100,6 +100,45 @@ export const AdminLincoinRisk: React.FC = () => {
     setAbierto(null);
     cargar();
   };
+  // El PDF de la consulta. Una ficha de Sarblock arma el reporte con marca
+  // Lincoin (el mismo que baja la cuenta que la consultó); una de TusDatos
+  // trae el PDF de ellos por el id del reporte. Se pide al tocar el botón:
+  // el listado no trae la ficha completa (pesa).
+  const [pdfDe, setPdfDe] = useState<string | null>(null);
+  const descargarPdf = async (p: any) => {
+    const id = `${p.tipoDocumento}:${p.documento}`;
+    if (pdfDe) return;
+    setPdfDe(id);
+    try {
+      if (p.pdf === 'lincoin') {
+        const r = await llamarFuncion('tusdatos', { action: 'risk_ficha', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
+        if (!r?.ok || !r.ficha) { setAviso({ ok: false, t: r?.error ?? 'No se pudo leer la ficha de esa consulta.' }); return; }
+        const { descargarReporteLincoin } = await import('./reporte/ReporteLincoin');
+        await descargarReporteLincoin({
+          ...r.ficha,
+          documento: r.ficha.documento ?? p.documento, tipoDocumento: r.ficha.tipoDocumento ?? p.tipoDocumento,
+          ...(r.empresa?.nombre ? { empresa: r.empresa } : {}), consultadoAt: r.ficha.consultadoAt ?? r.consultadoAt ?? p.consultadoAt,
+        });
+        return;
+      }
+      if (p.pdf === 'tusdatos' && p.reportId) {
+        const r = await llamarFuncion('tusdatos', { action: 'pdf', reportId: p.reportId }, 60000).catch(() => null);
+        if (!r?.ok || !r.pdf) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo obtener el PDF.' }); return; }
+        // Se abre como archivo con su tipo, nunca escrito dentro de una página.
+        const bytes = Uint8Array.from(atob(String(r.pdf)), ch => ch.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        const a = document.createElement('a');
+        a.href = url; a.download = r.nombre ?? `antecedentes-${p.documento}.pdf`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        return;
+      }
+      setAviso({ ok: false, t: 'Esta consulta no tiene PDF guardado.' });
+    } catch {
+      setAviso({ ok: false, t: 'No se pudo generar el PDF. Vuelve a intentarlo.' });
+    } finally { setPdfDe(null); }
+  };
+
   const borrarTodas = async () => {
     if (escrito.trim() !== 'ELIMINAR') return;
     setConfirmar(null); setEscrito('');
@@ -271,7 +310,41 @@ export const AdminLincoinRisk: React.FC = () => {
                         </div>
                       ))}
                     </div>
-                    <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                    {/* Quién la consultó o la inscribió, en orden: la primera
+                        pagó la consulta que creó la ficha; las demás la
+                        reutilizaron (o la volvieron a consultar al vencerse). */}
+                    <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+                      <p style={{ fontSize: 10.5, color: C.sub, margin: '0 0 6px' }}>Clientes que la consultaron o inscribieron</p>
+                      {Array.isArray(p.consultantes) && p.consultantes.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                          {p.consultantes.map((e: any, k: number) => (
+                            <div key={e.id} style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', fontSize: 12.5 }}>
+                              <span style={{ color: C.text, fontWeight: 600, overflowWrap: 'anywhere' }}>{e.nombre}</span>
+                              <span style={{ fontSize: 11, color: C.sub }}>
+                                {[e.tipo, e.nit ? `NIT ${e.nit}` : ''].filter(Boolean).join(' · ')}
+                              </span>
+                              {k === 0 && (
+                                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.4px', padding: '2px 7px', borderRadius: 999, border: `1px solid ${C.greenB}`, color: C.green }}>
+                                  PAGÓ LA CONSULTA
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ fontSize: 12, color: C.dim, margin: 0 }}>
+                          {p.fuente === 'monitoreo' ? 'La creó el monitoreo; ninguna cuenta la ha usado todavía.' : 'Sin registro de qué cuenta la pidió.'}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+                      {p.pdf && (
+                        <button onClick={() => descargarPdf(p)} disabled={pdfDe !== null}
+                          className="hover:opacity-90 transition-opacity"
+                          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#0A0A0A', background: C.text, border: 'none', padding: '7px 12px', borderRadius: 9, opacity: pdfDe === id ? 0.6 : 1, cursor: pdfDe ? 'default' : 'pointer' }}>
+                          <FileDown size={12} /> {pdfDe === id ? 'Generando PDF…' : 'Descargar PDF'}
+                        </button>
+                      )}
                       <button onClick={() => setConfirmar({ tipo: 'una', p })} disabled={borrando !== null}
                         className="hover:bg-white/[0.09] transition-colors"
                         style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '7px 12px', borderRadius: 9, opacity: borrando === id ? 0.6 : 1 }}>

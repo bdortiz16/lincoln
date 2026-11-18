@@ -1965,6 +1965,25 @@ Deno.serve(async (req: Request) => {
       }
 
       const lista = (filas ?? []) as any[]
+      // QUIÉN la consultó o la inscribió. El padrón ya guardaba los ids
+      // (`empresas`, en orden: la primera es la que pagó la consulta que creó
+      // la ficha), pero la pantalla solo mostraba cuántas eran. Se leen nombre
+      // y NIT con el mismo criterio que el PDF de Sarblock (columnas primero y,
+      // si están vacías, lo que dejó el registro), sin traer el raw_data entero.
+      const idsEmp = [...new Set(lista.flatMap(r => Array.isArray(r.empresas) ? r.empresas.map((x: unknown) => String(x)) : []))].filter(Boolean)
+      const fichaEmp: Record<string, { nombre: string; nit: string; tipo: string }> = {}
+      for (let i = 0; i < idsEmp.length; i += 200) {
+        const { data: us } = await db.from('users')
+          .select('id, role, company_name, full_name, name, email, tax_id, rdEmpresa:raw_data->>companyName, rdNit:raw_data->>taxId')
+          .in('id', idsEmp.slice(i, i + 200))
+        for (const u of (us ?? []) as any[]) {
+          fichaEmp[String(u.id)] = {
+            nombre: String(u.company_name || u.rdEmpresa || u.full_name || u.name || u.email || '—'),
+            nit: String(u.tax_id || u.rdNit || ''),
+            tipo: u.role === 'business' ? 'Empresa' : 'Operador',
+          }
+        }
+      }
       // Los totales se calculan sobre TODO el padrón, no sobre la página.
       const { count: total } = await db.from('risk_registry').select('*', { count: 'exact', head: true })
       const { data: sumas } = await db.from('risk_registry').select('veces_consultado, veces_reutilizado, categoria').limit(20000)
@@ -1998,8 +2017,38 @@ Deno.serve(async (req: Request) => {
           consultadoAt: r.consultado_at, actualizadoAt: r.actualizado_at, fuente: r.fuente,
           vecesConsultado: r.veces_consultado, vecesReutilizado: r.veces_reutilizado,
           empresas: Array.isArray(r.empresas) ? r.empresas.length : 0,
+          consultantes: (Array.isArray(r.empresas) ? r.empresas : []).map((id: unknown) => String(id)).filter(Boolean)
+            .map((id: string) => ({ id, ...(fichaEmp[id] ?? { nombre: 'Cuenta eliminada', nit: '', tipo: '' }) })),
+          // De dónde sale el PDF: el reporte con marca Lincoin se arma con la
+          // ficha de Sarblock (trae el catálogo); el de TusDatos lo dan ellos
+          // por el id del reporte. Sin ninguno de los dos, no hay PDF.
+          pdf: r.ficha?.sarblock?.catalog ? 'lincoin' : r.report_id ? 'tusdatos' : null,
         })),
       })
+    }
+
+    // La ficha guardada de UNA persona del padrón, para armar su PDF con
+    // marca Lincoin en el panel (el mismo reporte que ve la cuenta que la
+    // consultó). Va aparte del listado: el catálogo de cada ficha pesa y el
+    // listado trae hasta 300. "Consultado por" es la cuenta que pagó la
+    // consulta (la primera de `empresas`).
+    if (accion === 'risk_ficha') {
+      { const no = await exigirAdmin(req, yo); if (no) return no }
+      const tipo = RISK_TIPO(String(body.tipoDocumento ?? 'CC'))
+      const doc = String(body.documento ?? '').trim()
+      if (!doc) return json({ error: 'Falta el documento.' }, 400)
+      const { data: fila, error } = await db.from('risk_registry').select('doc_type, doc_number, ficha, empresas, consultado_at, report_id')
+        .eq('doc_type', tipo).eq('doc_number', doc).maybeSingle()
+      if (error) return json({ error: error.message }, 500)
+      if (!fila) return json({ ok: false, error: 'Esa persona ya no está en el padrón.' }, 404)
+      const primera = Array.isArray((fila as any).empresas) ? String((fila as any).empresas[0] ?? '') : ''
+      let empresa: { nombre: string; nit: string } | null = null
+      if (primera) {
+        const { data: u } = await db.from('users').select('company_name, full_name, name, tax_id, rdEmpresa:raw_data->>companyName, rdNit:raw_data->>taxId').eq('id', primera).maybeSingle()
+        if (u) empresa = { nombre: String((u as any).company_name || (u as any).rdEmpresa || (u as any).full_name || (u as any).name || ''), nit: String((u as any).tax_id || (u as any).rdNit || '') }
+      }
+      await auditar('tusdatos.risk_ficha_pdf', { adminId: yo.userId, tipo, documento: doc })
+      return json({ ok: true, ficha: (fila as any).ficha ?? null, reportId: (fila as any).report_id ?? null, empresa, consultadoAt: (fila as any).consultado_at ?? null })
     }
 
     if (accion === 'compliance') {
