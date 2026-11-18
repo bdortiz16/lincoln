@@ -332,6 +332,9 @@ const mapSupabaseUser = (data: any): User => {
     name: data.full_name,
     balances: mergedBalances,
     kycStatus: data.kyc_status,
+    // Fecha de registro. El servidor la manda (columna created_at) pero no se
+    // copiaba, y la ficha del cliente en el panel decía "Cliente desde —".
+    ...((data.created_at ?? data.raw_data?.createdAt) ? { createdAt: data.created_at ?? data.raw_data?.createdAt } : {}),
   };
 };
 

@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS public.users (
   company_name text,
   compliance_hold boolean,
   country text,
-  created_at timestamptz,
+  created_at timestamptz DEFAULT now(),
   crypto_balances jsonb,
   custom_daily_limit numeric,
   custom_monthly_limit numeric,
