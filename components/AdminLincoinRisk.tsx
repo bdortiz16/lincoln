@@ -5,7 +5,8 @@ import { llamarFuncion } from '../lib/edge';
 // ─────────────────────────────────────────────────────────────
 // Lincoin Risk — el padrón de consultas de antecedentes.
 //
-// Cada consulta a TusDatos cuesta 1.400 COP. El veredicto se guardaba dentro
+// Cada consulta de antecedentes se paga (hoy a Sarblock; antes a TusDatos,
+// que ya no se usa). El veredicto se guardaba dentro
 // de la cuenta que lo pidió, así que si INVERSIONES consulta a Juan Pérez y
 // mañana MEXITECH inscribe al mismo Juan Pérez, se pagaba otra vez por
 // exactamente el mismo dato.
@@ -100,10 +101,11 @@ export const AdminLincoinRisk: React.FC = () => {
     setAbierto(null);
     cargar();
   };
-  // El PDF de la consulta. Una ficha de Sarblock arma el reporte con marca
-  // Lincoin (el mismo que baja la cuenta que la consultó); una de TusDatos
-  // trae el PDF de ellos por el id del reporte. Se pide al tocar el botón:
-  // el listado no trae la ficha completa (pesa).
+  // El PDF de la consulta. Una ficha de Sarblock arma el reporte completo con
+  // marca Lincoin (el mismo que baja la cuenta que la consultó). Una de la
+  // época de TusDatos —que ya no se usa, y cuyo PDF vence— baja el resumen con
+  // marca Lincoin de lo que quedó guardado. Se pide al tocar el botón: el
+  // listado no trae la ficha completa (pesa).
   const [pdfDe, setPdfDe] = useState<string | null>(null);
   const descargarPdf = async (p: any) => {
     const id = `${p.tipoDocumento}:${p.documento}`;
@@ -121,29 +123,7 @@ export const AdminLincoinRisk: React.FC = () => {
         });
         return;
       }
-      if (p.pdf === 'tusdatos' && p.reportId) {
-        const r = await llamarFuncion('tusdatos', { action: 'pdf', reportId: p.reportId }, 60000).catch(() => null);
-        if (!r?.ok || !r.pdf) {
-          // El PDF del proveedor vence (410). En vez de quedarse sin soporte,
-          // se arma el reporte Lincoin resumido con lo que quedó guardado.
-          if (r?.enProceso) { setAviso({ ok: false, t: r.motivo ?? 'El PDF todavía se está generando. Vuelve a intentar en unos segundos.' }); return; }
-          const f = await llamarFuncion('tusdatos', { action: 'risk_ficha', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
-          if (!f?.ok || !f.resumen) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo obtener el PDF.' }); return; }
-          const { descargarReporteLincoin } = await import('./reporte/ReporteLincoin');
-          await descargarReporteLincoin({ ...f.resumen, ...(f.empresa?.nombre ? { empresa: f.empresa } : {}), consultadoAt: f.consultadoAt ?? p.consultadoAt, at: f.consultadoAt ?? p.consultadoAt });
-          setAviso({ ok: true, t: `${r?.vencido ? 'El reporte original ya venció' : 'No se pudo bajar el reporte original'}: se descargó el resumen con marca Lincoin hecho con lo que quedó guardado de la consulta.` });
-          return;
-        }
-        // Se abre como archivo con su tipo, nunca escrito dentro de una página.
-        const bytes = Uint8Array.from(atob(String(r.pdf)), ch => ch.charCodeAt(0));
-        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-        const a = document.createElement('a');
-        a.href = url; a.download = r.nombre ?? `antecedentes-${p.documento}.pdf`;
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
-        return;
-      }
-      if (p.pdf === 'resumen') {
+      if (p.pdf === 'resumen' || p.pdf === 'tusdatos') {
         const f = await llamarFuncion('tusdatos', { action: 'risk_ficha', tipoDocumento: p.tipoDocumento, documento: p.documento }).catch(() => null);
         if (!f?.ok || !f.resumen) { setAviso({ ok: false, t: f?.error ?? 'No se pudo leer la consulta.' }); return; }
         const { descargarReporteLincoin } = await import('./reporte/ReporteLincoin');
@@ -228,7 +208,7 @@ export const AdminLincoinRisk: React.FC = () => {
             </p>
             <p style={{ color: C.sub, fontSize: 12, margin: '6px 0 0', maxWidth: 680, lineHeight: 1.55 }}>
               Una ficha por documento, compartida por todas las cuentas. Antes de pagarle una consulta
-              a TusDatos se mira acá: si otra empresa ya consultó a esa persona y el dato sigue vigente,
+              a Sarblock se mira acá: si otra empresa ya consultó a esa persona y el dato sigue vigente,
               se reutiliza. Se busca <b style={{ color: C.text }}>por documento</b>, nunca por nombre.
             </p>
           </div>
@@ -257,9 +237,9 @@ export const AdminLincoinRisk: React.FC = () => {
       {/* El ahorro, que es el punto */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
         {[
-          { n: cop(r.ahorroCop ?? 0), t: `${num(r.consultasAhorradas ?? 0)} consultas que no se pagaron`, ok: true },
+          { n: r.ahorroCop != null ? cop(r.ahorroCop) : num(r.consultasAhorradas ?? 0), t: r.ahorroCop != null ? `${num(r.consultasAhorradas ?? 0)} consultas que no se pagaron` : 'Consultas que no se pagaron', ok: true },
           { n: num(r.personas ?? 0), t: 'Personas en el padrón' },
-          { n: cop(r.gastoCop ?? 0), t: `${num(r.consultasPagadas ?? 0)} consultas pagadas` },
+          { n: r.gastoCop != null ? cop(r.gastoCop) : num(r.consultasPagadas ?? 0), t: r.gastoCop != null ? `${num(r.consultasPagadas ?? 0)} consultas pagadas` : 'Consultas pagadas' },
           { n: num(r.alto ?? 0), t: 'De riesgo alto' },
           { n: num(r.limpios ?? 0), t: 'Sin hallazgos o riesgo bajo', ok: true },
         ].map(s => (
@@ -335,8 +315,9 @@ export const AdminLincoinRisk: React.FC = () => {
                         ['Hallazgos', `${p.altos ?? 0} altos · ${p.medios ?? 0} medios · ${p.bajos ?? 0} bajos`],
                         ['Documento', p.documentoVigente === false ? `No vigente${p.estadoDocumento ? `: ${p.estadoDocumento}` : ''}` : 'Vigente'],
                         ['Última actualización', fecha(p.actualizadoAt)],
-                        ['Créditos gastados', `${p.vecesConsultado ?? 1} · ${cop((p.vecesConsultado ?? 1) * 1400)}`],
-                        ['Créditos ahorrados', `${p.vecesReutilizado ?? 0} · ${cop((p.vecesReutilizado ?? 0) * 1400)}`],
+                        ['Consultas pagadas', `${p.vecesConsultado ?? 1}${r.costoUnitario ? ` · ${cop((p.vecesConsultado ?? 1) * r.costoUnitario)}` : ''}`],
+                        ['Consultas ahorradas', `${p.vecesReutilizado ?? 0}${r.costoUnitario ? ` · ${cop((p.vecesReutilizado ?? 0) * r.costoUnitario)}` : ''}`],
+                        ['Proveedor', p.deSarblock || p.pdf === 'lincoin' ? 'Sarblock' : 'TusDatos (consulta vieja)'],
                       ].map(([l, v]) => (
                         <div key={String(l)}>
                           <p style={{ fontSize: 10.5, color: C.sub, margin: 0 }}>{l}</p>
@@ -437,7 +418,7 @@ export const AdminLincoinRisk: React.FC = () => {
                   <p style={{ fontSize: 11.5, color: C.sub, fontFamily: MONO, margin: '3px 0 0' }}>{confirmar.p.tipoDocumento} {confirmar.p.documento}</p>
                 </div>
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
-                  Esta ficha es de la consulta vieja (TusDatos): solo quedó el resumen. Se le vuelve a consultar en Sarblock para tener el
+                  Esta ficha es de una consulta vieja, de cuando se usaba TusDatos: solo quedó el resumen. Se consulta en Sarblock para tener el
                   <b style={{ color: C.text }}> reporte completo, fuente por fuente</b>. <b style={{ color: C.text }}>Se paga una consulta de Sarblock.</b>
                 </p>
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>
@@ -452,7 +433,7 @@ export const AdminLincoinRisk: React.FC = () => {
                   <p style={{ fontSize: 11.5, color: C.sub, fontFamily: MONO, margin: '3px 0 0' }}>{confirmar.p.tipoDocumento} {confirmar.p.documento}</p>
                 </div>
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
-                  La próxima vez que alguien la inscriba o se reintente su consulta, se le volverá a preguntar a TusDatos y se paga la consulta (1.400 COP).
+                  La próxima vez que alguien la inscriba o se reintente su consulta, se le volverá a consultar en Sarblock y se paga la consulta.
                   Lo que ya quedó guardado en cada cuenta no cambia.
                 </p>
               </>
@@ -460,7 +441,7 @@ export const AdminLincoinRisk: React.FC = () => {
               <>
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
                   Se eliminan las <b style={{ color: C.text }}>{num(r.personas ?? 0)}</b> consultas del padrón. Desde ahí, cada persona se vuelve a consultar
-                  (y se paga, 1.400 COP) la próxima vez que se inscriba. Lo que ya quedó guardado en cada cuenta no cambia.
+                  en Sarblock (y se paga) la próxima vez que se inscriba. Lo que ya quedó guardado en cada cuenta no cambia.
                 </p>
                 <label style={{ display: 'block', marginTop: 14 }}>
                   <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginBottom: 5 }}>Para confirmar escribe <b style={{ color: C.text }}>ELIMINAR</b></span>

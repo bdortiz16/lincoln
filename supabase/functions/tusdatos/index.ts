@@ -1993,17 +1993,26 @@ Deno.serve(async (req: Request) => {
       const todo = (sumas ?? []) as any[]
       const reutilizadas = todo.reduce((a, r) => a + Number(r.veces_reutilizado ?? 0), 0)
       const pagadas = todo.reduce((a, r) => a + Number(r.veces_consultado ?? 0), 0)
-      const COSTO = 1400
+      // El costo de una consulta es el de SARBLOCK (lo escribe el dueño en
+      // Lincoin Risk → configuración). Antes estaba fijo en 1.400, el precio
+      // de TusDatos, que ya no se usa. Sin costo definido, solo conteos.
+      let COSTO: number | null = null
+      try {
+        const { data: cr } = await db.from('system_config').select('value').eq('key', 'risk_venta_config').maybeSingle()
+        const n = Number(JSON.parse(String((cr as any)?.value ?? '{}'))?.costoPorConsulta)
+        if (Number.isFinite(n) && n > 0) COSTO = n
+      } catch { COSTO = null }
 
       return json({
         ok: true,
-        config: { activo: (await leerConfig()).riskActivo !== false, dias: (await leerConfig()).riskDiasVigencia ?? 90 },
+        // Las consultas las hace Sarblock y su padrón vale 90 días.
+        config: { activo: true, dias: 90, proveedor: 'sarblock' },
         resumen: {
           personas: total ?? lista.length,
           consultasPagadas: pagadas,
           consultasAhorradas: reutilizadas,
-          ahorroCop: reutilizadas * COSTO,
-          gastoCop: pagadas * COSTO,
+          ahorroCop: COSTO != null ? reutilizadas * COSTO : null,
+          gastoCop: COSTO != null ? pagadas * COSTO : null,
           costoUnitario: COSTO,
           alto: todo.filter(r => r.categoria === 'alto').length,
           medio: todo.filter(r => r.categoria === 'medio').length,
@@ -2025,7 +2034,10 @@ Deno.serve(async (req: Request) => {
           // De dónde sale el PDF: el reporte con marca Lincoin se arma con la
           // ficha de Sarblock (trae el catálogo); el de TusDatos lo dan ellos
           // por el id del reporte. Sin ninguno de los dos, no hay PDF.
-          pdf: r.ficha?.sarblock?.catalog ? 'lincoin' : r.report_id ? 'tusdatos' : r.categoria ? 'resumen' : null,
+          // Sin catálogo (fichas de la época de TusDatos, que ya no se usa) el
+          // PDF es el resumen de lo guardado: ya no se le pide nada a TusDatos.
+          pdf: r.ficha?.sarblock?.catalog ? 'lincoin' : (r.categoria || r.estado === 'finalizado') ? 'resumen' : null,
+          deSarblock: !!r.ficha?.sarblock?.catalog,
         })),
       })
     }
