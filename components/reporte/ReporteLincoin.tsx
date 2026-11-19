@@ -20,7 +20,7 @@ import logoSarblock from './sarblock-on-light.svg?raw';
 
 // A4 a 96 dpi.
 const ANCHO = 794, ALTO = 1123, MARGEN = 44;
-const CABECERA_1 = 200, CABECERA_N = 56, PIE = 70;
+const CABECERA_1 = 180, CABECERA_N = 56, PIE = 70;
 
 // Paleta sobre fondo claro (CLAUDE.md): letras #15181A, verde #22A35C.
 const T = {
@@ -260,9 +260,9 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
               <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1.4px', color: T.sub, margin: 0 }}>REPORTE DE VERIFICACIÓN DE ANTECEDENTES</p>
               <p style={{ fontSize: 10.5, color: T.sub, margin: '4px 0 0' }}>Consulta del {fecha(sb.completedAt ?? f.at ?? f.consultadoAt)}</p>
               {esSarblock(f) && (
-                <div style={{ marginTop: 12 }}>
-                  <p style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '1.2px', color: T.tenue, margin: '0 0 5px' }}>VERIFICACIÓN AML REALIZADA POR NUESTRO PARTNER</p>
-                  <LogoSarblock alto={15} />
+                <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 7.5, fontWeight: 700, letterSpacing: '1px', color: T.tenue }}>AML POR NUESTRO PARTNER</span>
+                  <LogoSarblock alto={9} />
                 </div>
               )}
             </div>
