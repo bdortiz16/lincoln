@@ -4,8 +4,9 @@
 // Se arma desde la ficha guardada (raw_data.tusdatos.beneficiarios[doc])
 // con el bloque `sarblock` que trae el catálogo completo de la consulta.
 // Sarblock no entrega PDF: este reporte es nuestro, y por eso dice de dónde
-// salen los datos (fuentes públicas consultadas a través de Sarblock) y no
-// imita el documento de nadie.
+// salen los datos. Sarblock es nuestro partner de AML: en las consultas hechas
+// con ellos el reporte lo dice con su logo oficial (versión para fondo claro,
+// sarblock.com/logo-sarblock-on-light.svg) en la cabecera y en el pie.
 //
 // Cómo se genera: el reporte se dibuja en HTML (Archivo, paleta Lincoin
 // sobre fondo claro), se pagina midiendo cada bloque para que ninguna fila
@@ -14,10 +15,12 @@
 // ════════════════════════════════════════════════════════
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
+// @ts-ignore — Vite importa el .svg como texto (?raw)
+import logoSarblock from './sarblock-on-light.svg?raw';
 
 // A4 a 96 dpi.
 const ANCHO = 794, ALTO = 1123, MARGEN = 44;
-const CABECERA_1 = 168, CABECERA_N = 56, PIE = 70;
+const CABECERA_1 = 200, CABECERA_N = 56, PIE = 70;
 
 // Paleta sobre fondo claro (CLAUDE.md): letras #15181A, verde #22A35C.
 const T = {
@@ -58,6 +61,13 @@ const Wordmark: React.FC<{ tam: number }> = ({ tam }) => (
     Lincoin<span style={{ color: T.verde }}>.</span>
   </span>
 );
+// El logo va como SVG en línea (no <img>): así sale en la captura sin esperar
+// a que cargue y sin pedir nada a otro dominio.
+const LogoSarblock: React.FC<{ alto: number }> = ({ alto }) => (
+  <span aria-label="Sarblock" style={{ display: 'inline-block', height: alto, width: alto * 175 / 22, lineHeight: 0 }}
+    dangerouslySetInnerHTML={{ __html: logoSarblock.replace('width="175" height="22"', 'width="100%" height="100%"') }} />
+);
+const esSarblock = (f: any) => f?.proveedor === 'sarblock' || Array.isArray(f?.sarblock?.catalog);
 const Rotulo: React.FC<{ t: string }> = ({ t }) => (
   <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1.4px', color: T.sub, margin: '0 0 6px', textTransform: 'uppercase' }}>{t}</p>
 );
@@ -249,6 +259,12 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
             <div style={{ textAlign: 'right' }}>
               <p style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '1.4px', color: T.sub, margin: 0 }}>REPORTE DE VERIFICACIÓN DE ANTECEDENTES</p>
               <p style={{ fontSize: 10.5, color: T.sub, margin: '4px 0 0' }}>Consulta del {fecha(sb.completedAt ?? f.at ?? f.consultadoAt)}</p>
+              {esSarblock(f) && (
+                <div style={{ marginTop: 12 }}>
+                  <p style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '1.2px', color: T.tenue, margin: '0 0 5px' }}>VERIFICACIÓN AML REALIZADA POR NUESTRO PARTNER</p>
+                  <LogoSarblock alto={15} />
+                </div>
+              )}
             </div>
           </div>
           <p style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.4px', margin: '18px 0 0' }}>{nombre}</p>
@@ -268,7 +284,9 @@ const Hoja: React.FC<{ f: any; n: number; total: number; children: React.ReactNo
       <div>{children}</div>
       <div style={{ position: 'absolute', left: MARGEN, right: MARGEN, bottom: 26, borderTop: `1px solid ${T.borde}`, paddingTop: 8, display: 'flex', justifyContent: 'space-between', gap: 20 }}>
         <p style={{ fontSize: 8.5, color: T.tenue, margin: 0, lineHeight: 1.45, maxWidth: 560 }}>
-          Resumen de la consulta de listas internacionales y fuentes públicas realizada a través de nuestro aliado de verificación. La calidad de cada dato es atribuible a su fuente.
+          {esSarblock(f)
+            ? 'Verificación AML (listas internacionales y fuentes públicas) realizada por Sarblock, partner (socio) de Lincoin. La calidad de cada dato es atribuible a su fuente.'
+            : 'Resumen de la consulta de listas internacionales y fuentes públicas realizada a través de nuestro aliado de verificación. La calidad de cada dato es atribuible a su fuente.'}
           Documento de uso interno de cumplimiento{f.empresa?.nombre ? ` de ${f.empresa.nombre}` : ''}; contiene datos personales protegidos por la Ley 1581 de 2012.
           {sb.catalogVersion ? ` Catálogo de fuentes ${sb.catalogVersion}.` : ''}
         </p>
