@@ -779,6 +779,12 @@ export const DatabaseProvider: React.FC<{ children: ReactNode }> = ({ children }
                 id: t.id, userId: t.user_id, type: t.type,
                 amount: Number(t.amount), currency: t.currency, status: t.status,
                 ...t.raw_data,
+                // La fecha de la base. No se copiaba: solo tenían fecha los
+                // movimientos que la traían en raw_data, y los envíos ACH
+                // salían en Fallos con "—", ordenados como si fueran los más
+                // viejos (19 nov). Va después de raw_data para que mande la
+                // columna.
+                createdAt: t.created_at ?? t.raw_data?.createdAt ?? t.raw_data?.date,
               }));
               const sortedTx = mappedTx.sort(((a:any,b:any)=> (new Date(b.createdAt??b.created_at??b.date??0).getTime()||0) - (new Date(a.createdAt??a.created_at??a.date??0).getTime()||0)));
               setTransactions(sortedTx);
