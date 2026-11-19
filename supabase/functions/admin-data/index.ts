@@ -1887,6 +1887,10 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   caja_movimiento_crear: ['tesoreria', 'fn.lincoin'],
   reject_rail_move: ['tesoreria', 'fn.tesoreria'],
   otc_ajuste_set: ['plata.mover', 'fn.contabilidad'],
+  // Anular un cierre de la mesa OTC ya completado: le quita al cliente lo que
+  // se le acreditó. Lo hace quien opera la mesa (el mismo permiso con el que
+  // otc-mesa deja completar), siempre con el código 2FA de la operación.
+  otc_anular_cierre: ['plata.mover', 'fn.otc'],
   // Los topes de envío son un control de cumplimiento: los ajusta Compliance
   // (el dueño también, como todo).
   limites_envio_set: 'cumplimiento',
@@ -4108,7 +4112,7 @@ Deno.serve(async (req: Request) => {
       // si algo del 2FA falla — lo que se protege es lo que hace daño.
       const SENSITIVE_ADMIN_ACTIONS = new Set([
         // Mueven dinero
-        'admin_credit_balance', 'admin_credit_crypto',
+        'admin_credit_balance', 'admin_credit_crypto', 'otc_anular_cierre',
         'approve_rail_move', 'reject_rail_move', 'tesoreria_movimiento',
         // La caja: abrirla, corregir la apertura, ocultar un movimiento
         'caja_abrir', 'caja_apertura_set', 'mov_ocultar',
@@ -4180,6 +4184,8 @@ Deno.serve(async (req: Request) => {
         // Corregir la venta de un cargue cambia la utilidad de Lincoin, que
         // es lo que después se puede retirar de las bolsas y lo que se factura
         'contabilidad_corregir_venta',
+        // Anular un cierre OTC completado le descuenta al cliente lo acreditado
+        'otc_anular_cierre',
       ])
       // save_config guarda el objeto entero y se llama también solo (tasas,
       // paleta): el código se pide únicamente si cambia una clave sensible.
@@ -6289,6 +6295,168 @@ Deno.serve(async (req: Request) => {
         const { error: delErr } = await db.auth.admin.deleteUser(found.id)
         if (delErr) return json({ error: delErr.message }, 500)
         return json({ success: true, deletedAuthUserId: found.id })
+      }
+
+      // ── Anular un cierre de la mesa OTC ya completado ────────────────
+      // 19 nov: la mesa completó OTC-112A5D (vende 10.000 USDT) con un
+      // "comprobante" que era una factura de la DIAN, no el envío de los USDT;
+      // se acreditaron 33.770.300 COP en Bre-B y no había cómo deshacerlo:
+      // `cancelar` rechaza un cierre completado (con razón: no devuelve plata).
+      //
+      // Anular deshace el acreditado como si no hubiera pasado:
+      //   · el movimiento de la conversión pasa a 'Rechazado' (reversado), así
+      //     deja de contar en Contabilidad, la utilidad, la factura de Lincoin
+      //     y los reportes, que solo leen lo 'Completado';
+      //   · el saldo baja exactamente lo que subió, en la misma billetera.
+      // NO se crea un débito aparte: con la conversión fuera del libro y un
+      // ajuste encima, el libro del cliente quedaría con la plata quitada dos
+      // veces frente a su saldo.
+      //
+      // Orden: primero se RESERVA todo (CAS del cierre y del movimiento) y la
+      // plata se mueve al final. Si el débito no pasa (el cliente ya usó la
+      // plata), se devuelven las dos reservas y no cambia nada. El código 2FA
+      // ya se exigió arriba (ACCIONES_CON_CODIGO).
+      if (body.action === 'otc_anular_cierre') {
+        const id = String(body.id ?? '').trim()
+        const motivo = String(body.motivo ?? '').trim().slice(0, 500)
+        if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ success: false, error: 'Cierre inválido.' }, 400)
+        if (motivo.length < 5) return json({ success: false, error: 'Escribe el motivo de la anulación (el cliente lo ve en el chat del cierre).' }, 400)
+        const NOMBRE_BILLETERA: Record<string, string> = { COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT' }
+        const fmtM = (n: number) => n.toLocaleString('es-CO', { maximumFractionDigits: 2 })
+
+        const { data: c } = await db.from('otc_closes')
+          .select('id, ref, user_id, status, side, from_amount, from_currency, to_amount, to_currency, motivo_cierre, cancelada_at')
+          .eq('id', id).maybeSingle()
+        const cierre = c as any
+        if (!cierre) return json({ success: false, error: 'No se encontró ese cierre.' }, 404)
+        if (cierre.status === 'anulada') return json({ success: true, yaEstaba: true })
+        if (cierre.status !== 'completada') return json({ success: false, error: 'Solo se anula un cierre completado. Uno que sigue en curso se cancela.' }, 409)
+
+        // El movimiento con el que `completar` acreditó. Tiene que haber UNO:
+        // sin él no se sabe qué billetera ni cuánto, y con dos algo ya está
+        // raro — eso se mira a mano, no se adivina.
+        const { data: movs, error: eMovs } = await db.from('transactions')
+          .select('id, user_id, amount, currency, status, created_at, raw_data')
+          .eq('type', 'convert').eq('user_id', cierre.user_id).eq('raw_data->>otcCloseId', id)
+        if (eMovs) return json({ success: false, error: `No se pudo leer el movimiento del cierre: ${eMovs.message}` }, 500)
+        const vigentes = ((movs ?? []) as any[]).filter(m => String(m.status) === 'Completado')
+        if (vigentes.length !== 1) {
+          return json({ success: false, error: vigentes.length
+            ? 'Este cierre tiene más de un acreditado registrado. No se tocó nada: revísalo con los movimientos del cliente.'
+            : 'No se encontró el movimiento con el que se acreditó este cierre. No se descontó nada: revisa el saldo del cliente a mano.' }, 409)
+        }
+        const mov = vigentes[0]
+        const monto = Number(mov.amount)
+        const billetera = String(mov.currency)
+        const nomBilletera = NOMBRE_BILLETERA[billetera] ?? billetera
+        if (!(monto > 0)) return json({ success: false, error: 'El movimiento del cierre no tiene monto.' }, 409)
+
+        // Antes de reservar nada: si el cliente ya no tiene la plata, se dice
+        // de una vez cuánto le queda (el débito lo vuelve a comprobar, atómico).
+        const saldoDe = async (): Promise<number> => {
+          const { data: u } = await db.from('users').select('balances').eq('id', cierre.user_id).maybeSingle()
+          return Number((u as any)?.balances?.[billetera] ?? 0) || 0
+        }
+        const sinSaldo = (disp: number) => json({
+          success: false, sinSaldo: true, disponible: disp,
+          error: `El cliente ya no tiene ${fmtM(monto)} en ${nomBilletera}: le quedan ${fmtM(disp)}. No se anuló ni se descontó nada. `
+            + 'Si ya movió parte de la plata, hay que recuperarla antes (o descontar lo que tenga con un ajuste en su ficha).',
+        }, 409)
+        const disp0 = await saldoDe()
+        if (disp0 < monto - 0.005) return sinSaldo(disp0)
+
+        const clave = `otc_anular:${id}`
+        const cand = await reclamarCandado(db, clave, 86_400, String(auth.userId ?? ''), 'otc_anular_cierre')
+        if (cand === 'ocupado') return json({ success: false, error: 'Este cierre ya se está anulando (o se anuló). Recarga antes de repetir.' }, 409)
+        if (cand === 'error') return json({ success: false, error: 'No se pudo asegurar la operación contra duplicados. No se cambió nada; intenta de nuevo.' }, 503)
+
+        const { data: yo } = await db.from('users').select('full_name, email').eq('id', auth.userId).maybeSingle()
+        const porNombre = String((yo as any)?.full_name || (yo as any)?.email || 'la mesa')
+        const ahoraIso = new Date().toISOString()
+
+        // Reserva 1: el cierre, solo si sigue completado.
+        const { data: tomado, error: eT } = await db.from('otc_closes').update({
+          status: 'anulada', motivo_cierre: `Anulado: ${motivo}`, cancelada_at: ahoraIso, updated_at: ahoraIso,
+        }).eq('id', id).eq('status', 'completada').select('id')
+        if (eT || !tomado?.length) {
+          await soltarCandado(db, clave)
+          return json({ success: false, error: eT ? `No se pudo anular: ${eT.message}` : 'El cierre cambió de estado mientras tanto. Recarga.' }, 409)
+        }
+        const devolverCierre = () => db.from('otc_closes').update({
+          status: 'completada', motivo_cierre: cierre.motivo_cierre ?? null, cancelada_at: cierre.cancelada_at ?? null, updated_at: new Date().toISOString(),
+        }).eq('id', id).eq('status', 'anulada')
+
+        // Reserva 2: el movimiento, solo si sigue Completado. notified_failed va
+        // puesto para que no salga el correo genérico de "no pudimos completar
+        // tu operación" (sería falso: se completó y después se anuló); el
+        // cliente lo lee en el chat del cierre.
+        const rd = (mov.raw_data ?? {}) as Record<string, any>
+        const anulacion = { at: ahoraIso, por: auth.userId ?? null, porNombre, motivo, cierreRef: cierre.ref, montoDescontado: monto, billetera }
+        const { data: movTomado, error: eM } = await db.from('transactions').update({
+          status: 'Rechazado',
+          raw_data: { ...rd, reversado: true, notified_failed: true, anulacionOtc: anulacion,
+            rejectReason: `La mesa anuló el cierre ${cierre.ref} y descontó lo acreditado.` },
+        }).eq('id', mov.id).eq('status', 'Completado').select('id')
+        if (eM || !movTomado?.length) {
+          await devolverCierre()
+          await soltarCandado(db, clave)
+          return json({ success: false, error: eM ? `No se pudo anular el movimiento: ${eM.message}. No se descontó nada.` : 'El movimiento del cierre cambió mientras tanto. No se descontó nada; recarga.' }, 409)
+        }
+        // Al devolver el movimiento queda notified_failed puesto: el aviso de
+        // la base por el paso a 'Rechazado' sale después (pg_net) y no puede
+        // encontrar la marca borrada y mandar el correo de rechazo.
+        const devolverMov = () => db.from('transactions').update({ status: 'Completado', raw_data: { ...rd, notified_failed: true } })
+          .eq('id', mov.id).eq('status', 'Rechazado')
+
+        // La plata, al final y atómica (no deja el saldo en negativo).
+        const { data: adj, error: adjErr } = await db.rpc('adjust_balances', { p_user_id: cierre.user_id, p_fiat: { [billetera]: -monto } })
+        if (adjErr) {
+          // Sin respuesta clara: pudo haberse aplicado. No se devuelven las
+          // reservas (un reintento descontaría dos veces); se deja constancia.
+          await auditAdmin(req, 'otc.anulacion_saldo_incierto', { cierreId: id, ref: cierre.ref, userId: cierre.user_id, monto, billetera, error: adjErr.message })
+          return json({ success: false, incierto: true, error: `El cierre quedó anulado, pero no hubo respuesta clara al descontar ${fmtM(monto)} de ${nomBilletera}. Revisa el saldo del cliente ANTES de hacer nada más.` }, 502)
+        }
+        if ((adj as any)?.error) {
+          await devolverMov()
+          await devolverCierre()
+          await soltarCandado(db, clave)
+          if ((adj as any).error === 'insufficient') return sinSaldo(await saldoDe())
+          return json({ success: false, error: `No se pudo descontar el saldo (${(adj as any).error}). No se anuló nada.` }, 409)
+        }
+        const nuevoSaldo = Number((adj as any)?.balances?.[billetera] ?? 0)
+
+        // El hilo del cierre: el cliente ve qué pasó y por qué.
+        try {
+          await db.from('otc_messages').insert({
+            close_id: id, autor: 'sistema', autor_id: null, autor_nom: null, adjunto_url: null,
+            body: `Cierre anulado por la mesa. Se descontaron ${fmtM(monto)} ${cierre.to_currency} de tu saldo ${nomBilletera}. Motivo: ${motivo}`,
+          })
+          await db.from('otc_closes').update({ last_msg_at: new Date().toISOString(), last_msg_por: 'sistema' }).eq('id', id)
+        } catch { /* el registro del chat no frena la anulación: ya quedó en la auditoría */ }
+
+        // ¿Ya salió la factura de Lincoin con esta conversión? Eso no se
+        // deshace solo: se anula o se corrige con una nota crédito en Siigo.
+        let aviso: string | undefined
+        try {
+          const ENVIADAS = ['emitida', 'emitiendo', 'incierta']
+          const { data: propias } = await db.from('facturas_lincoin').select('estado, numero').eq('transaction_id', String(mov.id)).limit(5)
+          const fPropia = ((propias ?? []) as any[]).find(f => ENVIADAS.includes(String(f.estado)))
+          if (fPropia) {
+            aviso = `Esta conversión ya tenía la factura de Lincoin ${fPropia.numero ?? ''}. Anúlala con una nota crédito en Siigo.`
+          } else {
+            const dia = new Date(new Date(String(mov.created_at)).getTime() - 5 * 3600_000).toISOString().slice(0, 10)
+            const { data: diarias } = await db.from('facturas_lincoin').select('estado, numero, txs:detalle->txs')
+              .like('transaction_id', `dia:${cierre.user_id}:${dia}%`)
+            const d = ((diarias ?? []) as any[]).find(f => ENVIADAS.includes(String(f.estado)) && Array.isArray(f.txs) && f.txs.map(String).includes(String(mov.id)))
+            if (d) aviso = `Esta conversión ya iba en la factura diaria del ${dia}${d.numero ? ` (${d.numero})` : ''}. Corrígela con una nota crédito en Siigo.`
+          }
+        } catch { /* sin tabla de facturas */ }
+
+        await auditAdmin(req, 'otc.cierre_anulado', {
+          cierreId: id, ref: cierre.ref, userId: cierre.user_id, movimientoId: mov.id,
+          monto, billetera, nuevoSaldo, motivo, side: cierre.side, fromAmount: cierre.from_amount, fromCurrency: cierre.from_currency,
+        })
+        return json({ success: true, descontado: monto, billetera, nuevoSaldo, ...(aviso ? { aviso } : {}) })
       }
 
       // Acreditar o descontar a mano el saldo de dólares o euros digitales de un

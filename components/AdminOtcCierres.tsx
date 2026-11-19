@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { sonarCampana, campanaActiva, guardarCampana, TONOS, tonoActual, guardarTono, volumenActual, guardarVolumen } from './campanaOtc';
 import { estadoPush, activarPush, desactivarPush, probarPush, type EstadoPush } from './pushLincoin';
+import { pedirAdmin } from './adminApi';
 import {
     RefreshCw, Send, X, MessageSquare, CheckCircle2, Clock, XCircle,
     AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap, Paperclip,
@@ -99,6 +100,8 @@ const ESTADO: Record<string, { label: string; c: string }> = {
     pagada:         { label: 'POR VERIFICAR',  c: AMBAR },
     completada:     { label: 'COMPLETADO',     c: VERDE },
     cancelada:      { label: 'CANCELADO',      c: TXT2 },
+    // Completado y después deshecho por la mesa (se descontó lo acreditado).
+    anulada:        { label: 'ANULADO',        c: ROJO },
 };
 const caraDe = (s: string) => ESTADO[s] ?? { label: String(s ?? '—').toUpperCase(), c: TXT2 };
 
@@ -128,6 +131,7 @@ const FILTROS: Array<{ id: string; label: string }> = [
     { id: 'pagada',         label: 'Por verificar' },
     { id: 'completada',     label: 'Completadas' },
     { id: 'cancelada',      label: 'Canceladas' },
+    { id: 'anulada',        label: 'Anuladas' },
     { id: 'todas',          label: 'Todas' },
 ];
 
@@ -679,7 +683,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     const [lupa, setLupa] = useState<string | null>(null);
     // Confirmación propia en vez del window.confirm del navegador: completar
     // ACREDITA plata, y el diálogo tiene que decir cuánta y en qué billetera.
-    const [pide, setPide] = useState<null | 'completar' | 'cancelar'>(null);
+    const [pide, setPide] = useState<null | 'completar' | 'cancelar' | 'anular'>(null);
     const [motivo, setMotivo] = useState('');
     const [tasaAbierta, setTasaAbierta] = useState(false);
     const [subiendo, setSubiendo] = useState(false);
@@ -699,7 +703,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     useEffect(() => { cargar(); }, [cargar]);
     useEffect(() => {
         const t = setInterval(() => {
-            if (cierre && (cierre.status === 'completada' || cierre.status === 'cancelada')) return;
+            if (cierre && ['completada', 'cancelada', 'anulada'].includes(cierre.status)) return;
             cargar();
         }, 8000);
         return () => clearInterval(t);
@@ -713,6 +717,19 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
         if (!r?.ok) { setAviso(r?.message ?? r?.error ?? 'No se pudo.'); return false; }
         await cargar(); onCambio();
         return true;
+    };
+
+    // Anular va por admin-data y no por otc-mesa: le QUITA plata al cliente,
+    // y eso pide el código 2FA de la operación (pedirAdmin lo pide solo).
+    const anular = async (m: string) => {
+        setOcupado(true); setAviso(null);
+        const r = await pedirAdmin({ action: 'otc_anular_cierre', id, motivo: m });
+        setOcupado(false);
+        if (!r?.success) { setAviso(r?.error ?? 'No se pudo anular.'); return; }
+        setAviso(r.aviso
+            ? `Anulado: se descontaron ${nf(r.descontado, 0)} de ${BILLETERA[r.billetera] ?? r.billetera}. ${r.aviso}`
+            : r.yaEstaba ? 'Este cierre ya estaba anulado.' : `Anulado: se descontaron ${nf(r.descontado, 0)} de ${BILLETERA[r.billetera] ?? r.billetera}.`);
+        await cargar(); onCambio();
     };
 
     const enviar = async () => {
@@ -774,7 +791,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     // Si el servidor no devuelve `tomada_por` no se bloquea: quedarse sin poder
     // atender por un campo que no vino sería peor que el riesgo que evita.
     const mia  = !!cierre.tomada_at && (!cierre.tomada_por || String(cierre.tomada_por) === miIdAdmin());
-    const viva = !['completada', 'cancelada'].includes(cierre.status);
+    const viva = !['completada', 'cancelada', 'anulada'].includes(cierre.status);
     const bloqueado = viva && !mia;
 
     const verbo = cierre.side === 'vende_usdt' ? 'Vende' : 'Compra';
@@ -1032,7 +1049,21 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                         <div style={{ padding: '14px 18px', borderTop: `1px solid ${BORDE}`, fontSize: 12, color: TXT3, lineHeight: 1.5 }}>
                             {cierre.status === 'completada'
                                 ? <>Completado el {fecha(cierre.completada_at)}. El hilo queda como registro.</>
-                                : <>Cancelado el {fecha(cierre.cancelada_at)}{cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}.</>}
+                                : cierre.status === 'anulada'
+                                    ? <>Anulado el {fecha(cierre.cancelada_at)}{cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}. Se descontó lo acreditado.</>
+                                    : <>Cancelado el {fecha(cierre.cancelada_at)}{cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}.</>}
+                            {/* Completado por error (un comprobante que no era el
+                                envío, otro monto): se deshace descontando lo que
+                                se acreditó. Antes no había cómo y quedaba a mano. */}
+                            {cierre.status === 'completada' && (
+                                <div style={{ marginTop: 10 }}>
+                                    <button onClick={() => setPide('anular')} disabled={ocupado}
+                                        className="transition-colors hover:bg-white/[0.04]"
+                                        style={{ padding: '9px 14px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: ROJO, background: 'transparent', border: `1px solid ${ROJO}44`, opacity: ocupado ? 0.5 : 1 }}>
+                                        Anular cierre
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -1067,6 +1098,42 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                     <button onClick={async () => { setPide(null); await hacer('completar'); }} disabled={ocupado}
                                         style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado ? 0.5 : 1 }}>
                                         Sí, acreditar y completar
+                                    </button>
+                                </div>
+                            </>
+                        ) : pide === 'anular' ? (
+                            <>
+                                <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Anular {cierre.ref}</h4>
+                                <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>Deshace el cierre completado: se le descuenta al cliente lo que se le acreditó.</p>
+                                <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                    <Fila icon={Wallet} label="Se descuenta" valor={`${nf(cierre.to_amount, 0)} ${cierre.to_currency}`} />
+                                    <Fila icon={Landmark} label="De" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />
+                                    <Fila icon={User} label="Cliente" valor={cliente?.company_name || cliente?.full_name || cliente?.email || '—'} />
+                                </div>
+                                <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                                    <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
+                                    <p style={{ fontSize: 11.5, color: TXT2, lineHeight: 1.5 }}>
+                                        Si el cliente ya movió esa plata, no se anula nada y te dice cuánto le queda. El movimiento de la conversión queda rechazado y sale de Contabilidad. El motivo lo ve el cliente en el chat. Te pide el código 2FA.
+                                    </p>
+                                </div>
+                                <textarea
+                                    autoFocus
+                                    value={motivo}
+                                    onChange={e => setMotivo(e.target.value)}
+                                    rows={3}
+                                    placeholder="Ej: el comprobante era una factura, no el envío de los USDT"
+                                    style={{ ...INPUT, fontSize: 12.5, marginTop: 12, resize: 'vertical' }}
+                                />
+                                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                                    <button onClick={() => { setPide(null); setMotivo(''); }} className="transition-colors hover:bg-white/[0.06]"
+                                        style={{ padding: '11px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none' }}>
+                                        Volver
+                                    </button>
+                                    <button
+                                        onClick={async () => { const m = motivo.trim(); if (m.length < 5) return; setPide(null); setMotivo(''); await anular(m); }}
+                                        disabled={ocupado || motivo.trim().length < 5}
+                                        style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: motivo.trim().length >= 5 ? '#0C0E0D' : TXT2, background: motivo.trim().length >= 5 ? ROJO : 'rgba(255,255,255,0.06)', border: 'none', opacity: ocupado ? 0.5 : 1 }}>
+                                        Sí, descontar y anular
                                     </button>
                                 </div>
                             </>

@@ -59,6 +59,8 @@ const ESTADO: Record<string, { label: string; color: string; borde: string; fond
     pagada:         { label: 'VERIFICANDO',         color: '#FBBF24', borde: 'rgba(251,191,36,0.4)',  fondo: 'rgba(251,191,36,0.07)', Icon: Clock },
     completada:     { label: 'COMPLETADA',          color: '#4ADE80', borde: 'rgba(74,222,128,0.45)', fondo: 'transparent',           Icon: CheckCircle2 },
     cancelada:      { label: 'CANCELADA',           color: '#F87171', borde: 'rgba(248,113,113,0.4)', fondo: 'transparent',           Icon: XCircle },
+    // Completada y después anulada por la mesa: lo acreditado se descontó.
+    anulada:        { label: 'ANULADA',             color: '#F87171', borde: 'rgba(248,113,113,0.4)', fondo: 'transparent',           Icon: XCircle },
 };
 const caraDe = (s: string) => ESTADO[s] ?? { label: String(s ?? '—').toUpperCase(), color: '#878E88', borde: 'rgba(255,255,255,0.14)', fondo: 'transparent', Icon: Clock };
 
@@ -514,7 +516,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
         cargar();
         const t = setInterval(() => {
             setCierre((c: any) => {
-                if (c && (c.status === 'completada' || c.status === 'cancelada')) return c;
+                if (c && ['completada', 'cancelada', 'anulada'].includes(c.status)) return c;
                 cargar();
                 return c;
             });
@@ -577,7 +579,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
 
     const cara = caraDe(cierre.status);
     const tasaVigente = cierre.rate_final ?? cierre.rate_cotizada;
-    const vivo  = !['completada', 'cancelada'].includes(cierre.status);
+    const vivo  = !['completada', 'cancelada', 'anulada'].includes(cierre.status);
     const enPago = cierre.status === 'esperando_pago';
     // Si ya subió comprobante se ve en el hilo. Es el mismo hecho que comprueba
     // el servidor antes de aceptar "ya pagué".
@@ -716,8 +718,8 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                     </div>
                 ) : (
                     <p style={{ padding: '13px 18px', borderTop: '1px solid rgba(255,255,255,0.07)', color: 'rgba(244,244,242,0.45)', fontSize: 12, lineHeight: 1.5 }}>
-                        Este cierre está {cierre.status === 'completada' ? 'completado' : 'cancelado'}
-                        {cierre.status === 'cancelada' && cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}. El hilo queda como registro.
+                        Este cierre está {cierre.status === 'completada' ? 'completado' : cierre.status === 'anulada' ? 'anulado' : 'cancelado'}
+                        {(cierre.status === 'cancelada' || cierre.status === 'anulada') && cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}. El hilo queda como registro.
                     </p>
                 )}
             </div>

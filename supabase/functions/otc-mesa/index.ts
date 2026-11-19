@@ -50,7 +50,10 @@ const PROJECT_REF = (() => { try { return new URL(SUPABASE_URL).hostname.split('
 // ─── Estados ────────────────────────────────────────────
 // El orden importa: es el que ordena la bandeja y el que decide que
 // transiciones son legales.
-const ESTADOS = ['abierta', 'en_proceso', 'esperando_pago', 'pagada', 'completada', 'cancelada'] as const
+// 'anulada' = un cierre COMPLETADO que la mesa anuló después (admin-data
+// otc_anular_cierre: le descuenta al cliente lo acreditado). Es final: no se
+// reabre, no se le sube comprobante ni se vuelve a completar.
+const ESTADOS = ['abierta', 'en_proceso', 'esperando_pago', 'pagada', 'completada', 'cancelada', 'anulada'] as const
 type Estado = typeof ESTADOS[number]
 
 // Estados en los que la operacion sigue viva. Se usa para el badge del panel
@@ -878,7 +881,7 @@ Deno.serve(async (req) => {
       // después de que venciera el plazo.
       const FIJABLES = ['abierta', 'en_proceso', 'esperando_pago', 'cancelada']
       if (!FIJABLES.includes(String(r.cierre.status))) {
-        return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : 'El cliente ya marcó el pago: verifícalo y complétalo, o cancélalo antes de cambiar la tasa.' })
+        return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : r.cierre.status === 'anulada' ? 'Este cierre fue anulado: se monta uno nuevo.' : 'El cliente ya marcó el pago: verifícalo y complétalo, o cancélalo antes de cambiar la tasa.' })
       }
       // Un cancelado se reabre solo si NUNCA se acreditó. Antes un cierre que
       // se completaba y se cancelaba a la vez quedaba 'cancelada' con la plata
@@ -942,7 +945,7 @@ Deno.serve(async (req) => {
     if (action === 'comprobante') {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
-      if (r.cierre.status === 'completada' || r.cierre.status === 'cancelada') {
+      if (r.cierre.status === 'completada' || r.cierre.status === 'cancelada' || r.cierre.status === 'anulada') {
         return json(409, { ok: false, error: 'ese cierre ya esta cerrado' })
       }
       const archivo = String(payload.archivo ?? '')
@@ -1004,6 +1007,7 @@ Deno.serve(async (req) => {
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       if (r.cierre.status === 'completada') return json(200, { ok: true, yaEstaba: true })
       if (r.cierre.status === 'cancelada') return json(409, { ok: false, error: 'ese cierre esta cancelado' })
+      if (r.cierre.status === 'anulada') return json(409, { ok: false, error: 'ese cierre fue anulado', message: 'Este cierre fue anulado. Si el cliente sí pagó, se monta un cierre nuevo.' })
       if (!r.cierre.rate_final) {
         return json(409, { ok: false, error: 'falta_tasa', message: 'Fija la tasa final antes de completar: sin eso el cierre queda sin precio de ejecucion.' })
       }
@@ -1085,6 +1089,7 @@ Deno.serve(async (req) => {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       if (r.cierre.status === 'completada') return json(409, { ok: false, error: 'ese cierre ya se completo' })
+      if (r.cierre.status === 'anulada') return json(409, { ok: false, error: 'ese cierre fue anulado' })
       if (r.cierre.status === 'cancelada') return json(200, { ok: true, yaEstaba: true })
       // El cliente solo puede cancelar mientras nadie espera su plata. Una vez
       // que dijo que pago, cancelar es decision de la mesa: puede haber dinero
