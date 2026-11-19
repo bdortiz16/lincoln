@@ -65,12 +65,9 @@ const hace = (iso?: string | null) => {
   const d = Math.floor(h / 24);
   return d < 30 ? `hace ${d} d` : `hace ${Math.floor(d / 30)} meses`;
 };
-// El documento se enmascara: en una pantalla que alguien puede estar mirando
-// por encima del hombro no hace falta la cédula completa para reconocer un caso.
-const mask = (d?: string | null) => {
-  const s = String(d ?? '');
-  return s.length > 4 ? `···${s.slice(-4)}` : (s || '—');
-};
+// El documento va completo: cumplimiento lo necesita para buscar a la persona o
+// la empresa en RUES, Registraduría o el portal del proveedor sin abrir la ficha.
+const docCompleto = (d?: string | null) => String(d ?? '').trim() || '—';
 
 const Pill: React.FC<{ children: React.ReactNode; tono?: 'ok' | 'fuerte' | 'suave'; titulo?: string }> = ({ children, tono = 'suave', titulo }) => (
   <span title={titulo} style={{
@@ -417,7 +414,7 @@ export const AdminCompliance: React.FC = () => {
                       {c.nombreInscrito || c.nombreReal || 'Sin nombre'}
                     </span>
                     <span style={{ display: 'block', fontSize: 11.5, color: C.sub, fontFamily: MONO, marginTop: 2 }}>
-                      {c.tipoDocumento} {mask(c.documento)}{c.cliente?.pais ? ` · ${c.cliente.pais}` : ''}
+                      {c.tipoDocumento} {docCompleto(c.documento)}{c.cliente?.pais ? ` · ${c.cliente.pais}` : ''}
                     </span>
                     {/* El nombre que tuvo antes. El cliente lo corrigió y ya no
                         lo ve; cumplimiento sí, y sabe cuándo cambió. */}
@@ -637,7 +634,7 @@ export const AdminCompliance: React.FC = () => {
               {decidiendo.decision === 'aprobar' ? '¿Aprobar a esta persona?' : '¿Mantenerla bloqueada?'}
             </p>
             <p style={{ fontSize: 12.5, color: C.sub, margin: '7px 0 0', lineHeight: 1.55 }}>
-              {decidiendo.caso.nombreInscrito || decidiendo.caso.nombreReal} · {decidiendo.caso.tipoDocumento} {mask(decidiendo.caso.documento)}
+              {decidiendo.caso.nombreInscrito || decidiendo.caso.nombreReal} · {decidiendo.caso.tipoDocumento} {docCompleto(decidiendo.caso.documento)}
               <br />Inscrita por {decidiendo.caso.cliente?.nombre ?? decidiendo.caso.titular}.
               {decidiendo.decision === 'aprobar'
                 ? ' Al aprobarla se podrá volver a transferirle, con el veredicto del sistema en contra.'
