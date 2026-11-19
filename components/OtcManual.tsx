@@ -348,6 +348,27 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                 ))}
             </div>
 
+            {/* Vende USDT: PRIMERO la wallet desde donde los manda (pedido del
+                dueño, 19 nov): es lo que decide si se puede pedir el cierre,
+                así que va antes del monto y no al fondo del formulario. */}
+            {side === 'vende_usdt' && pideWallet && (
+                <div style={{ marginTop: 16, padding: '14px 14px 16px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, background: 'rgba(255,255,255,0.02)' }}>
+                    <WalletOrigen
+                        wallet={wallet} red={red} verif={verif}
+                        onWallet={(v) => {
+                            setWallet(v); setVerif(null);
+                            // TRON se reconoce sola; una 0x pasa a Ethereum
+                            // solo si estaba en TRON (BNB Chain la elige él).
+                            const r = redDe(v);
+                            if (r === 'TRX') setRed('TRX');
+                            else if (r && red === 'TRX') setRed(r);
+                        }}
+                        onRed={(r) => { setRed(r); setVerif(null); }}
+                        onVerificado={setVerif}
+                    />
+                </div>
+            )}
+
             {/* Envías / Recibís */}
             <div style={{ marginTop: 16 }}>
                 <label style={LABEL}>Envías</label>
@@ -404,29 +425,13 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                 )}
             </div>
 
-            {/* Vende USDT: la wallet desde donde los manda, revisada antes de
-                dejarle pedir el cierre. Compra USDT: a dónde va lo que compra. */}
+            {/* Compra USDT: a dónde va lo que compra. (La wallet de origen de
+                una venta va arriba, antes del monto.) */}
             <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
                 {side === 'vende_usdt' ? (
-                    pideWallet ? (
-                        <WalletOrigen
-                            wallet={wallet} red={red} verif={verif}
-                            onWallet={(v) => {
-                                setWallet(v); setVerif(null);
-                                // TRON se reconoce sola; una 0x pasa a Ethereum
-                                // solo si estaba en TRON (BNB Chain la elige él).
-                                const r = redDe(v);
-                                if (r === 'TRX') setRed('TRX');
-                                else if (r && red === 'TRX') setRed(r);
-                            }}
-                            onRed={(r) => { setRed(r); setVerif(null); }}
-                            onVerificado={setVerif}
-                        />
-                    ) : (
-                        <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
-                            La mesa te confirma por el chat a qué cuenta se acredita el COP.
-                        </p>
-                    )
+                    <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                        La mesa te confirma por el chat a qué cuenta se acredita el COP.
+                    </p>
                 ) : (
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                         <Wallet size={14} style={{ color: '#878E88', marginTop: 2, flexShrink: 0 }} />

@@ -273,6 +273,22 @@ function esConvertAcreditado(t: any): boolean {
     return !(t.targetCurrency ?? rd.targetCurrency);
 }
 
+// Un movimiento que NO quedó en el saldo: rechazado, fallido o anulado.
+// Su monto se sigue mostrando (es el registro), pero tachado y en gris: el 19
+// nov la mesa anuló OTC-112A5D, se descontaron los 33.770.300, y el cliente
+// seguía viendo "+33.770.300" en verde junto a RECHAZADO — se leía como si
+// la plata siguiera ahí.
+function noQuedoEnSaldo(t: any): boolean {
+    return ['Rechazado', 'Fallido'].includes(String(t?.status ?? ''));
+}
+// Un cierre OTC que se completó y después la mesa anuló (admin-data
+// otc_anular_cierre): se dice ANULADO, no RECHAZADO.
+function esAnuladoOtc(t: any): boolean {
+    const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {};
+    return !!(t?.anulacionOtc ?? rd.anulacionOtc);
+}
+const ESTILO_NO_APLICA: React.CSSProperties = { color: '#878E88', textDecoration: 'line-through' };
+
 // Direcciones del portal de EMPRESAS: el inicio es /portal_empresas y cada
 // sección lleva el prefijo empresas_. Así la barra del navegador dice en qué
 // portal estás (Personas tiene /portal_personas; el contador,
@@ -583,6 +599,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {};
     const devuelto = t?.refunded === true || rd.refunded === true;
     if (st === 'Completado') return { label: 'COMPLETADO', color: '#4ADE80', border: 'rgba(74,222,128,0.3)' };
+    if (esAnuladoOtc(t)) return { label: 'ANULADO', color: '#F87171', border: 'rgba(248,113,113,0.35)' };
     if (st === 'Rechazado' || st === 'Fallido') {
       return {
         label: devuelto ? `${st.toUpperCase()} · SALDO DEVUELTO` : st.toUpperCase(),
@@ -2430,7 +2447,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap' }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
+                      <p style={{ fontSize: 13.5, fontWeight: 700, color: credit ? '#4ADE80' : '#F4F4F2', whiteSpace: 'nowrap', ...(noQuedoEnSaldo(tx) ? ESTILO_NO_APLICA : {}) }}>{credit ? '+' : '−'} {formatMoney(tx.amount, tx.currency)}</p>
                       <span style={{ display: 'inline-block', marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, border: `1px solid ${etiquetaEstado(tx).border}`, color: etiquetaEstado(tx).color }}>{etiquetaEstado(tx).label}</span>
                     </div>
                   </button>
@@ -2759,7 +2776,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                         <span style={{ fontSize: 11.5, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.reference}</span>
                         <span style={{ textAlign: 'right' }}>
                             {(() => { const rec = i.kind === 'in' || tx.type === 'convert'; return (
-                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2' }}>
+                            <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2', ...(noQuedoEnSaldo(tx) ? ESTILO_NO_APLICA : {}) }}>
                                 {rec ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
                             </span>
                             ); })()}
@@ -2780,7 +2797,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                         </span>
                         <span style={{ textAlign: 'right', flexShrink: 0 }}>
                             {(() => { const rec = i.kind === 'in' || tx.type === 'convert'; return (
-                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2' }}>
+                            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', color: rec ? '#4ADE80' : '#F4F4F2', ...(noQuedoEnSaldo(tx) ? ESTILO_NO_APLICA : {}) }}>
                                 {rec ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {i.ticker}
                             </span>
                             ); })()}
@@ -3293,7 +3310,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   const failed = (t: any) => ['Fallido', 'Rechazado'].includes(String(t.status || ''));
                   const pillOf = (t: any) => String(t.status) === 'Completado' ? { l: 'LIQUIDADO', b: 'rgba(74,222,128,0.3)', c: '#4ADE80' }
                       : inFlight(t) ? { l: 'EN CURSO', b: 'rgba(255,255,255,0.14)', c: 'rgba(244,244,242,0.7)' }
-                      : failed(t) ? { l: String(t.status) === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', b: 'rgba(248,113,113,0.35)', c: '#F87171' }
+                      : failed(t) ? { l: esAnuladoOtc(t) ? 'ANULADO' : String(t.status) === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', b: 'rgba(248,113,113,0.35)', c: '#F87171' }
                       : { l: String(t.status || 'PENDIENTE').toUpperCase(), b: 'rgba(255,255,255,0.14)', c: '#878E88' };
                   const box = (kind: string) => (
                       <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: kind === 'in' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.055)' }}>
@@ -3323,7 +3340,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                                       <span style={{ display: 'block', fontSize: 11, color: '#878E88', fontFamily: 'ui-monospace, Menlo, monospace', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{reference}</span>
                                   </span>
                               </span>
-                              <span style={{ textAlign: 'right', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: kind === 'in' ? '#4ADE80' : '#F4F4F2' }}>
+                              <span style={{ textAlign: 'right', fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', color: kind === 'in' ? '#4ADE80' : '#F4F4F2', ...(noQuedoEnSaldo(tx) ? ESTILO_NO_APLICA : {}) }}>
                                   {kind === 'in' ? '+' : '−'}{formatMoney(tx.amount, tx.currency)} {ticker}
                               </span>
                               <span style={{ textAlign: 'right' }}>
@@ -4422,7 +4439,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const st = String(tx.status || '');
     const pill = st === 'Completado' ? { l: isCredit ? 'ACREDITADO' : 'COMPLETADO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)', ok: true }
         : (st === 'Procesando' || st === 'Pendiente') ? { l: 'EN CURSO', c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)', ok: false }
-        : (st === 'Fallido' || st === 'Rechazado') ? { l: st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', c: '#F87171', b: 'rgba(248,113,113,0.35)', ok: false }
+        : (st === 'Fallido' || st === 'Rechazado') ? { l: esAnuladoOtc(tx) ? 'ANULADO' : st === 'Rechazado' ? 'RECHAZADO' : 'FALLIDO', c: '#F87171', b: 'rgba(248,113,113,0.35)', ok: false }
         : { l: (st || 'PENDIENTE').toUpperCase(), c: '#878E88', b: 'rgba(255,255,255,0.14)', ok: false };
     const amtParts = formatMoney(tx.amount, tx.currency).split(',');
     // Filas de detalle del rediseño
@@ -4478,7 +4495,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {/* Monto */}
           <div className="text-center" style={{ padding: '4px 22px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
             <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 3 }}>
-              <span style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.2px', color: isCredit ? '#4ADE80' : '#F4F4F2' }}>{isCredit ? '+' : '−'}{amtParts[0]}</span>
+              <span style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-1.2px', color: isCredit ? '#4ADE80' : '#F4F4F2', ...(noQuedoEnSaldo(tx) ? ESTILO_NO_APLICA : {}) }}>{isCredit ? '+' : '−'}{amtParts[0]}</span>
               {amtParts[1] && <span style={{ fontSize: 21, fontWeight: 800, color: '#878E88' }}>,{amtParts[1]}</span>}
               <span style={{ fontSize: 17, fontWeight: 600, color: '#878E88', marginLeft: 5 }}>{displayCurrency(tx.currency)}</span>
             </div>
