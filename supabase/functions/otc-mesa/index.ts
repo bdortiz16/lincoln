@@ -30,6 +30,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
+import { nombreCuenta } from '../_shared/nombre-cuenta.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -326,6 +327,21 @@ type Cotizacion = {
 // proveedor no responde, el cierre se puede pedir igual (la mesa lo cotiza a
 // mano) pero se guarda SIN tasa y se dice por que — no se inventa un numero
 // que despues alguien va a leer como un precio acordado.
+// Como mucho un punto cada 20 s: con varias pantallas abiertas cotizando cada
+// minuto, sin esto la tabla se llena de puntos repetidos. Nunca frena la
+// cotización: si no se puede guardar, se cotiza igual.
+async function anotarPuntoTasa(bruta: number) {
+  if (!(bruta > 0)) return
+  try {
+    const { data: ult } = await db.from('fx_rate_snapshots').select('captured_at')
+      .eq('from_currency', 'USD').eq('to_currency', 'COP').eq('source', 'FINITY')
+      .order('captured_at', { ascending: false }).limit(1).maybeSingle()
+    const hace = ult?.captured_at ? Date.now() - new Date(String(ult.captured_at)).getTime() : Infinity
+    if (hace < 20_000) return
+    await db.from('fx_rate_snapshots').insert({ from_currency: 'USD', to_currency: 'COP', rate: bruta, source: 'FINITY' })
+  } catch { /* el gráfico no vale una cotización */ }
+}
+
 async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise<Cotizacion> {
   const margenPct = await margenDe(userId)
   const vacia = (motivo: string, crudo?: string): Cotizacion =>
@@ -365,6 +381,12 @@ async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise
       )
     }
     const ajusteCop = Number(d?.ajusteCop) > 0 ? Number(d.ajusteCop) : 0
+    // Un punto para el gráfico de la mesa (fx_rate_snapshots, FINITY). Los
+    // puntos solo se guardaban al abrir el convertidor viejo; la mesa manual
+    // cotiza aquí y no dejaba nada, así que 5 min, 1 h y 24 h salían vacíos
+    // (19 nov). Se guarda la tasa BRUTA, que es lo que el gráfico espera (le
+    // resta el ajuste al leer).
+    await anotarPuntoTasa(Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : Number(referencia) + ajusteCop)
     // El margen va SIEMPRE a favor de Lincoin. Cuando el cliente VENDE USDT
     // recibe COP = monto × tasa: la tasa baja. Cuando COMPRA USDT recibe
     // USDT = COP ÷ tasa: la tasa tiene que SUBIR. Antes se bajaba en los dos
@@ -483,6 +505,13 @@ const ahora = () => new Date().toISOString()
 // cual de sus rieles de esa moneda la quiere.
 const BILLETERAS_COP = ['COP', 'COP_BREB', 'COP_ACH'] as const
 
+// Desde el 19 nov el cliente ya no elige dónde recibe el COP: lo elige la
+// MESA al completar, entre los canales por donde Lincoin tiene la plata
+// (Mouv = Bre-B, Finity = ACH, Coinsenda Jero = Cuenta 3, Coinsenda
+// Kaupaloki = Cuenta 4). Es una lista cerrada por la misma razón de arriba:
+// la billetera es la CLAVE del saldo y no puede ser cualquier texto.
+const CANALES_MESA = ['COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4'] as const
+
 function billeteraDestino(side: string, pedida?: unknown): string | null {
   const w = String((pedida as any) ?? '').trim()
   if (side === 'compra_usdt') {
@@ -499,6 +528,42 @@ function billeteraDestino(side: string, pedida?: unknown): string | null {
 // en su pantalla de saldos.
 const NOMBRE_BILLETERA: Record<string, string> = {
   COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
+  COP_C3: nombreCuenta(3), COP_C4: nombreCuenta(4),
+}
+
+// ─── La wallet desde donde el cliente manda los USDT ────
+// Para VENDER USDT, el cliente dice desde qué wallet los manda y esa wallet se
+// revisa en la KYT (kyt, acción otc_wallet) ANTES de pedir el cierre. Solo
+// pasa una de riesgo BAJO y sin señalamientos.
+//
+// La prueba es la fila de auditoría que escribe kyt (audit_log solo lo
+// escribe el servidor): de ESTE usuario, de ESTA wallet, de las últimas 2
+// horas y con permitido = true. Lo que diga la pantalla no cuenta: el botón
+// se puede habilitar a mano en el navegador.
+const KYT_CONFIG_KEY = 'kyt_config'
+const VIGENCIA_VERIFICACION_MS = 2 * 3600_000
+async function kytExigeWallet(): Promise<boolean> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', KYT_CONFIG_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(String(data.value)) : {}
+    return v?.otcExigeWallet !== false
+  } catch { return true }   // sin poder leerlo, se exige
+}
+async function walletVerificada(uid: string, coin: string, address: string): Promise<{ ok: true; ficha: Record<string, unknown> } | { ok: false; motivo: string }> {
+  const desde = new Date(Date.now() - VIGENCIA_VERIFICACION_MS).toISOString()
+  const { data, error } = await db.from('audit_log').select('metadata, created_at')
+    .eq('user_id', uid).eq('action', 'kyt.otc_wallet').gte('created_at', desde)
+    .filter('metadata->>coin', 'eq', coin).filter('metadata->>addressLower', 'eq', address.toLowerCase())
+    .order('created_at', { ascending: false }).limit(1)
+  if (error) return { ok: false, motivo: 'No se pudo comprobar la verificación de la wallet. Intenta de nuevo.' }
+  const fila = (data ?? [])[0] as any
+  if (!fila) return { ok: false, motivo: 'Verifica la wallet desde donde envías antes de pedir el cierre.' }
+  const m = fila.metadata ?? {}
+  if (m.permitido !== true) return { ok: false, motivo: 'Esa wallet no pasó la revisión de riesgo: no se puede usar para la mesa.' }
+  return { ok: true, ficha: {
+    coin, address, categoria: m.categoria ?? null, puntaje: m.puntaje ?? null, nivel: m.nivel ?? null,
+    saldoUsdt: m.saldoUsdt ?? null, consultadoAt: m.consultadoAt ?? null, verificadaAt: fila.created_at,
+  } }
 }
 
 // ─── Comprobantes ───────────────────────────────────────
@@ -577,11 +642,14 @@ Deno.serve(async (req) => {
         ? String(payload.user_id ?? caller.userId ?? '')
         : (caller.viaJwt ? String(caller.userId ?? '') : '')
       const c = await tasaUsdCop(uidCotiza, side)
+      // Si la venta exige verificar la wallet de origen (panel → KYT). La
+      // pantalla lo usa para pedirla; el que manda es `crear`.
+      const exigeWallet = side === 'vende_usdt' && await kytExigeWallet()
       if (c.rate == null) {
         const emSinTasa = await estadoMesa()
         return json(200, {
           ok: true, rate: null, referencia: null, margenPct: c.margenPct,
-          toAmount: null, indicativa: true,
+          toAmount: null, indicativa: true, exigeWallet,
           mesa: { abierta: emSinTasa.abierta, proxima: emSinTasa.proxima, hoy: emSinTasa.hoy, dia: emSinTasa.dia },
           // Al cliente no le corresponde saber QUIEN nos da la tasa ni por que
           // fallo: el motivo del proveedor puede nombrarlo o filtrar detalle de
@@ -600,7 +668,7 @@ Deno.serve(async (req) => {
       const em = await estadoMesa()
       return json(200, {
         ok: true, rate: c.rate, referencia: c.referencia, margenPct: c.margenPct,
-        toAmount: to, indicativa: true, ajusteCop: c.ajusteCop,
+        toAmount: to, indicativa: true, ajusteCop: c.ajusteCop, exigeWallet,
         mesa: { abierta: em.abierta, proxima: em.proxima, hoy: em.hoy, dia: em.dia },
         ...(caller.admin ? { fuente: c.fuente } : {}),
       })
@@ -642,11 +710,24 @@ Deno.serve(async (req) => {
       const monto = num(payload.fromAmount)
       if (!(monto > 0)) return json(400, { ok: false, error: 'el monto tiene que ser mayor a cero' })
 
-      // La billetera se valida ACA y se guarda ya normalizada: lo que quede en
-      // la fila tiene que ser algo que corresponda al lado de la operacion.
-      const destinoValidado = billeteraDestino(side, (payload.payout as any)?.wallet)
-      if (!destinoValidado) {
-        return json(400, { ok: false, error: 'billetera_invalida', message: 'Esa billetera no corresponde a esta operación.' })
+      // Vende USDT: el COP lo acredita la mesa en el canal que ELLA elige al
+      // completar (ver CANALES_MESA); lo que mande una pantalla vieja se
+      // ignora. Compra USDT: siempre a su saldo USDT.
+      const destinoValidado = side === 'compra_usdt' ? 'USD' : null
+
+      // La wallet de origen, verificada en la KYT (ver walletVerificada).
+      // La mesa puede crear sin ella: es quien opera, no el cliente.
+      let origen: Record<string, unknown> | null = null
+      if (side === 'vende_usdt' && !caller.admin && await kytExigeWallet()) {
+        const w = (payload.walletOrigen ?? {}) as Record<string, unknown>
+        const coin = String(w.coin ?? '').trim()
+        const address = String(w.address ?? '').trim()
+        if (!coin || !address) {
+          return json(400, { ok: false, error: 'falta_wallet', message: 'Escribe la wallet desde donde envías los USDT y verifícala.' })
+        }
+        const v = await walletVerificada(uid, coin, address)
+        if (!v.ok) return json(409, { ok: false, error: 'wallet_no_verificada', message: v.motivo })
+        origen = v.ficha
       }
 
       const { count } = await db.from('otc_closes')
@@ -688,7 +769,7 @@ Deno.serve(async (req) => {
         status: conTasa ? 'esperando_pago' : 'abierta',
         confirmada_at: conTasa ? ahora() : null,
         vence_at: conTasa ? new Date(Date.now() + mins * 60_000).toISOString() : null,
-        payout: { wallet: destinoValidado },
+        payout: { tipo: 'saldo', wallet: destinoValidado, ...(origen ? { origen } : {}) },
         last_msg_at: ahora(), last_msg_por: 'sistema',
       }).select('*').maybeSingle()
       if (error) return json(500, { ok: false, error: error.message })
@@ -1015,11 +1096,21 @@ Deno.serve(async (req) => {
       // alcanzaria si nada mas pudiera escribir esa fila, y eso es justo lo que
       // no se puede dar por sentado con plata: una fila vieja, una migracion o
       // un futuro camino de escritura vuelven a abrir el agujero.
-      const destino = billeteraDestino(String(r.cierre.side ?? ''), r.cierre.payout?.wallet)
+      // Vende USDT: el canal lo elige la mesa (payload.wallet), de la lista
+      // cerrada. Un cierre viejo que ya traía la billetera elegida por el
+      // cliente se puede completar con esa si la mesa no elige otra.
+      const lado = String(r.cierre.side ?? '')
+      const elegida = String(payload.wallet ?? '').trim()
+      let destino: string | null
+      if (lado !== 'vende_usdt') destino = billeteraDestino(lado, r.cierre.payout?.wallet)
+      else if (elegida) destino = (CANALES_MESA as readonly string[]).includes(elegida) ? elegida : null
+      else destino = billeteraDestino(lado, r.cierre.payout?.wallet || 'falta')
       if (!destino) {
         return json(409, {
-          ok: false, error: 'billetera_invalida',
-          message: 'La billetera de destino no corresponde a esta operación. No se acreditó nada.',
+          ok: false, error: lado === 'vende_usdt' && !elegida ? 'falta_canal' : 'billetera_invalida',
+          message: lado === 'vende_usdt' && !elegida
+            ? 'Elige en qué canal se le acredita el COP al cliente (Mouv, Finity, Coinsenda Jero o Coinsenda Kaupaloki). No se acreditó nada.'
+            : 'La billetera de destino no corresponde a esta operación. No se acreditó nada.',
         })
       }
       const monto = Number(r.cierre.to_amount)
@@ -1035,6 +1126,9 @@ Deno.serve(async (req) => {
       const COMPLETABLES = ['abierta', 'en_proceso', 'esperando_pago', 'pagada']
       const { data: ok } = await db.from('otc_closes').update({
         status: 'completada', completada_at: ahora(), updated_at: ahora(),
+        // Dónde quedó acreditado, y quién lo eligió. Es lo que leen el
+        // detalle, la anulación y la pantalla del cliente.
+        payout: { ...(r.cierre.payout ?? {}), wallet: destino, canalPor: caller.nombre ?? null },
       }).eq('id', r.cierre.id).in('status', COMPLETABLES).select('id')
       if (!ok?.length) return json(200, { ok: true, yaEstaba: true })
 
@@ -1047,7 +1141,7 @@ Deno.serve(async (req) => {
         // No se acredito: el cierre NO puede quedar completado. Se devuelve al
         // estado anterior para que se pueda reintentar, en vez de dejar un
         // "completado" que no movio nada.
-        await db.from('otc_closes').update({ status: r.cierre.status, completada_at: null, updated_at: ahora() }).eq('id', r.cierre.id)
+        await db.from('otc_closes').update({ status: r.cierre.status, completada_at: null, payout: r.cierre.payout ?? null, updated_at: ahora() }).eq('id', r.cierre.id)
         const detalle = errSaldo?.message ?? (res as any)?.error
         // El detalle técnico va a la mesa (respuesta), no al hilo del cliente.
         await escribirMensaje(r.cierre.id, 'sistema', 'No se pudo acreditar el saldo todavía. El cierre sigue abierto y la mesa lo revisa.')

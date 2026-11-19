@@ -120,8 +120,23 @@ const Pill: React.FC<{ estado: string }> = ({ estado }) => {
 
 // Billeteras del cliente donde se le acredita lo que recibe. El cierre NO es
 // un envío: la mesa cambia una moneda por otra dentro de la cuenta.
+// En el panel se nombra al aliado: es quien opera la mesa el que elige por
+// dónde entra la plata. Al cliente le llega solo "Bre-B", "ACH", "Cuenta 3 ·
+// Jero" o "Cuenta 4 · Kaupaloki" (otc-mesa, NOMBRE_BILLETERA).
 const BILLETERA: Record<string, string> = {
-    COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
+    COP: 'Saldo Lincoin', COP_BREB: 'Mouv · Bre-B', COP_ACH: 'Finity · ACH', USD: 'Saldo USDT',
+    COP_C3: 'Coinsenda Jero · Cuenta 3', COP_C4: 'Coinsenda Kaupaloki · Cuenta 4',
+};
+// Los canales donde la mesa puede acreditar una venta de USDT (la misma lista
+// cerrada que valida el servidor, CANALES_MESA).
+const CANALES: Array<{ v: string; l: string; pie: string }> = [
+    { v: 'COP_BREB', l: 'Mouv', pie: 'Bre-B' },
+    { v: 'COP_ACH', l: 'Finity', pie: 'ACH' },
+    { v: 'COP_C3', l: 'Coinsenda Jero', pie: 'Cuenta 3' },
+    { v: 'COP_C4', l: 'Coinsenda Kaupaloki', pie: 'Cuenta 4' },
+];
+const RIESGO: Record<string, { t: string; c: string }> = {
+    bajo: { t: 'BAJO', c: VERDE }, medio: { t: 'MEDIO', c: AMBAR }, alto: { t: 'ALTO', c: ROJO }, sin_dato: { t: 'SIN DATO', c: TXT2 },
 };
 
 const FILTROS: Array<{ id: string; label: string }> = [
@@ -685,6 +700,8 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     // ACREDITA plata, y el diálogo tiene que decir cuánta y en qué billetera.
     const [pide, setPide] = useState<null | 'completar' | 'cancelar' | 'anular'>(null);
     const [motivo, setMotivo] = useState('');
+    // El canal donde se acredita una venta de USDT: lo elige la mesa al completar.
+    const [canal, setCanal] = useState<string>('');
     const [tasaAbierta, setTasaAbierta] = useState(false);
     const [subiendo, setSubiendo] = useState(false);
     const finRef = useRef<HTMLDivElement | null>(null);
@@ -694,6 +711,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
         const r = await callMesa('detalle', { id });
         if (r?.ok) {
             setCierre(r.cierre); setCliente(r.cliente ?? null); setMsgs(r.mensajes ?? []);
+            setCanal(prev => prev || (CANALES.some(x => x.v === r.cierre?.payout?.wallet) ? String(r.cierre.payout.wallet) : ''));
             setNotas(prev => (prev === '' ? (r.cierre?.notas_internas ?? '') : prev));
             setTasaInput(prev => (prev === '' && r.cierre?.rate_cotizada ? String(r.cierre.rate_cotizada) : prev));
         } else setAviso(r?.message ?? r?.error ?? 'No pude abrir el cierre.');
@@ -845,9 +863,11 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                         <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
                             <p style={{ ...ROTULO, marginBottom: 9 }}>Dónde se le acredita</p>
                             <div style={{ background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
-                                {cierre.payout?.tipo === 'saldo' && (
+                                {(cierre.payout?.tipo === 'saldo' || (!cierre.payout?.tipo && 'wallet' in (cierre.payout ?? {}))) && (
                                     <>
-                                        <Fila icon={Wallet} label="Billetera" valor={BILLETERA[cierre.payout.wallet] ?? cierre.payout.wallet} />
+                                        <Fila icon={Wallet} label="Canal" valor={cierre.payout.wallet
+                                            ? `${BILLETERA[cierre.payout.wallet] ?? cierre.payout.wallet}${cierre.payout.canalPor ? ` · eligió ${cierre.payout.canalPor}` : ''}`
+                                            : 'Lo eliges al completar'} />
                                         <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5, marginTop: 2 }}>
                                             Se acredita en la cuenta del cliente. No sale plata hacia ningún banco.
                                         </p>
@@ -873,9 +893,39 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                         <Fila icon={Hash}   label="Dirección" valor={cierre.payout.direccion} mono onCopy={() => copiar(String(cierre.payout.direccion ?? ''))} />
                                     </>
                                 )}
-                                {!cierre.payout?.tipo && <p style={{ fontSize: 12, color: TXT3 }}>Sin datos de destino.</p>}
+                                {!cierre.payout?.tipo && !('wallet' in (cierre.payout ?? {})) && <p style={{ fontSize: 12, color: TXT3 }}>Sin datos de destino.</p>}
                             </div>
                         </div>
+
+                        {/* La wallet desde donde el cliente dijo que manda los
+                            USDT, ya revisada en la KYT. Los USDT que lleguen
+                            tienen que salir de ESTA wallet: si vienen de otra,
+                            no es la operación que se aprobó. */}
+                        {cierre.side === 'vende_usdt' && (
+                            <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
+                                <p style={{ ...ROTULO, marginBottom: 9 }}>Wallet de origen (KYT)</p>
+                                {cierre.payout?.origen?.address ? (() => {
+                                    const o = cierre.payout.origen;
+                                    const rz = RIESGO[o.categoria] ?? RIESGO.sin_dato;
+                                    return (
+                                        <div style={{ background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                            <Fila icon={Hash} label="Dirección" valor={o.address} mono onCopy={() => copiar(String(o.address ?? ''))} />
+                                            <Fila icon={Wallet} label="Red" valor={o.coin === 'TRX' ? 'TRON (TRC20)' : o.coin === 'ETH' ? 'Ethereum (ERC20)' : o.coin === 'BNB' ? 'BNB Chain (BEP20)' : o.coin} />
+                                            <Fila icon={AlertTriangle} label="Riesgo" valor={<span style={{ color: rz.c, fontWeight: 800 }}>{rz.t}{o.puntaje != null ? ` · ${o.puntaje}/100` : ''}</span>} />
+                                            {o.saldoUsdt != null && <Fila icon={Wallet} label="Saldo USDT al revisar" valor={nf(o.saldoUsdt)} />}
+                                            <Fila icon={Clock} label="Verificada" valor={fecha(o.verificadaAt ?? o.consultadoAt)} />
+                                            <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5, marginTop: 2 }}>
+                                                Confirma que los USDT lleguen desde esta dirección antes de completar. El reporte completo está en Cumplimiento → KYT.
+                                            </p>
+                                        </div>
+                                    );
+                                })() : (
+                                    <p style={{ fontSize: 12, color: TXT3, lineHeight: 1.5 }}>
+                                        Sin wallet de origen verificada (cierre anterior al 19 nov o creado por la mesa).
+                                    </p>
+                                )}
+                            </div>
+                        )}
 
                         <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
                             <p style={{ ...ROTULO, marginBottom: 9, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1081,9 +1131,25 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>Esto acredita el saldo y cierra la operación.</p>
                                 <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
                                     <Fila icon={Wallet} label="Se acredita" valor={`${nf(cierre.to_amount, 0)} ${cierre.to_currency}`} />
-                                    <Fila icon={Landmark} label="En" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />
+                                    {cierre.side !== 'vende_usdt' && <Fila icon={Landmark} label="En" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />}
                                     <Fila icon={Hash} label="A la tasa" valor={nf(cierre.rate_final)} />
                                 </div>
+                                {cierre.side === 'vende_usdt' && (
+                                    <div style={{ marginTop: 12 }}>
+                                        <p style={{ ...ROTULO, marginBottom: 7 }}>¿En qué canal se le acredita?</p>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                                            {CANALES.map(o => (
+                                                <button key={o.v} onClick={() => setCanal(o.v)}
+                                                    style={{ textAlign: 'left', padding: '9px 10px', borderRadius: 10,
+                                                        border: `1px solid ${canal === o.v ? `${VERDE}88` : BORDE2}`,
+                                                        background: canal === o.v ? `${VERDE}12` : 'rgba(255,255,255,0.03)' }}>
+                                                    <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: canal === o.v ? VERDE : TXT }}>{o.l}</span>
+                                                    <span style={{ display: 'block', fontSize: 10.5, color: TXT2, marginTop: 1 }}>{o.pie}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                                 <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
                                     <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
                                     <p style={{ fontSize: 11.5, color: TXT2, lineHeight: 1.5 }}>
@@ -1095,9 +1161,14 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                         style={{ padding: '11px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none' }}>
                                         Volver
                                     </button>
-                                    <button onClick={async () => { setPide(null); await hacer('completar'); }} disabled={ocupado}
-                                        style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado ? 0.5 : 1 }}>
-                                        Sí, acreditar y completar
+                                    <button onClick={async () => {
+                                            if (cierre.side === 'vende_usdt' && !canal) return;
+                                            setPide(null);
+                                            await hacer('completar', cierre.side === 'vende_usdt' ? { wallet: canal } : {});
+                                        }}
+                                        disabled={ocupado || (cierre.side === 'vende_usdt' && !canal)}
+                                        style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado || (cierre.side === 'vende_usdt' && !canal) ? 0.5 : 1 }}>
+                                        {cierre.side === 'vende_usdt' && !canal ? 'Elige el canal' : 'Sí, acreditar y completar'}
                                     </button>
                                 </div>
                             </>

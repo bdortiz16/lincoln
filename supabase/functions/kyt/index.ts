@@ -29,10 +29,40 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { igualSeguro, requireMfaSession } from '../_shared/admin-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
+import { encField, decField } from '../_shared/field-crypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const MT_KEY       = Deno.env.get('MISTTRACK_API_KEY') ?? ''
+// La llave de MistTrack. Desde el 19 nov se puede poner desde el panel
+// (Cumplimiento → KYT): queda CIFRADA en private_config (sin acceso para
+// anon/authenticated) y manda sobre el secreto MISTTRACK_API_KEY, que sigue
+// sirviendo de respaldo. Nunca vuelve al navegador, ni en forma de pista.
+const MT_KEY_ENV   = Deno.env.get('MISTTRACK_API_KEY') ?? ''
+const LLAVE_KEY    = 'kyt_misttrack_key'
+let MT_KEY         = MT_KEY_ENV
+let llaveDesdePanel = false
+let llaveIlegible   = false
+let llaveLeidaAt    = 0
+async function cargarLlave(forzar = false) {
+  if (!forzar && Date.now() - llaveLeidaAt < 60_000) return
+  llaveIlegible = false
+  try {
+    const { data } = await db.from('private_config').select('value').eq('key', LLAVE_KEY).maybeSingle()
+    const guardada = data?.value ? String(data.value) : ''
+    let v = ''
+    if (guardada) {
+      // Cifrada con otra FIELD_ENC_KEY (o dañada): se avisa en el panel y se
+      // usa el secreto, en vez de mandarle basura al proveedor.
+      try { v = await decField(guardada) } catch { llaveIlegible = true }
+    }
+    MT_KEY = v || MT_KEY_ENV
+    llaveDesdePanel = !!v
+  } catch {
+    MT_KEY = MT_KEY_ENV
+    llaveDesdePanel = false
+  }
+  llaveLeidaAt = Date.now()
+}
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 const FROM_EMAIL   = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
 
@@ -72,6 +102,13 @@ type Config = {
   // cliente. Configurable porque MistTrack puede afinar su escala.
   puntajeAlto: number
   puntajeMedio: number
+  // Mesa OTC: para VENDER USDT el cliente tiene que verificar la wallet desde
+  // donde envía, y solo pasa una de riesgo bajo sin señalamientos. Se puede
+  // apagar desde el panel (si el proveedor cae, la mesa no queda parada).
+  otcExigeWallet: boolean
+  // Cuántas horas sirve una consulta del padrón para la mesa. Más corto que
+  // diasVigencia: acá se decide si se recibe plata de esa wallet.
+  otcHorasVigencia: number
 }
 
 const CONFIG_POR_DEFECTO: Config = {
@@ -92,6 +129,8 @@ const CONFIG_POR_DEFECTO: Config = {
   topeDiarioPorCliente: 25,
   puntajeAlto: 70,
   puntajeMedio: 40,
+  otcExigeWallet: true,
+  otcHorasVigencia: 24,
 }
 
 async function leerConfig(): Promise<Config> {
@@ -1002,13 +1041,52 @@ Deno.serve(async (req) => {
     if (!yo.userId && !yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
 
     const c = await leerConfig()
+    await cargarLlave()
 
     // ── Configuración (admin) ─────────────────────────────────────
     if (accion === 'config_get') {
       { const no = soloAdmin(yo); if (no) return no }
-      // Se dice SI hay credencial, nunca cuál ni dónde vive. La llave está en
-      // la Bóveda y de ahí no sale ni en forma de pista.
-      return json({ ok: true, config: c, credencial: !!MT_KEY })
+      // Se dice SI hay credencial y si la puso el panel, nunca cuál.
+      return json({ ok: true, config: c, credencial: !!MT_KEY, desdePanel: llaveDesdePanel, respaldo: !!MT_KEY_ENV, llaveIlegible })
+    }
+
+    // ── La llave de MistTrack, desde el panel ─────────────────────
+    // Se guarda cifrada y se prueba en el acto contra /v1/status, para que
+    // quien la pegó sepa si sirve sin tener que esperar a la primera consulta
+    // de un cliente.
+    if (accion === 'llave_set') {
+      { const no = soloAdmin(yo); if (no) return no }
+      const llave = String(body.llave ?? '').trim()
+      if (!/^[A-Za-z0-9_\-]{16,200}$/.test(llave)) {
+        return json({ ok: false, error: 'llave_invalida', mensaje: 'Esa no parece una llave de MistTrack (letras y números, sin espacios).' }, 400)
+      }
+      let cifrada: string
+      try { cifrada = await encField(llave) } catch {
+        return json({ ok: false, error: 'sin_cifrado', mensaje: 'El servidor no tiene con qué cifrar la llave (FIELD_ENC_KEY). No se guardó.' }, 500)
+      }
+      const { error } = await db.from('private_config').upsert({ key: LLAVE_KEY, value: cifrada }, { onConflict: 'key' })
+      if (error) return json({ ok: false, error: 'no_guardada', mensaje: error.message }, 500)
+      await cargarLlave(true)
+      const prueba = await llamarMT(c, c.rutaEstado, {})
+      await logAuditKyt(yo.userId, 'kyt.llave_cambiada', { prueba: prueba.ok ? 'ok' : `HTTP ${prueba.status}` })
+      return json({
+        ok: true, guardada: true, prueba: prueba.ok,
+        mensaje: prueba.ok
+          ? 'Llave guardada y probada: MistTrack respondió bien.'
+          : `Llave guardada, pero MistTrack no la aceptó (HTTP ${prueba.status}${motivoProveedor(prueba.data) ? `: ${motivoProveedor(prueba.data)}` : ''}). Revísala.`,
+      })
+    }
+    if (accion === 'llave_quitar') {
+      { const no = soloAdmin(yo); if (no) return no }
+      await db.from('private_config').delete().eq('key', LLAVE_KEY)
+      await cargarLlave(true)
+      await logAuditKyt(yo.userId, 'kyt.llave_quitada', {})
+      return json({ ok: true, credencial: !!MT_KEY, respaldo: !!MT_KEY_ENV })
+    }
+    if (accion === 'llave_probar') {
+      { const no = soloAdmin(yo); if (no) return no }
+      const prueba = await llamarMT(c, c.rutaEstado, {})
+      return json({ ok: prueba.ok, status: prueba.status, credencial: !!MT_KEY, mensaje: prueba.ok ? 'MistTrack respondió bien.' : (prueba.error === 'sin_credencial' ? 'No hay llave configurada.' : `MistTrack respondió HTTP ${prueba.status}${motivoProveedor(prueba.data) ? `: ${motivoProveedor(prueba.data)}` : ''}.`) })
     }
     if (accion === 'config_set') {
       { const no = soloAdmin(yo); if (no) return no }
@@ -1028,6 +1106,8 @@ Deno.serve(async (req) => {
       nueva.puntajeMedio = Math.max(1, Math.min(nueva.puntajeAlto, Number(nueva.puntajeMedio) || 40))
       nueva.topeMonitoreadas = Math.max(1, Math.min(2000, Number(nueva.topeMonitoreadas) || 50))
       nueva.horasMonitoreo = Math.max(1, Math.min(720, Number(nueva.horasMonitoreo) || 24))
+      nueva.otcExigeWallet = nueva.otcExigeWallet !== false
+      nueva.otcHorasVigencia = Math.max(1, Math.min(720, Number(nueva.otcHorasVigencia) || 24))
       await guardarConfig(nueva)
       await logAuditKyt(yo.userId, 'kyt.config', { cambios: Object.keys(pedida) })
       return json({ ok: true, config: nueva })
@@ -1173,6 +1253,164 @@ Deno.serve(async (req) => {
         estado: 'finalizado',
         delPadron: false,
         consultadoAt: new Date().toISOString(),
+      })
+    }
+
+    // ── MESA OTC: la wallet desde donde el cliente manda los USDT ──
+    // Antes de pedir un cierre de VENTA de USDT, el cliente pone la wallet de
+    // origen y se revisa acá. Solo pasa una de riesgo BAJO y sin
+    // señalamientos (la misma lectura del reporte: un puntaje bajo con
+    // hallazgos propios no es una wallet limpia). Sin resultado, tampoco
+    // pasa: no saber no es estar limpia.
+    //
+    // Cada verificación queda en audit_log ('kyt.otc_wallet', solo la escribe
+    // el servidor) con quién la cargó y el veredicto. Es la prueba que exige
+    // otc-mesa al crear el cierre, y lo que lee Cumplimiento.
+    if (accion === 'otc_wallet') {
+      if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
+      if (!c.activo) return json({ ok: false, error: 'inactivo', mensaje: 'La verificación de wallets no está disponible en este momento. Escríbele a la mesa.' })
+      const coin = canonCoin(body.coin)
+      const dir = normDir(body.address)
+      const REDES_OTC: Record<string, string> = { TRX: 'TRON (TRC20)', ETH: 'Ethereum (ERC20)', BNB: 'BNB Chain (BEP20)' }
+      if (!REDES_OTC[coin]) return json({ ok: false, error: 'red_no_soportada', mensaje: 'Elige la red de la wallet: TRON (TRC20), Ethereum (ERC20) o BNB Chain (BEP20).' })
+      if (dir.length < 20 || dir.length > 120 || !formatoValido(coin, dir)) {
+        return json({ ok: false, error: 'formato_red', mensaje: `Esa dirección no tiene el formato de ${REDES_OTC[coin]}. Revisa la wallet y la red.` })
+      }
+      const { data: u } = await db.from('users').select('email, company_name, full_name').eq('id', yo.userId).maybeSingle()
+      const quien = { userId: yo.userId, email: (u as any)?.email ?? null, empresa: (u as any)?.company_name ?? null }
+      const nombre = (u as any)?.full_name ?? null
+
+      let ficha = await padronBuscar(coin, dir)
+      const vigente = !!ficha && ficha.estado === 'finalizado' && !!ficha.consultado_at
+        && Date.now() - new Date(ficha.consultado_at).getTime() < c.otcHorasVigencia * 3600_000
+      const delPadron = vigente
+      if (vigente) {
+        await db.from('kyt_registry').update({
+          veces_reutilizado: Number(ficha.veces_reutilizado ?? 0) + 1,
+          actualizado_at: new Date().toISOString(),
+          empresas: anotarEmpresa(ficha.empresas, quien),
+        }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+      } else {
+        if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: `${msgTopeKyt(c)} Escríbele a la mesa.` })
+        const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
+        await logAuditKyt(yo.userId, ev.hay ? 'kyt.consulta_pagada' : 'kyt.consulta_fallida', { coin, address: dir, origen: 'otc_wallet' })
+        if (!ev.hay) {
+          await logAuditKyt(yo.userId, 'kyt.otc_wallet', {
+            coin, address: dir, addressLower: dir.toLowerCase(), categoria: 'sin_dato', puntaje: null, nivel: null,
+            permitido: false, motivo: 'sin_resultado', empresa: quien.empresa, email: quien.email, nombre,
+          })
+          return json({
+            ok: false, error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'sin_resultado',
+            mensaje: ev.error === 'sin_credencial'
+              ? 'La verificación de wallets no está configurada todavía. Escríbele a la mesa.'
+              : 'No pudimos revisar esa wallet en este momento. Sin revisión no se puede pedir el cierre: intenta de nuevo en unos minutos.',
+          })
+        }
+        ficha = await padronBuscar(coin, dir)
+      }
+      const f = ficha ?? {}
+      const categoria = clasificar(c, f.risk_score ?? null, f.risk_level ?? null)
+      const motivos = [
+        ...(Array.isArray(f.detail_list) ? f.detail_list : []),
+        ...(Array.isArray(f.risk_detail) ? f.risk_detail : []).map((x: any) => x?.risk_type ?? x?.entity ?? 'exposición señalada'),
+        ...(f.hacking_event ? [`incidente: ${f.hacking_event}`] : []),
+      ].map((x: any) => String(typeof x === 'string' ? x : JSON.stringify(x)).slice(0, 160))
+      const permitido = categoria === 'bajo' && motivos.length === 0
+      const motivoBloqueo = permitido ? null
+        : categoria === 'sin_dato' ? 'No hay un resultado de riesgo para esta wallet.'
+        : categoria === 'bajo' ? 'El puntaje es bajo, pero la wallet tiene señalamientos propios.'
+        : `La wallet salió con riesgo ${categoria === 'alto' ? 'alto' : 'medio'}.`
+      // El saldo que importa es el USDT de la red, después el nativo.
+      const cad = f.cadena ?? null
+      const tok = f.token_actividad ?? null
+      const act = f.actividad ?? null
+      const saldoUsdt = cad?.saldoUsdt ?? tok?.saldo ?? null
+      await logAuditKyt(yo.userId, 'kyt.otc_wallet', {
+        coin, address: f.address ?? dir, addressLower: dir.toLowerCase(), red: REDES_OTC[coin],
+        categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
+        permitido, motivo: motivoBloqueo, hallazgos: motivos.slice(0, 10),
+        saldoUsdt, consultadoAt: f.consultado_at ?? null, delPadron,
+        empresa: quien.empresa, email: quien.email, nombre,
+      })
+      return json({
+        ok: true, permitido, motivoBloqueo,
+        coin, red: REDES_OTC[coin], address: f.address ?? dir,
+        categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
+        // Los hallazgos van en crudo: la pantalla los traduce con kytTextos.
+        hallazgos: motivos.slice(0, 10),
+        etiquetas: Array.isArray(f.labels) ? f.labels.slice(0, 8) : [],
+        saldo: {
+          usdt: saldoUsdt,
+          nativo: cad?.saldoNativo ?? act?.saldo ?? null,
+          valorUsd: cad?.valorUsd ?? null,
+        },
+        actividad: {
+          transacciones: cad?.transacciones ?? act?.txs ?? null,
+          primera: cad?.creada ?? act?.primera ?? null,
+          ultima: cad?.ultimaActividad ?? act?.ultima ?? null,
+          recibido: act?.recibido ?? null, enviado: act?.enviado ?? null,
+        },
+        consultadoAt: f.consultado_at ?? null, delPadron,
+      })
+    }
+
+    // ── Cumplimiento: quién cargó qué wallet en la mesa OTC ───────
+    // Cada verificación (permitida o no), con la empresa y la persona que la
+    // cargó, el veredicto y los cierres en que se usó. Una wallet cargada por
+    // más de una empresa se marca: es lo primero que pregunta un requerimiento.
+    if (accion === 'otc_registro') {
+      { const no = soloAdmin(yo); if (no) return no }
+      const dias = Math.max(1, Math.min(365, Number(body.dias) || 30))
+      const desde = new Date(Date.now() - dias * 86400_000).toISOString()
+      const { data: filas, error } = await db.from('audit_log')
+        .select('id, user_id, created_at, metadata')
+        .eq('action', 'kyt.otc_wallet').gte('created_at', desde)
+        .order('created_at', { ascending: false }).limit(2000)
+      if (error) return json({ ok: false, error: error.message }, 500)
+      const lista = (filas ?? []) as any[]
+      // Los cierres de venta que trajeron wallet de origen en ese período.
+      const { data: cierres } = await db.from('otc_closes')
+        .select('id, ref, user_id, status, from_amount, from_currency, to_amount, created_at, payout')
+        .eq('side', 'vende_usdt').gte('created_at', desde)
+        .order('created_at', { ascending: false }).limit(2000)
+      const porWallet = new Map<string, any[]>()
+      for (const cz of (cierres ?? []) as any[]) {
+        const o = cz.payout?.origen
+        if (!o?.address) continue
+        const k = `${o.coin}:${String(o.address).toLowerCase()}`
+        porWallet.set(k, [...(porWallet.get(k) ?? []), { id: cz.id, ref: cz.ref, status: cz.status, monto: cz.from_amount, moneda: cz.from_currency, cop: cz.to_amount, at: cz.created_at, userId: cz.user_id }])
+      }
+      const empresasPorWallet = new Map<string, Set<string>>()
+      for (const r of lista) {
+        const k = `${r.metadata?.coin}:${String(r.metadata?.addressLower ?? '')}`
+        if (!empresasPorWallet.has(k)) empresasPorWallet.set(k, new Set())
+        empresasPorWallet.get(k)!.add(String(r.user_id))
+      }
+      const out = lista.map(r => {
+        const m = r.metadata ?? {}
+        const k = `${m.coin}:${String(m.addressLower ?? '')}`
+        return {
+          id: r.id, fecha: r.created_at, userId: r.user_id,
+          empresa: m.empresa ?? null, nombre: m.nombre ?? null, email: m.email ?? null,
+          coin: m.coin ?? null, red: m.red ?? m.coin ?? null, address: m.address ?? null,
+          categoria: m.categoria ?? null, puntaje: m.puntaje ?? null, nivel: m.nivel ?? null,
+          permitido: m.permitido === true, motivo: m.motivo ?? null, hallazgos: m.hallazgos ?? [],
+          saldoUsdt: m.saldoUsdt ?? null, consultadoAt: m.consultadoAt ?? null,
+          cierres: (porWallet.get(k) ?? []).filter(x => String(x.userId) === String(r.user_id)),
+          empresasDistintas: empresasPorWallet.get(k)?.size ?? 1,
+        }
+      })
+      const unicas = new Set(out.map(x => `${x.coin}:${String(x.address ?? '').toLowerCase()}`))
+      return json({
+        ok: true, dias, filas: out,
+        resumen: {
+          verificaciones: out.length,
+          permitidas: out.filter(x => x.permitido).length,
+          bloqueadas: out.filter(x => !x.permitido).length,
+          wallets: unicas.size,
+          compartidas: Array.from(empresasPorWallet.values()).filter(s => s.size > 1).length,
+          conCierre: out.filter(x => x.cierres.length > 0).length,
+        },
       })
     }
 

@@ -106,3 +106,24 @@ jobs:
           echo "$BODY" | jq -r '"revisados: \(.checked // 0)"' || true
           echo "$BODY" | jq -r '[.results[]?.result] | group_by(.) | map("  \(.[0]): \(length)") | .[]' || true
           if [ "$CODE" -ge 500 ]; then exit 1; fi
+
+      # Un punto de la tasa USD→COP cada 5 minutos para el gráfico de la mesa
+      # OTC. Sin esto el historial solo crecía cuando alguien cotizaba, y los
+      # rangos de 24 h y 7 días quedaban con huecos de horas (19 nov). La
+      # acción es interna (service-role) y solo guarda una tasa real.
+      - name: Punto de la tasa para el gráfico OTC
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then exit 0; fi
+          RESP=$(curl -sS --max-time 60 -w '\n%{http_code}' \
+            -X POST "$SUPABASE_URL/functions/v1/finity-proxy" \
+            -H "Content-Type: application/json" \
+            -H "apikey: $SERVICE_KEY" \
+            -H "Authorization: Bearer $SERVICE_KEY" \
+            -d '{"action":"snapshot_finity"}')
+          CODE=$(echo "$RESP" | tail -n1)
+          echo "HTTP $CODE"
+          echo "$RESP" | sed '$d' | jq -r '"guardado: \(.ok // false) \(.skipped // "")"' || true

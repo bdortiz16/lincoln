@@ -4,6 +4,9 @@ import {
     CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet, Paperclip, Plus, ChevronDown, ChevronUp, X,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
+import { llamarFuncion } from '../lib/edge';
+import { hallazgosEnEspanol } from '../lib/kytTextos';
+import { nombreCuenta } from '../lib/nombreCuenta';
 
 // ─────────────────────────────────────────────
 // OtcManual — Mesa OTC manual del cliente.
@@ -218,11 +221,14 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const [ajusteCop, setAjusteCop]   = useState<number>(0);
     const [motivoSinTasa, setMotivoSinTasa] = useState<string | null>(null);
     const [cargandoTasa, setCargandoTasa]   = useState(true);
-    // Billetera del cliente donde se le acredita lo que recibe. NO es un
-    // envio: la mesa cambia una moneda por otra dentro de la cuenta. Sacar
-    // esa plata hacia un banco es otra operacion, la de Enviar dinero, con
-    // sus propios destinatarios y sus propios topes.
-    const [destino, setDestino] = useState<'COP' | 'COP_BREB' | 'COP_ACH'>('COP');
+    // Desde el 19 nov el cliente ya NO elige en qué billetera recibe el COP:
+    // la mesa decide el canal al acreditar. Lo que sí tiene que decir, para
+    // vender USDT, es desde qué wallet los manda: se revisa su riesgo antes
+    // de dejarle pedir el cierre (ver WalletOrigen y kyt otc_wallet).
+    const [wallet, setWallet] = useState('');
+    const [red, setRed]       = useState<RedOtc>('TRX');
+    const [verif, setVerif]   = useState<any>(null);
+    const [exigeWallet, setExigeWallet] = useState(true);
     const [nota, setNota]     = useState('');
     const [enviando, setEnviando] = useState(false);
     const [error, setError]   = useState<string | null>(null);
@@ -236,6 +242,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
         const r = await callOtcMesa('cotizar', { user_id: userId, side });
         if (r?.mesa) setMesa({ abierta: !!r.mesa.abierta, proxima: r.mesa.proxima ?? null });
         if (r?.margenPct != null) setMargenPct(Number(r.margenPct));
+        if (typeof r?.exigeWallet === 'boolean') setExigeWallet(r.exigeWallet);
         if (r?.ajusteCop != null) setAjusteCop(Number(r.ajusteCop));
         if (r?.ok && r.rate != null) {
             setTasa(Number(r.rate));
@@ -264,6 +271,12 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const recibe = (montoOk && tasa != null) ? (side === 'vende_usdt' ? n * tasa : n / tasa) : null;
     const envMoneda = side === 'vende_usdt' ? 'USDT' : 'COP';
     const recMoneda = side === 'vende_usdt' ? 'COP' : 'USDT';
+    // La verificación vale para ESA wallet en ESA red: si la cambia, hay que
+    // volver a verificar (el servidor exige lo mismo al crear).
+    const walletLimpia = wallet.trim();
+    const pideWallet = side === 'vende_usdt' && exigeWallet;
+    const walletOk = !pideWallet || (!!verif && verif.permitido === true
+        && String(verif.address ?? '').toLowerCase() === walletLimpia.toLowerCase() && verif.coin === red);
 
     // Candado síncrono: dos toques a "Enviar solicitud" creaban dos cierres.
     const enviarEnCursoRef = useRef(false);
@@ -275,11 +288,12 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const enviarUnaVez = async () => {
         setError(null);
         if (!montoOk) { setError('Escribí cuánto querés enviar.'); return; }
+        if (!walletOk) { setError('Verifica la wallet desde donde envías los USDT: solo se aceptan wallets de riesgo bajo.'); return; }
         setEnviando(true);
-        const payout = side === 'compra_usdt'
-            ? { tipo: 'saldo', wallet: 'USD' }
-            : { tipo: 'saldo', wallet: destino };
-        const r = await callOtcMesa('crear', { user_id: userId, side, fromAmount: n, payout, nota: nota.trim() });
+        const r = await callOtcMesa('crear', {
+            user_id: userId, side, fromAmount: n, nota: nota.trim(),
+            ...(side === 'vende_usdt' && walletLimpia ? { walletOrigen: { coin: red, address: walletLimpia } } : {}),
+        });
         setEnviando(false);
         if (!r?.ok) {
             setError(r?.message ?? r?.error ?? 'No se pudo crear el cierre.');
@@ -287,6 +301,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
         }
         showToast?.(`Cierre ${r.ref} enviado a la mesa.`);
         setMonto(''); setNota('');
+        setWallet(''); setVerif(null);
         onCreado(r.id);
     };
 
@@ -389,48 +404,29 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                 )}
             </div>
 
-            {/* Dónde recibe */}
+            {/* Vende USDT: la wallet desde donde los manda, revisada antes de
+                dejarle pedir el cierre. Compra USDT: a dónde va lo que compra. */}
             <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
                 {side === 'vende_usdt' ? (
-                    <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                            <Landmark size={14} style={{ color: '#878E88' }} />
-                            <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>En qué billetera querés el COP</span>
-                        </div>
-                        <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 11, lineHeight: 1.5 }}>
-                            Se acredita en tu cuenta. Sacarlo hacia un banco es aparte, desde Enviar dinero.
+                    pideWallet ? (
+                        <WalletOrigen
+                            wallet={wallet} red={red} verif={verif}
+                            onWallet={(v) => {
+                                setWallet(v); setVerif(null);
+                                // TRON se reconoce sola; una 0x pasa a Ethereum
+                                // solo si estaba en TRON (BNB Chain la elige él).
+                                const r = redDe(v);
+                                if (r === 'TRX') setRed('TRX');
+                                else if (r && red === 'TRX') setRed(r);
+                            }}
+                            onRed={(r) => { setRed(r); setVerif(null); }}
+                            onVerificado={setVerif}
+                        />
+                    ) : (
+                        <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                            La mesa te confirma por el chat a qué cuenta se acredita el COP.
                         </p>
-                        {/* Los mismos tres rieles, con los mismos nombres, que
-                            en la billetera Peso colombiano. Si acá se llamaran
-                            distinto habría que traducir mentalmente entre dos
-                            pantallas para saber dónde va a caer la plata. */}
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 7 }}>
-                            {([
-                                ['COP',      'Saldo Lincoin', 'Cuenta principal'],
-                                ['COP_BREB', 'Bre-B',         'Pagos inmediatos'],
-                                ['COP_ACH',  'ACH',           'Interbancario'],
-                            ] as const).map(([v, l, pie]) => (
-                                <button
-                                    key={v}
-                                    onClick={() => setDestino(v)}
-                                    className="text-left transition-colors"
-                                    style={{
-                                        padding: '10px 11px', borderRadius: 10,
-                                        border: `1px solid ${destino === v ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`,
-                                        background: destino === v ? 'rgba(74,222,128,0.07)' : 'rgba(255,255,255,0.025)',
-                                    }}
-                                >
-                                    <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: destino === v ? '#4ADE80' : '#F4F4F2' }}>{l}</span>
-                                    <span style={{ display: 'block', fontSize: 10.5, color: '#878E88', marginTop: 2 }}>{pie}</span>
-                                    {saldos?.[v] != null && (
-                                        <span style={{ display: 'block', fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 3 }}>
-                                            {nf(saldos[v], 0)}
-                                        </span>
-                                    )}
-                                </button>
-                            ))}
-                        </div>
-                    </>
+                    )
                 ) : (
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                         <Wallet size={14} style={{ color: '#878E88', marginTop: 2, flexShrink: 0 }} />
@@ -476,15 +472,167 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
 
             <button
                 onClick={enviar}
-                disabled={enviando || (!!mesa && !mesa.abierta)}
+                disabled={enviando || (!!mesa && !mesa.abierta) || !walletOk}
                 className="lincoin-btn-white transition-colors"
-                style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 14, opacity: enviando || (!!mesa && !mesa.abierta) ? 0.45 : 1 }}
+                style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 14, opacity: enviando || (!!mesa && !mesa.abierta) || !walletOk ? 0.45 : 1, cursor: !walletOk ? 'not-allowed' : undefined }}
             >
                 {enviando ? 'Enviando a la mesa…' : (mesa && !mesa.abierta) ? 'Mesa cerrada' : 'Solicitar cierre'}
             </button>
+            {!walletOk && (
+                <p style={{ color: '#878E88', fontSize: 11.5, textAlign: 'center', marginTop: 8, lineHeight: 1.5 }}>
+                    {!walletLimpia ? 'Escribe y verifica la wallet desde donde envías para habilitar el cierre.'
+                        : !verif ? 'Verifica la wallet para habilitar el cierre.'
+                        : 'Esta wallet no se puede usar en la mesa: usa una de riesgo bajo.'}
+                </p>
+            )}
             <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11, textAlign: 'center', marginTop: 9, lineHeight: 1.5 }}>
                 No se mueve nada de tu saldo al pedir el cierre. La mesa te escribe por el chat.
             </p>
+        </div>
+    );
+};
+
+// ─── La wallet desde donde el cliente manda los USDT ────
+type RedOtc = 'TRX' | 'ETH' | 'BNB';
+const REDES_OTC: Array<{ v: RedOtc; l: string; pie: string }> = [
+    { v: 'TRX', l: 'TRON', pie: 'TRC20' },
+    { v: 'ETH', l: 'Ethereum', pie: 'ERC20' },
+    { v: 'BNB', l: 'BNB Chain', pie: 'BEP20' },
+];
+// La red se deduce del formato cuando se puede (TRON empieza por T; las EVM
+// por 0x y ahí el cliente elige cuál de las dos).
+const redDe = (w: string): RedOtc | null => {
+    const x = w.trim();
+    if (/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(x)) return 'TRX';
+    if (/^0x[0-9a-fA-F]{40}$/.test(x)) return 'ETH';
+    return null;
+};
+const CARA_RIESGO: Record<string, { t: string; c: string }> = {
+    bajo: { t: 'RIESGO BAJO', c: '#4ADE80' },
+    medio: { t: 'RIESGO MEDIO', c: '#FBBF24' },
+    alto: { t: 'RIESGO ALTO', c: '#F87171' },
+    sin_dato: { t: 'SIN RESULTADO', c: '#878E88' },
+};
+const fechaCorta = (v: any) => {
+    if (v == null || v === '') return '—';
+    const t = typeof v === 'number' ? new Date(v < 1e12 ? v * 1000 : v) : new Date(String(v));
+    return Number.isNaN(t.getTime()) ? '—' : t.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+
+const WalletOrigen: React.FC<{
+    wallet: string; red: RedOtc; verif: any;
+    onWallet: (v: string) => void; onRed: (r: RedOtc) => void; onVerificado: (v: any) => void;
+}> = ({ wallet, red, verif, onWallet, onRed, onVerificado }) => {
+    const [cargando, setCargando] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const w = wallet.trim();
+    const esEvm = /^0x/i.test(w);
+
+    const verificar = async () => {
+        if (!w || cargando) return;
+        setCargando(true); setError(null); onVerificado(null);
+        const r = await llamarFuncion('kyt', { action: 'otc_wallet', coin: red, address: w }, 60000).catch(() => null);
+        setCargando(false);
+        if (!r?.ok) { setError(r?.mensaje ?? r?.error ?? 'No se pudo revisar la wallet. Intenta de nuevo.'); return; }
+        onVerificado(r);
+    };
+
+    const cara = verif ? (CARA_RIESGO[verif.categoria] ?? CARA_RIESGO.sin_dato) : null;
+    const motivos = verif ? hallazgosEnEspanol(verif.hallazgos ?? [], 6) : [];
+    const n2 = (v: any, d = 2) => v == null ? '—' : Number(v).toLocaleString('es-CO', { maximumFractionDigits: d });
+
+    return (
+        <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+                <Wallet size={14} style={{ color: '#878E88' }} />
+                <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>Wallet desde donde envías los USDT</span>
+            </div>
+            <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 10, lineHeight: 1.5 }}>
+                Revisamos su riesgo antes de abrir el cierre. Solo se aceptan wallets de riesgo bajo, y los USDT tienen que salir de esta misma wallet.
+            </p>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                {REDES_OTC.map(o => {
+                    const activa = red === o.v;
+                    const deshabilitada = (o.v === 'TRX' && esEvm) || (o.v !== 'TRX' && !!w && !esEvm);
+                    return (
+                        <button key={o.v} onClick={() => !deshabilitada && onRed(o.v)} disabled={deshabilitada}
+                            style={{ padding: '6px 11px', borderRadius: 999, fontSize: 11.5, fontWeight: 700,
+                                color: activa ? '#0C0E0D' : '#878E88', background: activa ? '#F4F4F2' : 'rgba(255,255,255,0.045)',
+                                border: activa ? 'none' : '1px solid rgba(255,255,255,0.10)', opacity: deshabilitada ? 0.35 : 1 }}>
+                            {o.l} <span style={{ fontWeight: 500, opacity: 0.8 }}>· {o.pie}</span>
+                        </button>
+                    );
+                })}
+            </div>
+            <div style={{ display: 'flex', gap: 7 }}>
+                <input
+                    value={wallet}
+                    onChange={e => onWallet(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') verificar(); }}
+                    placeholder={red === 'TRX' ? 'T…' : '0x…'}
+                    spellCheck={false}
+                    style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontSize: 13 }}
+                />
+                <button onClick={verificar} disabled={!w || cargando}
+                    style={{ flexShrink: 0, padding: '0 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700,
+                        color: w ? '#0C0E0D' : '#878E88', background: w ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', opacity: cargando ? 0.6 : 1 }}>
+                    {cargando ? 'Revisando…' : verif ? 'Revisar de nuevo' : 'Verificar'}
+                </button>
+            </div>
+
+            {error && (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.06)', borderRadius: 10, padding: '10px 12px' }}>
+                    <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
+                    <p style={{ color: '#F87171', fontSize: 12.5, lineHeight: 1.5 }}>{error}</p>
+                </div>
+            )}
+
+            {verif && cara && (
+                <div style={{ marginTop: 10, border: `1px solid ${cara.c}55`, borderRadius: 12, padding: '12px 13px', background: 'rgba(255,255,255,0.02)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: `1px solid ${cara.c}55`, color: cara.c, fontSize: 10, fontWeight: 800, letterSpacing: '0.6px', padding: '3px 9px', borderRadius: 999 }}>
+                            <span style={{ width: 6, height: 6, borderRadius: 999, background: cara.c }} /> {cara.t}
+                        </span>
+                        <span style={{ fontSize: 12, color: '#878E88' }}>
+                            Puntaje <b style={{ color: '#F4F4F2' }}>{verif.puntaje ?? '—'}</b> / 100 · {verif.red}
+                        </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginTop: 12 }}>
+                        <Dato label="Saldo USDT" valor={n2(verif.saldo?.usdt)} />
+                        <Dato label={`Saldo ${red === 'TRX' ? 'TRX' : red === 'ETH' ? 'ETH' : 'BNB'}`} valor={n2(verif.saldo?.nativo, 4)} />
+                        <Dato label="Transacciones" valor={n2(verif.actividad?.transacciones, 0)} />
+                        <Dato label="Primera actividad" valor={fechaCorta(verif.actividad?.primera)} />
+                        <Dato label="Última actividad" valor={fechaCorta(verif.actividad?.ultima)} />
+                        {verif.saldo?.valorUsd != null && <Dato label="Valor total (USD)" valor={n2(verif.saldo.valorUsd)} />}
+                    </div>
+
+                    {Array.isArray(verif.etiquetas) && verif.etiquetas.length > 0 && (
+                        <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>
+                            Etiquetas: {verif.etiquetas.map((e: any) => typeof e === 'string' ? e : (e?.label ?? e?.name ?? '')).filter(Boolean).join(', ')}
+                        </p>
+                    )}
+                    {motivos.length > 0 && (
+                        <ul style={{ marginTop: 8, paddingLeft: 16, color: '#F4F4F2', fontSize: 12, lineHeight: 1.55 }}>
+                            {motivos.map((m, i) => <li key={i}>{m}</li>)}
+                        </ul>
+                    )}
+
+                    <div style={{ marginTop: 11, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                        {verif.permitido
+                            ? <CheckCircle2 size={14} style={{ color: '#4ADE80', marginTop: 1, flexShrink: 0 }} />
+                            : <XCircle size={14} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />}
+                        <p style={{ fontSize: 12, color: verif.permitido ? '#F4F4F2' : '#F87171', lineHeight: 1.5 }}>
+                            {verif.permitido
+                                ? 'Wallet aprobada para la mesa. Ya puedes solicitar el cierre.'
+                                : `${verif.motivoBloqueo ?? 'Esta wallet no pasó la revisión de riesgo.'} No se puede usar para la mesa.`}
+                        </p>
+                    </div>
+                    <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
+                        Revisado el {fecha(verif.consultadoAt)}. El resultado refleja la información disponible hoy.
+                    </p>
+                </div>
+            )}
         </div>
     );
 };
@@ -631,6 +779,9 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                                 pie={cierre.rate_final ? 'confirmada por la mesa' : cierre.rate_cotizada ? 'indicativa' : undefined} />
                             <Dato label="Solicitado" valor={fecha(cierre.created_at)} />
                             {destino && <Dato label={destino.label} valor={destino.valor} mono={destino.mono} />}
+                            {cierre.payout?.origen?.address && (
+                                <Dato label="Wallet de origen" valor={cierre.payout.origen.address} pie={`${cierre.payout.origen.coin ?? ''} · riesgo ${cierre.payout.origen.categoria ?? '—'}`} mono />
+                            )}
                         </div>
                     )}
                 </div>
@@ -843,11 +994,13 @@ const Renglon: React.FC<{ k: string; v: string; fuerte?: boolean }> = ({ k, v, f
 // Como se describe cada destino del COP en el detalle del cierre.
 export const NOMBRE_BILLETERA: Record<string, string> = {
     COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
+    COP_C3: nombreCuenta(3), COP_C4: nombreCuenta(4),
 };
 
 export function destinoTexto(p: any): { label: string; valor: string; mono?: boolean } | null {
     if (!p?.tipo) return null;
-    if (p.tipo === 'saldo') return { label: 'Se acredita en', valor: NOMBRE_BILLETERA[p.wallet] ?? String(p.wallet ?? '—') };
+    // Sin billetera todavía: desde el 19 nov la elige la mesa al acreditar.
+    if (p.tipo === 'saldo') return { label: 'Se acredita en', valor: p.wallet ? (NOMBRE_BILLETERA[p.wallet] ?? String(p.wallet)) : 'Lo confirma la mesa' };
     // Formas viejas: cierres creados antes de que el destino fuera una
     // billetera propia. Se siguen mostrando para no romper el historial.
     if (p.tipo === 'lincoin') return { label: 'Se acredita en', valor: 'Peso Lincoin' };

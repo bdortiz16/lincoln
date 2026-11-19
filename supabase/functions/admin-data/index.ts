@@ -6321,7 +6321,8 @@ Deno.serve(async (req: Request) => {
         const motivo = String(body.motivo ?? '').trim().slice(0, 500)
         if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ success: false, error: 'Cierre inválido.' }, 400)
         if (motivo.length < 5) return json({ success: false, error: 'Escribe el motivo de la anulación (el cliente lo ve en el chat del cierre).' }, 400)
-        const NOMBRE_BILLETERA: Record<string, string> = { COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT' }
+        // Nombres que ve el cliente (el mensaje va a su chat): sin aliados.
+        const NOMBRE_BILLETERA: Record<string, string> = { COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT', COP_C3: 'Cuenta 3 · Jero', COP_C4: 'Cuenta 4 · Kaupaloki' }
         const fmtM = (n: number) => n.toLocaleString('es-CO', { maximumFractionDigits: 2 })
 
         const { data: c } = await db.from('otc_closes')

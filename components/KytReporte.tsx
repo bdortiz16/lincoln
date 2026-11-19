@@ -253,6 +253,32 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           </div>
         </div>
 
+        {/* Mesa OTC (solo cuando lo abre Cumplimiento desde KYT): quién cargó
+            esta wallet como origen de los USDT, cuándo, con qué resultado y en
+            qué cierres. Es lo primero que pide un requerimiento. */}
+        {d.contextoOtc && (
+          <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', padding: '10px 12px' }}>
+            <p style={{ fontSize: 9, fontWeight: 700, color: T.suave, margin: 0 }}>WALLET DE ORIGEN EN LA MESA OTC</p>
+            <p style={{ fontSize: 11, margin: '4px 0 0', lineHeight: 1.5 }}>
+              Cargada por <b>{d.contextoOtc.empresa || '—'}</b>
+              {d.contextoOtc.nombre ? ` · ${d.contextoOtc.nombre}` : ''}
+              {d.contextoOtc.email ? ` (${d.contextoOtc.email})` : ''} el {fecha(d.contextoOtc.fecha)}.
+              {' '}Resultado: <b>{d.contextoOtc.permitido ? 'permitida' : 'bloqueada'}</b>
+              {d.contextoOtc.motivo ? ` — ${d.contextoOtc.motivo}` : ''}.
+            </p>
+            {Array.isArray(d.contextoOtc.cierres) && d.contextoOtc.cierres.length > 0 && (
+              <p style={{ fontSize: 10.5, margin: '4px 0 0', color: T.suave }}>
+                Cierres: {d.contextoOtc.cierres.map((c: any) => `${c.ref} (${c.status}, ${Number(c.monto ?? 0).toLocaleString('es-CO')} ${c.moneda ?? ''})`).join(' · ')}
+              </p>
+            )}
+            {d.contextoOtc.empresasDistintas > 1 && (
+              <p style={{ fontSize: 10.5, margin: '4px 0 0', color: '#B42318', fontWeight: 700 }}>
+                Esta wallet la cargaron {d.contextoOtc.empresasDistintas} empresas distintas.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* ── LO QUE TIENE, según el explorador de la cadena ──
             MistTrack es un proveedor de riesgo, no un explorador: para esta
             misma dirección devolvió "sin dato" en saldo y transacciones

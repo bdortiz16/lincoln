@@ -41,11 +41,24 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?:
     const [error, setError] = useState<string | null>(null);
     const [hoverIdx, setHoverIdx] = useState<number | null>(null);
     const [hoverY, setHoverY] = useState<number | null>(null);
+    // Relectura periódica: con la pantalla abierta llegan puntos nuevos (la
+    // mesa anota uno cada vez que cotiza) y en 5 min / 1 h un gráfico que no
+    // se mueve parece roto.
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+        const cada = range === '5m' || range === '1h' ? 30_000 : 120_000;
+        const t = setInterval(() => setTick(x => x + 1), cada);
+        return () => clearInterval(t);
+    }, [range]);
+    const primeraCarga = React.useRef(true);
 
     useEffect(() => {
         let cancelled = false;
         (async () => {
-            setLoading(true); setError(null);
+            // Solo la primera lectura de cada rango muestra "Cargando…": las
+            // relecturas periódicas no tienen que hacer parpadear el gráfico.
+            if (primeraCarga.current) setLoading(true);
+            setError(null);
             const hours = CHART_RANGES.find(r => r.key === range)?.hours ?? 24;
             const sinceISO = new Date(Date.now() - hours * 3600 * 1000).toISOString();
             try {
@@ -61,7 +74,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?:
                     .gte('captured_at', sinceISO)
                     .order('captured_at', { ascending: true })
                     .limit(2000);
-                const { data, error } = await Promise.race([
+                let { data, error } = await Promise.race([
                     query as any,
                     new Promise<{ data: null; error: any }>((resolve) =>
                         setTimeout(() => resolve({ data: null, error: { message: 'timeout' } }), 8000)),
@@ -69,6 +82,25 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?:
                 if (cancelled) return;
                 if (error) { setError(error.message === 'timeout' ? null : error.message); setRows([]); }
                 else {
+                    // El último punto ANTES del rango, pegado al inicio del
+                    // rango. La tasa no se anota a intervalos fijos: en 5 min
+                    // casi nunca hay dos puntos, y sin éste el rango salía
+                    // vacío aunque la tasa vigente en ese momento se conoce
+                    // (es la última que se vio). No se inventa nada después:
+                    // el gráfico llega hasta el último punto real.
+                    let ancla: any = null;
+                    try {
+                        const { data: prev } = await supabase
+                            .from('fx_rate_snapshots')
+                            .select('rate, captured_at, source')
+                            .eq('from_currency', from).eq('to_currency', to).eq('source', 'FINITY')
+                            .lt('captured_at', sinceISO)
+                            .order('captured_at', { ascending: false })
+                            .limit(1);
+                        if (prev?.[0]) ancla = { ...prev[0], captured_at: sinceISO };
+                    } catch { /* sin ancla, se dibuja lo que haya */ }
+                    if (cancelled) return;
+                    if (ancla) data = [ancla, ...((data ?? []) as any[])];
                     // Se resta al LEER y no al pintar: asi el precio grande, el
                     // porcentaje de cambio, los ejes y el tooltip salen todos
                     // de la misma serie. Restarlo solo en un lugar volveria a
@@ -82,11 +114,11 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?:
             } catch (e: any) {
                 if (!cancelled) { setError(null); setRows([]); }
             } finally {
-                if (!cancelled) setLoading(false);
+                if (!cancelled) { setLoading(false); primeraCarga.current = false; }
             }
         })();
         return () => { cancelled = true; };
-    }, [from, to, range, ajusteCop]);
+    }, [from, to, range, ajusteCop, tick]);
 
     const bucketMs = range === '5m' ? 15 * 1000
         : range === '1h' ? 60 * 1000
@@ -184,7 +216,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?:
                     {CHART_RANGES.map(r => (
                         <button
                             key={r.key}
-                            onClick={() => { setRange(r.key); setHoverIdx(null); }}
+                            onClick={() => { primeraCarga.current = true; setRange(r.key); setHoverIdx(null); }}
                             className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors ${range === r.key ? 'bg-[#4ADE80] text-[#0C0E0D]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
                         >
                             {r.label}
@@ -212,7 +244,7 @@ export const FinityRateChart: React.FC<{ from?: string; to?: string; ajusteCop?:
                 {!loading && !error && !hasData && (
                     <div className="flex flex-col items-center justify-center h-[180px] text-slate-500 text-xs text-center px-4 gap-1">
                         <span>Aún no hay suficiente historial de la tasa en este rango.</span>
-                        <span className="text-slate-600">Se registra un punto cada vez que se abre el convertidor OTC.</span>
+                        <span className="text-slate-600">Se registra un punto cada vez que se cotiza en la mesa.</span>
                     </div>
                 )}
                 {!loading && !error && hasData && (
