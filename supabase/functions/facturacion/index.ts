@@ -245,8 +245,11 @@ async function tokenDe(userId: string, cfg: any, forzar = false): Promise<{ toke
 //   · Cada factura emitida queda sellada con su empresa (factura_detalle.
 //     emisora): las anulaciones, la DIAN y el PDF se buscan en ESE Siigo.
 type Emisora = { id: string; nombre: string; nit: string | null; cuentas: string[]; creadaAt?: string; cfg: Record<string, any> }
+// Los nombres que ve la empresa, numerados como sus cuentas (pedido del
+// dueño, 20 nov): Bre-B es la Cuenta 1 y ACH la Cuenta 2. El orden es el de
+// la pantalla.
 const CUENTAS_FACTURABLES: Record<string, string> = {
-  COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', COP_C3: 'Cuenta 3 · Jero', COP_C4: 'Cuenta 4 · Kaupaloki',
+  COP_BREB: 'Cuenta 1 · Bre-B', COP_ACH: 'Cuenta 2 · ACH', COP_C3: 'Cuenta 3 · Jero', COP_C4: 'Cuenta 4 · Kaupaloki', COP: 'Saldo Lincoin',
 }
 const claveEmisoras = (userId: string) => `facturacion_empresas:${userId}`
 // El documento entero: { empresas: [...], principal: { nombre, nit } }.
