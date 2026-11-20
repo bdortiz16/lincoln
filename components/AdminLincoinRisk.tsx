@@ -367,7 +367,15 @@ export const AdminLincoinRisk: React.FC = () => {
         {personas.map((p, i) => {
           const id = `${p.tipoDocumento}:${p.documento}`;
           const ab = abierto === id;
-          const c = CAT[String(p.categoria ?? '')] ?? { t: String(p.categoria ?? 'SIN RESULTADO').toUpperCase() };
+          // Mientras se recalcula con la matriz vigente no se muestra el riesgo
+          // viejo: al abrir GENCELL se veía "RIESGO ALTO" unos segundos y
+          // después "RIESGO MEDIO", y se leía como dos respuestas distintas.
+          const viejo = !!p.deSarblock && !!d.criterioVigente && p.criterio !== d.criterioVigente;
+          const c = recalculandoUna === id
+            ? { t: 'RECALCULANDO…' }
+            : viejo
+              ? { t: `${(CAT[String(p.categoria ?? '')]?.t ?? String(p.categoria ?? 'SIN RESULTADO').toUpperCase())} · MATRIZ ANTERIOR` }
+              : (CAT[String(p.categoria ?? '')] ?? { t: String(p.categoria ?? 'SIN RESULTADO').toUpperCase() });
           return (
             <div key={id} style={{ borderTop: i === 0 ? 'none' : `1px solid ${C.border}` }}>
               <button onClick={() => setAbierto(ab ? null : id)}
