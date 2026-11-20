@@ -670,6 +670,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
                           <span style={{ display: 'block', fontSize: 10.5, color: C.tenue, marginTop: 3 }}>
                             {e.activo ? 'Activa' : 'Pausada'}{e.conectada ? '' : ' · Siigo sin conectar'}
                           </span>
+                          {/* Qué hace tocarla, a la vista: el dueño no se dio cuenta
+                              de que la tarjeta de la empresa 2 abría su Siigo y
+                              creyó que solo la 1 se podía conectar (20 nov). */}
+                          <span style={{ display: 'inline-block', marginTop: 8, fontSize: 11.5, fontWeight: 700, color: sel ? C.sub : (e.conectada ? C.text : C.verde) }}>
+                            {sel ? 'Configurando esta empresa ↓' : e.conectada ? 'Abrir su configuración →' : 'Conectar su Siigo →'}
+                          </span>
                         </button>
                       );
                     })}
