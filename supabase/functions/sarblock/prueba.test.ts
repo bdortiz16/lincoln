@@ -65,7 +65,7 @@ Deno.test('OFAC: alto, no operable, con el motivo', () => {
   assert(f.bloqueo?.startsWith('Riesgo alto: Coincidencia en lista restrictiva: OFAC SDN'));
   assertEquals(f.altos, 1);
   assertEquals(f.hallazgos?.[0], { nivel: 'alto', codigo: 'lista_restrictiva', texto: 'Coincidencia en lista restrictiva: OFAC SDN (Ada Lovelace)', fuente: 'OFAC SDN' });
-  assertEquals(f.criterio, 'lincoin-v3-2026-10-30');
+  assertEquals(f.criterio, 'lincoin-v4-2026-11-20');
 });
 
 Deno.test('revisión solo por una fuente caída, sin coincidencias: NO es riesgo medio', () => {
@@ -379,22 +379,71 @@ const rama = (hits: any[], matched = true) => ({
 });
 const bajoSarblock = { action: 'MONITOR', riskLevel: 'LOW', shouldBlock: false, blockReason: 'provider_error', matchedLists: 1, unavailableLists: 0 };
 
-Deno.test('caso real CC 75104651: penal como parte pasiva → alto y bloqueado, aunque Sarblock diga LOW', () => {
+// Matriz v4 (2026-11-20): un penal sin señal de LA/FT ya no bloquea solo.
+Deno.test('v4: penal como parte pasiva SIN señal de LA/FT → medio y operable, para revisión', () => {
   const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('civil', 'pasiva', 'JUZGADO 001 CIVIL DE MANIZALES'), proceso('penal', 'pasiva'), proceso('familia', 'pasiva', 'JUZGADO 003 DE FAMILIA DE MANIZALES')])] }), benef);
+  assertEquals(f.categoria, 'medio');
+  assertEquals(f.operable, true);
+  assertEquals(f.altos, 0);
+  assertEquals(f.medios, 3);
+  const penal = f.hallazgos?.find(h => h.codigo === 'rama_penal_pasiva');
+  assert(penal?.texto.includes('Falta verificar el delito'));
+  assertEquals(penal?.radicado, '052126000201200904949');
+  assert(f.bloqueo?.startsWith('En revisión de cumplimiento:'));
+});
+
+Deno.test('v4: penal especializado sin señal de LA/FT → medio (caso GENCELL)', () => {
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('penal_especializado', 'pasiva', 'JUZGADO 001 PENAL DE CIRCUITO ESPECIALIZADO DE SANTA MARTA')])] }), benef);
+  assertEquals(f.categoria, 'medio');
+  assertEquals(f.operable, true);
+});
+
+Deno.test('v4: penal con señal de LA/FT en los datos del proceso → alto', () => {
+  const h = { ...proceso('penal', 'pasiva'), delito: 'LAVADO DE ACTIVOS' };
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([h])] }), benef);
   assertEquals(f.categoria, 'alto');
   assertEquals(f.operable, false);
-  assertEquals(f.altos, 1);
-  assertEquals(f.medios, 2);
-  assertEquals(f.hallazgos?.[0].nivel, 'alto');                       // lo alto primero
-  assert(f.hallazgos?.[0].texto.includes('proceso penal'));
-  assert(f.hallazgos?.[0].texto.includes('radicado 052126000201200904949'));
-  assert(f.bloqueo?.startsWith('Riesgo alto: Parte pasiva en proceso penal'));
+  assertEquals(f.hallazgos?.[0].codigo, 'rama_penal_laft');
+  assert(f.bloqueo?.startsWith('Riesgo alto: Parte pasiva en proceso penal con señal de LA/FT'));
+});
+
+Deno.test('v4: la señal de LA/FT NO se busca en el nombre de la persona', () => {
+  const h = { ...proceso('penal', 'pasiva'), matchedName: 'LAVADO DE ACTIVOS EXPRESS SAS' };
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([h])] }), benef);
+  assertEquals(f.categoria, 'medio');
+});
+
+Deno.test('v4: Cumplimiento marca el penal como LA/FT → alto y bloqueado', () => {
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('penal', 'pasiva')])] }),
+    { ...benef, revisionesPenales: { '052126000201200904949': { decision: 'laft', nota: 'Fiscalía: lavado de activos', porNombre: 'Oficial' } } });
+  assertEquals(f.categoria, 'alto');
+  assertEquals(f.operable, false);
+  assert(f.hallazgos?.[0].texto.includes('verificado por Cumplimiento'));
+  assert(f.hallazgos?.[0].texto.includes('lavado de activos'));
+});
+
+Deno.test('v4: Cumplimiento lo verifica "no relacionado" → no pesa y queda a la vista', () => {
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('penal', 'pasiva')])] }),
+    { ...benef, revisionesPenales: { '052126000201200904949': { decision: 'sin_relacion', nota: 'Archivado, hurto simple', porNombre: 'Oficial' } } });
+  assertEquals(f.altos, 0);
+  assertEquals(f.medios, 0);
+  assertEquals(f.operable, true);
+  assertEquals(f.penalesVerificados?.length, 1);
+  assertEquals(f.penalesVerificados?.[0].nota, 'Archivado, hurto simple');
+});
+
+Deno.test('v4: rejuzgar conserva las revisiones de Cumplimiento', () => {
+  const base = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('penal', 'pasiva')])] }),
+    { ...benef, revisionesPenales: { '052126000201200904949': { decision: 'laft' } } });
+  const otra = rejuzgar(base, benef)!;
+  assertEquals(otra.categoria, 'alto');
+  assertEquals(otra.revisionesPenales?.['052126000201200904949']?.decision, 'laft');
 });
 
 Deno.test('extinción de dominio como parte pasiva → alto', () => {
   const m = reglasLincoin([rama([proceso('extincion_de_dominio', 'pasiva')])]);
   assertEquals(m[0].nivel, 'alto');
-  assert(m[0].texto.includes('extincion de dominio'));
+  assert(m[0].texto.includes('extinción de dominio'));
 });
 
 Deno.test('civil o familia como parte pasiva → medio, en revisión', () => {
@@ -509,7 +558,7 @@ Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a S
     criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
   const nueva = rejuzgar(vieja, { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
   assertEquals(nueva?.operable, true);
-  assertEquals(nueva?.criterio, 'lincoin-v3-2026-10-30');
+  assertEquals(nueva?.criterio, 'lincoin-v4-2026-11-20');
 });
 
 // ── Lincoin Risk prepago ────────────────────────────────────────────────

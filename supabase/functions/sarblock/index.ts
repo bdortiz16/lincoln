@@ -35,7 +35,7 @@ import { setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
-import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, fichaIncompleta, rejuzgar, CRITERIO, soloTrasladoRues, type RuesTraslado } from './traductor.ts'
+import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, fichaIncompleta, rejuzgar, CRITERIO, soloTrasladoRues, PASIVA, type RuesTraslado, type Revisiones } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron, tipoPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
@@ -207,6 +207,64 @@ function verFicha(f: any, esAdmin: boolean) {
 }
 // Una consulta NUEVA conserva la decisión de cumplimiento anterior: si el
 // veredicto no cambió, la aprobación sigue valiendo (aprobacionVigente).
+// Lo que Cumplimiento ya decidió de los procesos penales de un documento
+// (matriz v4). Vive en el padrón: es sobre la persona, no sobre una cuenta.
+async function revisionesDelPadron(tipo: unknown, doc: unknown): Promise<Revisiones | null> {
+  try {
+    const t = tipoPadron(String(tipo ?? 'CC'))
+    const d = docPadron(String(doc ?? ''), t)
+    if (!d) return null
+    const { data } = await db.from('risk_registry').select('revisiones:ficha->revisionesPenales').eq('doc_type', t).eq('doc_number', d).maybeSingle()
+    const r = (data as any)?.revisiones
+    return r && typeof r === 'object' && Object.keys(r).length ? r as Revisiones : null
+  } catch { return null }
+}
+
+// Vuelve a juzgar con la matriz vigente (y las revisiones del padrón) TODO
+// lo guardado de un documento: el padrón, las consultas de Lincoin Risk y la
+// ficha de beneficiario de cada cuenta que lo tiene. La ficha del
+// beneficiario es la que lee mouv-proxy para dejar salir o frenar un envío:
+// sin esto, un cambio de matriz o de revisión no llegaba a los envíos.
+async function rejuzgarDocumento(tipo: string, doc: string, revisiones?: Revisiones | null): Promise<{ categoria: string | null; operable: boolean | null; cuentas: number } | null> {
+  const { data: fila } = await db.from('risk_registry').select('ficha, empresas').eq('doc_type', tipo).eq('doc_number', doc).maybeSingle()
+  const f = (fila as any)?.ficha
+  if (!f?.sarblock?.catalog) return null
+  const revs = revisiones === undefined ? (f.revisionesPenales ?? null) : revisiones
+  const nueva = rejuzgar({ ...f, revisionesPenales: revs }, { documento: doc, tipoDocumento: tipo })
+  if (!nueva) return null
+  const ahora = new Date().toISOString()
+  const { nombreInscrito: _n, decisionManual: _d, historialDecisiones: _h, ...fichaPadron } = nueva as any
+  if (!revs || !Object.keys(revs).length) delete fichaPadron.revisionesPenales
+  await db.from('risk_registry').update({
+    ficha: fichaPadron, categoria: nueva.categoria ?? null, operable: nueva.operable ?? null,
+    altos: nueva.altos ?? 0, medios: nueva.medios ?? 0, bajos: nueva.bajos ?? 0,
+    hallazgos: nueva.hallazgos ?? [], codigos: nueva.codigos ?? [], criterio: nueva.criterio ?? null, actualizado_at: ahora,
+  }).eq('doc_type', tipo).eq('doc_number', doc)
+  // Consultas de Lincoin Risk de ese documento (cada una con el nombre que
+  // escribió su cuenta).
+  const { data: cons } = await db.from('risk_consultas').select('id, documento, tipo_documento, nombre_escrito, ficha')
+    .eq('tipo_documento', tipo).eq('estado', 'lista').in('documento', Array.from(new Set([doc, String(f.documento ?? doc)])))
+  for (const c of (cons ?? []) as any[]) {
+    if (!c.ficha?.sarblock?.catalog) continue
+    const nc = rejuzgar({ ...c.ficha, revisionesPenales: revs }, { documento: c.documento, tipoDocumento: c.tipo_documento, nombre: c.nombre_escrito ?? undefined })
+    if (!nc) continue
+    await db.from('risk_consultas').update({ ficha: nc, categoria: nc.categoria ?? null, operable: nc.operable ?? null, riesgos: R.tiposDeRiesgo(nc), despachos: R.despachos(nc), actualizado_at: ahora }).eq('id', c.id)
+  }
+  // Fichas de beneficiario de cada cuenta que usó el padrón para ese documento.
+  let cuentas = 0
+  for (const uid of (Array.isArray((fila as any).empresas) ? (fila as any).empresas : []).map((x: unknown) => String(x)).filter(Boolean)) {
+    const benefs: Record<string, any> = (await leerRaw(uid))?.tusdatos?.beneficiarios ?? {}
+    for (const [k, fb] of Object.entries(benefs)) {
+      if (docPadron(k, tipo) !== doc || fb?.proveedor !== 'sarblock' || fb.estado !== 'finalizado' || !fb.sarblock?.catalog) continue
+      const nb = rejuzgar({ ...fb, revisionesPenales: revs }, { documento: k, tipoDocumento: fb.tipoDocumento ?? tipo, nombre: fb.nombreInscrito })
+      if (!nb) continue
+      await guardarFicha(uid, k, conDecision(nb, fb))
+      cuentas++
+    }
+  }
+  return { categoria: nueva.categoria ?? null, operable: nueva.operable ?? null, cuentas }
+}
+
 const conDecision = (nueva: Record<string, unknown>, previa: any) =>
   previa?.decisionManual ? { ...nueva, decisionManual: previa.decisionManual, historialDecisiones: previa.historialDecisiones } : nueva
 
@@ -500,7 +558,10 @@ async function recoger(uid: string, soloCheck?: string) {
       // el padrón (visto el 2026-10-28: 555 escrituras en 6 h, dos fichas).
       if (enCursoAun && check.aggregateOutcome === f.sarblock?.aggregateOutcome && estable(check.catalog) === estable(f.sarblock?.catalog)) continue
       const ruesTraslado = terminado(check) ? await trasladoVigente(check, f.tipoDocumento, doc) : null
-      const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, ruesTraslado }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}),
+      // Las revisiones de Cumplimiento de sus procesos penales (matriz v4)
+      // siguen valiendo con el resultado nuevo: son sobre el radicado.
+      const revisionesPenales = f.revisionesPenales ?? await revisionesDelPadron(f.tipoDocumento, doc)
+      const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, ruesTraslado, revisionesPenales }), lanzadoAt: f.lanzadoAt, ...(n ? { sarblockReintentos: n } : {}),
         // Se conserva cuántas consultas pagas se lanzaron por la fuente: sin
         // esto el tope se borraba al cerrar y se relanzaba sin fin.
         ...(f.relanzamientosFuente ? { relanzamientosFuente: f.relanzamientosFuente } : {}) }
@@ -660,7 +721,8 @@ async function razonSocialRues(documento: string) {
 // dos cierres al tiempo no devuelven dos veces.
 async function cerrarConsultaRisk(cq: any, check: any) {
   const ruesTraslado = terminado(check) ? await trasladoVigente(check, cq.tipo_documento, cq.documento) : null
-  const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined, ruesTraslado })
+  const ficha = traducir(check, { documento: cq.documento, tipoDocumento: cq.tipo_documento, nombre: cq.nombre_escrito ?? undefined, ruesTraslado,
+    revisionesPenales: await revisionesDelPadron(cq.tipo_documento, cq.documento) })
   // Una persona cuyo documento la Registraduría no encontró, sin ninguna
   // coincidencia: no hubo revisión real (no se sabe de quién serían los
   // antecedentes). Queda "no verificado" y se le devuelve la consulta.
@@ -887,6 +949,55 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
       const { data: r2 } = await db.from('risk_consultas').select('*').eq('id', (r as any).id).maybeSingle()
       return { ok: true, consulta: vista(r2 ?? r, cfg, await empresaDe((r as any).user_id)) }
     }
+    // ── Cumplimiento revisa UN proceso penal (matriz v4) ────────────────
+    // Sarblock no trae el delito ni si sigue activo. Quien revisa lo consulta
+    // en la Rama Judicial y lo deja escrito: "LA/FT o delito fuente" (sube a
+    // alto y bloquea los envíos a esa persona) o "no relacionado / inactivo"
+    // (deja de pesar). Con nota obligatoria: es el soporte ante un
+    // requerimiento. Se aplica al padrón y a todas las cuentas que la tienen.
+    if (accion === 'admin_risk_revisar_penal') {
+      const tipo = tipoPadron(String(body.tipoDocumento ?? 'CC'))
+      const doc = docPadron(String(body.documento ?? ''), tipo)
+      const radicado = String(body.radicado ?? '').trim()
+      const decision = String(body.decision ?? '')
+      const nota = String(body.nota ?? '').trim().slice(0, 600)
+      if (!doc || !radicado) return { ok: false, motivo: 'Falta el documento o el radicado.' }
+      if (!['laft', 'sin_relacion', 'quitar'].includes(decision)) return { ok: false, motivo: 'Decisión inválida.' }
+      if (decision !== 'quitar' && nota.length < 5) return { ok: false, motivo: 'Escribe qué encontraste (delito, estado del proceso, dónde lo consultaste): queda como soporte.' }
+      const { data: fila } = await db.from('risk_registry').select('ficha').eq('doc_type', tipo).eq('doc_number', doc).maybeSingle()
+      const f = (fila as any)?.ficha
+      if (!f?.sarblock?.catalog) return { ok: false, motivo: 'Esta persona no tiene el resultado de Sarblock guardado.' }
+      const esSuyo = (f.sarblock.catalog as any[]).some(e => String(e?.code ?? '') === 'co_rama_judicial'
+        && (Array.isArray(e?.hits) ? e.hits : []).some((h: any) => PASIVA(h) && /penal/i.test(String(h?.judicial?.branch ?? '')) && String(h?.judicial?.processKey ?? '').trim() === radicado))
+      if (!esSuyo) return { ok: false, motivo: 'Ese radicado no es un proceso penal de esta persona como parte pasiva.' }
+      const antes = (f.revisionesPenales ?? {})[radicado] ?? null
+      const revisiones: Revisiones = { ...(f.revisionesPenales ?? {}) }
+      if (decision === 'quitar') delete revisiones[radicado]
+      else revisiones[radicado] = { decision: decision as 'laft' | 'sin_relacion', nota, por: yo.userId, porNombre: por, at: new Date().toISOString() }
+      const r = await rejuzgarDocumento(tipo, doc, revisiones)
+      if (!r) return { ok: false, motivo: 'No se pudo volver a juzgar a esta persona.' }
+      await auditar('risk.revision_penal', { por: yo.userId, porNombre: por, documento: doc, tipoDocumento: tipo, radicado, decision, nota, antes, categoria: r.categoria, operable: r.operable, cuentas: r.cuentas })
+      return { ok: true, ...r }
+    }
+
+    // Vuelve a juzgar con la matriz vigente todo lo guardado (no llama a
+    // Sarblock): las personas del padrón juzgadas con otra versión. Por
+    // tandas: la pantalla lo vuelve a pedir mientras queden.
+    if (accion === 'admin_risk_rejuzgar') {
+      const hasta = Date.now() + 100_000
+      const { data: viejas } = await db.from('risk_registry').select('doc_type, doc_number')
+        .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null).limit(300)
+      let hechas = 0
+      for (const v of (viejas ?? []) as any[]) {
+        if (Date.now() > hasta) break
+        try { await rejuzgarDocumento(String(v.doc_type), String(v.doc_number)); hechas++ } catch (e) { console.warn('[sarblock] rejuzgar', v.doc_number, String((e as Error)?.message ?? e)) }
+      }
+      const { count } = await db.from('risk_registry').select('doc_number', { count: 'exact', head: true })
+        .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null)
+      await auditar('risk.rejuzgado_padron', { por: yo.userId, hechas, quedan: count ?? null, criterio: CRITERIO })
+      return { ok: true, hechas, quedan: count ?? 0, criterio: CRITERIO }
+    }
+
     if (accion === 'admin_risk_ver') {
       const { data: r } = await db.from('risk_consultas').select('*').eq('id', String(body.consultaId ?? '')).maybeSingle()
       if (!r) return { ok: false, motivo: 'No existe esa consulta.' }
@@ -1203,7 +1314,19 @@ Deno.serve(async (req) => {
       try { riskCerradas = await cerrarRiskAtascadas(inicio + 120_000) } catch (e) { console.warn('[sarblock] barrido risk', String((e as Error)?.message ?? e)) }
       let cartera: unknown = null
       try { cartera = await carteraVuelta(inicio + 130_000) } catch (e) { console.warn('[sarblock] barrido cartera', String((e as Error)?.message ?? e)) }
-      return json({ ok: true, cuentas: cuentas.length, cerrados, riskCerradas, cartera })
+      // Una tanda de personas del padrón juzgadas con una matriz anterior:
+      // así un cambio de matriz llega a los envíos sin esperar a que alguien
+      // abra el panel (gratis: sale del catálogo guardado).
+      let rejuzgadas = 0
+      try {
+        const { data: viejas } = await db.from('risk_registry').select('doc_type, doc_number')
+          .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null).limit(15)
+        for (const v of (viejas ?? []) as any[]) {
+          if (Date.now() - inicio > 138_000) break
+          if (await rejuzgarDocumento(String(v.doc_type), String(v.doc_number))) rejuzgadas++
+        }
+      } catch (e) { console.warn('[sarblock] barrido rejuzgar', String((e as Error)?.message ?? e)) }
+      return json({ ok: true, cuentas: cuentas.length, cerrados, riskCerradas, cartera, rejuzgadas })
     }
 
     if (accion === 'estado') {

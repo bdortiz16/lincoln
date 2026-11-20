@@ -2025,6 +2025,10 @@ Deno.serve(async (req: Request) => {
           categoria: r.categoria, operable: r.operable, estado: r.estado,
           altos: r.altos, medios: r.medios, bajos: r.bajos,
           hallazgos: Array.isArray(r.hallazgos) ? r.hallazgos : [],
+          // Matriz v4: lo que Cumplimiento ya revisó de sus procesos penales.
+          penalesVerificados: Array.isArray(r.ficha?.penalesVerificados) ? r.ficha.penalesVerificados : [],
+          revisionesPenales: r.ficha?.revisionesPenales ?? {},
+          criterio: r.criterio ?? r.ficha?.criterio ?? null,
           reportId: r.report_id,
           consultadoAt: r.consultado_at, actualizadoAt: r.actualizado_at, fuente: r.fuente,
           vecesConsultado: r.veces_consultado, vecesReutilizado: r.veces_reutilizado,

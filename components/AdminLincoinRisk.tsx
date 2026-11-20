@@ -63,6 +63,12 @@ export const AdminLincoinRisk: React.FC = () => {
   // que dicen "lincoin.me dice" y no se ven como el panel).
   const [confirmar, setConfirmar] = useState<{ tipo: 'una'; p: any } | { tipo: 'todas' } | { tipo: 'reconsultar'; p: any } | null>(null);
   const [escrito, setEscrito] = useState('');
+  // Matriz v4: Cumplimiento revisa cada proceso penal (delito y estado) y deja
+  // su decisión con nota. Ver sarblock admin_risk_revisar_penal.
+  const [revisar, setRevisar] = useState<{ p: any; radicado: string; texto: string; decision: 'laft' | 'sin_relacion' } | null>(null);
+  const [notaRev, setNotaRev] = useState('');
+  const [guardandoRev, setGuardandoRev] = useState(false);
+  const [rejuzgando, setRejuzgando] = useState<string | null>(null);
   const turno = useRef(0);
 
   const cargar = async (buscar = q) => {
@@ -89,6 +95,32 @@ export const AdminLincoinRisk: React.FC = () => {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
+
+  const guardarRevision = async (p: any, radicado: string, decision: 'laft' | 'sin_relacion' | 'quitar', nota = '') => {
+    setGuardandoRev(true);
+    const r = await llamarFuncion('sarblock', { action: 'admin_risk_revisar_penal', tipoDocumento: p.tipoDocumento, documento: p.documento, radicado, decision, nota }, 90000).catch(() => null);
+    setGuardandoRev(false);
+    if (!r?.ok) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo guardar la revisión.' }); return false; }
+    const cat = CAT[String(r.categoria ?? '')]?.t ?? String(r.categoria ?? '').toUpperCase();
+    setAviso({ ok: true, t: `Revisión guardada. ${p.nombreReal ?? 'La persona'} queda en ${cat}${r.operable === false ? ' (bloquea envíos)' : ''}${r.cuentas ? ` · actualizada en ${r.cuentas} cuenta${r.cuentas === 1 ? '' : 's'}` : ''}.` });
+    setRevisar(null); setNotaRev('');
+    await cargar();
+    return true;
+  };
+  // Vuelve a juzgar con la matriz vigente lo que quedó juzgado con otra
+  // versión (gratis: sale del catálogo guardado). Por tandas hasta terminar.
+  const rejuzgarTodo = async () => {
+    let total = 0;
+    for (let i = 0; i < 30; i++) {
+      setRejuzgando(`Recalculando… ${total} listas`);
+      const r = await llamarFuncion('sarblock', { action: 'admin_risk_rejuzgar' }, 150000).catch(() => null);
+      if (!r?.ok) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo recalcular.' }); break; }
+      total += Number(r.hechas ?? 0);
+      if (!r.quedan || !r.hechas) { setAviso({ ok: true, t: `Recalculado con la matriz vigente: ${total} personas${r.quedan ? ` (quedan ${r.quedan} sin catálogo para recalcular)` : ''}.` }); break; }
+    }
+    setRejuzgando(null);
+    await cargar();
+  };
 
   const borrarUna = async (p: any) => {
     setConfirmar(null);
@@ -241,7 +273,13 @@ export const AdminLincoinRisk: React.FC = () => {
               se reutiliza. Se busca <b style={{ color: C.text }}>por documento</b>, nunca por nombre.
             </p>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap' }}>
+            <button onClick={rejuzgarTodo} disabled={busy || rejuzgando !== null}
+              title="Vuelve a juzgar con la matriz vigente las personas juzgadas con una versión anterior. No se paga nada: sale de lo guardado."
+              className="hover:bg-white/[0.09] transition-colors"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 13px', borderRadius: 9, opacity: rejuzgando ? 0.6 : 1 }}>
+              <RefreshCw size={13} className={rejuzgando ? 'animate-spin' : ''} /> {rejuzgando ?? 'Recalcular con la matriz vigente'}
+            </button>
             <button onClick={() => { setEscrito(''); setConfirmar({ tipo: 'todas' }); }} disabled={busy || borrando !== null}
               className="hover:bg-white/[0.09] transition-colors"
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 13px', borderRadius: 9, opacity: borrando === '*' ? 0.6 : 1 }}>
@@ -405,10 +443,52 @@ export const AdminLincoinRisk: React.FC = () => {
                     </div>
                     {Array.isArray(p.hallazgos) && p.hallazgos.length > 0 && (
                       <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 7 }}>
-                        {p.hallazgos.slice(0, 10).map((h: any, k: number) => (
+                        {p.hallazgos.slice(0, 12).map((h: any, k: number) => {
+                          // Los procesos penales se revisan uno por uno (matriz
+                          // v4): Cumplimiento consulta el radicado y decide.
+                          const penal = h?.radicado && (h?.codigo === 'rama_penal_pasiva' || h?.codigo === 'rama_penal_laft');
+                          const rev = h?.radicado ? p.revisionesPenales?.[h.radicado] : null;
+                          return (
                           <div key={k} style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.45 }}>
                             <span style={{ color: C.text }}>{String(h?.nivel ?? '').toUpperCase()}</span> · {h?.texto ?? ''}
                             {h?.fuente ? <span style={{ display: 'block', color: C.dim, fontFamily: MONO, fontSize: 10.5 }}>{h.fuente}</span> : null}
+                            {penal && (
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5, alignItems: 'center' }}>
+                                {rev ? (
+                                  <>
+                                    <span style={{ fontSize: 10.5, color: C.text }}>Revisado{rev.porNombre ? ` por ${rev.porNombre}` : ''}{rev.at ? ` el ${fecha(rev.at)}` : ''}</span>
+                                    <button onClick={() => guardarRevision(p, h.radicado, 'quitar')} disabled={guardandoRev}
+                                      style={{ fontSize: 10.5, fontWeight: 600, color: C.sub, background: 'none', border: `1px solid ${C.border2}`, padding: '3px 8px', borderRadius: 7 }}>Quitar revisión</button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button onClick={() => { setNotaRev(''); setRevisar({ p, radicado: h.radicado, texto: h.texto, decision: 'sin_relacion' }); }}
+                                      style={{ fontSize: 10.5, fontWeight: 700, color: C.green, background: 'none', border: `1px solid ${C.greenB}`, padding: '3px 8px', borderRadius: 7 }}>No relacionado con LA/FT / inactivo</button>
+                                    {h.codigo !== 'rama_penal_laft' && (
+                                      <button onClick={() => { setNotaRev(''); setRevisar({ p, radicado: h.radicado, texto: h.texto, decision: 'laft' }); }}
+                                        style={{ fontSize: 10.5, fontWeight: 700, color: '#F87171', background: 'none', border: '1px solid rgba(248,113,113,0.4)', padding: '3px 8px', borderRadius: 7 }}>Es LA/FT o delito fuente</button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {/* Penales que Cumplimiento verificó como no relacionados:
+                        ya no pesan, pero quedan a la vista con su soporte. */}
+                    {Array.isArray(p.penalesVerificados) && p.penalesVerificados.length > 0 && (
+                      <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 7 }}>
+                        <p style={{ fontSize: 10.5, color: C.sub, margin: 0 }}>Procesos penales verificados por Cumplimiento (no pesan)</p>
+                        {p.penalesVerificados.map((v: any) => (
+                          <div key={v.radicado} style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.45 }}>
+                            <span style={{ color: C.green }}>VERIFICADO</span> · {v.texto}
+                            {v.nota ? <span style={{ display: 'block', color: C.text }}>{v.nota}</span> : null}
+                            <span style={{ display: 'block', color: C.dim, fontSize: 10.5 }}>{v.porNombre ? `${v.porNombre} · ` : ''}{v.at ? fecha(v.at) : ''}</span>
+                            <button onClick={() => guardarRevision(p, v.radicado, 'quitar')} disabled={guardandoRev}
+                              style={{ marginTop: 4, fontSize: 10.5, fontWeight: 600, color: C.sub, background: 'none', border: `1px solid ${C.border2}`, padding: '3px 8px', borderRadius: 7 }}>Quitar revisión</button>
                           </div>
                         ))}
                       </div>
@@ -425,6 +505,36 @@ export const AdminLincoinRisk: React.FC = () => {
           </div>
         )}
       </div>
+      {/* ══ Revisión de un proceso penal ══ */}
+      {revisar && (
+        <div onClick={() => !guardandoRev && setRevisar(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(4,5,4,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+            style={{ width: '100%', maxWidth: 520, background: C.card, border: `1px solid ${C.border2}`, borderRadius: 16, padding: '20px 22px', fontFamily: FONT }}>
+            <p style={{ fontSize: 15, fontWeight: 800, color: C.text, margin: 0 }}>
+              {revisar.decision === 'laft' ? 'Proceso vinculado a LA/FT o delito fuente' : 'Proceso no relacionado con LA/FT o inactivo'}
+            </p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '8px 0 0', lineHeight: 1.5 }}>{revisar.p.nombreReal} · {revisar.texto}</p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '10px 0 0', lineHeight: 1.55 }}>
+              {revisar.decision === 'laft'
+                ? 'La persona pasa a riesgo ALTO y se frenan los envíos hacia ella en todas las cuentas.'
+                : 'Este proceso deja de pesar en el riesgo. Si no le queda nada más, puede quedar en riesgo bajo.'}
+              {' '}Consulta el radicado en la Rama Judicial y escribe el delito, el estado del proceso y dónde lo verificaste: queda como soporte ante un requerimiento.
+            </p>
+            <textarea value={notaRev} onChange={e => setNotaRev(e.target.value.slice(0, 600))} rows={4} autoFocus
+              placeholder={revisar.decision === 'laft' ? 'Ej: Delito: lavado de activos (art. 323). Proceso activo, en juicio. Verificado en consultaprocesos.ramajudicial.gov.co el 20/11/2026.' : 'Ej: Delito: lesiones personales culposas. Proceso archivado desde 2024. Verificado en consultaprocesos.ramajudicial.gov.co el 20/11/2026.'}
+              style={{ width: '100%', marginTop: 12, background: C.elev, border: `1px solid ${C.border2}`, borderRadius: 10, padding: '10px 12px', color: C.text, fontSize: 12.5, fontFamily: FONT, outline: 'none', resize: 'vertical' }} />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+              <button onClick={() => setRevisar(null)} disabled={guardandoRev}
+                style={{ fontSize: 12.5, fontWeight: 600, color: C.sub, background: 'none', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>Volver</button>
+              <button onClick={() => guardarRevision(revisar.p, revisar.radicado, revisar.decision, notaRev.trim())} disabled={guardandoRev || notaRev.trim().length < 5}
+                style={{ fontSize: 12.5, fontWeight: 700, color: '#0A0A0A', background: revisar.decision === 'laft' ? '#F87171' : C.green, border: 'none', padding: '8px 14px', borderRadius: 9, opacity: guardandoRev || notaRev.trim().length < 5 ? 0.5 : 1 }}>
+                {guardandoRev ? 'Guardando…' : 'Guardar revisión'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* ══ Confirmar eliminación ══ */}
       {confirmar && (
         <div onClick={() => setConfirmar(null)}

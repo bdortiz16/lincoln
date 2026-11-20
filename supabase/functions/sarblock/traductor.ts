@@ -29,16 +29,51 @@ export function soloTrasladoRues(catalogo: any[]): any | null {
 }
 export type RuesTraslado = { camara: string | null; matricula: string | null; estado?: string | null; renovado?: string | null; verificadoAt?: string };
 
-export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string; fuente: string };
+// `radicado` va en los procesos penales: es la llave con la que Cumplimiento
+// los revisa uno por uno (revisionesPenales).
+export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string; fuente: string; radicado?: string };
 
 // Qué versión de la matriz decidió esta ficha. Si la matriz cambia, se sabe
 // con qué regla se juzgó cada caso.
 // v3 (2026-10-30): un "pedir revisión" de Sarblock que solo se debe a una
 // fuente caída, sin ninguna coincidencia, ya no sube a riesgo medio; y se
 // marca cuando la Registraduría no encontró el documento.
-export const CRITERIO = 'lincoin-v3-2026-10-30';
+// v4 (2026-11-20, pedido del dueño): un proceso penal como parte pasiva ya no
+// es riesgo alto por sí solo. Sarblock no trae el delito ni si sigue activo
+// (solo despacho, radicado y fechas), y empresas con las que se puede operar
+// salían bloqueadas (GENCELL PHARMA: dos penales y cinco civiles). Ahora:
+//   · penal con señal de LA/FT o delito fuente en lo que trae la fuente → alto
+//   · penal marcado por Cumplimiento como LA/FT                        → alto
+//   · penal marcado por Cumplimiento "no relacionado / inactivo"       → no pesa
+//   · penal sin señal y sin revisar                                     → medio
+//     (operable, queda para revisión). El dueño eligió esto sabiendo que un
+//     caso como CC 75104651 (penal por delito fuente) opera hasta que alguien
+//     lo revise.
+//   · extinción de dominio sigue siendo alto: es sobre bienes ilícitos.
+export const CRITERIO = 'lincoin-v4-2026-11-20';
 
-export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string };
+export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string; radicado?: string };
+
+// La revisión de Cumplimiento de UN proceso penal (por radicado): quien
+// consultó la Rama Judicial y encontró el delito y el estado.
+export type RevisionPenal = { decision: 'laft' | 'sin_relacion'; nota?: string; por?: string | null; porNombre?: string | null; at?: string };
+export type Revisiones = Record<string, RevisionPenal>;
+
+// Delitos que hacen de un proceso penal un asunto de LA/FT: el lavado mismo,
+// la financiación del terrorismo y los delitos fuente del art. 323 del Código
+// Penal. Se buscan en lo que la fuente describe del proceso (despacho, rama y
+// cualquier campo de delito o clase que llegue), NUNCA en el nombre de la
+// persona: "LAVADO EXPRESS S.A.S." es un lavadero, no un hallazgo.
+const DELITO_LAFT = /lavado de activos|enriquecimiento il[ií]cito|testaferr|financiaci[oó]n del terrorismo|terroris|narcotr[aá]fico|estupefacient|tr[aá]fico de drogas|concierto para delinquir|extinci[oó]n de dominio|trata de personas|tr[aá]fico de migrantes|extorsi[oó]n|secuestro|tr[aá]fico de armas|contrabando|fraude aduanero|captaci[oó]n (masiva|ilegal)|cohecho|peculado|concusi[oó]n|soborno/i;
+const sinTildes = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+function describeProceso(h: any): string {
+  const j = h?.judicial ?? {};
+  const { processKey: _k, partySide: _p, startDate: _s, lastActionDate: _l, ...resto } = j;
+  const extra = [h?.description, h?.delito, h?.crime, h?.offense, h?.details, h?.clase, h?.processClass]
+    .filter(v => v != null).map(v => typeof v === 'string' ? v : JSON.stringify(v));
+  return [JSON.stringify(resto), ...extra].join(' ');
+}
+export const senalLaft = (h: any) => DELITO_LAFT.test(describeProceso(h)) || DELITO_LAFT.test(sinTildes(describeProceso(h)));
 
 export const PASIVA = (h: any) => String(h?.judicial?.partySide ?? '').toLowerCase() === 'pasiva';
 const RAMA_GRAVE = (rama: string) => /penal|extinci/.test(rama);
@@ -47,14 +82,18 @@ const GRAVEDAD_ALTA = new Set(['EXTREMO', 'ALTO']);
 const CERTEZA_ALTA = new Set(['CONFIRMADA', 'PROBABLE']);
 const limpio = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim();
 
-// La matriz, fila por fila:
+// La matriz, fila por fila (v4):
 //   Lista restrictiva (OFAC, ONU…)                                → alto
-//   Rama Judicial: parte pasiva en proceso penal / extinción      → alto
+//   Rama Judicial: parte pasiva en extinción de dominio           → alto
+//   Rama Judicial: parte pasiva en penal con señal de LA/FT       → alto
+//     (en los datos del proceso, o marcado así por Cumplimiento)
 //   Antecedentes Policía / Procuraduría / Contraloría con coinc.  → alto
 //   Prensa adversa EXTREMO/ALTO con certeza CONFIRMADA/PROBABLE    → alto
+//   Rama Judicial: parte pasiva en penal sin señal ni revisión    → medio
 //   Rama Judicial: parte pasiva en civil, familia, laboral…       → medio
 //   PEP · fuente que pide revisión · prensa de menor gravedad     → medio
-export function reglasLincoin(catalogo: any[]): Motivo[] {
+//   Penal marcado por Cumplimiento "no relacionado / inactivo"    → no pesa
+export function reglasLincoin(catalogo: any[], revisiones?: Revisiones | null): Motivo[] {
   const out: Motivo[] = [];
   for (const e of catalogo) {
     const label = limpio(e?.label ?? e?.code);
@@ -68,10 +107,28 @@ export function reglasLincoin(catalogo: any[]): Motivo[] {
       // Se miran los procesos uno por uno: lo que pesa es la rama y el lado.
       for (const h of hits.filter(PASIVA)) {
         const rama = String(h.judicial?.branch ?? '').toLowerCase();
-        const donde = `${limpio(h.judicial?.court)}, radicado ${h.judicial?.processKey ?? '—'}${h.judicial?.startDate ? `, desde ${h.judicial.startDate}` : ''}`;
-        out.push(RAMA_GRAVE(rama)
-          ? { nivel: 'alto', regla: 'rama_penal_pasiva', fuente: label, texto: `Parte pasiva en proceso ${rama.replace(/_/g, ' ')}: ${donde}` }
-          : { nivel: 'medio', regla: 'rama_pasiva', fuente: label, texto: `Parte pasiva en proceso ${rama.replace(/_/g, ' ') || 'judicial'}: ${donde}` });
+        const radicado = String(h.judicial?.processKey ?? '').trim();
+        const ult = h.judicial?.lastActionDate;
+        const donde = `${limpio(h.judicial?.court)}, radicado ${radicado || '—'}${h.judicial?.startDate ? `, desde ${h.judicial.startDate}` : ''}${ult ? `, última actuación ${ult}` : ''}`;
+        const nomRama = rama.replace(/_/g, ' ');
+        if (!RAMA_GRAVE(rama)) {
+          out.push({ nivel: 'medio', regla: 'rama_pasiva', fuente: label, texto: `Parte pasiva en proceso ${nomRama || 'judicial'}: ${donde}` });
+          continue;
+        }
+        if (/extinci/.test(rama)) {
+          out.push({ nivel: 'alto', regla: 'rama_extincion', fuente: label, radicado, texto: `Parte pasiva en proceso de extinción de dominio: ${donde}` });
+          continue;
+        }
+        const rev = radicado ? revisiones?.[radicado] : undefined;
+        if (rev?.decision === 'sin_relacion') continue;   // verificado: no pesa (queda en penalesVerificados)
+        if (rev?.decision === 'laft') {
+          out.push({ nivel: 'alto', regla: 'rama_penal_laft', fuente: label, radicado,
+            texto: `Proceso penal vinculado a LA/FT o delito fuente (verificado por Cumplimiento${rev.porNombre ? `, ${rev.porNombre}` : ''}): ${donde}${rev.nota ? ` — ${limpio(rev.nota)}` : ''}` });
+          continue;
+        }
+        out.push(senalLaft(h)
+          ? { nivel: 'alto', regla: 'rama_penal_laft', fuente: label, radicado, texto: `Parte pasiva en proceso ${nomRama} con señal de LA/FT o delito fuente: ${donde}` }
+          : { nivel: 'medio', regla: 'rama_penal_pasiva', fuente: label, radicado, texto: `Parte pasiva en proceso ${nomRama}: ${donde}. Falta verificar el delito: si es LA/FT o delito fuente, Cumplimiento lo sube a alto` });
       }
       continue;
     }
@@ -122,6 +179,8 @@ export type Ficha = {
   categoria?: 'alto' | 'medio' | 'bajo' | 'ninguno' | 'sin_validar';
   documentoNoEncontrado?: boolean   // la Registraduría no encontró el documento
   ruesTraslado?: RuesTraslado       // matrícula cancelada por traslado, con la nueva vigente
+  revisionesPenales?: Revisiones    // lo que Cumplimiento decidió de cada proceso penal (por radicado)
+  penalesVerificados?: { radicado: string; texto: string; nota?: string; porNombre?: string | null; at?: string }[]
   incompleta?: boolean              // alguna fuente no respondió (resultado parcial)
   operable?: boolean;
   bloqueo?: string;
@@ -168,7 +227,7 @@ const CATEGORIA: Record<string, Ficha['categoria']> = {
   CRITICAL: 'alto', HIGH: 'alto', MEDIUM: 'medio', LOW: 'bajo', NONE: 'ninguno',
 };
 
-export function traducir(check: any, d: { documento: string; tipoDocumento: string; nombre?: string; ruesTraslado?: RuesTraslado | null }): Ficha {
+export function traducir(check: any, d: { documento: string; tipoDocumento: string; nombre?: string; ruesTraslado?: RuesTraslado | null; revisionesPenales?: Revisiones | null }): Ficha {
   const base: Ficha = {
     proveedor: 'sarblock', documento: d.documento, tipoDocumento: d.tipoDocumento,
     estado: 'procesando', jobid: String(check?.id ?? ''), nombreInscrito: d.nombre || undefined,
@@ -197,9 +256,20 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   // aplican encima del catálogo y el veredicto es el MÁS estricto entre el
   // de Sarblock y el de la matriz. Cada motivo queda escrito con la regla,
   // la fuente y el dato, para que quien revisa sepa por qué.
-  const motivos = reglasLincoin(catalogo);
+  const revisiones = d.revisionesPenales && typeof d.revisionesPenales === 'object' ? d.revisionesPenales : null;
+  const motivos = reglasLincoin(catalogo, revisiones);
   const coinciden = catalogo.filter(e => e?.matched === true);
-  const hallazgos: Hallazgo[] = motivos.map(m => ({ nivel: m.nivel, codigo: m.regla, texto: m.texto, fuente: m.fuente }));
+  const hallazgos: Hallazgo[] = motivos.map(m => ({ nivel: m.nivel, codigo: m.regla, texto: m.texto, fuente: m.fuente, ...(m.radicado ? { radicado: m.radicado } : {}) }));
+  // Los penales que Cumplimiento verificó como no relacionados: no pesan, pero
+  // se siguen viendo (con quién, cuándo y por qué) en el panel y el PDF.
+  const penalesVerificados = revisiones ? catalogo
+    .filter(e => String(e?.code ?? '') === 'co_rama_judicial')
+    .flatMap(e => (Array.isArray(e?.hits) ? e.hits : []).filter(PASIVA))
+    .filter(h => /penal/.test(String(h?.judicial?.branch ?? '').toLowerCase()))
+    .map(h => ({ h, rev: revisiones[String(h?.judicial?.processKey ?? '').trim()] }))
+    .filter(x => x.rev?.decision === 'sin_relacion')
+    .map(x => ({ radicado: String(x.h.judicial.processKey), texto: `${limpio(x.h.judicial?.court)}, radicado ${x.h.judicial.processKey}`, nota: x.rev.nota, porNombre: x.rev.porNombre ?? null, at: x.rev.at }))
+    : [];
   const altos = motivos.filter(m => m.nivel === 'alto').length;
   const medios = motivos.length - altos;
   // Menciones que NO son coincidencia (p. ej. procesos como demandante): se
@@ -281,6 +351,8 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     ...(check.aggregateOutcome === 'PARTIAL' ? { incompleta: true } : {}),
     hallazgo: traslado ? coinciden.length > 0 : Number(s.matchedLists ?? coinciden.length) > 0,
     ...(traslado ? { ruesTraslado: traslado } : {}),
+    ...(revisiones && Object.keys(revisiones).length ? { revisionesPenales: revisiones } : {}),
+    ...(penalesVerificados.length ? { penalesVerificados } : {}),
     categoria,
     operable,
     bloqueo,
@@ -363,5 +435,5 @@ export function rejuzgar(f: any, d: { documento: string; tipoDocumento: string; 
   if (!s?.catalog) return null;
   const check = { id: s.checkId, status: 'COMPLETED', aggregateOutcome: s.aggregateOutcome, screeningRecordId: s.screeningRecordId,
     catalogVersion: s.catalogVersion, summary: s.summary, identity: s.identity, catalog: s.catalog, completedAt: f.at };
-  return { ...traducir(check, { ...d, ruesTraslado: f.ruesTraslado ?? null }), ...(f.lanzadoAt ? { lanzadoAt: f.lanzadoAt } : {}) };
+  return { ...traducir(check, { ...d, ruesTraslado: f.ruesTraslado ?? null, revisionesPenales: f.revisionesPenales ?? null }), ...(f.lanzadoAt ? { lanzadoAt: f.lanzadoAt } : {}) };
 }
