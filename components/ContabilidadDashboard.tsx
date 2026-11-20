@@ -159,7 +159,9 @@ const ordenanteDe = (tx: any): ClienteFactura | null => {
 // A quién se le factura: un ordenante de Configuración con un clic, uno
 // buscado en el Siigo del usuario, o uno escrito (se crea en Siigo al
 // emitir). Lo usan la factura de un movimiento y la emisión en lote.
-const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?: string; onCambio: (c: ClienteFactura | null) => void }> = ({ inicial = null, notaInicial, onCambio }) => {
+// `transactionId`: con varias empresas, se busca en el Siigo de la empresa
+// que factura ese movimiento.
+const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?: string; transactionId?: string; onCambio: (c: ClienteFactura | null) => void }> = ({ inicial = null, notaInicial, transactionId, onCambio }) => {
   const { currentUser } = useDatabase();
   const fact = useFacturacion();
   const cuU: any = currentUser ?? {};
@@ -178,7 +180,7 @@ const SelectorCliente: React.FC<{ inicial?: ClienteFactura | null; notaInicial?:
   const buscar = async () => {
     if (!q.trim()) return;
     setBuscando(true); setErrorBusqueda(null); setResultados(null);
-    const r = await fact({ action: 'buscar_clientes', q: q.trim() }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'buscar_clientes', q: q.trim(), ...(transactionId ? { transactionId } : {}) }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setBuscando(false);
     if (!r?.ok) { setErrorBusqueda(r?.error ?? 'No se pudo buscar.'); return; }
     setResultados(r.clientes ?? []);
@@ -304,7 +306,7 @@ const FacturaComisionModal: React.FC<{ asiento: Asiento; cfg: any; onCerrar: () 
         </div>
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>A QUIÉN SE LE FACTURA</p>
-        <SelectorCliente inicial={ordTx} notaInicial={cfg?.modelo === 'psp' ? 'Beneficiario del envío (a quien se le transfirió).' : 'Ordenante elegido al hacer el envío.'} onCambio={setElegido} />
+        <SelectorCliente inicial={ordTx} transactionId={asiento?.tx?.id ? String(asiento.tx.id) : undefined} notaInicial={cfg?.modelo === 'psp' ? 'Beneficiario del envío (a quien se le transfirió).' : 'Ordenante elegido al hacer el envío.'} onCambio={setElegido} />
 
         <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '18px 0 6px' }}>COMISIÓN (% SOBRE {asiento.dir === 'in' ? 'EL DEPÓSITO' : 'EL MOVIMIENTO'}, IVA INCLUIDO)</p>
         <div className="flex items-center" style={{ gap: 10 }}>
@@ -788,7 +790,8 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
   };
   useEffect(() => { revisar(30); }, []);
   const registrar = async () => {
-    const facturas = ((res?.sin_registrar ?? []) as any[]).map(s => ({ folio: s.folio, factura_id: s.factura?.id }));
+    // Con varias empresas, cada una se registra desde el Siigo donde se encontró.
+    const facturas = ((res?.sin_registrar ?? []) as any[]).map(s => ({ folio: s.folio, factura_id: s.factura?.id, ...(s.emisora?.id ? { emisora: s.emisora.id } : {}) }));
     if (!facturas.length) return;
     setRegistrando(true); setRegMsg(null);
     const r: any = await fact({ action: 'duplicadas_registrar', facturas }, 150000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
@@ -814,6 +817,9 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
   const revertidas: any[] = res?.revertidas ?? [];
   const rechazadas: any[] = res?.rechazadas ?? [];
   const posibles: any[] = res?.posibles ?? [];
+  // De qué empresa (qué Siigo) es cada hallazgo, cuando hay varias.
+  const deEmpresa = (d: any) => d?.emisora?.nombre ? ` · ${d.emisora.nombre}` : '';
+  const clave = (d: any) => `${d?.emisora?.id ?? ''}-${d?.comprobante}`;
   const nAnular = duplicadas.reduce((s, d) => {
     const vig = (d.facturas as FacturaRev[]).filter(f => !f.anulada);
     return s + vig.length - 1;
@@ -846,6 +852,11 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
               Se revisaron {Number(res.revisadas ?? 0).toLocaleString('es-CO')} facturas de Siigo desde el {fecha(res.desde)}.
               {!res.completo && ' Son demasiadas para una sola revisión: se leyeron las primeras 6.000. Elige un periodo más corto.'}
             </p>
+            {Array.isArray(res.porEmpresa) && res.porEmpresa.length > 1 && (
+              <p style={{ fontSize: 11.5, color: C.sub, margin: '4px 0 0', lineHeight: 1.5 }}>
+                {res.porEmpresa.map((e: any) => `${e.nombre}: ${e.ok ? `${Number(e.revisadas ?? 0).toLocaleString('es-CO')} revisadas` : `no se pudo (${e.error})`}`).join(' · ')}
+              </p>
+            )}
 
             {titulo(duplicadas.length ? `DUPLICADAS · ${duplicadas.length} MOVIMIENTO${duplicadas.length === 1 ? '' : 'S'}` : 'DUPLICADAS')}
             {duplicadas.length === 0
@@ -861,8 +872,8 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                     // está, la primera que salió.
                     const queda = fs.find(f => !f.anulada && f.registrada) ?? fs.find(f => !f.anulada);
                     return (
-                      <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
-                        <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}</p>
+                      <div key={clave(d)} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                        <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{deEmpresa(d)}</p>
                         {fs.map(f => fila(f, f.anulada
                           ? { txt: `anulada${f.notas_credito.length ? ` · ${f.notas_credito.join(', ')}` : ''}`, color: C.tenue }
                           : f.id === queda?.id ? { txt: f.registrada ? 'queda · registrada en Lincoin' : 'queda · la primera', color: C.entra } : { txt: 'anular', color: AMBAR }))}
@@ -877,8 +888,8 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                 {titulo(`A NOMBRE DE LA MISMA EMPRESA · ${aSiMisma.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas de movimientos con la misma empresa: a su nombre (pagos propios con la empresa como ordenante) o de envíos a una cuenta propia. Esas salidas son utilidades o gastos de la empresa y las registra su contador: anúlalas con una nota crédito en Siigo. Lincoin ya no emite estas facturas, en ningún modelo.</p>
                 {aSiMisma.map(d => (
-                  <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
-                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.cuenta_propia ? ' · cuenta propia' : ''}</p>
+                  <div key={clave(d)} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.cuenta_propia ? ' · cuenta propia' : ''}{deEmpresa(d)}</p>
                     {(d.facturas as FacturaRev[]).map(f => fila(f, { txt: 'anular', color: AMBAR }))}
                   </div>
                 ))}
@@ -890,8 +901,8 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                 {titulo(`AJUSTES DE SALDO Y CARGUES REVERTIDOS · ${revertidas.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas de ajustes de saldo, o de cargues que Lincoin revirtió con un ajuste porque fue un error del admin al cargar. No son operaciones con un tercero: anúlalas con una nota crédito en Siigo. Si el cargue se revirtió solo en parte, la nota crédito va por lo revertido. Lincoin ya no las emite.</p>
                 {revertidas.map(d => (
-                  <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
-                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.ajuste ? ' · ajuste de saldo' : d.completo ? ' · revertido completo' : ` · revertido en parte (${monto(d.revertido)})`}</p>
+                  <div key={clave(d)} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.ajuste ? ' · ajuste de saldo' : d.completo ? ' · revertido completo' : ` · revertido en parte (${monto(d.revertido)})`}{deEmpresa(d)}</p>
                     {(d.facturas as FacturaRev[]).map(f => fila(f, d.completo ? { txt: 'anular', color: AMBAR } : { txt: 'nota crédito por lo revertido', color: AMBAR }))}
                   </div>
                 ))}
@@ -903,8 +914,8 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                 {titulo(`DE MOVIMIENTOS RECHAZADOS · ${rechazadas.reduce((s, d) => s + (d.facturas?.length ?? 0), 0)}`)}
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>El movimiento se facturó y después quedó rechazado o devuelto: la plata volvió a la cuenta. Anula estas facturas con una nota crédito por el total en Siigo. Lincoin ya no factura movimientos rechazados.</p>
                 {rechazadas.map(d => (
-                  <div key={d.comprobante} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
-                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.estado_mov ? ` · ${String(d.estado_mov).toLowerCase()}` : ''}</p>
+                  <div key={clave(d)} style={{ border: `1px solid ${C.borde}`, borderRadius: 10, padding: '9px 12px', marginBottom: 8 }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 700, color: C.text, margin: '0 0 4px' }}>{d.comprobante} · {d.tipo} · {monto(d.monto)}{d.estado_mov ? ` · ${String(d.estado_mov).toLowerCase()}` : ''}{deEmpresa(d)}</p>
                     {(d.facturas as FacturaRev[]).map(f => fila(f, { txt: 'anular', color: AMBAR }))}
                   </div>
                 ))}
@@ -916,8 +927,8 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                 {titulo(`EN SIIGO Y NO EN LINCOIN · ${sinRegistrar.length}`)}
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Están emitidas en Siigo con la marca del movimiento, pero Lincoin no las tiene registradas: si se vuelven a emitir, saldrían duplicadas. Registrarlas no cambia nada en Siigo.</p>
                 {sinRegistrar.map(s => (
-                  <div key={s.comprobante} className="flex items-center justify-between" style={{ gap: 10, padding: '5px 0', fontSize: 12, borderBottom: `1px solid ${C.borde}` }}>
-                    <span style={{ color: C.text }}>{s.comprobante} · {s.tipo} · {monto(s.monto)}</span>
+                  <div key={clave(s)} className="flex items-center justify-between" style={{ gap: 10, padding: '5px 0', fontSize: 12, borderBottom: `1px solid ${C.borde}` }}>
+                    <span style={{ color: C.text }}>{s.comprobante} · {s.tipo} · {monto(s.monto)}{deEmpresa(s)}</span>
                     <span style={{ color: C.sub, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{s.factura?.numero} · {fecha(s.factura?.fecha)}</span>
                   </div>
                 ))}
@@ -937,7 +948,7 @@ const DuplicadasModal: React.FC<{ soloLectura: boolean; onCerrar: () => void; on
                 <p style={{ fontSize: 12, color: C.sub, margin: '0 0 8px', lineHeight: 1.5 }}>Facturas hechas fuera de Lincoin (sin el comprobante en la observación) con el mismo cliente y el mismo total que una de Lincoin. Pueden ser del mismo movimiento facturado a mano en Siigo: revísalas.</p>
                 {posibles.map((p, i) => (
                   <div key={`${p.factura?.id}-${i}`} style={{ padding: '5px 0', fontSize: 12, borderBottom: `1px solid ${C.borde}` }}>
-                    <span style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{p.factura?.numero} · {fecha(p.factura?.fecha)} · {monto(p.factura?.total)} · cliente {p.factura?.cliente}</span>
+                    <span style={{ color: C.text, fontVariantNumeric: 'tabular-nums' }}>{p.factura?.numero} · {fecha(p.factura?.fecha)} · {monto(p.factura?.total)} · cliente {p.factura?.cliente}{deEmpresa(p)}</span>
                     <span style={{ color: C.sub }}> — igual a {(p.de_lincoin as FacturaRev[]).map(f => `${f.numero} (${f.comprobante})`).join(', ')}</span>
                   </div>
                 ))}
@@ -1031,7 +1042,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   const [lote, setLote] = useState<ItemLote[] | null>(null);
   const [busca, setBusca] = useState('');
   const [limite, setLimite] = useState(25);
-  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null; at?: string | null; dian?: string | null } }>>({});
+  const [folios, setFolios] = useState<Record<string, { folio: number; numero: string; enviado: boolean; emisoraId?: string | null; moneda?: string | null; factura?: { estado: string | null; numero: string | null; url: string | null; error: string | null; tipo: string | null; at?: string | null; dian?: string | null } }>>({});
   const [foliosEstado, setFoliosEstado] = useState<'cargando' | 'ok' | 'sin_tabla' | 'error'>('cargando');
   const [configAbierta, setConfigAbierta] = useState(false);
   const [facturacionActiva, setFacturacionActiva] = useState<boolean | null>(null);
@@ -1062,6 +1073,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const m: typeof folios = {};
     for (const r of filas) m[String(r.transaction_id)] = {
       folio: Number(r.folio), numero: String(r.numero), enviado: !!r.enviado_at,
+      // La empresa que emitió la factura (varias empresas, 20 nov).
+      emisoraId: r.emisora?.id ?? r.emisora_id ?? r.factura_detalle?.emisora?.id ?? null, moneda: r.moneda ?? null,
       factura: { estado: r.factura_estado ?? null, numero: r.factura_numero ?? null, url: r.factura_url ?? null, error: r.factura_error ?? null, tipo: r.factura_tipo ?? null, at: r.factura_at ?? null, dian: r.dian ?? r.factura_detalle?.dian ?? null },
     };
     return m;
@@ -1090,7 +1103,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       // respuestas completas de Siigo y hacía lenta cada recarga). Si una
       // columna nueva todavía no existe (falta su migración), se cae a '*'.
       // dian: si la DIAN rechazó la factura (lo marca el servidor).
-      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at, dian:factura_detalle->>dian';
+      const cols = 'transaction_id, folio, numero, enviado_at, moneda, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at, dian:factura_detalle->>dian, emisora_id:factura_detalle->emisora->>id';
       let { data, error } = await supabase.from('comprobantes').select(cols).eq('user_id', userId).limit(2000);
       if (error && /column|schema cache|PGRST/i.test(error.message)) ({ data, error } = await supabase.from('comprobantes').select('*').eq('user_id', userId).limit(2000));
       if (!vivo) return;
@@ -1142,6 +1155,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // el aviso automático de la base no está llegando).
   const [chequeo, setChequeo] = useState<{ sinComprobante: number; ultimos: number } | null>(null);
   const [cfgFact, setCfgFact] = useState<any>(null);
+  // Las empresas que facturan (la 1 y las que tengan cuentas propias).
+  const [emisorasFact, setEmisorasFact] = useState<{ id: string; principal: boolean; nombre: string; cuentas: string[]; activo: boolean }[]>([]);
   // Factura de comisión (PSP): el movimiento (depósito) al que se le está
   // emitiendo, con el modal abierto.
   const [comisionPara, setComisionPara] = useState<any>(null);
@@ -1161,12 +1176,32 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   useEffect(() => {
     if (!userId || soloLectura) return;
     fact({ action: 'config_get' }, 20000)
-      .then((r: any) => { setFacturacionActiva(!!r?.config?.activo); setChequeo(r?.chequeo ?? null); setCfgFact(r?.config ?? null); })
+      .then((r: any) => {
+        const ems = Array.isArray(r?.emisoras) ? r.emisoras : [];
+        setEmisorasFact(ems);
+        // Con varias empresas, "activa" es que alguna emita: con la 1 pausada
+        // y la 2 activa, las cuentas de la 2 se siguen facturando.
+        setFacturacionActiva(!!r?.config?.activo || ems.some((e: any) => e.activo));
+        setChequeo(r?.chequeo ?? null); setCfgFact(r?.config ?? null);
+      })
       .catch(() => setFacturacionActiva(null));
   }, [userId, configAbierta, foliosVersion]);
+  const variasEmpresas = emisorasFact.length > 1;
+  const nActivas = emisorasFact.filter(e => e.activo).length;
+  // De qué empresa es la factura de un movimiento: la sellada al emitir; una
+  // emitida sin sello es de antes de que hubiera varias (la 1); si no, la
+  // dueña de la cuenta del movimiento.
+  const empresaDeFolio = (f: any): string => {
+    const id = f?.emisoraId
+      ?? ((f?.factura?.estado === 'emitida' || f?.factura?.estado === 'anulada') && f?.factura?.numero ? 'principal'
+        : (emisorasFact.find(e => !e.principal && e.cuentas.includes(String(f?.moneda ?? '').toUpperCase()))?.id ?? 'principal'));
+    return emisorasFact.find(e => e.id === id)?.nombre ?? 'Empresa quitada';
+  };
   // El interruptor: activar exige la configuración completa; el servidor
-  // dice qué falta, y eso se muestra tal cual.
+  // dice qué falta, y eso se muestra tal cual. Con varias empresas cada una
+  // se activa en Configuración (el interruptor no sabría cuál).
   const alternarAutomatica = async () => {
+    if (variasEmpresas) { setConfigAbierta(true); return; }
     if (facturacionActiva == null) return;
     setCambiandoAuto(true);
     const r = await fact({ action: 'config_set', config: { activo: !facturacionActiva }, cambiarActivo: true }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
@@ -1582,8 +1617,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const saldoInicial = primera ? (saldoTras.get(primera) ?? 0) - efecto(primera) : 0;
     let totEntradas = 0, totSalidas = 0, totCostos = 0;
     const movimientos: (string | number | Date | null)[][] = [
-      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Costo del envío', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Referencia', 'Id'],
-      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, null, saldoInicial, moneda, '', '', '', '', '', ''],
+      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Costo del envío', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', ...(variasEmpresas ? ['Empresa que factura'] : []), 'Referencia', 'Id'],
+      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, null, saldoInicial, moneda, '', '', '', '', ...(variasEmpresas ? [''] : []), '', ''],
     ];
     for (const a of filasHoja) {
       const f = folios[String(a.tx.id)];
@@ -1597,11 +1632,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         suma && a.costo > 0 ? a.costo : null,
         saldoTras.get(a) ?? null, a.moneda, a.estado,
         f?.numero ?? '', estadoDoc(f?.factura), f?.factura?.numero ?? '',
+        ...(variasEmpresas ? [f?.factura?.numero ? empresaDeFolio(f) : ''] : []),
         String(a.tx.providerRef ?? a.tx.reference ?? a.tx.txHash ?? ''), String(a.tx.id),
       ]);
     }
     const saldoFinal = filasHoja.length ? (saldoTras.get(filasHoja[filasHoja.length - 1]) ?? saldoInicial) : saldoInicial;
-    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, totCostos, saldoFinal, moneda, '', '', '', '', '', '']);
+    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, totCostos, saldoFinal, moneda, '', '', '', '', ...(variasEmpresas ? [''] : []), '', '']);
 
     // ── 3 y 4. A quién se le envió y de quién se recibió: una fila por
     //    tercero, el gráfico de los 15 primeros y, si el periodo tiene más de
@@ -1689,7 +1725,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const rotArchivo = periodo === 'mes' ? `${mesY}-${String(mesM + 1).padStart(2, '0')}` : periodo;
     descargarXlsx(`lincoin-contabilidad-${moneda}-${rotArchivo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
       hojaEstado,
-      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 14, 18, 8, 12, 14, 22, 12, 30, 38] },
+      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 14, 18, 8, 12, 14, 22, 12, ...(variasEmpresas ? [28] : []), 30, 38] },
       hojaTerceros('Enviado a', 'A quién se le envió', enviadoA, 'out'),
       hojaTerceros('Recibido de', 'De quién se recibió', recibidoDe, 'in'),
     ]);
@@ -1768,7 +1804,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
               <span style={{ width: 28, height: 16, borderRadius: 999, background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', position: 'relative', flexShrink: 0 }}>
                 <span style={{ position: 'absolute', top: 2, left: facturacionActiva ? 14 : 2, width: 12, height: 12, borderRadius: '50%', background: '#0C0E0D', transition: 'left .15s' }} />
               </span>
-              {cambiandoAuto ? '…' : facturacionActiva ? 'Automática' : 'Automática apagada'}
+              {cambiandoAuto ? '…' : variasEmpresas ? `Automática · ${nActivas} de ${emisorasFact.length} empresas` : facturacionActiva ? 'Automática' : 'Automática apagada'}
             </button>
           )}
           {/* Quién es contador de la empresa lo decide la empresa, no su contador. */}
@@ -2071,7 +2107,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {fa.estado === 'anulada'
                                 ? <button onClick={() => onVerMovimiento?.(a.tx)} style={{ fontFamily: FONT, fontSize: 12, color: C.tenue, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'line-through' }}>{fa.tipo === 'DS' ? 'DS · ' : ''}{fa.numero ?? 'anulado'}</button>
                                 : <span style={{ color: C.tenue }}>{fa.estado === 'omitida' ? (noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : 'no aplica') : fa.estado}</span>}
-                              {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado</span>}
+                              {fa.estado === 'anulada' && <span style={{ color: C.tenue, fontSize: 11 }}>anulado{variasEmpresas ? ` · ${empresaDeFolio(f)}` : ''}</span>}
                               {/* Anulada (en Siigo, con nota crédito): se vuelve a
                                   emitir al mismo cliente, con el cálculo vigente.
                                   Solo un envío: un depósito no lleva factura. */}
@@ -2104,6 +2140,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {fa.numero ?? 'factura'}
                             </button>
                             <span style={{ color: '#F87171', fontWeight: 700, fontSize: 11 }}>rechazada DIAN</span>
+                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'nowrap' }}>{empresaDeFolio(f)}</span>}
                             {/* Un movimiento rechazado no se vuelve a facturar. */}
                             {!soloLectura && txId && !rech && <button onClick={() => reenviarRechazada(txId, fa.numero)} disabled={reenviando === txId}
                               title="Corrige la fecha y vuelve a enviar a la DIAN la misma factura de Siigo"
@@ -2119,6 +2156,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {rotulo}{fa.numero ?? 'emitida'}
                             </button>
                             {fa.url && <a href={fa.url} target="_blank" rel="noopener noreferrer" title="Abrir en Siigo" style={{ color: C.sub, fontSize: 11 }}>↗</a>}
+                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'nowrap' }} title="Empresa que la emitió">{empresaDeFolio(f)}</span>}
                             {/* Vigente de un movimiento rechazado: la plata volvió,
                                 la factura sobra. Se anula en Siigo; Lincoin la ve
                                 tachada al leer la nota crédito. */}

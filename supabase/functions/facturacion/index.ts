@@ -210,10 +210,14 @@ async function diagnosticoComprobante(userId: string, token: string, partner: st
   return partes.join(' ')
 }
 
-// Token por cliente, mientras viva la instancia. Siigo lo da por 24 h.
+// Token por cliente (y por empresa que factura), mientras viva la instancia.
+// Siigo lo da por 24 h. Con varias empresas cada una tiene su Siigo: un solo
+// token por cuenta habría mandado la factura de la empresa 2 al Siigo de la 1.
 const tokens = new Map<string, { token: string; hasta: number }>()
+const claveToken = (userId: string, cfg: any) => cfg?._emisora && cfg._emisora !== 'principal' ? `${userId}:${cfg._emisora}` : userId
 async function tokenDe(userId: string, cfg: any, forzar = false): Promise<{ token: string } | { error: string }> {
-  const c = tokens.get(userId)
+  const clave = claveToken(userId, cfg)
+  const c = tokens.get(clave)
   if (!forzar && c && c.hasta > Date.now()) return { token: c.token }
   if (!cfg?.username || !cfg?.access_key_enc) return { error: 'Faltan las credenciales de Siigo (usuario y access key).' }
   let key: string
@@ -223,13 +227,116 @@ async function tokenDe(userId: string, cfg: any, forzar = false): Promise<{ toke
   const token = r.data?.access_token
   if (!r.ok || !token) return { error: `Siigo no aceptó las credenciales — ${motivoDe(r)}` }
   const seg = Number(r.data?.expires_in) || 86400
-  tokens.set(userId, { token, hasta: Date.now() + Math.max(60, seg - 120) * 1000 })
+  tokens.set(clave, { token, hasta: Date.now() + Math.max(60, seg - 120) * 1000 })
   return { token }
 }
 
-async function leerConfig(userId: string) {
+// ── Varias empresas que facturan (20 nov) ─────────────────────────
+// Pedido del dueño: los pagos que salen por las Cuentas 3 y 4 los hace OTRA
+// empresa (la titular de esas cuentas), así que su factura tiene que salir del
+// Siigo de esa empresa, no del de la empresa 1. Cada cuenta del cliente puede
+// tener varias empresas emisoras, cada una con su Siigo completo (credenciales,
+// comprobantes, ítems, modelo) y las cuentas que le tocan.
+//   · La empresa 1 ("principal") es la fila de facturacion_config de siempre.
+//   · Las demás viven en private_config (`facturacion_empresas:<userId>`): sin
+//     acceso desde el navegador, llevan la access key cifrada.
+//   · Una operación se factura desde la empresa dueña de su cuenta (la moneda
+//     del movimiento: COP_C3, COP_C4…); lo que no está asignado, desde la 1.
+//   · Cada factura emitida queda sellada con su empresa (factura_detalle.
+//     emisora): las anulaciones, la DIAN y el PDF se buscan en ESE Siigo.
+type Emisora = { id: string; nombre: string; nit: string | null; cuentas: string[]; creadaAt?: string; cfg: Record<string, any> }
+const CUENTAS_FACTURABLES: Record<string, string> = {
+  COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', COP_C3: 'Cuenta 3 · Jero', COP_C4: 'Cuenta 4 · Kaupaloki',
+}
+const claveEmisoras = (userId: string) => `facturacion_empresas:${userId}`
+// El documento entero: { empresas: [...], principal: { nombre, nit } }.
+async function leerDocEmisoras(userId: string): Promise<Record<string, any>> {
+  try {
+    const { data } = await db.from('private_config').select('value').eq('key', claveEmisoras(userId)).maybeSingle()
+    const v = (data as any)?.value ? JSON.parse(String((data as any).value)) : null
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+  } catch { return {} }
+}
+async function escribirDocEmisoras(userId: string, doc: Record<string, any>): Promise<string | null> {
+  const { error } = await db.from('private_config').upsert({ key: claveEmisoras(userId), value: JSON.stringify(doc) }, { onConflict: 'key' })
+  return error ? error.message : null
+}
+async function leerEmisoras(userId: string): Promise<Emisora[]> {
+  const v = await leerDocEmisoras(userId)
+  return (Array.isArray(v?.empresas) ? v.empresas : [])
+    .filter((e: any) => e && typeof e.id === 'string' && e.id !== 'principal')
+    .map((e: any) => ({ ...e, cuentas: Array.isArray(e.cuentas) ? e.cuentas.map((x: unknown) => String(x)) : [], cfg: e.cfg && typeof e.cfg === 'object' ? e.cfg : {} }))
+}
+async function guardarEmisoras(userId: string, lista: Emisora[]): Promise<string | null> {
+  const doc = await leerDocEmisoras(userId)
+  return escribirDocEmisoras(userId, { ...doc, empresas: lista })
+}
+const cuentaDeMoneda = (moneda: unknown) => String(moneda ?? '').toUpperCase().trim()
+function emisoraDeMoneda(emisoras: Emisora[], moneda: unknown): string {
+  const m = cuentaDeMoneda(moneda)
+  return emisoras.find(e => e.cuentas.includes(m))?.id ?? 'principal'
+}
+// De qué empresa es (o será) la factura de un comprobante. Una ya emitida
+// manda su sello; una emitida sin sello es de antes de que hubiera varias
+// empresas, y entonces es de la 1. Si no, la dueña de la cuenta.
+function emisoraDeFila(c: any, emisoras: Emisora[]): string {
+  const sello = c?.factura_detalle?.emisora?.id ?? c?.emisora?.id
+  if (sello) return String(sello)
+  if (c?.factura_estado === 'emitida' && (c?.factura_id || c?.factura_numero)) return 'principal'
+  return emisoraDeMoneda(emisoras, c?.moneda)
+}
+async function emisoraDeComprobante(c: any): Promise<string> {
+  return emisoraDeFila(c, await leerEmisoras(String(c?.user_id ?? '')))
+}
+// Para EMITIR: el sello solo manda mientras la factura sigue emitida. Una
+// anulada se vuelve a emitir desde la empresa que HOY tiene la cuenta; su
+// sello viejo la mandaría al Siigo de antes si la cuenta cambió de empresa.
+function emisoraParaEmitir(c: any, emisoras: Emisora[]): string {
+  return c?.factura_estado === 'emitida' ? emisoraDeFila(c, emisoras) : emisoraDeMoneda(emisoras, c?.moneda)
+}
+async function emisoraDeTx(userId: string, txId: string): Promise<string> {
+  const { data: comp } = await db.from('comprobantes').select('user_id, moneda, factura_estado, factura_id, factura_numero, factura_detalle').eq('transaction_id', txId).maybeSingle()
+  if (comp) return emisoraParaEmitir(comp, await leerEmisoras(userId))
+  const { data: tx } = await db.from('transactions').select('currency').eq('id', txId).maybeSingle()
+  return emisoraDeMoneda(await leerEmisoras(userId), (tx as any)?.currency)
+}
+// El nombre que se muestra de cada empresa. La 1 lleva el de la cuenta.
+async function nombreEmisora(userId: string, id: string, emisoras?: Emisora[]): Promise<string> {
+  if (id !== 'principal') return (emisoras ?? await leerEmisoras(userId)).find(e => e.id === id)?.nombre ?? 'Empresa sin nombre'
+  const propio = (await leerDocEmisoras(userId))?.principal?.nombre
+  if (propio) return String(propio)
+  const { data: u } = await db.from('users').select('company_name, full_name').eq('id', userId).maybeSingle()
+  return String((u as any)?.company_name || (u as any)?.full_name || 'Empresa 1')
+}
+// ¿Alguna empresa de la cuenta tiene la facturación activa? Lo usan las
+// vueltas automáticas: con la 1 pausada y la 2 activa, igual hay qué emitir.
+async function algunaActiva(userId: string): Promise<boolean> {
+  const { data } = await db.from('facturacion_config').select('activo').eq('user_id', userId).maybeSingle()
+  if ((data as any)?.activo) return true
+  return (await leerEmisoras(userId)).some(e => e.cfg?.activo === true)
+}
+// Después de emitir: la factura queda sellada con su empresa.
+// `usada`: la empresa desde la que se acaba de emitir. Se sobrescribe el
+// sello que hubiera (el de una factura anterior, ya anulada).
+async function sellarEmisora(folio: number, usada?: string): Promise<void> {
+  const { data: c } = await db.from('comprobantes').select('folio, user_id, moneda, factura_estado, factura_id, factura_numero, factura_detalle').eq('folio', folio).maybeSingle()
+  const comp = c as any
+  if (!comp || comp.factura_estado !== 'emitida') return
+  if (comp.factura_detalle?.emisora?.id && (!usada || comp.factura_detalle.emisora.id === usada)) return
+  const emisoras = await leerEmisoras(String(comp.user_id))
+  const id = usada ?? emisoraDeMoneda(emisoras, comp.moneda)
+  const nombre = await nombreEmisora(String(comp.user_id), id, emisoras)
+  await db.from('comprobantes').update({ factura_detalle: { ...(comp.factura_detalle ?? {}), emisora: { id, nombre } } })
+    .eq('folio', folio).eq('factura_estado', 'emitida')
+}
+
+async function leerConfig(userId: string, emisora?: string | null) {
   const { data } = await db.from('facturacion_config').select('*').eq('user_id', userId).maybeSingle()
-  return (data as any) ?? null
+  const base = (data as any) ?? null
+  if (!emisora || emisora === 'principal') return base ? { ...base, _emisora: 'principal' } : null
+  const e = (await leerEmisoras(userId)).find(x => x.id === emisora)
+  if (!e) return null
+  return { ...e.cfg, user_id: userId, proveedor: 'siigo', _emisora: e.id, _emisoraNombre: e.nombre }
 }
 
 // Lo que ve la pantalla: nunca la access key, ni pedazos de ella. Antes iba
@@ -240,6 +347,39 @@ async function publica(cfg: any, resumen?: any) {
   if (!cfg) return { existe: false, activo: false, tieneAccessKey: false, disparadores: ['load', 'pay_received'], stamp: true, mail: true, crear_clientes: true, cliente_default_nit: '222222222222', cliente_default_nombre: 'Consumidor final', resumen }
   const { access_key_enc, ...resto } = cfg
   return { existe: true, ...resto, tieneAccessKey: !!access_key_enc, resumen }
+}
+
+// A cada fila (comprobante) se le dice de qué empresa es su factura. Las
+// filas traen `emisora_id` (el sello) y se devuelven con `emisora`.
+async function etiquetarEmisoras(userId: string, filas: any[]): Promise<any[]> {
+  const extras = await leerEmisoras(userId)
+  if (!extras.length) return filas.map(({ emisora_id: _e, ...f }) => f)
+  const nombres = new Map<string, string>([['principal', await nombreEmisora(userId, 'principal', extras)], ...extras.map(e => [e.id, e.nombre] as [string, string])])
+  return filas.map(({ emisora_id, ...f }) => {
+    const id = emisoraDeFila({ ...f, factura_detalle: emisora_id ? { emisora: { id: emisora_id } } : null }, extras)
+    return { ...f, emisora: { id, nombre: nombres.get(id) ?? 'Empresa quitada' } }
+  })
+}
+
+// Las empresas que facturan, para la pantalla: nunca la access key.
+async function resumenEmisoras(userId: string) {
+  const extras = await leerEmisoras(userId)
+  const doc = await leerDocEmisoras(userId)
+  const { data: p } = await db.from('facturacion_config').select('activo, username, access_key_enc').eq('user_id', userId).maybeSingle()
+  const asignadas = new Set(extras.flatMap(e => e.cuentas))
+  const principal = {
+    id: 'principal', principal: true, nombre: await nombreEmisora(userId, 'principal', extras), nit: doc?.principal?.nit ?? null,
+    // La 1 factura todo lo que no está asignado a otra.
+    cuentas: Object.keys(CUENTAS_FACTURABLES).filter(k => !asignadas.has(k)),
+    activo: !!(p as any)?.activo, conectada: !!((p as any)?.username && (p as any)?.access_key_enc),
+  }
+  return {
+    emisoras: [principal, ...extras.map(e => ({
+      id: e.id, principal: false, nombre: e.nombre, nit: e.nit ?? null, cuentas: e.cuentas, creadaAt: e.creadaAt ?? null,
+      activo: e.cfg?.activo === true, conectada: !!(e.cfg?.username && e.cfg?.access_key_enc),
+    }))],
+    cuentasFacturables: CUENTAS_FACTURABLES,
+  }
 }
 
 async function resumenDe(userId: string) {
@@ -329,7 +469,8 @@ async function asegurarComprobante(tx: any, userId: string): Promise<{ folio: nu
 // sale aunque el trigger de la base haya fallado para esa operación. Se
 // hace de a pocas por vuelta: cada emisión puede tardar un minuto.
 async function reconciliar(userId: string, tope = 3): Promise<{ creados: number; emitidos: number; errores: string[]; pendientes: number }> {
-  const cfg = await leerConfig(userId)
+  // Con varias empresas basta que UNA esté activa: emitir decide por empresa.
+  const cfg = { activo: await algunaActiva(userId) }
   const { sin } = await completadasSinComprobante(userId)
   const out = { creados: 0, emitidos: 0, errores: [] as string[], pendientes: 0 }
   let hechos = 0
@@ -364,9 +505,8 @@ async function reconciliar(userId: string, tope = 3): Promise<{ creados: number;
 async function ponerseAlDia(userId: string, opts: { tope?: number; hastaMs?: number } = {}): Promise<{ creados: number; emitidos: number; reintentados: number; errores: string[] }> {
   const fin = opts.hastaMs ?? Date.now() + 100_000
   const tope = opts.tope ?? 3
-  const cfg = await leerConfig(userId)
   const out = { creados: 0, emitidos: 0, reintentados: 0, errores: [] as string[] }
-  if (!cfg?.activo) return out
+  if (!(await algunaActiva(userId))) return out
   // Una cola de lote cuyo relevo se perdió se retoma (en su propia llamada).
   await reanudarCola(userId).catch(e => console.error('[facturacion] reanudar cola', userId, String((e as Error)?.message ?? e)))
   const r = await reconciliar(userId, tope)
@@ -1095,11 +1235,22 @@ function desdeParaBuscar(comp: any): string {
 // revisadoEnSiigo: la persona confirmó que revisó en Siigo Nube que el
 // documento soporte a medias NO está (ver «documento soporte a medias» más
 // abajo). Solo sirve cuando Siigo no deja buscarlo por API.
+// La emisión, y al final el sello de la empresa que facturó (varias empresas,
+// 20 nov). Todo el que emite pasa por acá.
 async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boolean; revisadoEnSiigo?: boolean } = {}): Promise<any> {
+  const usada: { emisora?: string } = {}
+  const r = await emitirSinSello(folio, opts, usada)
+  if (r?.ok && r.estado === 'emitida') await sellarEmisora(folio, usada.emisora).catch(e => console.error('[facturacion] sello', folio, String((e as Error)?.message ?? e)))
+  return r
+}
+async function emitirSinSello(folio: number, opts: { forzar?: boolean; desdeCola?: boolean; revisadoEnSiigo?: boolean } = {}, usada: { emisora?: string } = {}): Promise<any> {
   const { data: comp } = await db.from('comprobantes').select('*').eq('folio', folio).maybeSingle()
   if (!comp) return { ok: false, error: 'comprobante_no_encontrado' }
   const userId = String((comp as any).user_id ?? '')
-  const cfg = await leerConfig(userId)
+  // Desde qué empresa (y qué Siigo) sale: la dueña de la cuenta del movimiento.
+  const emisora = emisoraParaEmitir(comp, await leerEmisoras(userId))
+  usada.emisora = emisora
+  const cfg = await leerConfig(userId, emisora)
   const detD: any = (comp as any).factura_detalle ?? {}
   // ¿Un envío anterior quedó A MEDIAS? Un 'emitiendo' de más de 3 min (la
   // función se cortó mandando el documento), lo que se encoló estando así (la
@@ -1147,8 +1298,11 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   }
   // Una factura anulada no se marca "no aplica" por estar pausada la
   // facturación: se perdería que estuvo facturada y anulada.
-  if ((!cfg || !cfg.activo) && opts.forzar && ((comp as any).factura_estado === 'anulada' || Array.isArray((comp as any).factura_detalle?.anteriores))) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para volver a emitir.' }
-  if (!cfg || !cfg.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación automática no activa.' }); return { ok: true, estado: 'omitida' } }
+  // Con varias empresas, decir CUÁL está pausada: la operación es de una
+  // cuenta que factura otra empresa, y activar la 1 no la emitiría.
+  const pausada = cfg?._emisoraNombre ? `La facturación de ${cfg._emisoraNombre} (la empresa de esta cuenta) no está activa.` : null
+  if ((!cfg || !cfg.activo) && opts.forzar && ((comp as any).factura_estado === 'anulada' || Array.isArray((comp as any).factura_detalle?.anteriores))) return { ok: false, error: pausada ?? 'La facturación está pausada. Activala en Contabilidad → Configuración para volver a emitir.' }
+  if (!cfg || !cfg.activo) { await marcar({ factura_estado: 'omitida', factura_error: pausada ?? 'Facturación automática no activa.' }); return { ok: true, estado: 'omitida', ...(pausada ? { aviso: pausada } : {}) } }
   const reglas = documentosDe(cfg)
   const regla = reglas[tipo] ?? null
   // EL MOTIVO DEL ENVÍO MANDA. Si la operación trae motivo (se pregunta al
@@ -1183,7 +1337,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
     if (opts.forzar && yaFueAnulada && clienteAnt?.identification) {
       return emitirComision(userId, String((comp as any).transaction_id), {
         identification: String(clienteAnt.identification), nombre: clienteAnt.nombre ? String(clienteAnt.nombre) : undefined,
-        pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true,
+        pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true, emisora,
       })
     }
     // A quién. PSP / pasarela: al BENEFICIARIO, con el nombre y documento
@@ -1194,7 +1348,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
         const e = 'El envío no trae el documento del beneficiario, y en PSP la factura va a su nombre. Revisá el beneficiario en la lista y emití de nuevo.'
         await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
       }
-      return emitirComision(userId, String((comp as any).transaction_id), { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa, auto: !opts.forzar })
+      return emitirComision(userId, String((comp as any).transaction_id), { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa, auto: !opts.forzar, emisora })
     }
     // Comisión: al ordenante (el cliente por cuenta de quien se pagó), que se
     // elige al enviar y viaja en raw_data.recipient.ordenante.
@@ -1206,7 +1360,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
         const e = 'El envío no tiene ordenante, y la factura de la comisión va a su nombre. Emitila a mano eligiendo el cliente.'
         await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
       }
-      return emitirComision(userId, String((comp as any).transaction_id), { identification: docOrd, nombre: String(ord?.nombre ?? ''), esEmpresa: String(ord?.docTipo ?? '') === 'NIT', auto: !opts.forzar })
+      return emitirComision(userId, String((comp as any).transaction_id), { identification: docOrd, nombre: String(ord?.nombre ?? ''), esEmpresa: String(ord?.docTipo ?? '') === 'NIT', auto: !opts.forzar, emisora })
     }
     // Solo envíos: en Comisión y en PSP un cargue o depósito no se factura.
     {
@@ -1331,7 +1485,7 @@ async function emitir(folio: number, opts: { forzar?: boolean; desdeCola?: boole
   // Última revisión de la pausa, justo antes de mandar a Siigo: armar el
   // documento (tercero, RUES, catálogos) puede tardar más de un minuto, y
   // una pausa puesta en ese rato tiene que frenar este envío.
-  const vigente = await leerConfig(userId)
+  const vigente = await leerConfig(userId, emisora)
   if (!vigente?.activo) {
     await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar el documento a Siigo.' })
     return { ok: true, estado: 'omitida' }
@@ -1602,7 +1756,20 @@ async function aplicarNotasCredito(c: any, notas: NotaCredito[]): Promise<'anula
 // vieja) y marca las anuladas con nota crédito.
 async function sincronizarAnulaciones(userId: string): Promise<{ revisadas: number; anuladas: string[]; parciales: string[]; error?: string }> {
   const out = { revisadas: 0, anuladas: [] as string[], parciales: [] as string[] }
-  const cfg = await leerConfig(userId)
+  // Cada empresa revisa SUS facturas en SU Siigo (varias empresas, 20 nov).
+  const emisoras = await leerEmisoras(userId)
+  if (!emisoras.length) return sincronizarAnulacionesDe(userId, 'principal', null)
+  const errores: string[] = []
+  for (const em of ['principal', ...emisoras.map(e => e.id)]) {
+    const r = await sincronizarAnulacionesDe(userId, em, emisoras)
+    out.revisadas += r.revisadas; out.anuladas.push(...r.anuladas); out.parciales.push(...r.parciales)
+    if (r.error && r.revisadas) errores.push(`${await nombreEmisora(userId, em, emisoras)}: ${r.error}`)
+  }
+  return errores.length ? { ...out, error: errores.join(' · ') } : out
+}
+async function sincronizarAnulacionesDe(userId: string, emisora: string, emisoras: Emisora[] | null): Promise<{ revisadas: number; anuladas: string[]; parciales: string[]; error?: string }> {
+  const out = { revisadas: 0, anuladas: [] as string[], parciales: [] as string[] }
+  const cfg = await leerConfig(userId, emisora)
   if (!cfg) return { ...out, error: 'Siigo no está configurado.' }
   const filas: any[] = []
   for (let desde = 0; desde < 20000; desde += 1000) {
@@ -1610,7 +1777,7 @@ async function sincronizarAnulaciones(userId: string): Promise<{ revisadas: numb
       .eq('user_id', userId).eq('factura_estado', 'emitida').not('factura_id', 'is', null)
       .order('folio', { ascending: true }).range(desde, desde + 999)
     if (error) return { ...out, error: error.message }
-    filas.push(...((data ?? []) as any[]).filter(f => f.factura_tipo !== 'DS'))
+    filas.push(...((data ?? []) as any[]).filter(f => f.factura_tipo !== 'DS' && (!emisoras || emisoraDeFila(f, emisoras) === emisora)))
     if (!data || data.length < 1000) break
   }
   out.revisadas = filas.length
@@ -1687,14 +1854,27 @@ async function resumenUtilidad(userId: string, desde: string, hasta: string): Pr
 // después queda aceptada se desmarca. Sin el dato del sello no se toca nada.
 const esRechazoDian = (st: unknown) => /reject|rechaz/i.test(String(st ?? ''))
 async function revisarDian(userId: string, dias = 10): Promise<{ revisadas: number; rechazadas: string[]; error?: string }> {
+  // Cada empresa en SU Siigo (varias empresas, 20 nov).
+  const emisoras = await leerEmisoras(userId)
+  if (!emisoras.length) return revisarDianDe(userId, dias, 'principal', null)
   const out = { revisadas: 0, rechazadas: [] as string[] }
-  const cfg = await leerConfig(userId)
+  const errores: string[] = []
+  for (const em of ['principal', ...emisoras.map(e => e.id)]) {
+    const r = await revisarDianDe(userId, dias, em, emisoras)
+    out.revisadas += r.revisadas; out.rechazadas.push(...r.rechazadas)
+    if (r.error) errores.push(`${await nombreEmisora(userId, em, emisoras)}: ${r.error}`)
+  }
+  return errores.length ? { ...out, error: errores.join(' · ') } : out
+}
+async function revisarDianDe(userId: string, dias: number, emisora: string, emisoras: Emisora[] | null): Promise<{ revisadas: number; rechazadas: string[]; error?: string }> {
+  const out = { revisadas: 0, rechazadas: [] as string[] }
+  const cfg = await leerConfig(userId, emisora)
   if (!cfg) return out
-  const { data: comps, error } = await db.from('comprobantes').select('folio, factura_id, factura_numero, factura_tipo, factura_detalle')
+  const { data: comps, error } = await db.from('comprobantes').select('folio, moneda, factura_estado, factura_id, factura_numero, factura_tipo, factura_detalle')
     .eq('user_id', userId).eq('factura_estado', 'emitida').not('factura_id', 'is', null)
     .gte('factura_at', new Date(Date.now() - dias * 86_400_000).toISOString()).limit(500)
   if (error) return { ...out, error: error.message }
-  const filas = ((comps ?? []) as any[]).filter(c => c.factura_tipo !== 'DS')
+  const filas = ((comps ?? []) as any[]).filter(c => c.factura_tipo !== 'DS' && (!emisoras || emisoraDeFila(c, emisoras) === emisora))
   if (!filas.length) return out
   const t = await tokenDe(userId, cfg)
   if ('error' in t) return { ...out, error: t.error }
@@ -1733,7 +1913,8 @@ async function reenviarRechazada(userId: string, txId: string): Promise<any> {
   if (!c || String(c.user_id) !== userId) return { ok: false, error: 'movimiento_no_encontrado' }
   if (c.factura_estado !== 'emitida' || !c.factura_id) return { ok: false, error: 'Este movimiento no tiene una factura emitida para volver a enviar.' }
   if (c.factura_tipo === 'DS') return { ok: false, error: 'Un documento soporte rechazado se corrige en Siigo Nube (Compras → Documento soporte → Ver inconsistencias) y se vuelve a enviar desde allá.' }
-  const cfg = await leerConfig(userId)
+  // En el Siigo de la empresa que la emitió.
+  const cfg = await leerConfig(userId, await emisoraDeComprobante(c))
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const t = await tokenDe(userId, cfg)
   if ('error' in t) return { ok: false, error: t.error }
@@ -1779,8 +1960,20 @@ async function reenviarRechazada(userId: string, txId: string): Promise<any> {
 // Siigo la toma como duplicada, vuelve a la cola con espera en vez de quedar
 // 'pendiente': el cron reintenta los 'pendiente' con las reglas automáticas,
 // que no saben del cliente elegido en el lote.
-async function emitirComision(userId: string, txId: string, d: { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean; reemplazo?: boolean; cola?: Record<string, any> }): Promise<any> {
-  const cfg = await leerConfig(userId)
+type DatosComision = { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean; reemplazo?: boolean; cola?: Record<string, any>; emisora?: string }
+async function emitirComision(userId: string, txId: string, d: DatosComision): Promise<any> {
+  const emisora = d.emisora ?? await emisoraDeTx(userId, txId)
+  const r = await emitirComisionSinSello(userId, txId, { ...d, emisora })
+  if (r?.ok && r.estado === 'emitida') {
+    const { data: c } = await db.from('comprobantes').select('folio').eq('transaction_id', txId).maybeSingle()
+    if ((c as any)?.folio) await sellarEmisora(Number((c as any).folio), emisora).catch(e => console.error('[facturacion] sello', txId, String((e as Error)?.message ?? e)))
+  }
+  return r
+}
+async function emitirComisionSinSello(userId: string, txId: string, d: DatosComision): Promise<any> {
+  // Desde qué empresa sale (varias empresas, 20 nov).
+  const emisora = d.emisora ?? await emisoraDeTx(userId, txId)
+  const cfg = await leerConfig(userId, emisora)
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
   if (!tx || String((tx as any).user_id) !== userId) return { ok: false, error: 'movimiento_no_encontrado' }
@@ -2016,7 +2209,7 @@ async function emitirComision(userId: string, txId: string, d: { identification:
   // Automática (modelo Comisión): la pausa se revisa de nuevo justo antes de
   // mandar la factura a Siigo.
   if (d.auto) {
-    const vigente = await leerConfig(userId)
+    const vigente = await leerConfig(userId, emisora)
     if (!vigente?.activo) { await marcar({ factura_estado: 'omitida', factura_error: 'Facturación pausada antes de enviar la factura a Siigo.' }); return { ok: true, estado: 'omitida' } }
   }
   // UN 'EMITIENDO' QUE QUEDÓ A MEDIAS (se cerró la pantalla durante un lote,
@@ -2281,8 +2474,8 @@ const resumenFactura = (f: any, notas: Map<string, NotaCredito[]>) => {
     notas_credito: ns.map(n => n.nombre),
   }
 }
-async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
-  const cfg = await leerConfig(userId)
+async function revisarDuplicadas(userId: string, dias: number, emisora = 'principal'): Promise<any> {
+  const cfg = await leerConfig(userId, emisora)
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const t = await tokenDe(userId, cfg)
   if ('error' in t) return { ok: false, error: t.error }
@@ -2389,8 +2582,9 @@ async function revisarDuplicadas(userId: string, dias: number): Promise<any> {
 // "sin registrar" de la revisión), para que no se vuelvan a emitir. Todo se
 // revisa de nuevo acá: que la factura exista, lleve la marca de ESE
 // comprobante, no esté anulada y el comprobante no tenga ya otra.
-async function registrarDeSiigo(userId: string, pedidas: any[]): Promise<any> {
-  const cfg = await leerConfig(userId)
+async function registrarDeSiigo(userId: string, pedidas: any[], emisora = 'principal'): Promise<any> {
+  const cfg = await leerConfig(userId, emisora)
+  const selloEmisora = (await leerEmisoras(userId)).length ? { emisora: { id: emisora, nombre: await nombreEmisora(userId, emisora) } } : {}
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
   const t = await tokenDe(userId, cfg)
   if ('error' in t) return { ok: false, error: t.error }
@@ -2426,7 +2620,7 @@ async function registrarDeSiigo(userId: string, pedidas: any[]): Promise<any> {
       factura_estado: 'emitida', factura_error: null, factura_tipo: 'FV', factura_proveedor: 'siigo',
       factura_id: String(f.id), factura_numero: numero, factura_cufe: f.stamp?.cufe ?? null, factura_url: f.public_url ?? null,
       factura_at: new Date().toISOString(),
-      factura_detalle: { ...resto, respuesta: f, adoptada: true, adoptada_por: 'revision_duplicadas', ...comision },
+      factura_detalle: { ...resto, respuesta: f, adoptada: true, adoptada_por: 'revision_duplicadas', ...comision, ...selloEmisora },
     }, q => q.eq('folio', c.folio).eq('user_id', userId), [(q: any) => q.is('factura_estado', null), (q: any) => q.in('factura_estado', ESTADOS_EMITIBLES)], 'folio')
     if (u.tomado) registradas.push(`${c.numero} → ${numero}`)
     else errores.push(u.error ? `${c.numero}: no se pudo guardar (${u.error}).` : `${c.numero}: ya tiene factura o se está emitiendo; no se cambió.`)
@@ -2479,12 +2673,14 @@ async function colaViva(userId: string): Promise<boolean> {
 // cliente elegido. En los demás modelos, con las reglas de Configuración.
 async function encolarLote(userId: string, body: any): Promise<any> {
   const cfg = await leerConfig(userId)
-  if (!cfg) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
-  if (!cfg.activo) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para emitir.' }
-  const modelo = String(cfg.modelo ?? '')
+  const extras = await leerEmisoras(userId)
+  if (!cfg && !extras.length) return { ok: false, error: 'Primero configurá Siigo en Contabilidad → Configuración.' }
+  if (!(await algunaActiva(userId))) return { ok: false, error: 'La facturación está pausada. Activala en Contabilidad → Configuración para emitir.' }
+  // Con varias empresas, cada operación se decide con las reglas de la
+  // empresa que la factura (la dueña de su cuenta), no con las de la 1.
+  const cfgPorEmisora = new Map<string, any>([['principal', cfg]])
   const ids = Array.from(new Set((Array.isArray(body.transactionIds) ? body.transactionIds : []).map((x: unknown) => String(x ?? '')).filter(Boolean))).slice(0, 1000) as string[]
   if (!ids.length) return { ok: false, error: 'No hay movimientos para emitir.' }
-  const pct = Number(body.comisionPct ?? cfg.utilidad_pct) || 0
   const cl = body.cliente && typeof body.cliente === 'object' ? body.cliente : null
   const docCl = String(cl?.identification ?? '').replace(/\D/g, '')
   const elegido = docCl.length >= 5 ? { identification: docCl, nombre: String(cl?.nombre ?? '').trim().slice(0, 200), esEmpresa: typeof cl?.esEmpresa === 'boolean' ? cl.esEmpresa : docCl.length === 9 } : null
@@ -2499,7 +2695,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
     const parte = ids.slice(i, i + 150)
     const [{ data: txs }, { data: comps }] = await Promise.all([
       db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').in('id', parte),
-      db.from('comprobantes').select('folio, transaction_id, factura_estado, factura_error, factura_at, factura_detalle').eq('user_id', userId).in('transaction_id', parte),
+      db.from('comprobantes').select('folio, transaction_id, moneda, factura_estado, factura_id, factura_numero, factura_error, factura_at, factura_detalle').eq('user_id', userId).in('transaction_id', parte),
     ])
     const txPorId = new Map(((txs ?? []) as any[]).map(t => [String(t.id), t]))
     const compPorTx = new Map(((comps ?? []) as any[]).map(c => [String(c.transaction_id), c]))
@@ -2512,7 +2708,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       if (!comp) {
         const c = await asegurarComprobante(tx, userId)
         if ('error' in c) { no(c.error); continue }
-        comp = (await db.from('comprobantes').select('folio, transaction_id, factura_estado, factura_error, factura_at, factura_detalle').eq('folio', c.folio).maybeSingle()).data
+        comp = (await db.from('comprobantes').select('folio, transaction_id, moneda, factura_estado, factura_id, factura_numero, factura_error, factura_at, factura_detalle').eq('folio', c.folio).maybeSingle()).data
         if (!comp) { no('No se pudo leer el comprobante.'); continue }
       }
       const est: string | null = comp.factura_estado ?? null
@@ -2520,15 +2716,21 @@ async function encolarLote(userId: string, body: any): Promise<any> {
       if (est === 'en_cola') { no('Ya está en la cola.'); continue }
       if (est === 'emitiendo' && Date.parse(String(comp.factura_at ?? '')) > Date.now() - 180000) { no('Se está emitiendo ahora.'); continue }
       const det: any = comp.factura_detalle ?? {}
+      const emTx = emisoraParaEmitir({ ...comp, moneda: comp.moneda ?? tx.currency }, extras)
+      if (!cfgPorEmisora.has(emTx)) cfgPorEmisora.set(emTx, await leerConfig(userId, emTx))
+      const cfgTx = cfgPorEmisora.get(emTx)
+      if (!cfgTx?.activo) { no(extras.length ? `La facturación de ${await nombreEmisora(userId, emTx, extras)} (la empresa de esta cuenta) está pausada.` : 'La facturación está pausada.'); continue }
+      const modelo = String(cfgTx.modelo ?? '')
+      const pct = Number(body.comisionPct ?? cfgTx.utilidad_pct) || 0
       const salida = SALIDAS.includes(String(tx.type))
       // Un ajuste de saldo (o el cargue que revirtió): no se factura.
       const porAjuste = motivoAjuste(String(tx.type), tx.raw_data)
       if (porAjuste) { no(porAjuste); continue }
       // Con una cuenta de la misma empresa: no se factura en ningún modelo.
-      const mov = contraparteDe({ detalle: { raw_data: tx.raw_data ?? {} }, tipo: tx.type }, cfg)
+      const mov = contraparteDe({ detalle: { raw_data: tx.raw_data ?? {} }, tipo: tx.type }, cfgTx)
       if (esDePropios(mov, propios)) { no(MSG_CUENTA_PROPIA(mov, salida)); continue }
       let lote: Record<string, unknown>
-      if (esMandato(cfg)) {
+      if (esMandato(cfgTx)) {
         const yaFueAnulada = est === 'anulada' || (est === 'error' && Array.isArray(det.anteriores) && det.anteriores.length > 0)
         if (!/^COP/i.test(String(tx.currency ?? ''))) { no('La factura en Siigo va en pesos y la operación no es en COP.'); continue }
         if (yaFueAnulada && !salida) { no(`En el modelo ${modelo === 'psp' ? 'PSP' : 'Comisión'} los depósitos no llevan factura: la anulada queda anulada.`); continue }
@@ -2544,7 +2746,7 @@ async function encolarLote(userId: string, body: any): Promise<any> {
           if (modelo === 'psp') {
             // PSP: al beneficiario del envío, con el documento con que se le
             // envió. Sin documento no hay a quién facturar.
-            const ben = contraparteDe({ detalle: { raw_data: rd }, tipo: tx.type }, cfg)
+            const ben = contraparteDe({ detalle: { raw_data: rd }, tipo: tx.type }, cfgTx)
             if (ben.esDefault) { no('El envío no trae el documento del beneficiario, y en PSP la factura va a su nombre.'); continue }
             cli = { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa }
           } else {
@@ -2644,9 +2846,9 @@ async function procesarCola(userId: string): Promise<{ emitidas: number; errores
   const inicio = Date.now()
   const out = { emitidas: 0, errores: 0, quedan: 0, relevo: false }
   await guardarSistema(claveCola(userId), String(inicio))
-  const cfg = await leerConfig(userId)
-  // Pausada: la cola espera; al activarla la retoman la app o el cron.
-  if (!cfg?.activo) { await guardarSistema(claveCola(userId), '0'); return out }
+  // Pausada (todas las empresas): la cola espera; al activarla la retoman la
+  // app o el cron. Cada factura revisa la pausa de SU empresa al emitirse.
+  if (!(await algunaActiva(userId))) { await guardarSistema(claveCola(userId), '0'); return out }
   const vistos = new Set<number>()
   while (Date.now() - inicio < COLA_VUELTA_MS) {
     const filas = (await pendientesDeCola(userId)).filter(f => !vistos.has(Number(f.folio)))
@@ -2733,8 +2935,8 @@ async function cancelarCola(userId: string, motivo?: string): Promise<number> {
 // Clientes de Siigo, para elegir a quién se le factura la comisión. Por
 // documento la API filtra; por nombre no, así que se traen páginas y se
 // filtra acá (tope razonable).
-async function buscarClientes(userId: string, q: string): Promise<{ ok: boolean; clientes?: any[]; error?: string }> {
-  const cfg = await leerConfig(userId)
+async function buscarClientes(userId: string, q: string, emisora = 'principal'): Promise<{ ok: boolean; clientes?: any[]; error?: string }> {
+  const cfg = await leerConfig(userId, emisora)
   if (!cfg) return { ok: false, error: 'Primero configurá Siigo.' }
   const partner = cfg.partner_id || 'Lincoin'
   const t = await tokenDe(userId, cfg)
@@ -3700,6 +3902,12 @@ Deno.serve(async (req) => {
       if (!uid) {
         const { data: activos } = await db.from('facturacion_config').select('user_id').eq('activo', true).limit(200)
         ids = ((activos ?? []) as any[]).map(a => String(a.user_id))
+        // Y las que solo tienen activa otra empresa (la 1 pausada).
+        const { data: extras } = await db.from('private_config').select('key, value').like('key', 'facturacion_empresas:%').limit(500)
+        for (const r of (extras ?? []) as any[]) {
+          try { if ((JSON.parse(String(r.value))?.empresas ?? []).some((e: any) => e?.cfg?.activo === true)) ids.push(String(r.key).slice('facturacion_empresas:'.length)) } catch { /* fila ilegible: se salta */ }
+        }
+        ids = [...new Set(ids)]
       }
       const resultados: Record<string, unknown> = {}
       for (const id of ids) {
@@ -3760,8 +3968,7 @@ Deno.serve(async (req) => {
     //    llegaba, esa operación se quedaba sin comprobante ni factura.
     //    Responde enseguida; el trabajo sigue en segundo plano.
     if (accion === 'al_dia') {
-      const cfgA = await leerConfig(userId)
-      if (!cfgA?.activo) return json({ ok: true, activo: false })
+      if (!(await algunaActiva(userId))) return json({ ok: true, activo: false })
       const p = ponerseAlDia(userId).then(r => { if (r.creados || r.emitidos || r.errores.length) console.log('[facturacion] al día', userId, JSON.stringify(r)) }, e => console.error('[facturacion] al día', String((e as Error)?.message ?? e)))
       const rt = (globalThis as any).EdgeRuntime
       if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p); else await p
@@ -3800,11 +4007,16 @@ Deno.serve(async (req) => {
         const rt = (globalThis as any).EdgeRuntime
         if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(pc)
       }
-      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)), disparadores: DISPARADORES, chequeo })
+      const emisoras = await resumenEmisoras(userId)
+      const em = emisoras.emisoras.some(e => e.id === String(body.emisora ?? '')) ? String(body.emisora) : 'principal'
+      return json({ ok: true, config: await publica(await leerConfig(userId, em), await resumenDe(userId)), disparadores: DISPARADORES, chequeo, emisora: em, ...emisoras })
     }
 
     if (accion === 'config_set') {
       const c = body.config ?? {}
+      // Qué empresa se configura: la 1 (facturacion_config) u otra (private_config).
+      const em = String(body.emisora ?? 'principal')
+      if (em !== 'principal' && !(await leerEmisoras(userId)).some(e => e.id === em)) return json({ ok: false, error: 'Esa empresa ya no existe. Recargá la pantalla.' }, 404)
       const fila: Record<string, unknown> = { user_id: userId, proveedor: 'siigo', updated_at: new Date().toISOString() }
       const copiar = ['username', 'partner_id', 'product_code', 'product_description', 'cliente_default_nit', 'cliente_default_nombre', 'observaciones']
       // Ciudad para cédulas expedidas en el exterior: un código DANE válido o
@@ -3814,7 +4026,7 @@ Deno.serve(async (req) => {
       if ('ciudad_exterior' in c) {
         const cod = municipioPorCodigo(c.ciudad_exterior)?.codigo ?? null
         if (cod) fila.ciudad_exterior = cod
-        else if ((await leerConfig(userId))?.ciudad_exterior) fila.ciudad_exterior = null
+        else if ((await leerConfig(userId, em))?.ciudad_exterior) fila.ciudad_exterior = null
       }
       for (const k of copiar) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : String(c[k]).trim()
       for (const k of ['document_id', 'seller_id', 'payment_id', 'ds_document_id', 'ds_payment_id']) if (k in c) fila[k] = c[k] == null || c[k] === '' ? null : Number(c[k])
@@ -3832,7 +4044,7 @@ Deno.serve(async (req) => {
         // Quitar el modelo con la facturación activa dejaría una activación
         // sin reglas. Primero se pausa.
         if (!fila.modelo && fila.activo !== false) {
-          const actual = await leerConfig(userId)
+          const actual = await leerConfig(userId, em)
           if (actual?.activo) return json({ ok: false, error: 'Pausá la facturación antes de eliminar el modelo.' }, 400)
         }
       }
@@ -3893,12 +4105,12 @@ Deno.serve(async (req) => {
       if (typeof c.access_key === 'string' && c.access_key.replace(/\s+/g, '')) {
         try { fila.access_key_enc = await encField(c.access_key.replace(/\s+/g, '')) }
         catch { return json({ ok: false, error: 'No se pudo cifrar la access key: falta FIELD_ENC_KEY en el servidor.' }, 500) }
-        tokens.delete(userId)
+        tokens.delete(claveToken(userId, { _emisora: em }))
       }
       // Activar exige que todo lo necesario esté elegido. Activar a medias
       // solo produce facturas en error.
       if (fila.activo === true) {
-        const actual = { ...(await leerConfig(userId) ?? {}), ...fila }
+        const actual = { ...(await leerConfig(userId, em) ?? {}), ...fila }
         const faltan: string[] = []
         if (!actual.username) faltan.push('usuario')
         if (!actual.access_key_enc) faltan.push('access key')
@@ -3934,7 +4146,17 @@ Deno.serve(async (req) => {
         }
         if (faltan.length) return json({ ok: false, error: `Para activar falta: ${faltan.join(', ')}.` }, 400)
       }
-      const { error } = await db.from('facturacion_config').upsert(fila, { onConflict: 'user_id' })
+      let error: { message: string } | null = null
+      if (em === 'principal') ({ error } = await db.from('facturacion_config').upsert(fila, { onConflict: 'user_id' }))
+      else {
+        const lista = await leerEmisoras(userId)
+        const e = lista.find(x => x.id === em)
+        if (!e) return json({ ok: false, error: 'Esa empresa ya no existe. Recargá la pantalla.' }, 404)
+        const { user_id: _u, proveedor: _p, ...resto } = fila
+        e.cfg = { ...e.cfg, ...resto }
+        const msg = await guardarEmisoras(userId, lista)
+        if (msg) return json({ ok: false, error: `No se pudo guardar la empresa: ${msg}` }, 500)
+      }
       if (error) {
         // Qué migración falta, según lo que falte: la tabla entera, o una
         // columna nueva. Decir el archivo equivocado manda a correr algo que
@@ -3944,32 +4166,122 @@ Deno.serve(async (req) => {
         return json({ ok: false, error: error.message }, 500)
       }
       if (cambiaActivo) {
-        await db.from('audit_log').insert({ user_id: userId, action: fila.activo ? 'facturacion.activada' : 'facturacion.pausada', metadata: { at: new Date().toISOString(), ...(userId !== yo.userId ? { contadorId: yo.userId } : {}) } }).then(() => {}, () => {})
+        await db.from('audit_log').insert({ user_id: userId, action: fila.activo ? 'facturacion.activada' : 'facturacion.pausada', metadata: { at: new Date().toISOString(), ...(em !== 'principal' ? { emisora: em, emisoraNombre: await nombreEmisora(userId, em) } : {}), ...(userId !== yo.userId ? { contadorId: yo.userId } : {}) } }).then(() => {}, () => {})
       }
       // El modelo, también en la ficha de la cuenta: el envío lo lee de ahí
       // para pedir el ordenante. Antes lo escribía el navegador de la
       // empresa; si lo cambia el contador, tiene que escribirlo el servidor.
-      if ('modelo' in c) await mergeRaw(db, userId, { facturacionModelo: fila.modelo ?? null }).catch(() => {})
-      return json({ ok: true, config: await publica(await leerConfig(userId), await resumenDe(userId)) })
+      // Solo el de la empresa 1: es el que dice si el envío pide ordenante.
+      if ('modelo' in c && em === 'principal') await mergeRaw(db, userId, { facturacionModelo: fila.modelo ?? null }).catch(() => {})
+      return json({ ok: true, config: await publica(await leerConfig(userId, em), await resumenDe(userId)), emisora: em, ...(await resumenEmisoras(userId)) })
+    }
+
+    // ── Las empresas que facturan (20 nov): crear, cambiar nombre, NIT y
+    //    cuentas, y quitar. La 1 no se crea ni se quita: es la de siempre, y
+    //    factura todas las cuentas que no tenga asignadas otra.
+    if (accion === 'emisora_crear' || accion === 'emisora_datos' || accion === 'emisora_quitar') {
+      const lista = await leerEmisoras(userId)
+      const id = String(body.emisora ?? '')
+      const nombre = String(body.nombre ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
+      const nit = String(body.nit ?? '').replace(/[^0-9A-Za-z-]/g, '').slice(0, 20) || null
+      // Solo cuentas que existen, y ninguna que ya tenga otra empresa: una
+      // operación no puede facturarse desde dos Siigo.
+      const cuentasPedidas = (otras: Emisora[]): string[] | { error: string } => {
+        const lista0: unknown[] = Array.isArray(body.cuentas) ? body.cuentas : []
+        const pedidas: string[] = [...new Set(lista0.map(x => String(x).toUpperCase().trim()))].filter(k => k in CUENTAS_FACTURABLES)
+        const choca = pedidas.find(k => otras.some(o => o.cuentas.includes(k)))
+        if (choca) return { error: `${CUENTAS_FACTURABLES[choca]} ya la factura ${otras.find(o => o.cuentas.includes(choca))?.nombre}. Quitásela a esa empresa primero.` }
+        return pedidas
+      }
+      const auditar = (accionAudit: string, metadata: Record<string, unknown>) => db.from('audit_log').insert({ user_id: userId, action: accionAudit, metadata: { ...metadata, at: new Date().toISOString(), ...(userId !== yo.userId ? { contadorId: yo.userId } : {}) } }).then(() => {}, () => {})
+
+      if (accion === 'emisora_crear') {
+        if (nombre.length < 2) return json({ ok: false, error: 'Escribí el nombre de la empresa.' }, 400)
+        if (lista.length >= 5) return json({ ok: false, error: 'Se pueden tener hasta 6 empresas que facturan.' }, 400)
+        const cuentas = cuentasPedidas(lista)
+        if (!Array.isArray(cuentas)) return json({ ok: false, ...cuentas }, 400)
+        // Arranca con las reglas de la empresa 1 (modelo, porcentaje, qué
+        // operaciones emiten) pero sin nada de su Siigo: credenciales,
+        // comprobantes, vendedor, forma de pago, impuestos e ítems son de cada
+        // Siigo, y copiarlos mandaría códigos que el otro Siigo no tiene.
+        const base = await leerConfig(userId)
+        const cfg: Record<string, any> = { activo: false }
+        for (const k of ['modelo', 'utilidad_pct', 'documentos', 'disparadores', 'stamp', 'mail', 'crear_clientes', 'cliente_default_nit', 'cliente_default_nombre', 'observaciones', 'desc_terceros', 'desc_comision', 'ciudad_exterior']) {
+          if (base && base[k] != null) cfg[k] = base[k]
+        }
+        if (base?.motivos && typeof base.motivos === 'object') {
+          cfg.motivos = Object.fromEntries(Object.entries(base.motivos as Record<string, any>).map(([k, v]) => [k, { emite: v?.emite ?? 'no', item: null }]))
+        }
+        const nueva: Emisora = { id: crypto.randomUUID(), nombre, nit, cuentas, creadaAt: new Date().toISOString(), cfg }
+        const err = await guardarEmisoras(userId, [...lista, nueva])
+        if (err) return json({ ok: false, error: `No se pudo crear la empresa: ${err}` }, 500)
+        await auditar('facturacion.empresa_creada', { emisora: nueva.id, nombre, nit, cuentas })
+        return json({ ok: true, emisora: nueva.id, ...(await resumenEmisoras(userId)) })
+      }
+
+      if (accion === 'emisora_datos') {
+        if (id === 'principal') {
+          // La 1 solo cambia el nombre que se muestra y su NIT; sus cuentas
+          // son "las que no tiene otra".
+          const doc = await leerDocEmisoras(userId)
+          const err = await escribirDocEmisoras(userId, { ...doc, principal: { nombre: nombre || null, nit } })
+          if (err) return json({ ok: false, error: `No se pudo guardar: ${err}` }, 500)
+          await auditar('facturacion.empresa_editada', { emisora: 'principal', nombre, nit })
+          return json({ ok: true, ...(await resumenEmisoras(userId)) })
+        }
+        const e = lista.find(x => x.id === id)
+        if (!e) return json({ ok: false, error: 'Esa empresa ya no existe. Recargá la pantalla.' }, 404)
+        if (nombre.length < 2) return json({ ok: false, error: 'Escribí el nombre de la empresa.' }, 400)
+        const cuentas = cuentasPedidas(lista.filter(x => x.id !== id))
+        if (!Array.isArray(cuentas)) return json({ ok: false, ...cuentas }, 400)
+        const antes = { nombre: e.nombre, nit: e.nit, cuentas: e.cuentas }
+        e.nombre = nombre; e.nit = nit; e.cuentas = cuentas
+        const err = await guardarEmisoras(userId, lista)
+        if (err) return json({ ok: false, error: `No se pudo guardar: ${err}` }, 500)
+        await auditar('facturacion.empresa_editada', { emisora: id, antes, despues: { nombre, nit, cuentas } })
+        return json({ ok: true, ...(await resumenEmisoras(userId)) })
+      }
+
+      // emisora_quitar
+      const e = lista.find(x => x.id === id)
+      if (!e) return json({ ok: false, error: 'Esa empresa ya no existe. Recargá la pantalla.' }, 404)
+      if (e.cfg?.activo) return json({ ok: false, error: `Pausá la facturación de ${e.nombre} antes de quitarla.` }, 400)
+      // Con facturas emitidas desde su Siigo no se quita: sus anulaciones, la
+      // DIAN y los PDF se buscan en ESE Siigo, con sus credenciales.
+      const { count } = await db.from('comprobantes').select('folio', { count: 'exact', head: true }).eq('user_id', userId).eq('factura_detalle->emisora->>id', id)
+      if ((count ?? 0) > 0) return json({ ok: false, error: `${e.nombre} ya emitió ${count} factura(s) desde su Siigo: se deja para poder anularlas y descargarlas. Podés pausarla y quitarle las cuentas.` }, 400)
+      const err = await guardarEmisoras(userId, lista.filter(x => x.id !== id))
+      if (err) return json({ ok: false, error: `No se pudo quitar: ${err}` }, 500)
+      tokens.delete(claveToken(userId, { _emisora: id }))
+      await auditar('facturacion.empresa_quitada', { emisora: id, nombre: e.nombre, nit: e.nit, cuentas: e.cuentas })
+      return json({ ok: true, ...(await resumenEmisoras(userId)) })
     }
 
     if (accion === 'probar') {
-      const cfg = await leerConfig(userId)
+      const em = String(body.emisora ?? 'principal')
+      const cfg = await leerConfig(userId, em)
       if (!cfg) return json({ ok: false, error: 'Primero guardá el usuario y la access key.' })
       const partner = cfg.partner_id || 'Lincoin'
       const t = await tokenDe(userId, cfg, true)
       const ahora = new Date().toISOString()
+      // Lo del último intento se guarda donde vive la configuración de esa empresa.
+      const anotar = async (patch: Record<string, unknown>) => {
+        if (em === 'principal') { await db.from('facturacion_config').update(patch).eq('user_id', userId); return }
+        const lista = await leerEmisoras(userId)
+        const e = lista.find(x => x.id === em)
+        if (e) { e.cfg = { ...e.cfg, ...patch }; await guardarEmisoras(userId, lista) }
+      }
       if ('error' in t) {
-        await db.from('facturacion_config').update({ ultimo_test_at: ahora, ultimo_test_ok: false, ultimo_error: t.error }).eq('user_id', userId)
-        return json({ ok: false, error: t.error, config: await publica(await leerConfig(userId)) })
+        await anotar({ ultimo_test_at: ahora, ultimo_test_ok: false, ultimo_error: t.error })
+        return json({ ok: false, error: t.error, config: await publica(await leerConfig(userId, em)) })
       }
       const cat = await traerCatalogos(t.token, partner)
       const conProblemas = Object.entries(cat.fuentes).filter(([, f]) => !f.ok).map(([k, f]) => `${k}: ${f.motivo}`)
-      await db.from('facturacion_config').update({
+      await anotar({
         ultimo_test_at: ahora, ultimo_test_ok: true, catalogos: cat,
         ultimo_error: conProblemas.length ? `Conectó, pero: ${conProblemas.join(' | ')}` : null,
-      }).eq('user_id', userId)
-      return json({ ok: true, catalogos: cat, aviso: conProblemas.length ? conProblemas.join(' | ') : null, config: await publica(await leerConfig(userId), await resumenDe(userId)) })
+      })
+      return json({ ok: true, catalogos: cat, aviso: conProblemas.length ? conProblemas.join(' | ') : null, config: await publica(await leerConfig(userId, em), await resumenDe(userId)) })
     }
 
     if (accion === 'reintentar') {
@@ -4016,7 +4328,9 @@ Deno.serve(async (req) => {
       }))
     }
     if (accion === 'buscar_clientes') {
-      return json(await buscarClientes(userId, String(body.q ?? '')))
+      // En el Siigo de la empresa elegida, o en el de la que factura ese movimiento.
+      const em = body.emisora ? String(body.emisora) : body.transactionId ? await emisoraDeTx(userId, String(body.transactionId)) : 'principal'
+      return json(await buscarClientes(userId, String(body.q ?? ''), em))
     }
 
     // ── Emisión en lote: se encola y el servidor emite en segundo plano,
@@ -4033,7 +4347,7 @@ Deno.serve(async (req) => {
     //    empresa los lee directo de la base; el contador no puede (RLS), y
     //    para ver salir las facturas del lote necesita leerlos seguido.
     if (accion === 'comprobantes') {
-      const cols = 'transaction_id, folio, numero, enviado_at, factura_estado, factura_numero, factura_url, factura_error, factura_tipo, factura_at, dian:factura_detalle->>dian'
+      const cols = 'transaction_id, folio, numero, enviado_at, moneda, factura_estado, factura_id, factura_numero, factura_url, factura_error, factura_tipo, factura_at, dian:factura_detalle->>dian, emisora_id:factura_detalle->emisora->>id'
       const filas: any[] = []
       for (let desde = 0; desde < 20000; desde += 1000) {
         const { data, error } = await db.from('comprobantes').select(cols).eq('user_id', userId).order('folio', { ascending: false }).range(desde, desde + 999)
@@ -4041,7 +4355,7 @@ Deno.serve(async (req) => {
         filas.push(...(data ?? []))
         if (!data || data.length < 1000) break
       }
-      return json({ ok: true, comprobantes: filas })
+      return json({ ok: true, comprobantes: await etiquetarEmisoras(userId, filas) })
     }
 
     // ── Los ordenantes (modelo Comisión). La empresa los edita desde su
@@ -4081,10 +4395,38 @@ Deno.serve(async (req) => {
       return json(await reenviarRechazada(userId, txId))
     }
     if (accion === 'duplicadas') {
-      return json(await revisarDuplicadas(userId, Number(body.dias ?? 30)))
+      const emisoras = await leerEmisoras(userId)
+      if (!emisoras.length) return json(await revisarDuplicadas(userId, Number(body.dias ?? 30)))
+      // Varias empresas: se revisa el Siigo de cada una y se junta, diciendo
+      // de qué empresa es cada hallazgo.
+      const LISTAS = ['duplicadas', 'sin_registrar', 'a_si_misma', 'revertidas', 'rechazadas', 'posibles']
+      const total: any = { ok: true, revisadas: 0, completo: true, porEmpresa: [] as any[] }
+      for (const k of LISTAS) total[k] = []
+      for (const em of ['principal', ...emisoras.map(e => e.id)]) {
+        const cfgE = await leerConfig(userId, em)
+        const nombre = await nombreEmisora(userId, em, emisoras)
+        if (!cfgE?.username) { total.porEmpresa.push({ id: em, nombre, ok: false, error: 'Sin credenciales de Siigo.' }); continue }
+        const r = await revisarDuplicadas(userId, Number(body.dias ?? 30), em)
+        total.porEmpresa.push({ id: em, nombre, ok: !!r.ok, error: r.ok ? null : r.error, revisadas: r.revisadas ?? 0 })
+        if (!r.ok) continue
+        total.dias = r.dias; total.desde = r.desde; total.revisadas += Number(r.revisadas) || 0; total.completo = total.completo && r.completo !== false
+        for (const k of LISTAS) total[k].push(...((r[k] ?? []) as any[]).map(x => ({ ...x, emisora: { id: em, nombre } })))
+      }
+      if (!total.porEmpresa.some((p: any) => p.ok)) return json({ ok: false, error: total.porEmpresa.map((p: any) => `${p.nombre}: ${p.error}`).join(' · ') })
+      return json(total)
     }
     if (accion === 'duplicadas_registrar') {
-      return json(await registrarDeSiigo(userId, body.facturas))
+      // Cada factura se registra desde el Siigo donde se encontró.
+      const pedidas: any[] = Array.isArray(body.facturas) ? body.facturas : []
+      const grupos = new Map<string, any[]>()
+      for (const p of pedidas) { const em = String(p?.emisora?.id ?? p?.emisora ?? 'principal'); grupos.set(em, [...(grupos.get(em) ?? []), p]) }
+      const out = { ok: true, registradas: [] as string[], errores: [] as string[] }
+      for (const [em, lista] of grupos) {
+        const r = await registrarDeSiigo(userId, lista, em)
+        if (!r.ok) { out.errores.push(String(r.error ?? 'error')); continue }
+        out.registradas.push(...(r.registradas ?? [])); out.errores.push(...(r.errores ?? []))
+      }
+      return json(out)
     }
 
     // ── El documento de UN movimiento, para verlo desde el detalle ──────
@@ -4102,7 +4444,8 @@ Deno.serve(async (req) => {
       const c = comp as any
       const clase: 'FV' | 'DS' = c.factura_tipo === 'DS' ? 'DS' : 'FV'
       const rutaDoc = clase === 'DS' ? '/v1/purchase-support-documents' : '/v1/invoices'
-      const cfg = await leerConfig(userId)
+      // En el Siigo de la empresa que la emitió (varias empresas, 20 nov).
+      const cfg = await leerConfig(userId, await emisoraDeComprobante(c))
       const partner = cfg?.partner_id || 'Lincoin'
 
       // PDF: Siigo lo entrega en base64 para la factura de venta
@@ -4276,9 +4619,9 @@ Deno.serve(async (req) => {
 
     if (accion === 'facturas') {
       const { data } = await db.from('comprobantes')
-        .select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_tipo, factura_numero, factura_cufe, factura_url, factura_error, factura_at, factura_intentos')
+        .select('folio, numero, transaction_id, tipo, monto, moneda, emitido_at, factura_estado, factura_tipo, factura_id, factura_numero, factura_cufe, factura_url, factura_error, factura_at, factura_intentos, emisora_id:factura_detalle->emisora->>id')
         .eq('user_id', userId).order('emitido_at', { ascending: false }).limit(2000)
-      return json({ ok: true, facturas: data ?? [] })
+      return json({ ok: true, facturas: await etiquetarEmisoras(userId, (data ?? []) as any[]) })
     }
 
     return json({ error: 'accion_desconocida' }, 400)

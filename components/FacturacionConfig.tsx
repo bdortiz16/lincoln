@@ -28,6 +28,13 @@
 //
 //  LA ACCESS KEY NO VUELVE A LA PANTALLA. Se manda una vez, el servidor la
 //  cifra, y acá solo se ve "hay una guardada".
+//
+//  VARIAS EMPRESAS (20 nov). Las cuentas de una cuenta Lincoin pueden ser de
+//  empresas distintas (las Cuentas 3 y 4 son de otra empresa), y la factura
+//  de cada operación tiene que salir del Siigo de la empresa dueña de la
+//  cuenta por donde pasó. Arriba se elige la empresa; todo lo de abajo
+//  (credenciales, modelo, ítems, activar) es de ESA empresa. La empresa 1
+//  factura todas las cuentas que no tenga otra.
 // ══════════════════════════════════════════════════════════════════
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
@@ -56,6 +63,9 @@ const C = {
   text: '#F4F4F2', sub: '#878E88', tenue: '#6b716c', verde: '#4ADE80', rojo: '#F87171', ambar: '#FBBF24',
   campo: '#121413', elevado: '#121413',
 };
+
+type Emisora = { id: string; principal: boolean; nombre: string; nit: string | null; cuentas: string[]; activo: boolean; conectada: boolean };
+type EdicionEmpresa = { id: string | null; nombre: string; nit: string; cuentas: string[]; guardando: boolean; error: string | null };
 
 type Cfg = {
   existe: boolean; activo: boolean; username?: string | null; tieneAccessKey: boolean; partner_id?: string | null;
@@ -115,6 +125,11 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
   const [credAbiertas, setCredAbiertas] = useState(false);
   // El modelo también: guardado, queda un resumen con "Editar" y "Eliminar".
   const [modeloAbierto, setModeloAbierto] = useState(true);
+  // La empresa que se está configurando y las que hay.
+  const [emisora, setEmisora] = useState('principal');
+  const [emisoras, setEmisoras] = useState<Emisora[]>([]);
+  const [cuentasFact, setCuentasFact] = useState<Record<string, string>>({});
+  const [editEmp, setEditEmp] = useState<EdicionEmpresa | null>(null);
   const { currentUser, actualizarListaRaw, updateUserRawData } = useDatabase();
   const [ordVersion, setOrdVersion] = useState(0);
   const ordenantes: Ordenante[] = useOrdenantesEmpresa(leerOrdenantes(currentUser), ordVersion);
@@ -151,7 +166,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     const q = busqOrd.q.trim();
     if (q.length < 2 || busqOrd.cargando) return;
     setBusqOrd(b => ({ ...b, cargando: true, error: null }));
-    const r = await fact({ action: 'buscar_clientes', q }, 60000).catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
+    const r = await fact({ action: 'buscar_clientes', q, emisora }, 60000).catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
     setBusqOrd(b => ({ ...b, cargando: false, resultados: r?.ok ? (r.clientes ?? []) : null, error: r?.ok ? null : String(r?.error ?? 'No se pudo buscar en Siigo.') }));
   };
   const agregarDesdeSiigo = async (c: any) => {
@@ -167,11 +182,16 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     await cambiarOrdenantes(l => l.filter((x: any) => x?.id !== id));
   };
 
-  const cargar = async () => {
+  const cargar = async (em: string = emisora) => {
     setCargando(true);
-    const r = await fact({ action: 'config_get' }, 20000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'config_get', emisora: em }, 20000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setCargando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? r?.mensaje ?? 'No se pudo leer la configuración.' }); return; }
+    if (Array.isArray(r.emisoras)) setEmisoras(r.emisoras);
+    if (r.cuentasFacturables) setCuentasFact(r.cuentasFacturables);
+    // El servidor confirma cuál cargó (si la pedida ya no existe, la 1).
+    setEmisora(String(r.emisora ?? 'principal'));
+    setAccessKey('');
     const c: Cfg = r.config;
     setCfg(c); setDisparadores(r.disparadores ?? {});
     setCredAbiertas(!(c.ultimo_test_ok && c.tieneAccessKey));
@@ -251,7 +271,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     const { activo: _activoForm, ...resto } = form;
     const cambiarActivo = 'activo' in extra;
     const config = { ...resto, ...extra, ...(llave ? { access_key: llave } : {}) };
-    const r = await fact({ action: 'config_set', config, ...(cambiarActivo ? { cambiarActivo: true } : {}) }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'config_set', emisora, config, ...(cambiarActivo ? { cambiarActivo: true } : {}) }, 30000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setGuardando(false);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo guardar.' }); return false; }
     // El servidor guarda solo lo que conoce: si devuelve otro modelo que el
@@ -262,10 +282,11 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
       return false;
     }
     setCfg(r.config); setAccessKey('');
+    if (Array.isArray(r.emisoras)) setEmisoras(r.emisoras);
     set('activo', !!r.config?.activo);
     // El envío pregunta el ordenante solo si el servidor confirmó el modelo Comisión.
     // (Si la configura el contador, lo escribe el servidor en la empresa.)
-    if (!empresaId && currentUser?.id && (currentUser as any)?.raw_data?.facturacionModelo !== (r.config?.modelo ?? null)) updateUserRawData(currentUser.id, { facturacionModelo: r.config?.modelo ?? null }).catch(() => {});
+    if (!empresaId && emisora === 'principal' && currentUser?.id && (currentUser as any)?.raw_data?.facturacionModelo !== (r.config?.modelo ?? null)) updateUserRawData(currentUser.id, { facturacionModelo: r.config?.modelo ?? null }).catch(() => {});
     // Guardado con modelo: se pliega al resumen.
     if (!('activo' in extra) && config.modelo) setModeloAbierto(false);
     setAviso({ ok: true, texto: 'activo' in extra ? (extra.activo ? 'Facturación automática activada.' : 'Facturación automática pausada.') : 'Guardado.' });
@@ -294,10 +315,12 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     // Siigo no devolvía el producto nuevo.
     if (!soloCatalogos && !(await guardar())) return;
     setProbando(true); setAviso(null);
-    const r = await fact({ action: 'probar' }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
+    const r = await fact({ action: 'probar', emisora }, 60000).catch((e: any) => ({ ok: false, error: String(e?.message ?? e) }));
     setProbando(false);
     if (r?.config) setCfg(r.config);
     if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'Siigo no respondió.' }); return; }
+    // La conexión cambia el puntito de la pestaña de la empresa.
+    setEmisoras(l => l.map(e => e.id === emisora ? { ...e, conectada: true } : e));
     // Conectó: las credenciales se pliegan y sigue el modelo.
     setCredAbiertas(false);
     if (!form.iva_tax_id) {
@@ -306,6 +329,44 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
     }
     setAviso({ ok: true, texto: r.aviso ? `Conectó con Siigo, pero: ${r.aviso}` : 'Conectó con Siigo. Ahora elegí el modelo de negocio y sus parámetros.' });
   };
+
+  // ── Empresas ──
+  const cambiarEmisora = (id: string) => {
+    if (id === emisora || cargando || guardando) return;
+    setAviso(null); setEditEmp(null);
+    cargar(id);
+  };
+  const guardarEmpresa = async () => {
+    if (!editEmp) return;
+    const nombre = editEmp.nombre.trim();
+    const esPrincipal = editEmp.id === 'principal';
+    if (!esPrincipal && nombre.length < 2) { setEditEmp(e => e && { ...e, error: 'Escribí el nombre de la empresa.' }); return; }
+    if (editEmp.nit.trim()) { const v = validarNit(editEmp.nit.replace(/\D/g, '')); if (!v.ok) { setEditEmp(e => e && { ...e, error: v.texto }); return; } }
+    if (!esPrincipal && !editEmp.cuentas.length) { setEditEmp(e => e && { ...e, error: 'Elegí al menos una cuenta: son las operaciones que factura esta empresa.' }); return; }
+    setEditEmp(e => e && { ...e, guardando: true, error: null });
+    const nueva = !editEmp.id;
+    const r = await fact({ action: nueva ? 'emisora_crear' : 'emisora_datos', emisora: editEmp.id ?? undefined, nombre, nit: editEmp.nit.trim(), cuentas: editEmp.cuentas }, 20000)
+      .catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
+    if (!r?.ok) { setEditEmp(e => e && { ...e, guardando: false, error: r?.error ?? 'No se pudo guardar.' }); return; }
+    if (Array.isArray(r.emisoras)) setEmisoras(r.emisoras);
+    setEditEmp(null);
+    if (nueva && r.emisora) { setAviso({ ok: true, texto: `${nombre} quedó creada y pausada. Conectá su Siigo y elegí sus ítems para activarla.` }); cargar(String(r.emisora)); }
+    else setAviso({ ok: true, texto: 'Empresa actualizada.' });
+  };
+  const quitarEmpresa = async (e: Emisora) => {
+    if (!window.confirm(`¿Quitar ${e.nombre}? Sus cuentas vuelven a facturarse desde ${emisoras.find(x => x.principal)?.nombre ?? 'la empresa 1'}.`)) return;
+    const r = await fact({ action: 'emisora_quitar', emisora: e.id }, 20000).catch((err: any) => ({ ok: false, error: String(err?.message ?? err) }));
+    if (!r?.ok) { setAviso({ ok: false, texto: r?.error ?? 'No se pudo quitar.' }); return; }
+    if (Array.isArray(r.emisoras)) setEmisoras(r.emisoras);
+    setEditEmp(null);
+    setAviso({ ok: true, texto: `${e.nombre} quitada.` });
+    cargar('principal');
+  };
+  const variasEmpresas = emisoras.length > 1;
+  const empActual = emisoras.find(e => e.id === emisora) ?? null;
+  const nombreCuentas = (l: string[]) => l.map(k => cuentasFact[k] ?? k).join(', ');
+  // Qué empresa tiene cada cuenta, para avisar al marcarla en otra.
+  const duenaDe = (k: string, salvo: string | null) => emisoras.find(e => !e.principal && e.id !== salvo && e.cuentas.includes(k)) ?? null;
 
   const cat = cfg?.catalogos;
   const modelo: string = form.modelo ?? '';
@@ -576,17 +637,121 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
         <div style={{ overflowY: 'auto', padding: '6px 24px 22px' }}>
           {cargando ? <p style={{ fontSize: 13, color: C.sub, padding: '20px 0' }}>Leyendo la configuración…</p> : (
             <>
+              {/* Empresas que facturan */}
+              <div style={{ marginTop: 14 }}>
+                <div className="flex items-center justify-between flex-wrap" style={{ gap: 8 }}>
+                  <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: 0 }}>EMPRESAS QUE FACTURAN</p>
+                  {!editEmp && emisoras.length < 6 && (
+                    <button onClick={() => setEditEmp({ id: null, nombre: '', nit: '', cuentas: [], guardando: false, error: null })}
+                      style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'transparent', border: `1px solid ${C.borde}`, borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
+                      + Agregar empresa
+                    </button>
+                  )}
+                </div>
+                {!variasEmpresas && !editEmp && (
+                  <p style={{ fontSize: 11.5, color: C.tenue, margin: '6px 0 0', lineHeight: 1.5 }}>
+                    Si alguna de tus cuentas es de otra empresa (otro NIT, otro Siigo), agregala y elegí sus cuentas: las operaciones de esas cuentas se facturan desde el Siigo de esa empresa.
+                  </p>
+                )}
+                {variasEmpresas && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8, marginTop: 10 }}>
+                    {emisoras.map((e, i) => {
+                      const sel = e.id === emisora;
+                      return (
+                        <button key={e.id} onClick={() => cambiarEmisora(e.id)}
+                          style={{ fontFamily: FONT, textAlign: 'left', padding: '10px 12px', borderRadius: 11, cursor: sel ? 'default' : 'pointer', background: sel ? 'rgba(255,255,255,0.05)' : 'transparent', border: `1px solid ${sel ? 'rgba(244,244,242,0.45)' : C.borde}` }}>
+                          <span className="flex items-center" style={{ gap: 7, fontSize: 13, fontWeight: 700, color: C.text }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: e.activo ? C.verde : 'rgba(255,255,255,0.18)' }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Empresa {i + 1} · {e.nombre}</span>
+                          </span>
+                          <span style={{ display: 'block', fontSize: 11, color: C.sub, marginTop: 4, lineHeight: 1.45 }}>
+                            {e.nit ? `NIT ${e.nit} · ` : ''}{e.cuentas.length ? nombreCuentas(e.cuentas) : 'Sin cuentas: no factura nada'}
+                          </span>
+                          <span style={{ display: 'block', fontSize: 10.5, color: C.tenue, marginTop: 3 }}>
+                            {e.activo ? 'Activa' : 'Pausada'}{e.conectada ? '' : ' · Siigo sin conectar'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {variasEmpresas && empActual && !editEmp && (
+                  <div className="flex items-center flex-wrap" style={{ gap: 12, marginTop: 8 }}>
+                    <span style={{ fontSize: 11.5, color: C.sub }}>Estás configurando <strong style={{ color: C.text }}>{empActual.nombre}</strong>: todo lo de abajo es de su Siigo.</span>
+                    <button onClick={() => setEditEmp({ id: empActual.id, nombre: empActual.nombre, nit: empActual.nit ?? '', cuentas: empActual.cuentas, guardando: false, error: null })}
+                      style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: C.sub, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline' }}>
+                      {empActual.principal ? 'Cambiar nombre o NIT' : 'Editar nombre, NIT y cuentas'}
+                    </button>
+                    {!empActual.principal && (
+                      <button onClick={() => quitarEmpresa(empActual)} disabled={empActual.activo} title={empActual.activo ? 'Pausala primero' : undefined}
+                        style={{ fontFamily: FONT, fontSize: 11.5, fontWeight: 700, color: empActual.activo ? C.tenue : C.rojo, background: 'none', border: 'none', padding: 0, cursor: empActual.activo ? 'not-allowed' : 'pointer', textDecoration: 'underline' }}>
+                        Quitar empresa
+                      </button>
+                    )}
+                  </div>
+                )}
+                {editEmp && (
+                  <div style={{ marginTop: 10, padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.borde}`, background: C.elevado }}>
+                    <p style={{ fontSize: 13, fontWeight: 800, color: C.text, margin: '0 0 10px' }}>
+                      {!editEmp.id ? 'Nueva empresa que factura' : editEmp.id === 'principal' ? 'Empresa 1' : 'Editar empresa'}
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+                      <Campo rot="NOMBRE O RAZÓN SOCIAL" ayuda={editEmp.id === 'principal' ? 'Vacío: se usa el nombre de tu cuenta.' : undefined}>
+                        <input value={editEmp.nombre} onChange={ev => setEditEmp(e => e && { ...e, nombre: ev.target.value })} placeholder="Empresa S.A.S." style={entrada} />
+                      </Campo>
+                      <Campo rot="NIT (OPCIONAL)">
+                        <input value={editEmp.nit} onChange={ev => setEditEmp(e => e && { ...e, nit: ev.target.value })} placeholder="900123456-7" inputMode="numeric" style={entrada} />
+                      </Campo>
+                    </div>
+                    {editEmp.id === 'principal' ? (
+                      <p style={{ fontSize: 11.5, color: C.sub, margin: '10px 0 0', lineHeight: 1.5 }}>
+                        La empresa 1 factura las cuentas que no tenga otra empresa{empActual?.cuentas.length ? `: hoy ${nombreCuentas(empActual.cuentas)}` : ''}. Para pasarle una cuenta a otra empresa, editá esa empresa.
+                      </p>
+                    ) : (
+                      <div style={{ marginTop: 12 }}>
+                        <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.2px', color: C.sub, margin: '0 0 6px' }}>SUS CUENTAS</p>
+                        <p style={{ fontSize: 11.5, color: C.tenue, margin: '0 0 8px', lineHeight: 1.5 }}>Las operaciones que pasen por estas cuentas se facturan desde el Siigo de esta empresa. Las facturas ya emitidas no cambian de empresa.</p>
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          {Object.entries(cuentasFact).map(([k, nombre]) => {
+                            const otra = duenaDe(k, editEmp.id);
+                            const marcada = editEmp.cuentas.includes(k);
+                            return (
+                              <label key={k} className="flex items-center" style={{ gap: 9, fontSize: 13, color: otra ? C.tenue : C.text, cursor: otra ? 'not-allowed' : 'pointer' }}>
+                                <input type="checkbox" checked={marcada} disabled={!!otra}
+                                  onChange={ev => setEditEmp(e => e && { ...e, cuentas: ev.target.checked ? [...new Set([...e.cuentas, k])] : e.cuentas.filter(x => x !== k) })} />
+                                <span>{nombre}{otra ? ` · la factura ${otra.nombre}` : ''}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {editEmp.error && <p style={{ fontSize: 12, color: C.rojo, margin: '10px 0 0', lineHeight: 1.5 }}>{editEmp.error}</p>}
+                    <div className="flex items-center flex-wrap" style={{ gap: 8, marginTop: 12 }}>
+                      <button onClick={guardarEmpresa} disabled={editEmp.guardando} className="lincoin-btn-white"
+                        style={{ fontFamily: FONT, fontSize: 12.5, fontWeight: 700, padding: '8px 14px', borderRadius: 9, border: 'none', cursor: 'pointer', opacity: editEmp.guardando ? 0.5 : 1 }}>
+                        {editEmp.guardando ? 'Guardando…' : !editEmp.id ? 'Crear empresa' : 'Guardar'}
+                      </button>
+                      <button onClick={() => setEditEmp(null)} disabled={editEmp.guardando} style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.sub, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cancelar</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Estado */}
               <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 12, border: `1px solid ${cfg?.activo ? 'rgba(74,222,128,0.35)' : C.borde}`, background: cfg?.activo ? 'rgba(74,222,128,0.06)' : 'transparent' }}>
                 <div className="flex items-center justify-between flex-wrap" style={{ gap: 10 }}>
                   <div>
                     <p className="flex items-center" style={{ gap: 8, fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0 }}>
                       <span style={{ width: 8, height: 8, borderRadius: '50%', background: cfg?.activo ? C.verde : 'rgba(255,255,255,0.18)' }} />
-                      {cfg?.activo ? 'Activa: cada operación completada emite su documento' : 'Pausada: no se emite ningún documento'}
+                      {variasEmpresas && empActual
+                        ? (cfg?.activo ? `${empActual.nombre}: activa` : `${empActual.nombre}: pausada, sus cuentas no emiten documento`)
+                        : (cfg?.activo ? 'Activa: cada operación completada emite su documento' : 'Pausada: no se emite ningún documento')}
                     </p>
                     <p style={{ fontSize: 11.5, color: C.sub, margin: '4px 0 0' }}>
                       {cfg?.modelo === 'rotacion' ? 'Modelo: rotación de capital' : cfg?.modelo === 'psp' ? 'Modelo: PSP / pasarela' : cfg?.modelo === 'comision' ? 'Modelo: Comisión' : 'Sin modelo elegido'}
-                      {cfg?.resumen && cfg.resumen.comprobantes > 0 ? ` · ${cfg.resumen.emitidas} emitidos · ${cfg.resumen.errores} con error` : ''}
+                      {variasEmpresas && empActual ? ` · ${empActual.cuentas.length ? nombreCuentas(empActual.cuentas) : 'sin cuentas'}` : ''}
+                      {!variasEmpresas && cfg?.resumen && cfg.resumen.comprobantes > 0 ? ` · ${cfg.resumen.emitidas} emitidos · ${cfg.resumen.errores} con error` : ''}
                     </p>
                   </div>
                   <button onClick={() => guardar({ activo: !form.activo })} disabled={guardando || (!form.activo && !listo)}
@@ -610,7 +775,7 @@ export const FacturacionConfig: React.FC<{ onCerrar: () => void; nitEmpresa?: st
               </div>
 
               {/* 1. Credenciales: plegadas cuando ya conectaron */}
-              <Seccion n="1" t="Cuenta de Siigo">
+              <Seccion n="1" t={variasEmpresas && empActual ? `Cuenta de Siigo de ${empActual.nombre}` : 'Cuenta de Siigo'}>
                 {conectado && !credAbiertas ? (
                   <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '11px 14px', borderRadius: 12, border: `1px solid rgba(74,222,128,0.28)`, background: 'rgba(74,222,128,0.04)' }}>
                     <div>
