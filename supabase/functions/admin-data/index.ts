@@ -10,6 +10,7 @@ import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvi
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
+import { canalDe, sentidoDe, idsDe, contraparteDe, motivoRechazoDe, marcasDe, riesgoDe, iniciadorDe, costosDe, motivoDe, TIPO_TXT, TIPOS_ENTRADA, TIPOS_SALIDA, TIPOS_OTC, ESTADOS_OK, ESTADOS_MAL, CLAVES_CANAL } from './auditoria.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permisosDe, permite, visibleEnPais, ROLES_VALIDOS, normalizarFunciones, FUNCIONES_VALIDAS, type Rol, type Acceso } from '../_shared/equipo.ts'
@@ -1874,6 +1875,8 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   lincoin_resumen: ['plata.ver', 'tesoreria', 'fn.lincoin'],
   // Reportes → Resumen financiero (solo lectura: utilidad, gastos, volumen).
   reporte_financiero: ['plata.ver', 'tesoreria', 'fn.reportes'],
+  auditoria_movimientos: ['plata.ver', 'tesoreria', 'fn.reportes'],
+  auditoria_movimiento: ['plata.ver', 'tesoreria', 'fn.reportes'],
   // Enviar la utilidad a la empresa por Bre-B: dueño y Tesorería, con su
   // código 2FA en cada envío. Inscribir o quitar las llaves de Lincoin es
   // solo del dueño (no figuran acá).
@@ -6616,6 +6619,179 @@ Deno.serve(async (req: Request) => {
       // Se compara con el MISMO tramo del periodo anterior (el mes en curso,
       // del 1 a hoy, contra el 1 al mismo día del mes pasado): comparar medio
       // mes contra un mes entero siempre "bajaba".
+      // ── Auditoría de movimientos (Reportes → Auditoría), 20 nov ───────
+      // Por cada movimiento: el canal real (Mouv, Finity, Coinsenda…), los
+      // ids del proveedor y de Lincoin, la contraparte, quién lo hizo, la
+      // revisión de riesgo y el comprobante. Ver auditoria.ts. Solo lee.
+      if (body.action === 'auditoria_movimientos' || body.action === 'auditoria_movimiento') {
+        const accA: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
+        const visibleA = (t: any) => accA.todosLosPaises || visibleEnPais(paisDeMovimiento({ currency: t.currency, raw_data: { rail: t.raw_data?.rail ?? t.rail } }), accA)
+        const COLS_USR = 'id, email, full_name, company_name, tax_id, doc_number, rd_nit:raw_data->>nit, rd_tax:raw_data->>taxId, rd_doc:raw_data->>documentNumber'
+        const leerUsuarios = async (ids: string[]) => {
+          const m = new Map<string, any>()
+          const unicos = Array.from(new Set(ids.filter(Boolean)))
+          for (let i = 0; i < unicos.length; i += 200) {
+            const { data, error } = await db.from('users').select(COLS_USR).in('id', unicos.slice(i, i + 200))
+            if (error) {
+              // Una columna que falte en esta base (tax_id, doc_number) no tumba la auditoría.
+              const { data: d2 } = await db.from('users').select('id, email, full_name, company_name, rd_nit:raw_data->>nit, rd_tax:raw_data->>taxId, rd_doc:raw_data->>documentNumber').in('id', unicos.slice(i, i + 200))
+              for (const u of (d2 ?? []) as any[]) m.set(String(u.id), u)
+              continue
+            }
+            for (const u of (data ?? []) as any[]) m.set(String(u.id), u)
+          }
+          return m
+        }
+        const leerComprobantes = async (ids: string[]) => {
+          const m = new Map<string, any>()
+          for (let i = 0; i < ids.length; i += 200) {
+            const { data, error } = await db.from('comprobantes').select('transaction_id, numero, factura_numero, factura_estado').in('transaction_id', ids.slice(i, i + 200))
+            if (error) break
+            for (const c of (data ?? []) as any[]) m.set(String(c.transaction_id), c)
+          }
+          return m
+        }
+        const armar = (t: any, usuarios: Map<string, any>, comps: Map<string, any>) => {
+          const u = usuarios.get(String(t.user_id)) ?? {}
+          const ini = iniciadorDe(t)
+          const quien = ini?.id ? usuarios.get(ini.id) : null
+          const comp = comps.get(String(t.id))
+          const { costo, costoProveedor } = costosDe(t)
+          return {
+            id: String(t.id), fecha: t.created_at ?? null, actualizado: t.updated_at && t.updated_at !== t.created_at ? t.updated_at : null,
+            cliente: { id: String(t.user_id ?? ''), nombre: String(u.company_name || u.full_name || u.email || 'Cliente sin nombre'), nit: u.tax_id ?? u.rd_nit ?? u.rd_tax ?? u.doc_number ?? u.rd_doc ?? null, email: u.email ?? null },
+            operador: ini ? { id: ini.id, nombre: ini.nombre ?? quien?.full_name ?? quien?.company_name ?? null, email: ini.email ?? quien?.email ?? null, via: ini.via } : null,
+            tipo: String(t.type ?? ''), tipoTxt: TIPO_TXT[String(t.type ?? '')] ?? String(t.type ?? '—'), sentido: sentidoDe(t),
+            monto: Number(t.amount) || 0, moneda: String(t.currency ?? ''), costo, costoProveedor,
+            estado: String(t.status ?? '—'), canal: canalDe(t), ids: idsDe(t), contraparte: contraparteDe(t),
+            motivo: motivoDe(t), motivoRechazo: ESTADOS_MAL.includes(String(t.status)) ? motivoRechazoDe(t) : null,
+            riesgo: riesgoDe(t), marcas: marcasDe(t),
+            comprobante: comp ? { numero: comp.numero ?? null, factura: comp.factura_numero ?? null, facturaEstado: comp.factura_estado ?? null } : null,
+          }
+        }
+
+        // ── Un movimiento, con su historial y todo lo guardado ──
+        if (body.action === 'auditoria_movimiento') {
+          const id = String(body.id ?? '')
+          if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ ok: false, error: 'Id inválido.' }, 400)
+          const { data: t, error } = await db.from('transactions').select('*').eq('id', id).maybeSingle()
+          if (error) return json({ ok: false, error: error.message }, 500)
+          if (!t || !visibleA(t)) return json({ ok: false, error: 'Movimiento no encontrado.' }, 404)
+          const ini = iniciadorDe(t as any)
+          const usuarios = await leerUsuarios([String((t as any).user_id), ini?.id ?? ''])
+          const comps = await leerComprobantes([id])
+          // Lo que el panel registró sobre este movimiento (anular, reversar,
+          // cargar, reenviar…): el audit_log solo lo escribe el servidor.
+          const { data: logs } = await db.from('audit_log').select('created_at, action, user_id, metadata')
+            .or(`metadata->>transactionId.eq.${id},metadata->>txId.eq.${id},metadata->>transaction_id.eq.${id},metadata->>tx_id.eq.${id},metadata->>movimientoId.eq.${id}`)
+            .order('created_at', { ascending: true }).limit(200)
+          const RUIDO = new Set(['ipChain', 'geo', 'userAgent', 'hadSession', 'at', 'byEmail', 'transactionId', 'txId', 'transaction_id', 'tx_id', 'movimientoId'])
+          const historial = ((logs ?? []) as any[]).map(l => {
+            const md = (l.metadata ?? {}) as Record<string, unknown>
+            const resto = Object.entries(md).filter(([k, v]) => !RUIDO.has(k) && v != null && v !== '')
+              .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join(' · ')
+            return { at: l.created_at, accion: String(l.action ?? ''), quien: (md.byEmail as string) ?? (md.adminEmail as string) ?? (l.user_id ? String(l.user_id) : null), detalle: resto ? resto.slice(0, 600) : null }
+          })
+          await auditAdmin(req, 'auditoria.ver_movimiento', { transactionId: id })
+          return json({ ok: true, fila: armar(t, usuarios, comps), raw: (t as any).raw_data ?? {}, historial })
+        }
+
+        // ── La lista, con filtros ──
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoyA = hoyBogota()
+        const desdeA = esYmd(body.desde) ? String(body.desde) : new Date(Date.parse(`${hoyA}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10)
+        const hastaA = esYmd(body.hasta) ? String(body.hasta) : hoyA
+        if (desdeA > hastaA) return json({ ok: false, error: 'La fecha "desde" es posterior a "hasta".' }, 400)
+        // Días de Bogotá (UTC−5) en instantes UTC.
+        const tIni = new Date(Date.parse(`${desdeA}T00:00:00Z`) + 5 * 3600_000).toISOString()
+        const tFin = new Date(Date.parse(`${hastaA}T00:00:00Z`) + 5 * 3600_000 + 86_400_000).toISOString()
+        const limite = Math.min(500, Math.max(1, Math.floor(Number(body.limite) || 100)))
+        const offset = Math.max(0, Math.floor(Number(body.offset) || 0))
+        const canalF = String(body.canal ?? '')
+        const estadoF = String(body.estado ?? '')
+        const sentidoF = String(body.sentido ?? '')
+        // La búsqueda va dentro de un filtro de PostgREST: solo letras,
+        // números y @ . - _ espacio (nada de comas, comillas ni paréntesis).
+        const qA = String(body.q ?? '').replace(/[^\p{L}\p{N}@.\-_ ]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 80)
+        let orBusqueda: string | null = null
+        if (qA) {
+          const pat = `"%${qA}%"`
+          const partes: string[] = []
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(qA)) partes.push(`id.eq.${qA}`, `user_id.eq.${qA}`)
+          const { data: us } = await db.from('users').select('id')
+            .or(`company_name.ilike.${pat},full_name.ilike.${pat},email.ilike.${pat},raw_data->>nit.ilike.${pat},raw_data->>taxId.ilike.${pat},raw_data->>documentNumber.ilike.${pat}`).limit(300)
+          const ids = ((us ?? []) as any[]).map(u => String(u.id))
+          if (ids.length) partes.push(`user_id.in.(${ids.join(',')})`)
+          for (const k of ['providerRef', 'providerTraceId', 'providerReference', 'reference', 'beneficiary', 'benefDoc', 'documentNumber', 'account', 'otcCloseId', 'txHash', 'endToEndId'])
+            partes.push(`raw_data->>${k}.ilike.${pat}`)
+          orBusqueda = partes.join(',')
+        }
+        const MONEDA_CANAL: Record<string, string> = { mouv: 'COP_BREB', finity: 'COP_ACH', coinsenda_jero: 'COP_C3', coinsenda_kaupaloki: 'COP_C4' }
+        const filtrar = (q: any) => {
+          q = q.gte('created_at', tIni).lt('created_at', tFin)
+          if (MONEDA_CANAL[canalF]) q = q.eq('currency', MONEDA_CANAL[canalF])
+          else if (canalF === 'otc') q = q.in('type', Array.from(TIPOS_OTC))
+          else if (canalF === 'usdt') q = q.ilike('currency', 'USD%')
+          if (estadoF === 'completado') q = q.in('status', ESTADOS_OK)
+          else if (estadoF === 'rechazado') q = q.in('status', ESTADOS_MAL)
+          else if (estadoF === 'proceso') q = q.not('status', 'in', `(${[...ESTADOS_OK, ...ESTADOS_MAL].map(e => `"${e}"`).join(',')})`)
+          if (sentidoF === 'entra') q = q.in('type', Array.from(TIPOS_ENTRADA))
+          else if (sentidoF === 'sale') q = q.in('type', Array.from(TIPOS_SALIDA))
+          if (orBusqueda) q = q.or(orBusqueda)
+          return q
+        }
+        // El canal se decide con la fila entera (un cargue del admin a la
+        // Cuenta 1 no es "Mouv"): lo que la base no puede filtrar se filtra acá.
+        const pasaCanal = (t: any) => !canalF || canalDe(t).clave === canalF
+
+        const { data: pagina, error: ePag } = await filtrar(db.from('transactions').select('id, user_id, type, amount, currency, status, created_at, updated_at, raw_data'))
+          .order('created_at', { ascending: false }).order('id', { ascending: true }).range(offset, offset + limite - 1)
+        if (ePag) return json({ ok: false, error: `No se pudieron leer los movimientos: ${ePag.message}` }, 500)
+        const crudas = (pagina ?? []) as any[]
+        const visibles = crudas.filter(t => visibleA(t) && pasaCanal(t))
+        const inis = visibles.map(t => iniciadorDe(t)?.id ?? '').filter(Boolean)
+        const usuarios = await leerUsuarios([...visibles.map(t => String(t.user_id)), ...inis])
+        const comps = await leerComprobantes(visibles.map(t => String(t.id)))
+        const filas = visibles.map(t => armar(t, usuarios, comps))
+
+        // El resumen, solo con la primera página: hasta 10.000 movimientos del
+        // filtro, con lo justo para decidir el canal (sin raw_data entero).
+        let resumen: any = null
+        if (offset === 0) {
+          const selRes = ['id', 'type', 'amount', 'currency', 'status', ...CLAVES_CANAL.map(k => `rd_${k}:raw_data->${k}`)].join(', ')
+          const TOPE = 10_000
+          const todas: any[] = []
+          let truncado = false
+          for (let off = 0; off < TOPE; off += 1000) {
+            const { data, error } = await filtrar(db.from('transactions').select(selRes)).order('created_at', { ascending: false }).order('id', { ascending: true }).range(off, off + 999)
+            if (error) break
+            todas.push(...((data ?? []) as any[]))
+            if (!data || data.length < 1000) break
+            if (off + 1000 >= TOPE) truncado = true
+          }
+          const porCanal = new Map<string, { clave: string; etiqueta: string; n: number; entra: number; sale: number }>()
+          let n = 0, entra = 0, sale = 0
+          for (const r of todas) {
+            const rd: Record<string, unknown> = {}
+            for (const k of CLAVES_CANAL) if (r[`rd_${k}`] != null) rd[k] = r[`rd_${k}`]
+            const t = { type: r.type, amount: r.amount, currency: r.currency, status: r.status, raw_data: rd }
+            if (!visibleA(t) || !pasaCanal(t)) continue
+            const c = canalDe(t)
+            const agr = porCanal.get(c.clave) ?? { clave: c.clave, etiqueta: c.clave === 'otc' ? 'Mesa OTC' : c.clave === 'admin' ? 'Cargues y ajustes del admin' : c.clave === 'finity' ? 'Finity · Cuenta 2' : c.clave === 'mouv' ? 'Mouv · Cuenta 1' : c.clave === 'coinsenda_jero' ? 'Coinsenda Jero · Cuenta 3' : c.clave === 'coinsenda_kaupaloki' ? 'Coinsenda Kaupaloki · Cuenta 4' : c.etiqueta, n: 0, entra: 0, sale: 0 }
+            agr.n++; n++
+            // Plata que se movió de verdad: solo lo completado y en pesos.
+            if (ESTADOS_OK.includes(String(r.status)) && /^COP/i.test(String(r.currency ?? ''))) {
+              const m = Math.abs(Number(r.amount) || 0)
+              const s = sentidoDe(t)
+              if (s === 'entra') { agr.entra += m; entra += m } else if (s === 'sale') { agr.sale += m; sale += m }
+            }
+            porCanal.set(c.clave, agr)
+          }
+          resumen = { n, entra, sale, truncado, porCanal: Array.from(porCanal.values()).sort((a, b) => b.n - a.n) }
+        }
+        return json({ ok: true, desde: desdeA, hasta: hastaA, filas, resumen, siguiente: crudas.length === limite ? offset + limite : null })
+      }
+
       if (body.action === 'reporte_financiero') {
         const accR: Acceso = auth.acceso ?? { rol: 'lectura', paises: [], todosLosPaises: false }
         const TZ = 5 * 3600_000

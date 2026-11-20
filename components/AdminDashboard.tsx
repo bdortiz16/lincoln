@@ -105,6 +105,7 @@ import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { ReporteFinanciero } from './ReporteFinanciero';
+import { AuditoriaMovimientos } from './AuditoriaMovimientos';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
@@ -4693,8 +4694,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           u.id.includes(reportUserSearch)
       )].filter(u => { if (vistosRep.has(u.id)) return false; vistosRep.add(u.id); return true; }).slice(0, 200);
 
-      // Logic for Audit Tab (Transaction Log)
-      const auditTransactions = historyTransactions.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
       return (
           <div className="space-y-6 animate-in fade-in duration-300">
@@ -4737,49 +4736,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           </div>
                       )}
 
-                      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                          <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                              <h3 className="font-bold text-slate-700">Registro de Transacciones</h3>
-                              <div className="text-xs text-slate-500">Mostrando {auditTransactions.length} registros</div>
-                          </div>
-                          <div className="max-h-[600px] overflow-y-auto">
-                              <table className="w-full text-left text-sm">
-                                  <thead className="bg-white text-slate-500 font-bold uppercase text-[10px] sticky top-0 z-10 border-b border-slate-100">
-                                      <tr>
-                                          <th className="px-6 py-3">Fecha</th>
-                                          <th className="px-6 py-3">ID</th>
-                                          <th className="px-6 py-3">Usuario</th>
-                                          <th className="px-6 py-3">Tipo</th>
-                                          <th className="px-6 py-3 text-right">Monto</th>
-                                          <th className="px-6 py-3 text-center">Estado</th>
-                                          <th className="px-6 py-3 text-center">Riesgo</th>
-                                      </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100">
-                                      {auditTransactions.map(tx => {
-                                          const isHighRisk = tx.amount > 5000 || tx.status === 'Rechazado';
-                                          return (
-                                              <tr key={tx.id} className="hover:bg-slate-50">
-                                                  <td className="px-6 py-3 text-slate-500 text-xs">{tx.date}</td>
-                                                  <td className="px-6 py-3 font-mono text-xs text-slate-400">#{tx.id}</td>
-                                                  <td className="px-6 py-3 font-bold text-slate-700">{tx.userName}</td>
-                                                  <td className="px-6 py-3 text-xs uppercase">{tx.type}</td>
-                                                  <td className="px-6 py-3 text-right font-mono font-medium">{formatMoney(tx.amount, tx.currency)} {tx.currency}</td>
-                                                  <td className="px-6 py-3 text-center">
-                                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${tx.status === 'Completado' ? 'bg-green-100 text-green-700' : tx.status === 'Rechazado' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
-                                                          {tx.status}
-                                                      </span>
-                                                  </td>
-                                                  <td className="px-6 py-3 text-center">
-                                                      {isHighRisk && <span className="bg-red-50 text-red-600 border border-red-100 px-2 py-0.5 rounded text-[10px] font-bold flex items-center justify-center gap-1"><ShieldAlert size={10}/> ALERTA</span>}
-                                                  </td>
-                                              </tr>
-                                          );
-                                      })}
-                                  </tbody>
-                              </table>
-                          </div>
-                      </div>
+                      {/* La auditoría sale del servidor, de la base entera, con canal,
+                          ids del proveedor, contraparte y quién lo hizo (20 nov). */}
+                      <AuditoriaMovimientos />
                   </div>
               )}
 
