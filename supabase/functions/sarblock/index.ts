@@ -984,9 +984,20 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
     // Sarblock): las personas del padrón juzgadas con otra versión. Por
     // tandas: la pantalla lo vuelve a pedir mientras queden.
     if (accion === 'admin_risk_rejuzgar') {
+      // UNA persona (la pantalla la pide al abrir una ficha juzgada con otra
+      // versión): al instante, sin esperar la tanda.
+      if (body.documento) {
+        const tipo1 = tipoPadron(String(body.tipoDocumento ?? 'CC'))
+        const doc1 = docPadron(String(body.documento ?? ''), tipo1)
+        const r1 = doc1 ? await rejuzgarDocumento(tipo1, doc1) : null
+        if (!r1) return { ok: false, motivo: 'Esta persona no tiene el resultado de Sarblock guardado: no se puede recalcular.' }
+        return { ok: true, uno: true, ...r1, criterio: CRITERIO }
+      }
       const hasta = Date.now() + 100_000
+      // Primero los de riesgo alto: son los que la matriz nueva puede liberar.
       const { data: viejas } = await db.from('risk_registry').select('doc_type, doc_number')
-        .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null).limit(300)
+        .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null)
+        .order('altos', { ascending: false }).limit(300)
       let hechas = 0
       for (const v of (viejas ?? []) as any[]) {
         if (Date.now() > hasta) break
@@ -1320,7 +1331,8 @@ Deno.serve(async (req) => {
       let rejuzgadas = 0
       try {
         const { data: viejas } = await db.from('risk_registry').select('doc_type, doc_number')
-          .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null).limit(15)
+          .or(`criterio.is.null,criterio.neq.${CRITERIO}`).not('ficha->sarblock', 'is', null)
+          .order('altos', { ascending: false }).limit(15)
         for (const v of (viejas ?? []) as any[]) {
           if (Date.now() - inicio > 138_000) break
           if (await rejuzgarDocumento(String(v.doc_type), String(v.doc_number))) rejuzgadas++

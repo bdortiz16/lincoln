@@ -65,7 +65,7 @@ Deno.test('OFAC: alto, no operable, con el motivo', () => {
   assert(f.bloqueo?.startsWith('Riesgo alto: Coincidencia en lista restrictiva: OFAC SDN'));
   assertEquals(f.altos, 1);
   assertEquals(f.hallazgos?.[0], { nivel: 'alto', codigo: 'lista_restrictiva', texto: 'Coincidencia en lista restrictiva: OFAC SDN (Ada Lovelace)', fuente: 'OFAC SDN' });
-  assertEquals(f.criterio, 'lincoin-v4-2026-11-20');
+  assertEquals(f.criterio, 'lincoin-v5-2026-11-20');
 });
 
 Deno.test('revisión solo por una fuente caída, sin coincidencias: NO es riesgo medio', () => {
@@ -385,7 +385,8 @@ Deno.test('v4: penal como parte pasiva SIN señal de LA/FT → medio y operable,
   assertEquals(f.categoria, 'medio');
   assertEquals(f.operable, true);
   assertEquals(f.altos, 0);
-  assertEquals(f.medios, 3);
+  assertEquals(f.medios, 1);                                          // civil y familia son informativos (v5)
+  assertEquals(f.procesosInformativos?.length, 2);
   const penal = f.hallazgos?.find(h => h.codigo === 'rama_penal_pasiva');
   assert(penal?.texto.includes('Falta verificar el delito'));
   assertEquals(penal?.radicado, '052126000201200904949');
@@ -446,11 +447,34 @@ Deno.test('extinción de dominio como parte pasiva → alto', () => {
   assert(m[0].texto.includes('extinción de dominio'));
 });
 
-Deno.test('civil o familia como parte pasiva → medio, en revisión', () => {
-  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('civil', 'pasiva', 'JUZGADO 001 CIVIL')])] }), benef);
+Deno.test('v5: civil o familia como parte pasiva → informativo, riesgo bajo', () => {
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('civil', 'pasiva', 'JUZGADO 001 CIVIL'), proceso('familia', 'pasiva', 'JUZGADO 003 DE FAMILIA')])] }), benef);
+  assertEquals(f.categoria, 'bajo');
+  assertEquals(f.operable, true);
+  assertEquals(f.medios, 0);
+  assertEquals(f.bloqueo, undefined);
+  assertEquals(f.procesosInformativos?.length, 2);
+});
+
+Deno.test('v5: Sarblock pide revisión solo por procesos judiciales → manda la matriz (caso GENCELL)', () => {
+  const holdJudicial = { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: 'judicial_records', matchedLists: 1, unavailableLists: 0 };
+  const f = traducir(check({ summary: holdJudicial, catalog: [rama([proceso('civil', 'pasiva', 'JUZGADO 040 CIVIL MUNICIPAL DE BOGOTÁ'), proceso('penal', 'pasiva')])] }),
+    { ...benef, revisionesPenales: { '052126000201200904949': { decision: 'sin_relacion', nota: 'Archivado' } } });
+  assertEquals(f.categoria, 'bajo');
+  assertEquals(f.operable, true);
+  assertEquals(f.bloqueo, undefined);
+});
+
+Deno.test('v5: con otra coincidencia además de la judicial, el nivel de Sarblock sigue mandando', () => {
+  const pep = { code: 'co_pep', label: 'PEP Colombia', category: 'PEP', matched: true, matchCount: 1, hits: [] };
+  const hold = { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: 'pep', matchedLists: 2, unavailableLists: 0 };
+  const f = traducir(check({ summary: hold, catalog: [rama([proceso('civil', 'pasiva')]), pep] }), benef);
   assertEquals(f.categoria, 'medio');
-  assertEquals(f.operable, true);                                     // el medio lo frena la configuración actual
-  assert(f.bloqueo?.startsWith('En revisión de cumplimiento: Parte pasiva en proceso civil'));
+});
+
+Deno.test('v5: una rama sin nombre o promiscua sigue en medio (puede ser penal)', () => {
+  const f = traducir(check({ summary: bajoSarblock, catalog: [rama([proceso('promiscuo', 'pasiva', 'JUZGADO 001 PROMISCUO MUNICIPAL')])] }), benef);
+  assertEquals(f.categoria, 'medio');
 });
 
 Deno.test('penal como DEMANDANTE no cuenta (solo pesa la parte pasiva)', () => {
@@ -558,7 +582,7 @@ Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a S
     criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
   const nueva = rejuzgar(vieja, { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
   assertEquals(nueva?.operable, true);
-  assertEquals(nueva?.criterio, 'lincoin-v4-2026-11-20');
+  assertEquals(nueva?.criterio, 'lincoin-v5-2026-11-20');
 });
 
 // ── Lincoin Risk prepago ────────────────────────────────────────────────

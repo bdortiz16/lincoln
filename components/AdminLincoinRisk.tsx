@@ -69,6 +69,8 @@ export const AdminLincoinRisk: React.FC = () => {
   const [notaRev, setNotaRev] = useState('');
   const [guardandoRev, setGuardandoRev] = useState(false);
   const [rejuzgando, setRejuzgando] = useState<string | null>(null);
+  const [recalculandoUna, setRecalculandoUna] = useState<string | null>(null);
+  const yaRecalculadas = useRef<Set<string>>(new Set());
   const turno = useRef(0);
 
   const cargar = async (buscar = q) => {
@@ -107,6 +109,26 @@ export const AdminLincoinRisk: React.FC = () => {
     await cargar();
     return true;
   };
+  // Al abrir una ficha juzgada con una versión anterior de la matriz, se
+  // recalcula ESA en el acto (gratis, desde lo guardado). Antes había que
+  // esperar a que la tanda llegara a ella, y la ficha seguía mostrando el
+  // riesgo viejo (20 nov, GENCELL).
+  useEffect(() => {
+    if (!abierto || !d?.criterioVigente) return;
+    const p = (d.personas ?? []).find((x: any) => `${x.tipoDocumento}:${x.documento}` === abierto);
+    if (!p || !p.deSarblock || p.criterio === d.criterioVigente || yaRecalculadas.current.has(abierto)) return;
+    yaRecalculadas.current.add(abierto);
+    setRecalculandoUna(abierto);
+    llamarFuncion('sarblock', { action: 'admin_risk_rejuzgar', tipoDocumento: p.tipoDocumento, documento: p.documento }, 90000)
+      .catch(() => null)
+      .then(async (r: any) => {
+        setRecalculandoUna(null);
+        if (r?.ok) await cargar();
+        else setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo recalcular esta ficha con la matriz vigente.' });
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abierto, d]);
+
   // Vuelve a juzgar con la matriz vigente lo que quedó juzgado con otra
   // versión (gratis: sale del catálogo guardado). Por tandas hasta terminar.
   const rejuzgarTodo = async () => {
@@ -364,6 +386,7 @@ export const AdminLincoinRisk: React.FC = () => {
                     {p.empresas > 1 && ` · ${p.empresas} empresas`}
                     {p.fuente === 'monitoreo' && ' · actualizado por monitoreo'}
                     {enCurso[id] && <> · <b style={{ color: C.green }}>consultando en Sarblock…</b></>}
+                    {recalculandoUna === id && <> · <b style={{ color: C.green }}>recalculando con la matriz vigente…</b></>}
                   </span>
                 </span>
                 <span style={{
@@ -475,6 +498,18 @@ export const AdminLincoinRisk: React.FC = () => {
                           </div>
                           );
                         })}
+                      </div>
+                    )}
+                    {/* Procesos civiles, de familia, laborales…: se muestran, no
+                        pesan (matriz v5). */}
+                    {Array.isArray(p.procesosInformativos) && p.procesosInformativos.length > 0 && (
+                      <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <p style={{ fontSize: 10.5, color: C.sub, margin: 0 }}>Procesos informativos · no suben el riesgo ({p.procesosInformativos.length})</p>
+                        {p.procesosInformativos.slice(0, 15).map((x: any, k: number) => (
+                          <div key={`${x.radicado}-${k}`} style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.45 }}>
+                            <span style={{ color: C.dim }}>INFORMATIVO</span> · {x.texto}
+                          </div>
+                        ))}
                       </div>
                     )}
                     {/* Penales que Cumplimiento verificó como no relacionados:

@@ -50,7 +50,13 @@ export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string;
 //     caso como CC 75104651 (penal por delito fuente) opera hasta que alguien
 //     lo revise.
 //   · extinción de dominio sigue siendo alto: es sobre bienes ilícitos.
-export const CRITERIO = 'lincoin-v4-2026-11-20';
+// v5 (2026-11-20, mismo día, pedido del dueño): los procesos civiles, de
+// familia, laborales y demás no penales como parte pasiva son INFORMATIVOS:
+// se ven en la ficha y el PDF pero no suben el riesgo (no son señal de LA/FT).
+// Y cuando lo único que Sarblock encontró son procesos judiciales, su propio
+// nivel o su "revisar" no mandan: esos procesos ya los juzga esta matriz,
+// uno por uno. Sin esto GENCELL seguía en medio por cinco demandas civiles.
+export const CRITERIO = 'lincoin-v5-2026-11-20';
 
 export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string; radicado?: string };
 
@@ -66,6 +72,11 @@ export type Revisiones = Record<string, RevisionPenal>;
 // persona: "LAVADO EXPRESS S.A.S." es un lavadero, no un hallazgo.
 const DELITO_LAFT = /lavado de activos|enriquecimiento il[ií]cito|testaferr|financiaci[oó]n del terrorismo|terroris|narcotr[aá]fico|estupefacient|tr[aá]fico de drogas|concierto para delinquir|extinci[oó]n de dominio|trata de personas|tr[aá]fico de migrantes|extorsi[oó]n|secuestro|tr[aá]fico de armas|contrabando|fraude aduanero|captaci[oó]n (masiva|ilegal)|cohecho|peculado|concusi[oó]n|soborno/i;
 const sinTildes = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+// Ramas que no son penales: el proceso se muestra pero no pesa. Una rama vacía
+// o "promiscua" (un juzgado promiscuo también lleva penal) NO entra acá: sin
+// saber qué es, sigue en medio.
+export const RAMA_INFORMATIVA = (rama: string) => !!rama && !/promiscu/.test(rama)
+  && /civil|famil|laboral|comercial|administr|contencios|agrari|tierras|constitucional|tutela|ejecuci[oó]n civil|peque[nñ]as causas/.test(rama);
 function describeProceso(h: any): string {
   const j = h?.judicial ?? {};
   const { processKey: _k, partySide: _p, startDate: _s, lastActionDate: _l, ...resto } = j;
@@ -112,6 +123,13 @@ export function reglasLincoin(catalogo: any[], revisiones?: Revisiones | null): 
         const donde = `${limpio(h.judicial?.court)}, radicado ${radicado || '—'}${h.judicial?.startDate ? `, desde ${h.judicial.startDate}` : ''}${ult ? `, última actuación ${ult}` : ''}`;
         const nomRama = rama.replace(/_/g, ' ');
         if (!RAMA_GRAVE(rama)) {
+          // Una señal de LA/FT pesa en cualquier rama.
+          if (senalLaft(h)) {
+            out.push({ nivel: 'alto', regla: 'rama_laft', fuente: label, radicado, texto: `Parte pasiva en proceso ${nomRama || 'judicial'} con señal de LA/FT o delito fuente: ${donde}` });
+            continue;
+          }
+          // Civil, familia, laboral…: informativo (v5), no es un motivo.
+          if (RAMA_INFORMATIVA(rama)) continue;
           out.push({ nivel: 'medio', regla: 'rama_pasiva', fuente: label, texto: `Parte pasiva en proceso ${nomRama || 'judicial'}: ${donde}` });
           continue;
         }
@@ -181,6 +199,7 @@ export type Ficha = {
   ruesTraslado?: RuesTraslado       // matrícula cancelada por traslado, con la nueva vigente
   revisionesPenales?: Revisiones    // lo que Cumplimiento decidió de cada proceso penal (por radicado)
   penalesVerificados?: { radicado: string; texto: string; nota?: string; porNombre?: string | null; at?: string }[]
+  procesosInformativos?: { radicado: string; rama: string; texto: string }[]   // civil, familia, laboral… (no pesan, v5)
   incompleta?: boolean              // alguna fuente no respondió (resultado parcial)
   operable?: boolean;
   bloqueo?: string;
@@ -272,9 +291,19 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     : [];
   const altos = motivos.filter(m => m.nivel === 'alto').length;
   const medios = motivos.length - altos;
-  // Menciones que NO son coincidencia (p. ej. procesos como demandante): se
-  // cuentan como bajos, igual que TusDatos contaba sus bajos sin listarlos.
-  const bajos = catalogo.filter(e => e?.matched !== true && Number(e?.matchCount ?? 0) > 0).length;
+  // Procesos no penales como parte pasiva (v5): se listan, no pesan.
+  const procesosInformativos = catalogo
+    .filter(e => String(e?.code ?? '') === 'co_rama_judicial')
+    .flatMap(e => (Array.isArray(e?.hits) ? e.hits : []).filter(PASIVA))
+    .filter(h => { const r = String(h?.judicial?.branch ?? '').toLowerCase(); return !RAMA_GRAVE(r) && RAMA_INFORMATIVA(r) && !senalLaft(h); })
+    .map(h => ({
+      radicado: String(h?.judicial?.processKey ?? ''), rama: String(h?.judicial?.branch ?? '').replace(/_/g, ' '),
+      texto: `Parte pasiva en proceso ${String(h?.judicial?.branch ?? '').replace(/_/g, ' ')}: ${limpio(h?.judicial?.court)}, radicado ${h?.judicial?.processKey ?? '—'}${h?.judicial?.startDate ? `, desde ${h.judicial.startDate}` : ''}`,
+    }));
+  // Menciones que NO son coincidencia (p. ej. procesos como demandante) y los
+  // procesos informativos: se cuentan como bajos, igual que TusDatos contaba
+  // sus bajos sin listarlos.
+  const bajos = catalogo.filter(e => e?.matched !== true && Number(e?.matchCount ?? 0) > 0).length + procesosInformativos.length;
 
   // Una fuente sin respuesta no es una fuente limpia.
   const fuentesConError = catalogo.filter(e => e?.status === 'UNAVAILABLE').map(e => String(e.label ?? e.code));
@@ -301,7 +330,11 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const soloIdentidad = /spoof/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0;
   // Y si lo único fue la matrícula cancelada por traslado (con la nueva
   // vigente en el RUES), su HIGH / HOLD_FOR_REVIEW tampoco.
-  const ignorarSarblock = (soloIdentidad || !!traslado) && !suplantacion;
+  // Y si lo único que encontró son procesos judiciales (v5): esos los juzga la
+  // matriz proceso por proceso; su nivel general no manda. Un bloqueo
+  // explícito de Sarblock (shouldBlock) sí se respeta siempre.
+  const soloJudicial = coinciden.length > 0 && coinciden.every(e => String(e?.code ?? '') === 'co_rama_judicial') && s.shouldBlock !== true && String(s.action ?? '') !== 'BLOCK';
+  const ignorarSarblock = (soloIdentidad || !!traslado || soloJudicial) && !suplantacion;
   const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
   // "Revisar" solo porque una fuente no respondió, sin ninguna coincidencia:
   // no es un hallazgo. Antes subía a riesgo medio una consulta limpia pero
@@ -322,6 +355,9 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   // Y la matriz de Lincoin sube el nivel si encontró algo más grave.
   if (altos > 0) categoria = 'alto';
   else if (medios > 0 && categoria !== 'alto') categoria = 'medio';
+  // Solo procesos informativos (o verificados por Cumplimiento): riesgo bajo,
+  // no "sin hallazgos": algo se encontró y está a la vista.
+  else if (soloJudicial && (categoria === 'ninguno' || !categoria) && (procesosInformativos.length > 0 || penalesVerificados.length > 0)) categoria = 'bajo';
   // Sin identidad contrastada y sin nada encontrado no se sabe de quién son
   // los antecedentes: igual que el 'sin_validar' de TusDatos, no bloquea.
   if (id && id.validated === false && (categoria === 'ninguno' || categoria === 'bajo')) categoria = 'sin_validar';
@@ -353,6 +389,7 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     ...(traslado ? { ruesTraslado: traslado } : {}),
     ...(revisiones && Object.keys(revisiones).length ? { revisionesPenales: revisiones } : {}),
     ...(penalesVerificados.length ? { penalesVerificados } : {}),
+    ...(procesosInformativos.length ? { procesosInformativos: procesosInformativos.slice(0, 40) } : {}),
     categoria,
     operable,
     bloqueo,

@@ -38,6 +38,7 @@
 // ARRANCA APAGADO.
 // ════════════════════════════════════════════════════════
 
+import { CRITERIO as CRITERIO_RISK } from '../sarblock/traductor.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
@@ -2007,6 +2008,9 @@ Deno.serve(async (req: Request) => {
         ok: true,
         // Las consultas las hace Sarblock y su padrón vale 90 días.
         config: { activo: true, dias: 90, proveedor: 'sarblock' },
+        // La versión vigente de la matriz: la pantalla recalcula al abrir una
+        // ficha juzgada con otra.
+        criterioVigente: CRITERIO_RISK,
         resumen: {
           personas: total ?? lista.length,
           consultasPagadas: pagadas,
@@ -2027,6 +2031,7 @@ Deno.serve(async (req: Request) => {
           hallazgos: Array.isArray(r.hallazgos) ? r.hallazgos : [],
           // Matriz v4: lo que Cumplimiento ya revisó de sus procesos penales.
           penalesVerificados: Array.isArray(r.ficha?.penalesVerificados) ? r.ficha.penalesVerificados : [],
+          procesosInformativos: Array.isArray(r.ficha?.procesosInformativos) ? r.ficha.procesosInformativos : [],
           revisionesPenales: r.ficha?.revisionesPenales ?? {},
           criterio: r.criterio ?? r.ficha?.criterio ?? null,
           reportId: r.report_id,
