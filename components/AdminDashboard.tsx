@@ -5373,7 +5373,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     // Los envíos por Coinsenda dicen su cuenta: "ACH · Cuenta 4" y no solo
     // "COP_C4" o "ACH", que no dejaba saber de qué bolsa salió.
     const etiquetaRiel = (t: any): string => {
-      const rd = t.raw_data ?? {};
+      // Las filas del panel llegan APLANADAS (raw_data esparcido en la fila,
+      // sin la llave raw_data): leer solo t.raw_data dejaba cada envío de
+      // Coinsenda como "ACH" y con la cuenta adivinada por la moneda.
+      const rd = { ...t, ...(t.raw_data ?? {}) };
       if (String(t.proveedor ?? rd.proveedor ?? '') !== 'coinsenda') return railLabel(t.currency);
       const cuenta = rd.coinsenda?.cuenta ?? rd.cuentaAch ?? rd.cuentaBreb ?? (String(t.currency) === 'COP_C4' ? 4 : 3);
       const riel = rd.rail ?? rd.riel ?? (rd.cuentaBreb ? 'Bre-B' : 'ACH');

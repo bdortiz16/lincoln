@@ -10,7 +10,7 @@ import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvi
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
-import { canalDe, sentidoDe, idsDe, contraparteDe, motivoRechazoDe, marcasDe, riesgoDe, iniciadorDe, costosDe, motivoDe, TIPO_TXT, TIPOS_ENTRADA, TIPOS_SALIDA, TIPOS_OTC, ESTADOS_OK, ESTADOS_MAL, CLAVES_CANAL } from './auditoria.ts'
+import { canalDe, sentidoDe, idsDe, contraparteDe, motivoRechazoDe, marcasDe, docRiesgoDe, iniciadorDe, resolvioDe, hitosDe, costosDe, motivoDe, etiquetaClave, TIPO_TXT, TIPOS_ENTRADA, TIPOS_SALIDA, ESTADOS_OK, ESTADOS_MAL, CLAVES_CANAL } from './auditoria.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { accesoDe as accesoEquipo, PERMISOS_POR_ROL, permisosDe, permite, visibleEnPais, ROLES_VALIDOS, normalizarFunciones, FUNCIONES_VALIDAS, type Rol, type Acceso } from '../_shared/equipo.ts'
@@ -6651,21 +6651,55 @@ Deno.serve(async (req: Request) => {
           }
           return m
         }
-        const armar = (t: any, usuarios: Map<string, any>, comps: Map<string, any>) => {
+        // La revisión de riesgo NO queda en el movimiento: sale del padrón de
+        // Lincoin Risk (risk_registry), por el documento del beneficiario. Es
+        // el veredicto de HOY, no necesariamente el del día del envío.
+        const leerFichas = async (filasT: any[]) => {
+          const m = new Map<string, any>()
+          const docs = new Set<string>()
+          for (const t of filasT) { const d = docRiesgoDe(t); if (d) { docs.add(d); const b = normDoc(d); if (b) docs.add(b) } }
+          const lista = Array.from(docs)
+          for (let i = 0; i < lista.length; i += 200) {
+            const { data, error } = await db.from('risk_registry').select('doc_type, doc_number, categoria, operable, estado, actualizado_at').in('doc_number', lista.slice(i, i + 200))
+            if (error) break
+            for (const r of (data ?? []) as any[]) {
+              const prev = m.get(String(r.doc_number))
+              if (!prev || Date.parse(String(r.actualizado_at ?? '')) > Date.parse(String(prev.actualizado_at ?? ''))) m.set(String(r.doc_number), r)
+            }
+          }
+          return m
+        }
+        const NIVEL: Record<string, string> = { alto: 'Alto', medio: 'Medio', bajo: 'Bajo', ninguno: 'Sin hallazgos', informativo: 'Informativo', sin_validar: 'Sin validar' }
+        const riesgoFicha = (t: any, fichas: Map<string, any>) => {
+          const d = docRiesgoDe(t); if (!d) return null
+          const f = fichas.get(d) ?? fichas.get(normDoc(d))
+          if (!f) return { nivel: null, detalle: 'El documento del beneficiario no está en el padrón de Lincoin Risk.' }
+          const partes = [`Padrón de Lincoin Risk (${f.doc_type} ${f.doc_number})`, f.actualizado_at ? `actualizado ${String(f.actualizado_at).slice(0, 10)}` : null, f.operable === false ? 'no operable' : null, f.estado && f.estado !== 'finalizado' ? String(f.estado) : null]
+          return { nivel: NIVEL[String(f.categoria)] ?? (f.categoria ? String(f.categoria) : null), detalle: `${partes.filter(Boolean).join(' · ')}. Es el veredicto de hoy.` }
+        }
+        const armar = (t: any, usuarios: Map<string, any>, comps: Map<string, any>, fichas: Map<string, any>) => {
           const u = usuarios.get(String(t.user_id)) ?? {}
           const ini = iniciadorDe(t)
           const quien = ini?.id ? usuarios.get(ini.id) : null
           const comp = comps.get(String(t.id))
           const { costo, costoProveedor } = costosDe(t)
+          const nombreCliente = String(u.company_name || u.full_name || u.email || 'Cliente sin nombre')
+          // Sin `por`, lo pidió la propia cuenta desde su sesión (los envíos
+          // exigen que la sesión sea la de esa cuenta). Lo que llega de afuera
+          // (recaudos, links pagados) no lo "hizo" nadie de Lincoin.
+          const desdeLaApp = ['dispersion', 'send', 'pay_sent', 'rail_move', 'convert'].includes(String(t.type)) || t.raw_data?.insertadoPorCliente
+          const operador = ini
+            ? { id: ini.id, nombre: ini.nombre ?? quien?.full_name ?? quien?.company_name ?? null, email: ini.email ?? quien?.email ?? null, via: ini.via }
+            : desdeLaApp ? { id: String(t.user_id ?? ''), nombre: nombreCliente, email: u.email ?? null, via: 'sesión del cliente en la app' } : null
           return {
-            id: String(t.id), fecha: t.created_at ?? null, actualizado: t.updated_at && t.updated_at !== t.created_at ? t.updated_at : null,
-            cliente: { id: String(t.user_id ?? ''), nombre: String(u.company_name || u.full_name || u.email || 'Cliente sin nombre'), nit: u.tax_id ?? u.rd_nit ?? u.rd_tax ?? u.doc_number ?? u.rd_doc ?? null, email: u.email ?? null },
-            operador: ini ? { id: ini.id, nombre: ini.nombre ?? quien?.full_name ?? quien?.company_name ?? null, email: ini.email ?? quien?.email ?? null, via: ini.via } : null,
+            id: String(t.id), fecha: t.created_at ?? null, actualizado: null,
+            cliente: { id: String(t.user_id ?? ''), nombre: nombreCliente, nit: u.tax_id ?? u.rd_nit ?? u.rd_tax ?? u.doc_number ?? u.rd_doc ?? null, email: u.email ?? null },
+            operador, resolvio: resolvioDe(t), hitos: hitosDe(t),
             tipo: String(t.type ?? ''), tipoTxt: TIPO_TXT[String(t.type ?? '')] ?? String(t.type ?? '—'), sentido: sentidoDe(t),
             monto: Number(t.amount) || 0, moneda: String(t.currency ?? ''), costo, costoProveedor,
             estado: String(t.status ?? '—'), canal: canalDe(t), ids: idsDe(t), contraparte: contraparteDe(t),
             motivo: motivoDe(t), motivoRechazo: ESTADOS_MAL.includes(String(t.status)) ? motivoRechazoDe(t) : null,
-            riesgo: riesgoDe(t), marcas: marcasDe(t),
+            riesgo: riesgoFicha(t, fichas), marcas: marcasDe(t),
             comprobante: comp ? { numero: comp.numero ?? null, factura: comp.factura_numero ?? null, facturaEstado: comp.factura_estado ?? null } : null,
           }
         }
@@ -6680,6 +6714,7 @@ Deno.serve(async (req: Request) => {
           const ini = iniciadorDe(t as any)
           const usuarios = await leerUsuarios([String((t as any).user_id), ini?.id ?? ''])
           const comps = await leerComprobantes([id])
+          const fichasD = await leerFichas([t])
           // Lo que el panel registró sobre este movimiento (anular, reversar,
           // cargar, reenviar…): el audit_log solo lo escribe el servidor.
           const { data: logs } = await db.from('audit_log').select('created_at, action, user_id, metadata')
@@ -6693,7 +6728,7 @@ Deno.serve(async (req: Request) => {
             return { at: l.created_at, accion: String(l.action ?? ''), quien: (md.byEmail as string) ?? (md.adminEmail as string) ?? (l.user_id ? String(l.user_id) : null), detalle: resto ? resto.slice(0, 600) : null }
           })
           await auditAdmin(req, 'auditoria.ver_movimiento', { transactionId: id })
-          return json({ ok: true, fila: armar(t, usuarios, comps), raw: (t as any).raw_data ?? {}, historial })
+          return json({ ok: true, fila: armar(t, usuarios, comps, fichasD), raw: (t as any).raw_data ?? {}, historial })
         }
 
         // ── La lista, con filtros ──
@@ -6722,7 +6757,7 @@ Deno.serve(async (req: Request) => {
             .or(`company_name.ilike.${pat},full_name.ilike.${pat},email.ilike.${pat},raw_data->>nit.ilike.${pat},raw_data->>taxId.ilike.${pat},raw_data->>documentNumber.ilike.${pat}`).limit(300)
           const ids = ((us ?? []) as any[]).map(u => String(u.id))
           if (ids.length) partes.push(`user_id.in.(${ids.join(',')})`)
-          for (const k of ['providerRef', 'providerTraceId', 'providerReference', 'reference', 'beneficiary', 'benefDoc', 'documentNumber', 'account', 'otcCloseId', 'txHash', 'endToEndId'])
+          for (const k of ['providerRef', 'providerReference', 'providerTransferId', 'depositId', 'providerTraceId', 'reference', 'otcRef', 'otcCloseId', 'txId', 'txHash', 'beneficiary', 'benefDoc', 'documentNumber', 'account', 'pagador', 'pagadorDocumento', 'counterpartyName'])
             partes.push(`raw_data->>${k}.ilike.${pat}`)
           orBusqueda = partes.join(',')
         }
@@ -6730,7 +6765,9 @@ Deno.serve(async (req: Request) => {
         const filtrar = (q: any) => {
           q = q.gte('created_at', tIni).lt('created_at', tFin)
           if (MONEDA_CANAL[canalF]) q = q.eq('currency', MONEDA_CANAL[canalF])
-          else if (canalF === 'otc') q = q.in('type', Array.from(TIPOS_OTC))
+          else if (canalF === 'otc' || canalF === 'conversion') q = q.in('type', ['convert', 'otc_deposit', 'otc_withdraw'])
+          else if (canalF === 'admin') q = q.in('type', ['load', 'adjustment', 'otc_deposit'])
+          else if (canalF === 'interno') q = q.in('type', ['pay_sent', 'pay_received', 'referral_payout', 'rail_move'])
           else if (canalF === 'usdt') q = q.ilike('currency', 'USD%')
           if (estadoF === 'completado') q = q.in('status', ESTADOS_OK)
           else if (estadoF === 'rechazado') q = q.in('status', ESTADOS_MAL)
@@ -6752,7 +6789,8 @@ Deno.serve(async (req: Request) => {
         const inis = visibles.map(t => iniciadorDe(t)?.id ?? '').filter(Boolean)
         const usuarios = await leerUsuarios([...visibles.map(t => String(t.user_id)), ...inis])
         const comps = await leerComprobantes(visibles.map(t => String(t.id)))
-        const filas = visibles.map(t => armar(t, usuarios, comps))
+        const fichas = await leerFichas(visibles)
+        const filas = visibles.map(t => armar(t, usuarios, comps, fichas))
 
         // El resumen, solo con la primera página: hasta 10.000 movimientos del
         // filtro, con lo justo para decidir el canal (sin raw_data entero).
@@ -6777,7 +6815,7 @@ Deno.serve(async (req: Request) => {
             const t = { type: r.type, amount: r.amount, currency: r.currency, status: r.status, raw_data: rd }
             if (!visibleA(t) || !pasaCanal(t)) continue
             const c = canalDe(t)
-            const agr = porCanal.get(c.clave) ?? { clave: c.clave, etiqueta: c.clave === 'otc' ? 'Mesa OTC' : c.clave === 'admin' ? 'Cargues y ajustes del admin' : c.clave === 'finity' ? 'Finity · Cuenta 2' : c.clave === 'mouv' ? 'Mouv · Cuenta 1' : c.clave === 'coinsenda_jero' ? 'Coinsenda Jero · Cuenta 3' : c.clave === 'coinsenda_kaupaloki' ? 'Coinsenda Kaupaloki · Cuenta 4' : c.etiqueta, n: 0, entra: 0, sale: 0 }
+            const agr = porCanal.get(c.clave) ?? { clave: c.clave, etiqueta: etiquetaClave(c.clave), n: 0, entra: 0, sale: 0 }
             agr.n++; n++
             // Plata que se movió de verdad: solo lo completado y en pesos.
             if (ESTADOS_OK.includes(String(r.status)) && /^COP/i.test(String(r.currency ?? ''))) {

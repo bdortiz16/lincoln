@@ -33,6 +33,8 @@ export type FilaAudit = {
   actualizado: string | null;
   cliente: { id: string; nombre: string; nit: string | null; email: string | null };
   operador: { id: string | null; nombre: string | null; email: string | null; via: string | null } | null;
+  resolvio: string | null;
+  hitos: { k: string; at: string }[];
   tipo: string; tipoTxt: string; sentido: 'entra' | 'sale' | 'otro';
   monto: number; moneda: string; costo: number | null; costoProveedor: number | null;
   estado: string;
@@ -55,6 +57,7 @@ const CANALES: { v: string; t: string }[] = [
   { v: 'coinsenda_jero', t: 'Coinsenda Jero · Cuenta 3' },
   { v: 'coinsenda_kaupaloki', t: 'Coinsenda Kaupaloki · Cuenta 4' },
   { v: 'otc', t: 'Mesa OTC' },
+  { v: 'conversion', t: 'Conversiones USDT' },
   { v: 'usdt', t: 'USDT (TRON)' },
   { v: 'admin', t: 'Cargues y ajustes del admin' },
   { v: 'interno', t: 'Entre cuentas Lincoin' },
@@ -142,13 +145,13 @@ export const AuditoriaMovimientos: React.FC = () => {
       todas.push(...(r.filas ?? []));
       off = typeof r.siguiente === 'number' ? r.siguiente : null;
     }
-    const cab = ['Fecha y hora (Bogotá)', 'Última actualización', 'Cliente', 'NIT / documento del cliente', 'Correo del cliente', 'Hecho por', 'Tipo', 'Sentido', 'Monto', 'Moneda', 'Costo cobrado', 'Costo del proveedor', 'Estado', 'Canal', 'Proveedor', 'Cuenta', 'Riel',
+    const cab = ['Fecha y hora (Bogotá)', 'Momentos guardados', 'Cliente', 'NIT / documento del cliente', 'Correo del cliente', 'Hecho por', 'Resuelto por', 'Tipo', 'Sentido', 'Monto', 'Moneda', 'Costo cobrado', 'Costo del proveedor', 'Estado', 'Canal', 'Proveedor', 'Cuenta', 'Riel',
       'Id del proveedor', 'Referencia Lincoin enviada', 'End-to-end / CUS', 'Cierre OTC', 'Hash', 'Contraparte', 'Tipo doc. contraparte', 'Doc. contraparte', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Motivo', 'Motivo del rechazo',
       'Riesgo', 'Detalle del riesgo', 'Comprobante', 'Factura', 'Estado de la factura', 'Marcas', 'Id Lincoin'];
     const fecha = (s: string | null) => s ? new Date(s) : null;
     const filasX: CeldaX[][] = [cab, ...todas.map(f => [
-      fecha(f.fecha), fecha(f.actualizado), f.cliente.nombre, f.cliente.nit ?? '', f.cliente.email ?? '',
-      f.operador ? [f.operador.nombre, f.operador.email, f.operador.via].filter(Boolean).join(' · ') : '',
+      fecha(f.fecha), f.hitos.map(h => `${h.k}: ${fechaHora(h.at)}`).join(' | '), f.cliente.nombre, f.cliente.nit ?? '', f.cliente.email ?? '',
+      f.operador ? [f.operador.nombre, f.operador.email, f.operador.via].filter(Boolean).join(' · ') : '', f.resolvio ?? '',
       f.tipoTxt, f.sentido === 'entra' ? 'Entrada' : f.sentido === 'sale' ? 'Salida' : '', f.monto, f.moneda, f.costo, f.costoProveedor, f.estado,
       f.canal.etiqueta, f.canal.proveedor, f.canal.cuenta ?? '', f.canal.riel ?? '',
       f.ids.proveedor ?? '', f.ids.nuestra ?? '', f.ids.e2e ?? '', f.ids.otc ?? '', f.ids.hash ?? '',
@@ -158,7 +161,7 @@ export const AuditoriaMovimientos: React.FC = () => {
     ] as CeldaX[])];
     descargarXlsx(`lincoin-auditoria-${desde}-a-${hasta}.xlsx`, [{
       nombre: 'Auditoría', filas: filasX,
-      anchos: [20, 20, 30, 18, 26, 30, 14, 10, 16, 10, 12, 12, 12, 30, 14, 12, 8, 30, 26, 30, 16, 30, 30, 10, 16, 20, 12, 24, 24, 34, 10, 34, 14, 14, 12, 24, 38],
+      anchos: [20, 44, 30, 18, 26, 30, 26, 14, 10, 16, 10, 12, 12, 12, 30, 14, 12, 8, 30, 26, 30, 16, 30, 30, 10, 16, 20, 12, 24, 24, 34, 10, 34, 14, 14, 12, 24, 38],
     }]);
     setExportando(false);
   };
@@ -346,7 +349,7 @@ const DetalleAuditoria: React.FC<{ id: string; onCerrar: () => void }> = ({ id, 
               {f.costo != null && <Linea k="Costo cobrado al cliente" v={plata(f.costo)} />}
               {f.costoProveedor != null && <Linea k="Costo del proveedor" v={plata(f.costoProveedor)} />}
               <Linea k="Creado" v={fechaHora(f.fecha)} />
-              {f.actualizado && <Linea k="Última actualización" v={fechaHora(f.actualizado)} />}
+              {f.hitos.map(h => <Linea key={h.k + h.at} k={h.k} v={fechaHora(h.at)} />)}
               {f.motivo && <Linea k="Motivo / concepto" v={f.motivo} />}
               {f.marcas.length > 0 && <Linea k="Marcas" v={<span style={{ color: C.ambar }}>{f.marcas.join(' · ')}</span>} />}
             </Bloque>
@@ -374,10 +377,11 @@ const DetalleAuditoria: React.FC<{ id: string; onCerrar: () => void }> = ({ id, 
               {f.cliente.nit && <Linea k="NIT / documento" v={f.cliente.nit} copiar={f.cliente.nit} />}
               {f.cliente.email && <Linea k="Correo" v={f.cliente.email} />}
               <Linea k="Id del cliente" v={f.cliente.id} copiar={f.cliente.id} mono />
-              <Linea k="Hecho por" v={f.operador ? [f.operador.nombre, f.operador.email, f.operador.via].filter(Boolean).join(' · ') : 'No quedó registrado'} />
+              <Linea k="Hecho por" v={f.operador ? [f.operador.nombre, f.operador.email, f.operador.via].filter(Boolean).join(' · ') : 'Entró de afuera (no lo hizo nadie de Lincoin)'} />
+              {f.resolvio && <Linea k="Resuelto por" v={f.resolvio} />}
             </Bloque>
             <Bloque t="RIESGO Y COMPROBANTE">
-              <Linea k="Revisión de riesgo" v={f.riesgo?.nivel ? <span style={{ color: colorRiesgo(f.riesgo.nivel), fontWeight: 700 }}>{f.riesgo.nivel}</span> : 'Sin revisión guardada'} />
+              <Linea k="Riesgo del beneficiario" v={f.riesgo?.nivel ? <span style={{ color: colorRiesgo(f.riesgo.nivel), fontWeight: 700 }}>{f.riesgo.nivel}</span> : f.riesgo ? 'Sin veredicto' : 'No aplica (no es un envío a un tercero)'} />
               {f.riesgo?.detalle && <Linea k="Detalle" v={f.riesgo.detalle} />}
               <Linea k="Comprobante" v={f.comprobante?.numero ?? 'Sin comprobante'} />
               {f.comprobante?.factura && <Linea k="Factura" v={`${f.comprobante.factura}${f.comprobante.facturaEstado ? ` · ${f.comprobante.facturaEstado}` : ''}`} />}
