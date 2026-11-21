@@ -35,11 +35,26 @@ const db = createClient(SUPABASE_URL, SERVICE_KEY)
 // llamada (fetch-multi) → 7 requests por corrida, 42 pares.
 const CURRENCIES = ['USD', 'COP', 'CLP', 'PEN', 'MXN', 'BRL', 'VES']
 
+function igualTexto(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false
+  let d = 0
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return d === 0
+}
+
 Deno.serve(async (req) => {
   try {
-    if (CRON_SECRET) {
+    // Falla CERRADO. Antes el guardia era `if (CRON_SECRET)`: sin la variable
+    // puesta, el endpoint quedaba abierto a internet y cualquiera podía
+    // dispararlo en bucle y escribir tasas con service role.
+    if (!CRON_SECRET) {
+      return new Response(JSON.stringify({ error: 'not_configured', message: 'Falta CRON_SECRET.' }), { status: 503 })
+    }
+    {
       const url = new URL(req.url)
-      if (url.searchParams.get('key') !== CRON_SECRET) {
+      // Comparación en tiempo constante (no filtra el secreto por lo que
+      // tarda). El secreto va en la URL porque así lo manda el cron de pg_net.
+      if (!igualTexto(url.searchParams.get('key') ?? '', CRON_SECRET)) {
         return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
       }
     }

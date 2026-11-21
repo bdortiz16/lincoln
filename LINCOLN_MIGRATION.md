@@ -69,14 +69,14 @@
 
 | Pieza | Archivo(s) |
 |---|---|
-| KYC/KYB (Didit) | `supabase/functions/didit-kyc/index.ts`, `didit-aml-monitor/index.ts` |
+| KYC/KYB | Sin proveedor externo — el estado lo fija un admin desde `components/AdminPersonas/sections/KycDetailModal.tsx` |
 | Correos transaccionales | `supabase/functions/notify-transaction/index.ts`, `notify-account-events`, `notify-limit-increase`, `send-compliance-email` |
 | Admin Personas (referencia) | `components/AdminPersonas/**` (compliance, tesorería, tasas, soporte, legal, etc.) |
 
 ## 7. Edge functions (lista completa)
 
-`admin-data`, `admin-login`, `crisp-proxy`, `delete-self`, `didit-aml-monitor`,
-`didit-kyc`, `fastforex-sync`, `mouv-proxy`, `mouv-webhook`, `fx-snapshot`,
+`admin-data`, `admin-login`, `crisp-proxy`, `delete-self`,
+`fastforex-sync`, `mouv-proxy`, `mouv-webhook`, `fx-snapshot`,
 `gasfree`, `get-system-config`, `mouv-proxy`, `notify-account-events`,
 `notify-limit-increase`, `notify-transaction`, `send-compliance-email`,
 `tatum-wallet`, `tatum-webhook`, `user-login`.
@@ -86,7 +86,7 @@ Deploy vía `.github/workflows/deploy-edge-functions.yml`.
 
 1. **Branding**: nombre, logo, colores, textos "CuyPay" → "Lincoln". Ver `components/Logo.tsx`, landing, correos (`notify-*`), y el SVG inline del logo en varios componentes.
 2. **Proyectos Supabase**: crear (o apuntar a) los proyectos Supabase de Lincoln y cambiar URLs/keys en `lib/supabaseClient.ts` y en las env (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, y las de Personas si aplica).
-3. **Secrets de edge functions** (nuevos, del proyecto de Lincoln): `GASFREE_TRON_MNEMONIC`, `MOUV_CLIENT_ID/SECRET`, `MOUV_API_KEY`, `ADMIN_PASS`, claves de Didit, etc.
+3. **Secrets de edge functions** (nuevos, del proyecto de Lincoln): `GASFREE_TRON_MNEMONIC`, `MOUV_CLIENT_ID/SECRET`, `MOUV_API_KEY`, `ADMIN_PASS`, etc.
 4. **Dominios/URLs**: reemplazar `cuypay.com` en el código (correos, links, QR, deep-links).
 5. **Migraciones SQL**: `supabase/migrations/**` — correrlas en el proyecto de Lincoln.
 6. **Vercel**: variables de entorno del proyecto Lincoln.

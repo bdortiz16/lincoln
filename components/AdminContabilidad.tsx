@@ -1,0 +1,1305 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { BarChart3, Users, Receipt, ArrowLeftRight, RefreshCw, Search, Download, ChevronLeft, AlertTriangle, Check, Power, Plug, X } from 'lucide-react';
+import { pedirAdmin } from './adminApi';
+import { AdminOtcSection } from './AdminOtcSection';
+import { descargarReporteContabilidad } from './reporteContabilidad';
+
+// ─────────────────────────────────────────────
+// Contabilidad (admin de Empresas).
+//
+// Resumen: lo que se le cargó a los clientes, lo que convirtieron y lo que
+// ganó Lincoin, por mes. Clientes: lo mismo por cliente, y al abrir uno, todo
+// lo que hizo con la factura de cada operación. Facturación: el Siigo de
+// Lincoin, que factura cada cargue y cada conversión (mandato: terceros +
+// comisión con IVA incluido). Mesa OTC: la configuración de la mesa de
+// siempre.
+//
+// Los números los calcula el servidor (admin-data contabilidad_resumen) con
+// la misma cuenta que usa la factura: lo que se ve acá es lo que se factura.
+// ─────────────────────────────────────────────
+
+type Pestana = 'resumen' | 'clientes' | 'rechazados' | 'facturacion' | 'mesa';
+type TipoPeriodo = 'mes' | 'mes_pasado' | 'mes_elegido' | 'rango' | '90d' | 'anio' | 'todo';
+// mes: 'AAAA-MM'; desde y hasta: 'AAAA-MM-DD' (días de Colombia, los dos incluidos).
+type Periodo = { tipo: TipoPeriodo; mes?: string; desde?: string; hasta?: string };
+// Lo que se le pide al servidor y cómo se llama. `clave` cambia si cambia el rango.
+type Seleccion = { nombre: string; texto: string; desde?: string; hasta?: string; clave: string; valido: boolean };
+
+const TIPOS_PERIODO: { id: TipoPeriodo; nombre: string }[] = [
+  { id: 'mes', nombre: 'Este mes' },
+  { id: 'mes_pasado', nombre: 'Mes pasado' },
+  { id: 'mes_elegido', nombre: 'Elegir un mes' },
+  { id: 'rango', nombre: 'Entre dos fechas' },
+  { id: '90d', nombre: 'Últimos 90 días' },
+  { id: 'anio', nombre: 'Este año' },
+  { id: 'todo', nombre: 'Todo' },
+];
+
+// Fechas en hora de Colombia (UTC−5): el mes y el día contables son los de
+// Bogotá. Un día empieza a las 05:00 UTC.
+const hoyBogota = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10);
+const inicioDia = (dia: string) => `${dia}T05:00:00.000Z`;
+const sumarDias = (dia: string, n: number) => { const d = new Date(`${dia}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const inicioMes = (y: number, m0: number) => new Date(Date.UTC(y, m0, 1, 5)).toISOString();
+const mesCorrido = (mes: string, n: number) => { const [y, m] = mes.split('-').map(Number); return new Date(Date.UTC(y, m - 1 + n, 15)).toISOString().slice(0, 7); };
+const diaLegible = (dia: string) => new Date(`${dia}T12:00:00Z`).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+
+// Siempre el mismo rango para la misma elección: "últimos 90 días" va por
+// días completos, no desde "ahora", para que dos pedidos seguidos coincidan.
+function seleccionDe(p: Periodo): Seleccion {
+  const hoy = hoyBogota();
+  const actual = hoy.slice(0, 7);
+  const rangoMes = (mes: string) => { const [y, m] = mes.split('-').map(Number); return { desde: inicioMes(y, m - 1), hasta: inicioMes(y, m) }; };
+  let r: { desde?: string; hasta?: string } = {};
+  let nombre = TIPOS_PERIODO.find(t => t.id === p.tipo)?.nombre ?? '';
+  let valido = true;
+  if (p.tipo === 'mes') { r = { desde: rangoMes(actual).desde }; nombre = `Este mes (${nombreMes(actual)})`; }
+  else if (p.tipo === 'mes_pasado') { const m = mesCorrido(actual, -1); r = rangoMes(m); nombre = `Mes pasado (${nombreMes(m)})`; }
+  else if (p.tipo === 'mes_elegido') { const m = p.mes || mesCorrido(actual, -1); r = rangoMes(m); nombre = nombreMes(m); }
+  else if (p.tipo === 'rango') {
+    const d = p.desde || `${actual}-01`, h = p.hasta || hoy;
+    valido = d <= h;
+    r = { desde: inicioDia(d), hasta: inicioDia(sumarDias(h, 1)) };
+    nombre = `Del ${diaLegible(d)} al ${diaLegible(h)}`;
+  }
+  else if (p.tipo === '90d') r = { desde: inicioDia(sumarDias(hoy, -89)) };
+  else if (p.tipo === 'anio') r = { desde: inicioDia(`${hoy.slice(0, 4)}-01-01`) };
+  const diaDe = (iso: string) => new Date(Date.parse(iso) - 5 * 3600_000).toISOString().slice(0, 10);
+  const texto = !r.desde ? 'todo el historial'
+    : `${diaLegible(diaDe(r.desde))} – ${r.hasta ? diaLegible(diaDe(new Date(Date.parse(r.hasta) - 1).toISOString())) : `hoy (${diaLegible(hoy)})`}`;
+  return { nombre, texto, ...r, clave: `${r.desde ?? ''}|${r.hasta ?? ''}`, valido };
+}
+
+const leerPeriodo = (): Periodo => {
+  try {
+    const v = JSON.parse(localStorage.getItem('lincoin_conta_periodo') || 'null');
+    if (v && TIPOS_PERIODO.some(t => t.id === v.tipo)) return v;
+  } catch { /* */ }
+  return { tipo: 'mes' };
+};
+
+const cop = (n: unknown) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '—';
+  return `${v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
+};
+const usd = (n: unknown) => {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v === 0) return '—';
+  return `${v.toLocaleString('es-CO', { maximumFractionDigits: 2 })}`;
+};
+const fecha = (iso: unknown) => {
+  const s = String(iso ?? '');
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+const nombreMes = (mes: string) => {
+  const [y, m] = mes.split('-').map(Number);
+  const t = new Date(Date.UTC(y, (m || 1) - 1, 15)).toLocaleDateString('es-CO', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+
+// Contabilidad es lo que factura Lincoin: cargues, conversiones y los ajustes
+// que corrigen un cargue. Los envíos y pagos del cliente están en Clientes →
+// ficha del cliente → Envíos y pagos.
+const TIPO_TX: Record<string, string> = { load: 'Cargue', convert: 'Conversión', adjustment: 'Ajuste' };
+const ESTADO_FACTURA: Record<string, { txt: string; cls: string }> = {
+  emitida: { txt: 'Emitida', cls: 'bg-green-50 text-[#16A34A] border-green-200' },
+  emitiendo: { txt: 'Emitiendo…', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
+  pendiente: { txt: 'Pendiente', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  revision: { txt: 'Revisar utilidad', cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+  // Siigo no contestó a tiempo (o quedó colgada emitiendo): la factura PUDO
+  // haberse creado. Antes de reenviar se verifica en Siigo.
+  incierta: { txt: 'Por verificar en Siigo', cls: 'bg-orange-50 text-orange-700 border-orange-300' },
+  error: { txt: 'Error', cls: 'bg-red-50 text-red-700 border-red-200' },
+  omitida: { txt: 'No aplica', cls: 'bg-slate-50 text-slate-500 border-slate-200' },
+};
+const FUENTE: Record<string, string> = { registrada: 'registrada', estimada: 'estimada', sin_dato: 'sin dato', manual: 'confirmada a mano' };
+// Cómo se le factura a cada cliente: Colombia → una factura por día (día
+// vencido) con todo lo del día; exterior → una por movimiento.
+const MODELO: Record<string, { corto: string; largo: string }> = {
+  colombia: { corto: 'Colombia · diaria', largo: 'Una factura por día (día vencido) con todo lo que movió' },
+  exterior: { corto: 'Exterior · por movimiento', largo: 'Una factura por cada movimiento' },
+};
+const ChipModelo: React.FC<{ modelo?: string; manual?: boolean }> = ({ modelo, manual }) => !modelo ? null : (
+  <span title={MODELO[modelo]?.largo + (manual ? ' · ajustado a mano en la ficha del cliente' : ' · según el país del registro')}
+    className={`inline-block text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border whitespace-nowrap ${modelo === 'exterior' ? 'border-sky-300 text-sky-700' : 'border-slate-300 text-slate-500'}`}>
+    {MODELO[modelo]?.corto ?? modelo}
+  </span>
+);
+
+
+const Kpi: React.FC<{ titulo: string; valor: string; detalle?: string; acento?: boolean }> = ({ titulo, valor, detalle, acento }) => (
+  <div className="bg-white rounded-xl border border-slate-200 p-4">
+    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{titulo}</p>
+    <p className={`text-lg sm:text-xl font-black mt-1 break-words ${acento ? 'text-[#16A34A]' : 'text-slate-800'}`}>{valor}</p>
+    {detalle && <p className="text-[11px] text-slate-500 mt-0.5">{detalle}</p>}
+  </div>
+);
+
+const Aviso: React.FC<{ tono?: 'error' | 'info'; children: React.ReactNode }> = ({ tono = 'info', children }) => (
+  <div className={`rounded-xl border px-4 py-3 text-xs flex gap-2 items-start ${tono === 'error' ? 'bg-red-50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+    <AlertTriangle size={14} className="shrink-0 mt-0.5" /> <div className="min-w-0">{children}</div>
+  </div>
+);
+
+const EstadoFactura: React.FC<{ estado?: string | null }> = ({ estado }) => {
+  if (!estado) return <span className="text-[10px] text-slate-400">Sin factura</span>;
+  const e = ESTADO_FACTURA[estado] ?? { txt: estado, cls: 'bg-slate-50 text-slate-600 border-slate-200' };
+  return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${e.cls}`}>{e.txt}</span>;
+};
+
+// ── Emitir una factura de Lincoin (con confirmación de la utilidad) ──
+// La utilidad registrada se factura tal cual. Si es estimada o falta, se
+// pide confirmarla: es lo que va a la DIAN como comisión.
+const BotonFacturar: React.FC<{ txId: string; estado?: string | null; liq?: any; utilidadFila?: number | null; onHecho: (msg: string, ok: boolean) => void }> = ({ txId, estado, liq, utilidadFila, onHecho }) => {
+  const [abierto, setAbierto] = useState(false);
+  const [valor, setValor] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  if (estado === 'emitida' || estado === 'emitiendo' || (estado === 'omitida' && liq && !liq.facturable)) return null;
+  const fuente = liq?.fuente ?? null;
+  // 'incierta' no pide utilidad: el servidor primero busca la factura en Siigo
+  // y solo la reenvía si de verdad no existe.
+  const pideUtilidad = estado !== 'incierta' && (estado === 'revision' || (fuente != null && fuente !== 'registrada'));
+  const sugerida = Number(liq?.utilidadCop ?? utilidadFila ?? 0) || 0;
+  const emitir = async (utilidad?: number) => {
+    const total = utilidad != null && liq ? (liq.fijo === 'total' ? liq.totalCop : (liq.tercerosCop ?? 0) + utilidad) : liq?.totalCop;
+    const pregunta = estado === 'incierta'
+      ? 'Siigo no confirmó la factura anterior. Primero se busca en Siigo; solo si no existe se vuelve a emitir. ¿Seguir?'
+      : `Se va a emitir la factura electrónica ante la DIAN${total ? ` por ${cop(total)}` : ''}${utilidad != null ? ` con una comisión de ${cop(utilidad)} (IVA incluido)` : ''}. ¿Seguir?`;
+    if (!window.confirm(pregunta)) return;
+    setEnviando(true);
+    const r = await pedirAdmin({ action: 'fact_lincoin_emitir', transactionId: txId, ...(utilidad != null ? { utilidad } : {}) });
+    setEnviando(false);
+    if (r?.ok && r.estado === 'emitida') { setAbierto(false); onHecho(`Factura ${r.numero ?? ''} emitida.`, true); }
+    else if (r?.ok) { setAbierto(false); onHecho(r.motivo ?? `Quedó en "${r.estado}".`, true); }
+    else onHecho(r?.error ?? 'No se pudo emitir.', false);
+  };
+  if (abierto) {
+    return (
+      <div className="flex items-center gap-1.5 flex-wrap justify-end">
+        <input value={valor} onChange={e => setValor(e.target.value)} inputMode="decimal" placeholder="Utilidad COP"
+          className="w-28 border border-slate-300 rounded-lg px-2 py-1 text-xs" />
+        <button disabled={enviando} onClick={() => { const n = Number(valor.replace(/\./g, '').replace(',', '.')); if (n > 0) emitir(n); else onHecho('Escribí una utilidad mayor que cero.', false); }}
+          className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-[#16A34A] text-white disabled:opacity-50">{enviando ? 'Emitiendo…' : 'Emitir'}</button>
+        <button onClick={() => setAbierto(false)} className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
+      </div>
+    );
+  }
+  return (
+    <button disabled={enviando}
+      onClick={() => { if (pideUtilidad) { setValor(sugerida > 0 ? String(Math.round(sugerida)) : ''); setAbierto(true); } else emitir(); }}
+      className="text-[11px] font-bold px-2.5 py-1 rounded-lg border border-[#16A34A] text-[#16A34A] hover:bg-green-50 disabled:opacity-50 whitespace-nowrap">
+      {enviando ? 'Emitiendo…' : estado === 'incierta' ? 'Verificar y reintentar' : pideUtilidad ? 'Confirmar utilidad' : estado === 'error' || estado === 'pendiente' ? 'Reintentar' : 'Facturar'}
+    </button>
+  );
+};
+
+// ── Excel completo: resumen, anotaciones, operaciones, movimientos y una
+//    hoja por cliente con gráficos (ver reporteContabilidad.ts) ──────────
+// `listo` = la lista de clientes es del período elegido. Mientras se carga
+// otro período el botón espera: antes podía salir un Excel del mes pasado
+// con los clientes de este mes.
+const BotonInforme: React.FC<{ clientes: any[]; sel: Seleccion; listo?: boolean; onAviso: (m: string, ok: boolean) => void }> = ({ clientes, sel, listo = true, onAviso }) => {
+  const [prog, setProg] = useState<[number, number] | null>(null);
+  const descargar = async () => {
+    if (prog || !clientes.length || !listo || !sel.valido) return;
+    setProg([0, clientes.length]);
+    try {
+      const r = await descargarReporteContabilidad({
+        clientes,
+        periodo: { nombre: sel.nombre, desde: sel.desde, hasta: sel.hasta },
+        onProgreso: (h, t) => setProg([h, t]),
+      });
+      if (r.avisos.length) onAviso(`El Excel se descargó, pero faltó información: ${r.avisos.slice(0, 3).join(' ')}`, false);
+    } catch (e: any) {
+      onAviso(`No se pudo armar el Excel: ${String(e?.message ?? e)}`, false);
+    } finally {
+      setProg(null);
+    }
+  };
+  return (
+    <button onClick={descargar} disabled={!!prog || !clientes.length || !listo || !sel.valido} title={`Excel de ${sel.texto}: resumen con gráficos, anotaciones y una hoja por cliente`}
+      className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap">
+      {prog
+        ? <><RefreshCw size={14} className="animate-spin" /> {prog[1] > 1 ? `Armando ${prog[0]}/${prog[1]}…` : 'Armando…'}</>
+        : <><Download size={14} /> Excel</>}
+    </button>
+  );
+};
+
+// ── Resumen ─────────────────────────────────────────────────
+const Resumen: React.FC<{ datos: any; cargando: boolean }> = ({ datos, cargando }) => {
+  if (!datos) return <p className="text-sm text-slate-400">{cargando ? 'Cargando…' : 'Sin datos.'}</p>;
+  const t = datos.totales ?? {};
+  const f = datos.facturas ?? {};
+  const utilidad = (t.utilidadCargues ?? 0) + (t.utilidadConversiones ?? 0);
+  const meses: any[] = datos.meses ?? [];
+  const maxU = Math.max(1, ...meses.map(m => (m.utilidadCargues ?? 0) + (m.utilidadConversiones ?? 0)));
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Kpi titulo="Cargado a clientes" valor={cop(t.cargadoCop)} detalle={`${t.cargues ?? 0} cargues · ${usd(t.usdCargado)} USDT`} />
+        <Kpi titulo="Convertido" valor={cop(t.convertidoCop)} detalle={`${t.conversiones ?? 0} conversiones · ${usd(t.usdConvertido)} USD`} />
+        <Kpi titulo="Utilidad Lincoin (neta)" valor={cop(utilidad)} acento detalle={t.enPerdida > 0
+          ? `Ganancias ${cop(t.gananciaCop)} − pérdidas ${cop(Math.abs(t.perdidaCop))} (${t.enPerdida} en rojo)`
+          : t.utilidadEstimada > 0 ? `${cop(t.utilidadEstimada)} estimada (mesa OTC)` : `Cargues ${cop(t.utilidadCargues)} · Conv. ${cop(t.utilidadConversiones)}`} />
+        <Kpi titulo="Facturas Lincoin" valor={`${f.emitida ?? 0} emitidas`} detalle={`${t.porFacturar ?? 0} por facturar · ${f.error ?? 0} con error · ${f.revision ?? 0} por revisar${f.incierta ? ` · ${f.incierta} por verificar en Siigo` : ''}${f.emitiendo ? ` · ${f.emitiendo} emitiendo` : ''}`} />
+      </div>
+      {t.porModelo && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {(['colombia', 'exterior'] as const).map(k => {
+            const m = t.porModelo[k] ?? {};
+            return (
+              <div key={k} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{MODELO[k].corto}</p>
+                  <span className="text-[11px] text-slate-400">{m.clientes ?? 0} cliente{m.clientes === 1 ? '' : 's'}</span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5">{MODELO[k].largo}</p>
+                <p className="text-lg font-extrabold text-slate-800 mt-2">{cop(m.facturadoCop)} <span className="text-xs font-semibold text-slate-400">facturado</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {k === 'colombia' ? `${m.facturasDiarias ?? 0} factura${m.facturasDiarias === 1 ? '' : 's'} diaria${m.facturasDiarias === 1 ? '' : 's'}` : `${m.facturadas ?? 0} factura${m.facturadas === 1 ? '' : 's'}`}
+                  {' · '}{m.porFacturar ?? 0} operaci{m.porFacturar === 1 ? 'ón' : 'ones'} por facturar{m.facturasConError ? ` · ${m.facturasConError} con error` : ''} · utilidad {cop(m.utilidad)}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {t.ajustes > 0 && (
+        <Aviso>Hay {t.ajustes} ajuste{t.ajustes === 1 ? '' : 's'} (débito) por {cop(t.ajustadoCop)} sin vincular a un cargue. Si corrigen un cargue hecho por error, ábrelos en Clientes → el cliente → Ajustes y vincúlalos: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>
+      )}
+      {t.facturasDeAnulados > 0 && (
+        <Aviso tono="error">{t.facturasDeAnulados} cargue{t.facturasDeAnulados === 1 ? '' : 's'} anulado{t.facturasDeAnulados === 1 ? '' : 's'} ya tenía{t.facturasDeAnulados === 1 ? '' : 'n'} factura emitida: anúlala en Siigo o haz la nota crédito.</Aviso>
+      )}
+      {t.sinUtilidad > 0 && (
+        <Aviso>{t.sinUtilidad} operación{t.sinUtilidad === 1 ? '' : 'es'} no guardaron la utilidad (cargues viejos sin la contabilidad del USDT). No se facturan solas: en Clientes podés confirmar la utilidad de cada una.</Aviso>
+      )}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <table className="w-full text-xs min-w-[760px]">
+          <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
+            <tr>
+              <th className="text-left px-4 py-2.5">Mes</th>
+              <th className="text-right px-3 py-2.5">Cargues</th>
+              <th className="text-right px-3 py-2.5">Cargado</th>
+              <th className="text-right px-3 py-2.5">Conversiones</th>
+              <th className="text-right px-3 py-2.5">Convertido</th>
+              <th className="text-right px-3 py-2.5">Utilidad</th>
+              <th className="px-3 py-2.5 w-36"></th>
+              <th className="text-right px-4 py-2.5">Facturado</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {meses.length === 0 && <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-400">Sin cargues ni conversiones en el período.</td></tr>}
+            {meses.map(m => {
+              const u = (m.utilidadCargues ?? 0) + (m.utilidadConversiones ?? 0);
+              return (
+                <tr key={m.mes} className="hover:bg-slate-50/60">
+                  <td className="px-4 py-2.5 font-semibold text-slate-700 whitespace-nowrap">{nombreMes(m.mes)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{m.cargues}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(m.cargadoCop)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{m.conversiones}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(m.convertidoCop)}</td>
+                  <td className="px-3 py-2.5 text-right font-bold text-[#16A34A]">{cop(u)}</td>
+                  <td className="px-3 py-2.5"><div className="h-1.5 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-[#4ADE80]" style={{ width: `${Math.max(0, Math.min(100, u / maxU * 100))}%` }} /></div></td>
+                  <td className="px-4 py-2.5 text-right text-slate-600">{m.facturadas ? `${m.facturadas} · ${cop(m.facturadoCop)}` : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ── Clientes ────────────────────────────────────────────────
+const Clientes: React.FC<{ datos: any; cargando: boolean; sel: Seleccion; onAviso: (m: string, ok: boolean) => void }> = ({ datos, cargando, sel, onAviso }) => {
+  const [q, setQ] = useState('');
+  const [modelo, setModelo] = useState<'todos' | 'colombia' | 'exterior'>('todos');
+  const [abierto, setAbierto] = useState<any | null>(null);
+  const lista: any[] = datos?.clientes ?? [];
+  const filtrados = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    const porModelo = modelo === 'todos' ? lista : lista.filter(c => (c.modelo ?? 'colombia') === modelo);
+    if (!n) return porModelo;
+    return porModelo.filter(c => String(c.nombre ?? '').toLowerCase().includes(n) || String(c.email ?? '').toLowerCase().includes(n) || String(c.documento ?? '').includes(n));
+  }, [lista, q, modelo]);
+  const cuantos = (k: string) => lista.filter(c => (c.modelo ?? 'colombia') === k).length;
+
+  if (abierto) return <DetalleCliente cliente={abierto} sel={sel} onVolver={() => setAbierto(null)} onAviso={onAviso} />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nombre, correo o NIT"
+            className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-sm bg-white" />
+        </div>
+        <BotonInforme clientes={filtrados} sel={sel} listo={!cargando && !!datos} onAviso={onAviso} />
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {([['todos', `Todos · ${lista.length}`], ['colombia', `${MODELO.colombia.corto} · ${cuantos('colombia')}`], ['exterior', `${MODELO.exterior.corto} · ${cuantos('exterior')}`]] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setModelo(k)}
+            className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${modelo === k ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
+        ))}
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <table className="w-full text-xs min-w-[900px]">
+          <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
+            <tr>
+              <th className="text-left px-4 py-2.5">Cliente</th>
+              <th className="text-right px-3 py-2.5">Cargues</th>
+              <th className="text-right px-3 py-2.5">Cargado</th>
+              <th className="text-right px-3 py-2.5">Conversiones</th>
+              <th className="text-right px-3 py-2.5">Convertido</th>
+              <th className="text-right px-3 py-2.5">Utilidad</th>
+              <th className="text-right px-3 py-2.5">Facturas</th>
+              <th className="text-right px-4 py-2.5">Última</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {!filtrados.length && <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Sin cargues ni conversiones en el período.'}</td></tr>}
+            {filtrados.map(c => (
+              <tr key={c.userId} onClick={() => setAbierto(c)} className="hover:bg-slate-50 cursor-pointer">
+                <td className="px-4 py-2.5">
+                  <p className="font-semibold text-slate-800 truncate max-w-[240px]">{c.nombre}</p>
+                  <p className="text-[10px] text-slate-400 truncate max-w-[240px]">{c.documento ? `${c.documento} · ` : ''}{c.email ?? ''}</p>
+                  <div className="mt-1"><ChipModelo modelo={c.modelo} manual={c.modeloManual} /></div>
+                </td>
+                <td className="px-3 py-2.5 text-right text-slate-600">{c.cargues}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <p className="font-semibold text-slate-800">{cop(c.cargadoCop)}</p>
+                  {c.usdCargado > 0 && <p className="text-[10px] text-slate-400">{usd(c.usdCargado)} USDT</p>}
+                  {c.ajustes > 0 && <p className="text-[10px] text-amber-700">{c.ajustes} ajuste{c.ajustes === 1 ? '' : 's'} sin vincular</p>}
+                </td>
+                <td className="px-3 py-2.5 text-right text-slate-600">{c.conversiones}</td>
+                <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(c.convertidoCop)}</td>
+                <td className="px-3 py-2.5 text-right">
+                  <p className="font-bold text-[#16A34A]">{cop((c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0))}</p>
+                  {c.enPerdida > 0 && <p className="text-[10px] text-red-600">incluye −{cop(Math.abs(c.perdidaCop)).replace('−', '')} en pérdida</p>}
+                </td>
+                <td className="px-3 py-2.5 text-right">
+                  <span className="text-slate-700">{c.facturadas}</span>
+                  {c.porFacturar > 0 && <span className="text-amber-700"> · {c.porFacturar} por facturar</span>}
+                  {c.facturasConError > 0 && <span className="text-red-600"> · {c.facturasConError} error</span>}
+                </td>
+                <td className="px-4 py-2.5 text-right text-slate-500 whitespace-nowrap">{fecha(c.ultima)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// "2026-11-01" → "01 nov 2026". Con siguiente=true, del instante ISO da el
+// día siguiente en Colombia (cuando sale la factura diaria).
+const fechaDia = (v: string, siguiente = false) => {
+  const dia = siguiente ? new Date(Date.parse(v) - 5 * 3600_000 + 86400000).toISOString().slice(0, 10) : v.slice(0, 10);
+  const d = new Date(`${dia}T12:00:00Z`);
+  return isNaN(d.getTime()) ? v : d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+};
+
+// Tasa en COP por USD, sin decimales de más.
+const tasa = (n: unknown) => {
+  const v = Number(n);
+  return Number.isFinite(v) && v > 0 ? v.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : '—';
+};
+
+// Número escrito a la colombiana: punto de miles, coma decimal ("3.389,07").
+// Se muestra debajo de cada campo cómo se entendió, para que un "3389.07"
+// leído como 338.907 se vea antes de guardar (el servidor además lo rechaza).
+const leerNumero = (s: string): number => {
+  const t = String(s ?? '').trim().replace(/\s/g, '').replace(/\$/g, '');
+  if (!t) return NaN;
+  return Number(t.replace(/\./g, '').replace(',', '.'));
+};
+const escribirNumero = (n: number | null | undefined) => n != null && Number.isFinite(n) ? n.toLocaleString('es-CO', { maximumFractionDigits: 6 }) : '';
+
+// ── Corregir la venta de un cargue ──────────────────────────
+// Lo que se escribió mal al hacer el cargue (la tasa de venta: 32 en vez de
+// 3.200; o los USDT que llegaron: 328 en vez de 3.248) dejaba la utilidad en
+// millones negativos sin forma de arreglarla. Esto corrige solo el lado de
+// Lincoin: lo acreditado al cliente no cambia. Pide el código 2FA (cambia la
+// utilidad, que es lo que Lincoin retira de las bolsas y factura).
+const CorregirVenta: React.FC<{ fila: any; onHecho: (m: string, ok: boolean) => void }> = ({ fila, onHecho }) => {
+  const v = fila.venta as { usdtGross: number; usdtNet: number | null; sellRate: number | null; creditedCop: number; correcciones: number };
+  const [abierto, setAbierto] = useState(false);
+  const [llego, setLlego] = useState('');
+  const [tasaTxt, setTasaTxt] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abrir = () => { setLlego(escribirNumero(v.usdtNet ?? v.usdtGross)); setTasaTxt(escribirNumero(v.sellRate)); setMotivo(''); setError(null); setAbierto(true); };
+  const nLlego = leerNumero(llego);
+  const nTasa = leerNumero(tasaTxt);
+  const recibido = Number.isFinite(nLlego) && Number.isFinite(nTasa) ? Math.round(nLlego * nTasa) : NaN;
+  const utilidad = Number.isFinite(recibido) ? recibido - v.creditedCop : NaN;
+  const problema = !(nLlego > 0) ? 'Escribe cuántos USDT llegaron al proveedor.'
+    : nLlego > v.usdtGross + 0.000001 ? `No pueden llegar más de los ${usd(v.usdtGross)} USDT que envió el cliente.`
+    : !(nTasa >= 1000 && nTasa <= 20000) ? 'La tasa de venta va en pesos por USDT, entre 1.000 y 20.000.'
+    : null;
+  const sospechosa = (v.sellRate != null && v.sellRate < 1000) || Number(fila.liq?.utilidadCop) < 0;
+  const guardar = async () => {
+    if (problema || enviando) return;
+    setEnviando(true); setError(null);
+    const r = await pedirAdmin({ action: 'contabilidad_corregir_venta', txId: fila.id, sellRate: nTasa, usdtNet: nLlego, motivo: motivo.trim() || undefined });
+    setEnviando(false);
+    if (r?.ok) {
+      setAbierto(false);
+      onHecho(`Venta corregida: la utilidad del cargue pasó de ${cop(r.antes?.utilityCop)} a ${cop(r.despues?.utilityCop)}.`, true);
+    } else if (!r?.cancelado) {
+      setError(r?.permisoDenegado ? 'Tu rol no permite corregir la contabilidad.' : (r?.error ?? 'No se pudo corregir.'));
+    }
+  };
+  return (
+    <>
+      <button onClick={abrir}
+        className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border whitespace-nowrap ${sospechosa ? 'border-amber-400 text-amber-700 hover:bg-amber-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+        Corregir venta
+      </button>
+      {abierto && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center" style={{ padding: 12, background: 'rgba(0,0,0,0.62)', backdropFilter: 'blur(3px)' }} onClick={() => !enviando && setAbierto(false)}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Corregir la venta del cargue"
+            style={{ width: '100%', maxWidth: 440, background: '#121413', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 16, padding: 20, fontFamily: "'Archivo', system-ui, sans-serif", color: '#F4F4F2', textAlign: 'left', boxShadow: '0 24px 60px rgba(0,0,0,0.55)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <p style={{ margin: 0, fontSize: 16, fontWeight: 800, letterSpacing: '-0.3px' }}>Corregir la venta del cargue</p>
+              <button onClick={() => !enviando && setAbierto(false)} style={{ color: '#878E88', background: 'none', border: 'none', cursor: 'pointer' }} aria-label="Cerrar"><X size={16} /></button>
+            </div>
+            <p style={{ margin: '6px 0 14px', fontSize: 12.5, color: '#878E88', lineHeight: 1.5 }}>
+              Cargue del {fecha(fila.created_at)}: el cliente envió <b style={{ color: '#F4F4F2' }}>{usd(v.usdtGross)} USDT</b> y se le acreditaron <b style={{ color: '#F4F4F2' }}>{cop(v.creditedCop)}</b>: eso no cambia. Se corrige solo la venta de Lincoin.
+            </p>
+
+            <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', textTransform: 'uppercase' }}>USDT que llegaron al proveedor</label>
+            <input value={llego} onChange={e => setLlego(e.target.value)} inputMode="decimal"
+              style={{ width: '100%', marginTop: 6, height: 40, borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#F4F4F2', padding: '0 12px', fontSize: 14, fontWeight: 600, outline: 'none' }} />
+            <p style={{ margin: '4px 0 12px', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>
+              {Number.isFinite(nLlego) ? `Se entiende: ${usd(nLlego)} USDT` : 'Escribe un número (punto de miles, coma decimal).'}{v.usdtNet != null ? ` · guardado: ${usd(v.usdtNet)}` : ''}
+            </p>
+
+            <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', textTransform: 'uppercase' }}>Tasa de venta (COP por USDT)</label>
+            <input value={tasaTxt} onChange={e => setTasaTxt(e.target.value)} inputMode="decimal" autoFocus
+              style={{ width: '100%', marginTop: 6, height: 40, borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#F4F4F2', padding: '0 12px', fontSize: 14, fontWeight: 600, outline: 'none' }} />
+            <p style={{ margin: '4px 0 12px', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>
+              {Number.isFinite(nTasa) ? `Se entiende: ${tasa(nTasa)}` : 'Escribe un número (punto de miles, coma decimal).'}{v.sellRate != null ? ` · guardada: ${tasa(v.sellRate)}` : ''}
+            </p>
+
+            <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.5px', color: '#878E88', textTransform: 'uppercase' }}>Motivo (opcional)</label>
+            <input value={motivo} onChange={e => setMotivo(e.target.value)} maxLength={300} placeholder="Ej.: se digitó 32 en vez de 3.201"
+              style={{ width: '100%', marginTop: 6, height: 38, borderRadius: 10, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(255,255,255,0.04)', color: '#F4F4F2', padding: '0 12px', fontSize: 13, outline: 'none' }} />
+
+            <div style={{ marginTop: 14, borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: '#0C0E0D', padding: '10px 12px', fontSize: 12.5 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0' }}><span style={{ color: '#878E88' }}>Recibido por la venta</span><b>{Number.isFinite(recibido) ? cop(recibido) : '—'}</b></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0' }}><span style={{ color: '#878E88' }}>Acreditado al cliente</span><b>{cop(v.creditedCop)}</b></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '6px 0 2px', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 4 }}>
+                <span style={{ color: '#878E88' }}>Utilidad Lincoin</span>
+                <b style={{ color: !Number.isFinite(utilidad) ? '#878E88' : utilidad < 0 ? '#F87171' : '#4ADE80' }}>{Number.isFinite(utilidad) ? cop(utilidad) : '—'}</b>
+              </div>
+              <p style={{ margin: '4px 0 0', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>Antes: {cop(fila.liq?.utilidadCop)}{fila.liq?.reversadoCop ? ' · el cargue tiene un ajuste vinculado: la utilidad final se prorratea' : ''}{v.correcciones ? ` · ya se corrigió ${v.correcciones} vez${v.correcciones === 1 ? '' : 'es'}` : ''}</p>
+            </div>
+
+            {(error || problema) && <p style={{ margin: '10px 0 0', fontSize: 12, color: '#F87171' }}>{error ?? problema}</p>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setAbierto(false)} disabled={enviando}
+                style={{ flex: 1, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: 10, fontWeight: 700, cursor: 'pointer' }}>Cancelar</button>
+              <button onClick={guardar} disabled={!!problema || enviando}
+                style={{ flex: 1, border: 'none', borderRadius: 10, padding: 10, fontWeight: 800, cursor: problema || enviando ? 'not-allowed' : 'pointer', background: problema || enviando ? 'rgba(255,255,255,0.08)' : '#4ADE80', color: problema || enviando ? 'rgba(244,244,242,0.45)' : '#0C0E0D' }}>
+                {enviando ? 'Guardando…' : 'Guardar corrección'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+// Vincular un débito (ajuste) al cargue que corrige. Las sugerencias las arma
+// el servidor: mismo saldo, anterior al débito, y primero el que cuadra exacto.
+const VincularAjuste: React.FC<{ fila: any; motivo?: string; fechaDe: (id: string) => string | null; onHecho: (m: string, ok: boolean) => void }> = ({ fila, motivo, fechaDe, onHecho }) => {
+  const sug: any[] = fila.sugerencias ?? [];
+  const [elegido, setElegido] = useState<string>(sug.find(x => x.exacto)?.id ?? sug[0]?.id ?? '');
+  const [enviando, setEnviando] = useState(false);
+  const pedir = async (cargueId: string | null) => {
+    setEnviando(true);
+    const r = await pedirAdmin({ action: 'contabilidad_vincular_ajuste', ajusteId: fila.id, cargueId });
+    setEnviando(false);
+    if (r?.ok) onHecho(cargueId ? (r.aviso ? `Vinculado. ${r.aviso}` : r.anulado ? 'Vinculado: el cargue quedó anulado y ya no suma ni deja utilidad.' : 'Vinculado: el cargue quedó corregido.') : 'Ajuste desvinculado.', !r.aviso);
+    else onHecho(r?.permisoDenegado ? 'Tu rol no permite vincular ajustes.' : (r?.error ?? 'No se pudo vincular.'), false);
+  };
+  if (fila.reversaDe || fila.vinculado) {
+    const f = fila.reversaDe ? fechaDe(String(fila.reversaDe)) : null;
+    return (
+      <div className="space-y-1">
+        <p className="text-[10px] text-slate-500">Revierte el cargue {f ? `del ${f}` : 'de otro período'}{fila.reversaAuto ? ' · vinculado solo' : ''}</p>
+        <button disabled={enviando} onClick={() => { if (window.confirm('¿Desvincular este ajuste del cargue? El cargue vuelve a sumar con su utilidad.')) pedir(null); }}
+          className="text-[11px] font-bold text-slate-400 hover:text-slate-600 underline disabled:opacity-50">Desvincular</button>
+      </div>
+    );
+  }
+  if (!fila.esDebito) return <p className="text-[10px] text-slate-400">Ajuste a favor del cliente</p>;
+  if (!sug.length) return <p className={`text-[10px] max-w-[260px] ${fila.noRevierte ? 'text-slate-400' : 'text-amber-700'}`}>{fila.noRevierte ? 'Marcado como otro ajuste: no revierte ningún cargue.' : `Sin vincular. ${motivo || 'No hay un cargue anterior de este saldo que lo cubra.'}`}</p>;
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap justify-end">
+      {fila.noRevierte
+        ? <p className="text-[10px] text-slate-400 w-full text-right max-w-[300px] ml-auto">Marcado como otro ajuste (no revierte un cargue). Si sí lo corrige, vincúlalo:</p>
+        : motivo && <p className="text-[10px] text-amber-700 w-full text-right max-w-[300px] ml-auto">No se vinculó solo: {motivo}</p>}
+      <select value={elegido} onChange={e => setElegido(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1 text-[11px] bg-white max-w-[230px]">
+        {sug.map(x => (
+          <option key={x.id} value={x.id}>
+            {x.exacto ? '✓ ' : ''}Cargue {new Date(x.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })} · {cop(x.credit)}{x.resta < x.credit ? ` (quedan ${cop(x.resta)})` : ''}
+          </option>
+        ))}
+      </select>
+      <button disabled={enviando || !elegido} onClick={() => pedir(elegido)}
+        className="text-[11px] font-bold px-2.5 py-1 rounded-lg border border-[#16A34A] text-[#16A34A] hover:bg-green-50 disabled:opacity-50 whitespace-nowrap">
+        {enviando ? '…' : 'Vincular'}
+      </button>
+    </div>
+  );
+};
+
+const DetalleCliente: React.FC<{ cliente: any; sel: Seleccion; onVolver: () => void; onAviso: (m: string, ok: boolean) => void }> = ({ cliente, sel, onVolver, onAviso }) => {
+  const [datos, setDatos] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(false);
+  const [filtro, setFiltro] = useState<'todo' | 'cargues' | 'conversiones' | 'ajustes' | 'perdida'>('todo');
+  // Por riel: lo que entró por ACH, por Bre-B o al Saldo Lincoin.
+  const [riel, setRiel] = useState<'todos' | 'ACH' | 'Bre-B' | 'Saldo Lincoin'>('todos');
+  const [motivos, setMotivos] = useState<Record<string, string>>({});
+  // Solo cuenta la última respuesta: si se cambió de período mientras
+  // cargaba, la respuesta vieja no pisa la nueva.
+  const pedido = React.useRef(0);
+  const cargar = useCallback(async () => {
+    const yo = ++pedido.current;
+    setCargando(true); setError(null); setDatos(null);
+    if (!sel.valido) { setCargando(false); return; }
+    // Primero se vinculan solos los débitos de este cliente que corrigen un
+    // cargue; los que no, vuelven con el motivo para mostrarlo en su fila.
+    const a = await pedirAdmin({ action: 'contabilidad_autovincular', userId: cliente.userId });
+    if (yo !== pedido.current) return;
+    if (a?.ok) {
+      setMotivos(Object.fromEntries(((a.sinVincular ?? []) as any[]).map(x => [String(x.id), String(x.motivo ?? '')])));
+      if (a.vinculados > 0) onAviso(`Se vincularon solos ${a.vinculados} débito${a.vinculados === 1 ? '' : 's'} al cargue que corregían.${a.avisos?.length ? ` ${a.avisos.join(' ')}` : ''}`, !a.avisos?.length);
+    }
+    const r = await pedirAdmin({ action: 'contabilidad_cliente', userId: cliente.userId, ...(sel.desde ? { desde: sel.desde } : {}), ...(sel.hasta ? { hasta: sel.hasta } : {}) });
+    if (yo !== pedido.current) return;
+    setCargando(false);
+    if (r?.ok) setDatos(r); else setError(r?.error ?? 'No se pudo leer el detalle.');
+  }, [cliente.userId, sel.clave, sel.valido]);
+  useEffect(() => { cargar(); }, [cargar]);
+  const c = datos?.cliente ?? cliente;
+  const detalle: any[] = datos?.detalle ?? [];
+  const vistos = detalle.filter(d => (riel === 'todos' || d.riel === riel) && (filtro === 'todo'
+    || (filtro === 'cargues' && d.liq?.tipo === 'cargue')
+    || (filtro === 'conversiones' && d.liq?.tipo === 'conversion')
+    || (filtro === 'ajustes' && d.type === 'adjustment')
+    || (filtro === 'perdida' && !d.liq?.anulado && Number(d.liq?.utilidadCop) < 0)));
+  const rieles = useMemo(() => Array.from(new Set(detalle.map(d => String(d.riel ?? '')).filter(Boolean))), [detalle]);
+  const fechaDe = (id: string) => { const d = detalle.find(x => String(x.id) === id); return d ? new Date(d.created_at).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : null; };
+  const aviso = (m: string, ok: boolean) => { onAviso(m, ok); cargar(); };
+  // Cliente de Colombia: lo que tiene utilidad registrada va en la factura
+  // DIARIA (la emite el sistema al día siguiente); no se factura suelto. Lo
+  // estimado o sin dato sí: se confirma y se emite aparte, como antes.
+  const vaEnDiaria = (d: any) => (c.modelo ?? 'colombia') === 'colombia' && d.liq?.facturable && d.liq?.fuente === 'registrada' && Number(d.liq?.utilidadCop) > 0;
+
+  // Los totales de lo que se está viendo. Un cargue anulado vale 0 y su
+  // débito vinculado NO se resta aparte (el par cargue + reversa da cero UNA
+  // vez); los ajustes que se muestran aparte son solo los SIN vincular.
+  //
+  // Tasas: la de venta es lo recibido sobre los USDT que LLEGARON (es a lo
+  // que de verdad se vendió); la del cliente, lo acreditado sobre los USDT
+  // que entregó. Si en la vista hay cargues y conversiones mezclados, las
+  // tasas salen solo de los cargues: promediar una tasa de venta con una de
+  // compra no significa nada.
+  const totalesDe = (filas: any[]) => {
+    const t = { usd: 0, usdLlego: 0, recibido: 0, acreditado: 0, utilidad: 0, recibidoTasa: 0, usdLlegoTasa: 0, acreditadoTasa: 0, usdTasa: 0, ajustesSueltos: 0, nAjustesSueltos: 0 };
+    const tipos = new Set(filas.filter(d => d.liq && !d.liq.anulado).map(d => d.liq.tipo));
+    const tipoTasa = tipos.size > 1 ? 'cargue' : [...tipos][0];
+    for (const d of filas) {
+      if (d.type === 'adjustment') { if (!(d.vinculado || d.reversaDe) && d.esDebito) { t.ajustesSueltos += Number(d.amount) || 0; t.nAjustesSueltos++; } continue; }
+      const l = d.liq; if (!l || l.anulado) continue;
+      const u = l.usd ?? 0;
+      t.usd += u; t.usdLlego += l.usdLlego ?? u;
+      t.recibido += l.totalCop ?? l.tercerosCop ?? 0; t.acreditado += l.tercerosCop ?? 0; t.utilidad += l.utilidadCop ?? 0;
+      if (l.tipo === tipoTasa && u > 0) {
+        if (l.totalCop != null && l.tasaLincoin) { t.recibidoTasa += l.totalCop; t.usdLlegoTasa += l.usdLlego ?? u; }
+        if (l.tercerosCop != null && l.tasaCliente) { t.acreditadoTasa += l.tercerosCop + (l.comisionBrebCop ?? 0); t.usdTasa += u; }
+      }
+    }
+    return { ...t, mezcla: tipos.size > 1, tasaVenta: t.usdLlegoTasa ? t.recibidoTasa / t.usdLlegoTasa : null, tasaCliente: t.usdTasa ? t.acreditadoTasa / t.usdTasa : null };
+  };
+  const tot = useMemo(() => totalesDe(vistos), [vistos]);
+  const totCargues = useMemo(() => totalesDe(detalle.filter(d => d.liq?.tipo === 'cargue')), [detalle]);
+
+  const util = (c.utilidadCargues ?? 0) + (c.utilidadConversiones ?? 0);
+  const tasaVentaProm = totCargues.tasaVenta;
+  const tasaClienteProm = totCargues.tasaCliente;
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <button onClick={onVolver} className="text-[11px] text-slate-400 hover:text-slate-600 font-bold mb-1 flex items-center gap-1"><ChevronLeft size={12} /> Todos los clientes</button>
+          <h4 className="font-bold text-slate-800 text-base">{c.nombre}</h4>
+          <p className="text-xs text-slate-500">{c.documento ? `${c.documento} · ` : ''}{c.email ?? ''}</p>
+          {c.modelo && (
+            <p className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+              <ChipModelo modelo={c.modelo} manual={c.modeloManual} />
+              <span>{MODELO[c.modelo]?.largo}{c.pais ? ` · ${c.pais}` : ''}{c.modeloManual ? ' · ajustado a mano' : ''}. Se cambia en Clientes → ficha → Controles de cuenta.</span>
+            </p>
+          )}
+          <p className="text-[11px] text-slate-400 mt-1">Sus envíos y pagos están en Clientes → ficha del cliente → Envíos y pagos.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={cargar} disabled={cargando} className="flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar</button>
+          <BotonInforme clientes={[cliente]} sel={sel} listo={!cargando} onAviso={onAviso} />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <Kpi titulo="USDT que entró" valor={`${usd(c.usdCargado)} USDT`} detalle={`${c.cargues ?? 0} cargues${c.usdLlego && Math.abs(c.usdLlego - c.usdCargado) > 0.009 ? ` · llegaron ${usd(c.usdLlego)}` : ''}`} />
+        <Kpi titulo="Recibido por la venta" valor={cop(c.cargadoTotalCop)} detalle={`Tasa promedio ${tasa(tasaVentaProm)}`} />
+        <Kpi titulo="Acreditado al cliente" valor={cop(c.cargadoCop)} detalle={`Tasa promedio ${tasa(tasaClienteProm)}${c.comisionBrebCop ? ` · comisión Bre-B ${cop(c.comisionBrebCop)}` : ''}`} />
+        <Kpi titulo="Utilidad Lincoin (neta)" valor={cop(util)} acento detalle={c.enPerdida > 0
+          ? `Ganancias ${cop(c.gananciaCop)} − pérdidas ${cop(Math.abs(c.perdidaCop))} (${c.enPerdida} en rojo)`
+          : `Cargues ${cop(c.utilidadCargues)}${c.conversiones ? ` · conversiones ${cop(c.utilidadConversiones)}` : ''}${c.utilidadEstimada > 0 ? ` · ${cop(c.utilidadEstimada)} estimada` : ''}`} />
+        <Kpi titulo="Facturas Lincoin" valor={`${c.facturadas ?? 0} emitidas`} detalle={`${cop(c.facturadoCop)} facturado · ${c.porFacturar ?? 0} por facturar${c.facturasConError ? ` · ${c.facturasConError} con error` : ''}`} />
+      </div>
+      {c.conversiones > 0 && <p className="text-[11px] text-slate-500">Además: {c.conversiones} conversion{c.conversiones === 1 ? '' : 'es'} por {cop(c.convertidoCop)} ({usd(c.usdConvertido)} USD), con utilidad de {cop(c.utilidadConversiones)}.</p>}
+      {c.enPerdida > 0 && (
+        <Aviso tono="error">
+          {c.enPerdida} operaci{c.enPerdida === 1 ? 'ón tiene' : 'ones tienen'} utilidad NEGATIVA por {cop(Math.abs(c.perdidaCop))}: se le acreditó al cliente más de lo que se recibió por la venta. Eso resta de la utilidad: ganancias {cop(c.gananciaCop)} − pérdidas {cop(Math.abs(c.perdidaCop))} = {cop(util)}.
+          {' '}Si es un cargue errado que ya descontaste, vincula su ajuste (débito) y deja de restar; si los USDT o las tasas se escribieron mal, hay que corregir el cargue.
+          {' '}<button onClick={() => setFiltro('perdida')} className="underline font-bold">Ver las que están en rojo</button>
+        </Aviso>
+      )}
+      {c.ajustes > 0 && <Aviso>Hay {c.ajustes} ajuste{c.ajustes === 1 ? '' : 's'} (débito) sin vincular por {cop(c.ajustadoCop)}. Si corrigen un cargue hecho por error, vincúlalos abajo: así el cargue se anula o se corrige y la utilidad cuadra.</Aviso>}
+      {c.anulados > 0 && <p className="text-[11px] text-slate-500">{c.anulados} cargue{c.anulados === 1 ? '' : 's'} anulado{c.anulados === 1 ? '' : 's'} con su ajuste: no suman ni dejan utilidad.</p>}
+      {c.facturasDeAnulados > 0 && <Aviso tono="error">{c.facturasDeAnulados} cargue{c.facturasDeAnulados === 1 ? '' : 's'} anulado{c.facturasDeAnulados === 1 ? '' : 's'} ya tenía{c.facturasDeAnulados === 1 ? '' : 'n'} factura emitida. Anúlala en Siigo (o haz la nota crédito).</Aviso>}
+      {error && <Aviso tono="error">{error}</Aviso>}
+      <div className="flex gap-1.5 flex-wrap">
+        {([['todo', 'Todo'], ['cargues', 'Cargues'], ['conversiones', 'Conversiones'], ...((c.ajustes || c.ajustesVinculados) ? [['ajustes', 'Ajustes']] as const : []), ...(c.enPerdida ? [['perdida', `Con pérdida (${c.enPerdida})`]] as const : [])] as const).map(([k, n]) => (
+          <button key={k} onClick={() => setFiltro(k)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{n}</button>
+        ))}
+        {rieles.length > 1 && <span className="w-px bg-slate-200 mx-1" />}
+        {rieles.length > 1 && (['todos', ...(['ACH', 'Bre-B', 'Saldo Lincoin'] as const).filter(r => rieles.includes(r))] as const).map(k => (
+          <button key={k} onClick={() => setRiel(k as any)} className={`text-xs font-bold px-3 py-1.5 rounded-full border ${riel === k ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{k === 'todos' ? 'Todos los rieles' : k}</button>
+        ))}
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <table className="w-full text-xs min-w-[1260px]">
+          <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
+            <tr>
+              <th className="text-left px-4 py-2.5">Fecha</th>
+              <th className="text-left px-3 py-2.5">Operación</th>
+              <th className="text-left px-3 py-2.5">Riel</th>
+              <th className="text-right px-3 py-2.5">USDT entró</th>
+              <th className="text-right px-3 py-2.5">Tasa venta</th>
+              <th className="text-right px-3 py-2.5">Recibido</th>
+              <th className="text-right px-3 py-2.5">Tasa cliente</th>
+              <th className="text-right px-3 py-2.5">Acreditado</th>
+              <th className="text-right px-3 py-2.5">Utilidad</th>
+              <th className="text-left px-3 py-2.5">Factura Lincoin</th>
+              <th className="px-4 py-2.5"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {!vistos.length && <tr><td colSpan={11} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : 'Nada en el período.'}</td></tr>}
+            {vistos.map(d => {
+              const l = d.liq;
+              if (d.type === 'adjustment') return (
+                <tr key={d.id} className="align-top" style={{ background: (d.vinculado || d.reversaDe) ? 'rgba(255,255,255,0.02)' : 'rgba(251,191,36,0.05)' }}>
+                  <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
+                  <td className="px-3 py-2.5">
+                    {(d.vinculado || d.reversaDe)
+                      ? <p className="font-semibold text-slate-700">Reversa del cargue{d.reversaDe && fechaDe(String(d.reversaDe)) ? ` del ${fechaDe(String(d.reversaDe))}` : ''}</p>
+                      : <p className="font-semibold text-slate-700">Ajuste {d.esDebito ? '(débito)' : '(crédito)'}</p>}
+                    {d.nota && <p className="text-[10px] text-slate-400 max-w-[240px] break-words">{d.nota}</p>}
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{d.riel ?? '—'}</td>
+                  <td colSpan={4} className="px-3 py-2.5 text-[10px] text-slate-400">{(d.vinculado || d.reversaDe) ? 'No se resta aparte: ya está adentro del cargue que revierte (anulado o corregido).' : d.esDebito ? 'No suma en los totales del cliente hasta que se vincule.' : ''}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold whitespace-nowrap" style={{ color: d.esDebito && !(d.vinculado || d.reversaDe) ? '#DC2626' : '#94A3B8' }}>{d.esDebito ? '−' : ''}{cop(d.amount)}</td>
+                  <td className="px-3 py-2.5"></td>
+                  <td colSpan={2} className="px-3 py-2.5 text-right"><VincularAjuste fila={d} motivo={motivos[String(d.id)]} fechaDe={fechaDe} onHecho={aviso} /></td>
+                </tr>
+              );
+              const anulado = !!l?.anulado;
+              const o = l?.original;
+              const tachado = anulado ? 'line-through text-slate-400' : '';
+              return (
+                <tr key={d.id} className={`align-top ${anulado ? 'opacity-70' : ''}`}>
+                  <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(d.created_at)}</td>
+                  <td className="px-3 py-2.5">
+                    <p className="font-semibold text-slate-700">{TIPO_TX[d.type] ?? d.type}{d.ref ? ` · ${d.ref}` : ''}
+                      {anulado && <span className="ml-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-red-200 text-red-600">ANULADO</span>}
+                      {!anulado && l?.reversadoCop ? <span className="ml-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-amber-300 text-amber-700">CORREGIDO</span> : null}
+                    </p>
+                    {d.nota && <p className="text-[10px] text-slate-400 max-w-[240px] break-words">{d.nota}</p>}
+                    {(anulado || l?.reversadoCop) && <p className="text-[10px] text-slate-500 max-w-[240px] break-words">{l.nota}</p>}
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{d.riel ?? '—'}</td>
+                  <td className={`px-3 py-2.5 text-right whitespace-nowrap ${tachado}`}>
+                    <p className="font-semibold text-slate-800">{usd(anulado ? o?.usd : l?.usd)}</p>
+                    {!anulado && l?.usdLlego != null && l?.usd != null && Math.abs(l.usdLlego - l.usd) > 0.009 && <p className="text-[10px] text-slate-400">llegaron {usd(l.usdLlego)}</p>}
+                  </td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap text-slate-600">{tasa(l?.tasaLincoin)}</td>
+                  <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold text-slate-800 ${tachado}`}>{cop(anulado ? o?.totalCop : l?.totalCop)}</td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap text-slate-600">{tasa(l?.tasaCliente)}</td>
+                  <td className={`px-3 py-2.5 text-right whitespace-nowrap ${tachado}`}>
+                    <p className="font-semibold text-slate-800">{cop(anulado ? o?.tercerosCop : l?.tercerosCop)}</p>
+                    {l?.comisionBrebCop ? <p className="text-[10px] text-slate-400">comisión Bre-B {cop(l.comisionBrebCop)}</p> : null}
+                  </td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap">
+                    {anulado ? <p className={`font-bold ${tachado}`}>{cop(o?.utilidadCop)}</p> : (
+                      <>
+                        <p className={`font-bold ${l?.utilidadCop == null ? 'text-slate-400' : l.utilidadCop < 0 ? 'text-red-600' : 'text-[#16A34A]'}`}>{l?.utilidadCop != null ? cop(l.utilidadCop) : 'Sin dato'}</p>
+                        <p className="text-[10px] text-slate-400">{l ? FUENTE[l.fuente] ?? l.fuente : ''}</p>
+                      </>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    {l ? (
+                      <div className="space-y-1">
+                        {l.facturable ? <EstadoFactura estado={d.factura?.estado} /> : d.factura?.estado === 'emitida' ? <span className="text-[10px] font-bold text-red-600">Factura emitida: anúlala en Siigo</span> : <span className="text-[10px] text-slate-400">No aplica</span>}
+                        {d.factura?.diaria && <p className="text-[10px] text-slate-500">En la diaria del {fechaDia(d.factura.diaria)}</p>}
+                        {!d.factura && vaEnDiaria(d) && <p className="text-[10px] text-slate-500 max-w-[200px]">Va en la factura diaria (sale el {fechaDia(String(d.created_at), true)})</p>}
+                        {d.factura?.numero && <p className="text-[10px] font-semibold text-slate-600">{d.factura.numero}</p>}
+                        {(d.factura?.error || (!l.facturable && !anulado && l.nota)) && <p className="text-[10px] text-slate-500 max-w-[220px] break-words">{d.factura?.error ?? l.nota}</p>}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="flex flex-col items-end gap-1.5">
+                      {l?.facturable && (d.factura?.diaria
+                        ? (['error', 'incierta', 'pendiente'].includes(String(d.factura.estado)) && <BotonFacturar txId={String(d.factura.clave)} estado={d.factura.estado} onHecho={aviso} />)
+                        : !vaEnDiaria(d) && <BotonFacturar txId={String(d.id)} estado={d.factura?.estado} liq={l} onHecho={aviso} />)}
+                      {d.venta && !anulado && d.factura?.estado !== 'emitida' && d.factura?.estado !== 'emitiendo' && <CorregirVenta fila={d} onHecho={aviso} />}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {vistos.some(d => d.liq) && (
+            <tfoot className="bg-slate-50 border-t-2 border-slate-200">
+              <tr className="font-bold text-slate-800">
+                <td className="px-4 py-3" colSpan={3}>
+                  TOTAL{riel !== 'todos' ? ` · ${riel}` : ''}
+                  <p className="text-[10px] font-normal text-slate-400">Sin anulados ni sus reversas{tot.nAjustesSueltos ? ` · ${tot.nAjustesSueltos} ajuste${tot.nAjustesSueltos === 1 ? '' : 's'} sin vincular (−${cop(tot.ajustesSueltos)}) aparte` : ''}{tot.mezcla ? ' · tasas: solo cargues' : ''}</p>
+                </td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">{usd(tot.usd)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap text-slate-600">{tasa(tot.tasaVenta)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">{cop(tot.recibido)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap text-slate-600">{tasa(tot.tasaCliente)}</td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">{cop(tot.acreditado)}</td>
+                <td className={`px-3 py-3 text-right whitespace-nowrap ${tot.utilidad < 0 ? 'text-red-600' : 'text-[#16A34A]'}`}>{cop(tot.utilidad)}</td>
+                <td colSpan={2}></td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ── Facturación (el Siigo de Lincoin) ───────────────────────
+const Facturacion: React.FC<{ onAviso: (m: string, ok: boolean) => void }> = ({ onAviso }) => {
+  const [cfg, setCfg] = useState<any | null>(null);
+  const [resumen, setResumen] = useState<Record<string, number>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [form, setForm] = useState<Record<string, any>>({});
+  const [accessKey, setAccessKey] = useState('');
+  const [ocupado, setOcupado] = useState<string | null>(null);
+  const [facturas, setFacturas] = useState<any[]>([]);
+  const [filtroEstado, setFiltroEstado] = useState('');
+
+  const leer = useCallback(async () => {
+    const r = await pedirAdmin({ action: 'fact_lincoin_get' });
+    if (!r?.ok) { setError(r?.error ?? 'No se pudo leer la configuración.'); return; }
+    setError(null);
+    setCfg(r.config); setResumen(r.resumen ?? {});
+    const c = r.config ?? {};
+    setForm({
+      username: c.username ?? '', partner_id: c.partner_id ?? '',
+      document_id: c.document_id ?? '', seller_id: c.seller_id ?? '', payment_id: c.payment_id ?? '',
+      item_terceros: c.item_terceros ?? '', item_comision: c.item_comision ?? '', iva_tax_id: c.iva_tax_id ?? '',
+      desc_terceros: c.desc_terceros ?? '', desc_comision: c.desc_comision ?? '', observaciones: c.observaciones ?? '',
+      stamp: c.stamp !== false, mail: c.mail !== false,
+      operaciones: Array.isArray(c.operaciones) ? c.operaciones : ['cargue', 'conversion'],
+      desde: c.desde ? String(c.desde).slice(0, 10) : '',
+    });
+  }, []);
+  const listar = useCallback(async () => {
+    const r = await pedirFacturas(filtroEstado);
+    if (r?.ok) setFacturas(r.facturas ?? []);
+  }, [filtroEstado]);
+  useEffect(() => { leer(); }, [leer]);
+  useEffect(() => { listar(); }, [listar]);
+
+  const cat = cfg?.catalogos ?? null;
+  const productos: any[] = cat?.productos ?? [];
+  const set = (k: string, v: any) => setForm(p => ({ ...p, [k]: v }));
+  const guardar = async (extra: Record<string, unknown> = {}, etiqueta = 'guardar') => {
+    setOcupado(etiqueta);
+    const config: Record<string, unknown> = { ...form, desde: form.desde ? new Date(`${form.desde}T00:00:00-05:00`).toISOString() : null, ...extra };
+    if (accessKey.trim()) config.access_key = accessKey;
+    const r = await pedirAdmin({ action: 'fact_lincoin_set', config, ...(('activo' in extra) ? { cambiarActivo: true } : {}) });
+    setOcupado(null);
+    if (r?.ok) { setAccessKey(''); onAviso('activo' in extra ? (extra.activo ? 'Facturación automática activada.' : 'Facturación automática pausada.') : 'Configuración guardada.', true); await leer(); }
+    else onAviso(r?.permisoDenegado ? 'Solo el dueño puede cambiar la configuración de Siigo.' : (r?.error ?? 'No se pudo guardar.'), false);
+  };
+  const probar = async () => {
+    if (accessKey.trim() || form.username !== (cfg?.username ?? '')) await guardar({}, 'probar');
+    setOcupado('probar');
+    const r = await pedirAdmin({ action: 'fact_lincoin_probar' });
+    setOcupado(null);
+    if (r?.ok) { onAviso(r.aviso ? `Conectó, pero: ${r.aviso}` : 'Conexión con Siigo correcta. Ya podés elegir los datos de la factura.', !r.aviso); await leer(); }
+    else onAviso(r?.error ?? 'No se pudo conectar.', false);
+  };
+  const alDia = async () => {
+    setOcupado('aldia');
+    const r = await pedirAdmin({ action: 'fact_lincoin_al_dia' });
+    setOcupado(null);
+    onAviso(r?.ok ? 'Se están emitiendo las pendientes. Recargá la lista en un minuto.' : (r?.error ?? 'No se pudo.'), !!r?.ok);
+  };
+
+  if (error && !cfg) return <Aviso tono="error">{error}</Aviso>;
+  if (!cfg) return <p className="text-sm text-slate-400">Cargando…</p>;
+  const sel = (k: string, opciones: { v: string | number; n: string }[], placeholder: string) => (
+    <select value={String(form[k] ?? '')} onChange={e => set(k, e.target.value)} className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm bg-white">
+      <option value="">{placeholder}</option>
+      {opciones.map(o => <option key={String(o.v)} value={String(o.v)}>{o.n}</option>)}
+    </select>
+  );
+  const campo = (titulo: string, hijo: React.ReactNode, ayuda?: string) => (
+    <label className="block">
+      <span className="text-[11px] font-bold text-slate-600">{titulo}</span>
+      <div className="mt-1">{hijo}</div>
+      {ayuda && <span className="text-[10px] text-slate-400">{ayuda}</span>}
+    </label>
+  );
+  const prodOpts = productos.filter(p => p.active !== false).map(p => ({ v: p.code, n: `${p.code} · ${p.name}${(p.taxes ?? []).some((t: any) => Number(t.percentage) > 0) ? ` (${(p.taxes ?? []).filter((t: any) => Number(t.percentage) > 0).map((t: any) => `${t.name ?? 'IVA'} ${t.percentage}%`).join(', ')})` : ' (sin impuesto)'}` }));
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h4 className="font-bold text-slate-800 flex items-center gap-2"><Receipt size={16} className="text-[#16A34A]" /> Facturas de Lincoin en Siigo</h4>
+            <p className="text-xs text-slate-500 mt-1 max-w-2xl leading-relaxed">
+              Por cada cargue y cada conversión completada se emite una factura de mandato al cliente: <b>ingresos recibidos para terceros</b> (lo que es del cliente, sin IVA) + <b>comisión de Lincoin</b> (la utilidad, con IVA incluido).
+              Si la utilidad no quedó registrada o es estimada (mesa OTC), la factura espera a que la confirmes.
+            </p>
+          </div>
+          <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${cfg.activo ? 'bg-green-50 text-[#16A34A] border-green-200' : 'bg-slate-50 text-slate-500 border-slate-200'}`}>{cfg.activo ? 'AUTOMÁTICA ACTIVA' : 'PAUSADA'}</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 mt-4">
+          {(['emitida', 'pendiente', 'emitiendo', 'incierta', 'revision', 'error', 'omitida'] as const).map(k => (
+            <div key={k} className="rounded-lg bg-slate-50 px-3 py-2">
+              <p className="text-[10px] text-slate-400 font-bold uppercase">{ESTADO_FACTURA[k].txt}</p>
+              <p className="text-base font-black text-slate-800">{resumen[k] ?? 0}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+        <h5 className="font-bold text-slate-800 text-sm flex items-center gap-2"><Plug size={15} className="text-slate-500" /> 1 · Conexión</h5>
+        <p className="text-[11px] text-slate-500">El usuario y la access key de la API de Siigo de Lincoin se pegan acá. Quedan cifradas en el servidor y no se vuelven a mostrar.</p>
+        <div className="grid sm:grid-cols-3 gap-3">
+          {campo('Usuario de la API', <input value={form.username ?? ''} onChange={e => set('username', e.target.value)} autoComplete="off" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />)}
+          {campo('Access key', <input type="password" value={accessKey} onChange={e => setAccessKey(e.target.value)} autoComplete="new-password" placeholder={cfg.tieneAccessKey ? 'Guardada — déjala vacía para conservarla' : 'Pegala acá'} className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />, cfg.tieneAccessKey ? 'Dejala vacía para conservar la guardada.' : undefined)}
+          {campo('Partner-Id', <input value={form.partner_id ?? ''} onChange={e => set('partner_id', e.target.value)} placeholder="Lincoin" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />)}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={() => guardar({}, 'cred')} disabled={!!ocupado} className="text-xs font-bold px-3 py-2 rounded-lg bg-slate-800 text-white disabled:opacity-50">{ocupado === 'cred' ? 'Guardando…' : 'Guardar'}</button>
+          <button onClick={probar} disabled={!!ocupado} className="text-xs font-bold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50">{ocupado === 'probar' ? 'Probando…' : 'Probar conexión'}</button>
+          {cfg.ultimo_test_at && (
+            <span className={`text-[11px] ${cfg.ultimo_test_ok ? 'text-[#16A34A]' : 'text-red-600'}`}>
+              {cfg.ultimo_test_ok ? <Check size={12} className="inline mr-1" /> : null}
+              Última prueba {fecha(cfg.ultimo_test_at)}: {cfg.ultimo_test_ok ? 'conectó' : 'falló'}{cfg.ultimo_error ? ` — ${cfg.ultimo_error}` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className={`bg-white rounded-xl border border-slate-200 p-5 space-y-4 ${cat ? '' : 'opacity-60'}`}>
+        <h5 className="font-bold text-slate-800 text-sm">2 · La factura</h5>
+        {!cat && <p className="text-[11px] text-slate-500">Probá la conexión para traer de Siigo los tipos de factura, vendedores, formas de pago e ítems.</p>}
+        <div className="grid sm:grid-cols-3 gap-3">
+          {campo('Tipo de factura (FV)', sel('document_id', (cat?.documentos ?? []).map((d: any) => ({ v: d.id, n: `${d.code ? d.code + ' · ' : ''}${d.name}` })), 'Elegí…'))}
+          {campo('Vendedor', sel('seller_id', (cat?.vendedores ?? []).filter((v: any) => v.activo !== false).map((v: any) => ({ v: v.id, n: v.nombre })), 'Elegí…'))}
+          {campo('Forma de pago', sel('payment_id', (cat?.pagos ?? []).map((p: any) => ({ v: p.id, n: p.name })), 'Elegí…'))}
+          {campo('Ítem ingresos para terceros', sel('item_terceros', prodOpts, 'Elegí…'), 'Va SIN IVA.')}
+          {campo('Ítem comisión Lincoin', sel('item_comision', prodOpts, 'Elegí…'), 'Va con IVA incluido en la utilidad.')}
+          {campo('IVA de la comisión (si el ítem no lo trae)', sel('iva_tax_id', (cat?.impuestos ?? []).filter((t: any) => Number(t.percentage) > 0).map((t: any) => ({ v: t.id, n: `${t.name} ${t.percentage}%` })), 'El del ítem'))}
+          {campo('Descripción terceros', <input value={form.desc_terceros ?? ''} onChange={e => set('desc_terceros', e.target.value)} placeholder="Ingresos recibidos para terceros · {tipo} {fecha}" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />)}
+          {campo('Descripción comisión', <input value={form.desc_comision ?? ''} onChange={e => set('desc_comision', e.target.value)} placeholder="Comisión Lincoin · {tipo} {fecha}" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />, 'Variables: {tipo} {fecha} {usd} {ref} {cliente}')}
+          {campo('Observaciones', <input value={form.observaciones ?? ''} onChange={e => set('observaciones', e.target.value)} placeholder="Texto de mandato por defecto" className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />)}
+        </div>
+        <div className="flex flex-wrap gap-4 text-xs text-slate-700">
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!form.stamp} onChange={e => set('stamp', e.target.checked)} /> Enviar a la DIAN (factura electrónica)</label>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={!!form.mail} onChange={e => set('mail', e.target.checked)} /> Mandar la factura al correo del cliente</label>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
+        <h5 className="font-bold text-slate-800 text-sm">3 · Cuándo se factura</h5>
+        <div className="flex flex-wrap gap-4 text-xs text-slate-700">
+          {[['cargue', 'Cada cargue'], ['conversion', 'Cada conversión']].map(([k, n]) => (
+            <label key={k} className="flex items-center gap-2">
+              <input type="checkbox" checked={(form.operaciones ?? []).includes(k)} onChange={e => set('operaciones', e.target.checked ? Array.from(new Set([...(form.operaciones ?? []), k])) : (form.operaciones ?? []).filter((x: string) => x !== k))} /> {n}
+            </label>
+          ))}
+        </div>
+        <div className="max-w-xs">
+          {campo('Facturar solas las operaciones desde', <input type="date" value={form.desde ?? ''} onChange={e => set('desde', e.target.value)} className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm" />, 'Vacío = desde que se activa. Las anteriores se facturan a mano, una por una.')}
+        </div>
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button onClick={() => guardar({}, 'guardar')} disabled={!!ocupado} className="text-xs font-bold px-3 py-2 rounded-lg bg-slate-800 text-white disabled:opacity-50">{ocupado === 'guardar' ? 'Guardando…' : 'Guardar configuración'}</button>
+          <button onClick={() => { if (cfg.activo || window.confirm('Desde ahora cada cargue y conversión completada va a emitir una factura electrónica ante la DIAN a nombre del cliente. ¿Activar?')) guardar({ activo: !cfg.activo }, 'activo'); }} disabled={!!ocupado}
+            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg disabled:opacity-50 ${cfg.activo ? 'border border-red-300 text-red-600 hover:bg-red-50' : 'bg-[#16A34A] text-white'}`}>
+            <Power size={13} /> {ocupado === 'activo' ? '…' : cfg.activo ? 'Pausar automática' : 'Activar automática'}
+          </button>
+          {cfg.activo && <button onClick={alDia} disabled={!!ocupado} className="text-xs font-bold px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-50">{ocupado === 'aldia' ? 'Pidiendo…' : 'Emitir las que faltan'}</button>}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 border-b border-slate-100">
+          <h5 className="font-bold text-slate-800 text-sm">Facturas</h5>
+          <div className="flex items-center gap-2">
+            <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white">
+              <option value="">Todas</option>
+              {Object.entries(ESTADO_FACTURA).map(([k, v]) => <option key={k} value={k}>{v.txt}</option>)}
+            </select>
+            <button onClick={() => { listar(); leer(); }} className="text-slate-500 hover:text-slate-700 p-1.5"><RefreshCw size={14} /></button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs min-w-[900px]">
+            <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
+              <tr>
+                <th className="text-left px-4 py-2.5">Operación</th>
+                <th className="text-left px-3 py-2.5">Cliente</th>
+                <th className="text-right px-3 py-2.5">Total</th>
+                <th className="text-right px-3 py-2.5">Terceros</th>
+                <th className="text-right px-3 py-2.5">Comisión</th>
+                <th className="text-left px-3 py-2.5">Estado</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {!facturas.length && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400">Todavía no hay facturas.</td></tr>}
+              {facturas.map(f => (
+                <tr key={f.id} className="align-top">
+                  <td className="px-4 py-2.5">
+                    <p className="font-semibold text-slate-700">{f.tipo === 'diaria' ? 'Factura diaria' : f.tipo === 'cargue' ? 'Cargue' : 'Conversión'}</p>
+                    <p className="text-[10px] text-slate-400">{f.tipo === 'diaria'
+                      ? `Del ${fechaDia(String(f.transaction_id).split(':')[2] ?? '')}${String(f.transaction_id).split(':')[3] ? ` · complementaria ${String(f.transaction_id).split(':')[3]}` : ''}`
+                      : fecha(f.operacion_at)}</p>
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700 max-w-[200px] truncate">{f.cliente ?? '—'}</td>
+                  <td className="px-3 py-2.5 text-right font-semibold text-slate-800">{cop(f.total)}</td>
+                  <td className="px-3 py-2.5 text-right text-slate-600">{cop(f.terceros)}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <p className="font-bold text-[#16A34A]">{cop(f.utilidad)}</p>
+                    {f.base != null && <p className="text-[10px] text-slate-400">base {cop(f.base)} + IVA {cop(f.iva)}</p>}
+                    {f.utilidad_fuente && f.utilidad_fuente !== 'registrada' && <p className="text-[10px] text-amber-700">{FUENTE[f.utilidad_fuente] ?? f.utilidad_fuente}</p>}
+                  </td>
+                  <td className="px-3 py-2.5 space-y-1">
+                    <EstadoFactura estado={f.estado} />
+                    {f.numero && <p className="text-[10px] font-semibold text-slate-600">{f.url ? <a href={f.url} target="_blank" rel="noreferrer" className="underline">{f.numero}</a> : f.numero}</p>}
+                    {f.error && <p className="text-[10px] text-slate-500 max-w-[300px] break-words">{f.error}</p>}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <BotonFacturar txId={String(f.transaction_id)} estado={f.estado} utilidadFila={f.utilidad} liq={f.estado === 'revision' ? { fuente: f.utilidad_fuente, utilidadCop: f.utilidad, tercerosCop: f.terceros, totalCop: f.total, fijo: f.tipo === 'conversion' && f.terceros == null ? 'total' : 'terceros', facturable: true } : null}
+                      onHecho={(m, ok) => { onAviso(m, ok); listar(); leer(); }} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+async function pedirFacturas(estado: string) {
+  return pedirAdmin({ action: 'fact_lincoin_lista', limite: 500, ...(estado ? { estado } : {}) });
+}
+
+// ── Rechazados ──────────────────────────────────────────────
+// Envíos, cargues y conversiones que se cayeron DESPUÉS de completarse (el
+// banco rechazó el envío y la plata volvió; un recaudo se reversó) y si
+// alcanzaron a facturarse: la factura del cliente en su Siigo, o la de
+// Lincoin (propia o dentro de la diaria). El Resumen solo cuenta lo
+// Completado, así que estas facturas no se veían en ningún lado. Solo se
+// listan: anular es con nota crédito en el Siigo de quien la emitió.
+const ACCION_FACTURA: Record<string, { txt: string; cls: string }> = {
+  anular: { txt: 'Anular · nota crédito', cls: 'bg-red-50 text-red-700 border-red-200' },
+  verificar: { txt: 'Verificar en Siigo', cls: 'bg-orange-50 text-orange-700 border-orange-300' },
+};
+const FacturaRech: React.FC<{ f: any; deLincoin?: boolean }> = ({ f, deLincoin }) => {
+  if (!f || (!f.numero && !f.accion && (!f.estado || f.estado === 'omitida'))) return <span className="text-[10px] text-slate-400">Sin factura</span>;
+  const acc = f.accion ? ACCION_FACTURA[f.accion] : null;
+  const tipoDoc = !deLincoin && f.tipo === 'DS' ? 'DS · ' : '';
+  return (
+    <div className="space-y-1">
+      <p className={`font-mono text-[11px] ${acc ? 'text-slate-800 font-semibold' : 'text-slate-400 line-through'}`}>
+        {tipoDoc}{f.numero ?? (f.estado === 'emitiendo' ? 'emitiendo' : f.estado ?? '—')}
+        {deLincoin && f.diaria ? <span className="font-sans not-italic text-[10px] text-slate-400"> · diaria del {fechaDia(f.diaria)}</span> : null}
+      </p>
+      {acc
+        ? <span title={deLincoin
+            ? (f.diaria ? 'La operación va dentro de la factura diaria: la nota crédito va por el valor de esta operación, no por toda la factura.' : 'Anúlala con una nota crédito por el total en el Siigo de Lincoin.')
+            : (f.tipo === 'DS' ? 'El cliente la anula en su Siigo con una nota de ajuste al documento soporte.' : 'El cliente (o su contadora) la anula en su Siigo con una nota crédito por el total.')}
+            className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${acc.cls}`}>{f.diaria && deLincoin && f.accion === 'anular' ? 'Nota crédito parcial' : (f.tipo === 'DS' && !deLincoin && f.accion === 'anular' ? 'Anular · nota de ajuste' : acc.txt)}</span>
+        : <EstadoFactura estado={f.estado === 'emitida' && f.dian === 'rechazada' ? 'omitida' : f.estado} />}
+    </div>
+  );
+};
+
+const Rechazados: React.FC<{ datos: any; cargando: boolean; error: string | null }> = ({ datos, cargando, error }) => {
+  const [q, setQ] = useState('');
+  const [filtro, setFiltro] = useState<'por_anular' | 'todos'>('por_anular');
+  const lista: any[] = datos?.movimientos ?? [];
+  const porAnular = (m: any) => !!(m.facturaCliente?.accion || m.facturaLincoin?.accion);
+  const nPorAnular = lista.filter(porAnular).length;
+  const filtrados = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    return lista
+      .filter(m => filtro === 'todos' || porAnular(m))
+      .filter(m => !n || String(m.cliente ?? '').toLowerCase().includes(n) || String(m.contraparte ?? '').toLowerCase().includes(n)
+        || String(m.facturaCliente?.numero ?? '').toLowerCase().includes(n) || String(m.facturaLincoin?.numero ?? '').toLowerCase().includes(n));
+  }, [lista, q, filtro]);
+  if (error) return <Aviso tono="error">{error}</Aviso>;
+  if (!datos) return <p className="text-sm text-slate-400">{cargando ? 'Cargando…' : 'Sin datos.'}</p>;
+  const t = datos.totales ?? {};
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Kpi titulo="Rechazados o devueltos" valor={String(t.movimientos ?? 0)} detalle={`${t.clientes ?? 0} cliente${t.clientes === 1 ? '' : 's'} · la plata volvió a la cuenta`} />
+        <Kpi titulo="Por anular" valor={String(nPorAnular)} acento={false} detalle={nPorAnular ? 'Con una factura vigente que sobra' : 'Ninguna factura vigente'} />
+        <Kpi titulo="Facturas del cliente" valor={String(t.facturaCliente ?? 0)} detalle="En el Siigo de cada cliente: la anula el cliente o su contadora" />
+        <Kpi titulo="Facturas de Lincoin" valor={String(t.facturaLincoin ?? 0)} detalle="En el Siigo de Lincoin: nota crédito de Lincoin" />
+      </div>
+      {nPorAnular > 0 && (
+        <Aviso tono="error">
+          {nPorAnular === 1 ? '1 movimiento rechazado tiene' : `${nPorAnular} movimientos rechazados tienen`} una factura vigente. La plata volvió a la cuenta del cliente, así que esa factura sobra: se anula con una nota crédito por el total en el Siigo de quien la emitió (si va dentro de una factura diaria de Lincoin, la nota crédito es solo por esa operación). Lincoin ya no emite facturas de movimientos rechazados.
+        </Aviso>
+      )}
+      {datos.truncado && <Aviso>Hay más de 5.000 movimientos rechazados en el período: se listan los más recientes. Elige un período más corto.</Aviso>}
+      {(!datos.conComprobantes || !datos.conFacturasLincoin) && <Aviso>No se pudo leer {!datos.conComprobantes ? 'el estado de las facturas de los clientes' : 'el estado de las facturas de Lincoin'}: la columna puede salir incompleta.</Aviso>}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1.5">
+          {([['por_anular', `Por anular · ${nPorAnular}`], ['todos', `Todos · ${lista.length}`]] as const).map(([k, l]) => (
+            <button key={k} onClick={() => setFiltro(k)}
+              className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${filtro === k ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
+          ))}
+        </div>
+        <div className="relative flex-1 min-w-[220px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por cliente, beneficiario o número de factura"
+            className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-sm bg-white" />
+        </div>
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+        <table className="w-full text-xs min-w-[920px]">
+          <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider">
+            <tr>
+              <th className="text-left px-4 py-2.5">Fecha</th>
+              <th className="text-left px-3 py-2.5">Cliente</th>
+              <th className="text-left px-3 py-2.5">Movimiento</th>
+              <th className="text-right px-3 py-2.5">Monto</th>
+              <th className="text-left px-3 py-2.5">Estado</th>
+              <th className="text-left px-3 py-2.5">Factura del cliente</th>
+              <th className="text-left px-4 py-2.5">Factura Lincoin</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {!filtrados.length && <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400">{cargando ? 'Cargando…' : filtro === 'por_anular' && lista.length ? 'Ningún movimiento rechazado del período tiene factura vigente.' : 'Sin movimientos rechazados ni devueltos en el período.'}</td></tr>}
+            {filtrados.map(m => (
+              <tr key={m.id} className="hover:bg-slate-50">
+                <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap">{fecha(m.created_at)}</td>
+                <td className="px-3 py-2.5"><p className="font-semibold text-slate-800 truncate max-w-[200px]">{m.cliente}</p></td>
+                <td className="px-3 py-2.5">
+                  <p className="font-semibold text-slate-700">{m.tipo}</p>
+                  {m.contraparte && <p className="text-[10px] text-slate-400 truncate max-w-[220px]">{m.contraparte}</p>}
+                </td>
+                <td className="px-3 py-2.5 text-right font-semibold text-slate-400 line-through whitespace-nowrap">{String(m.currency ?? '').toUpperCase().startsWith('COP') ? cop(m.amount) : `${usd(m.amount)} ${String(m.currency ?? '').split('_')[0]}`}</td>
+                <td className="px-3 py-2.5">
+                  <p className="font-bold text-[10px] uppercase tracking-wider text-red-600">{m.status}</p>
+                  <p className="text-[10px] text-slate-400">{m.reembolsoExterno ? 'reembolsado a mano' : m.reembolsado ? 'reembolsado' : m.reversado ? 'reversado' : 'sin reembolso marcado'}</p>
+                  {m.motivo && <p className="text-[10px] text-slate-400 truncate max-w-[200px]" title={String(m.motivo)}>{String(m.motivo)}</p>}
+                </td>
+                <td className="px-3 py-2.5"><FacturaRech f={m.facturaCliente} /></td>
+                <td className="px-4 py-2.5"><FacturaRech f={m.facturaLincoin} deLincoin /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// ── Contenedor ──────────────────────────────────────────────
+export const AdminContabilidad: React.FC = () => {
+  // Entrar a Contabilidad abre SIEMPRE el Resumen. Antes se recordaba la
+  // última pestaña (localStorage) y, si la última fue Mesa OTC, el clic en
+  // Contabilidad del menú abría la Mesa OTC en vez del resumen del mes.
+  const [pestana, setPestana] = useState<Pestana>('resumen');
+  const [periodo, setPeriodoEstado] = useState<Periodo>(leerPeriodo);
+  const sel = useMemo(() => seleccionDe(periodo), [periodo]);
+  const setPeriodo = (p: Periodo) => { setPeriodoEstado(p); try { localStorage.setItem('lincoin_conta_periodo', JSON.stringify(p)); } catch { /* */ } };
+  // Al cambiar el tipo, el mes o el rango arrancan en algo útil: el mes
+  // pasado, y del primero de este mes a hoy.
+  const cambiarTipo = (tipo: TipoPeriodo) => {
+    const hoy = hoyBogota();
+    if (tipo === 'mes_elegido') setPeriodo({ tipo, mes: periodo.mes || mesCorrido(hoy.slice(0, 7), -1) });
+    else if (tipo === 'rango') setPeriodo({ tipo, desde: periodo.desde || `${hoy.slice(0, 7)}-01`, hasta: periodo.hasta || hoy });
+    else setPeriodo({ tipo });
+  };
+  const mesesElegibles = useMemo(() => Array.from({ length: 24 }, (_, i) => mesCorrido(hoyBogota().slice(0, 7), -i)), []);
+  const [datos, setDatos] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(false);
+  const [aviso, setAviso] = useState<{ m: string; ok: boolean } | null>(null);
+
+  const cambiar = (p: Pestana) => setPestana(p);
+  // Al entrar, los débitos que revierten EXACTO un cargue (el operador se
+  // equivocó y descontó lo mismo) se vinculan solos. Una vez por visita; si
+  // el rol no puede, se sigue sin decir nada.
+  const autoHecho = React.useRef(false);
+  // Solo cuenta la respuesta del ÚLTIMO pedido. Antes, la primera carga (este
+  // mes, que tarda más porque antes vincula ajustes) llegaba después de que
+  // uno ya había elegido "Mes pasado" y pisaba la lista: se veían clientes
+  // de octubre con "Mes pasado" en el selector, y el Excel salía con ellos.
+  const pedido = React.useRef(0);
+  const cargar = useCallback(async () => {
+    const yo = ++pedido.current;
+    setCargando(true); setError(null); setDatos(null);
+    if (!sel.valido) { setCargando(false); return; }
+    if (!autoHecho.current) {
+      autoHecho.current = true;
+      const a = await pedirAdmin({ action: 'contabilidad_autovincular' });
+      if (a?.ok && a.vinculados > 0) setAviso({ m: `Se vincularon solos ${a.vinculados} débito${a.vinculados === 1 ? '' : 's'} al cargue que revertían.${a.avisos?.length ? ` ${a.avisos.join(' ')}` : ''}`, ok: !a.avisos?.length });
+    }
+    const r = await pedirAdmin({ action: 'contabilidad_resumen', ...(sel.desde ? { desde: sel.desde } : {}), ...(sel.hasta ? { hasta: sel.hasta } : {}) });
+    if (yo !== pedido.current) return;
+    setCargando(false);
+    // Y por si acaso: la respuesta tiene que ser del rango pedido.
+    if (r?.ok && (r.desde ?? '') === (sel.desde ?? '') && (r.hasta ?? '') === (sel.hasta ?? '')) setDatos(r);
+    else if (r?.ok) setError('La respuesta no corresponde al período elegido. Actualiza.');
+    else setError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudo leer la contabilidad.'));
+  }, [sel.clave, sel.valido]);
+  useEffect(() => { if (pestana === 'resumen' || pestana === 'clientes') cargar(); }, [cargar, pestana]);
+  // Rechazados del período: su pestaña, y el aviso del Resumen (una factura
+  // vigente de un movimiento rechazado no puede quedar escondida en otra
+  // pestaña). Mismo cuidado que arriba: solo cuenta el último pedido.
+  const [rech, setRech] = useState<any | null>(null);
+  const [rechError, setRechError] = useState<string | null>(null);
+  const [rechCargando, setRechCargando] = useState(false);
+  const pedidoRech = React.useRef(0);
+  const cargarRech = useCallback(async () => {
+    const yo = ++pedidoRech.current;
+    setRechCargando(true); setRechError(null); setRech(null);
+    if (!sel.valido) { setRechCargando(false); return; }
+    const r = await pedirAdmin({ action: 'contabilidad_rechazados', ...(sel.desde ? { desde: sel.desde } : {}), ...(sel.hasta ? { hasta: sel.hasta } : {}) });
+    if (yo !== pedidoRech.current) return;
+    setRechCargando(false);
+    if (r?.ok && (r.desde ?? '') === (sel.desde ?? '') && (r.hasta ?? '') === (sel.hasta ?? '')) setRech(r);
+    else if (r?.ok) setRechError('La respuesta no corresponde al período elegido. Actualiza.');
+    else setRechError(r?.permisoDenegado ? 'Tu rol no permite ver la contabilidad.' : (r?.error ?? 'No se pudieron leer los rechazados.'));
+  }, [sel.clave, sel.valido]);
+  useEffect(() => { if (pestana === 'resumen' || pestana === 'rechazados') cargarRech(); }, [cargarRech, pestana]);
+  const rechPorAnular = ((rech?.movimientos ?? []) as any[]).filter(m => m.facturaCliente?.accion || m.facturaLincoin?.accion).length;
+  const conPeriodo = pestana === 'resumen' || pestana === 'clientes' || pestana === 'rechazados';
+  const actualizar = () => { if (pestana === 'rechazados') cargarRech(); else { cargar(); if (pestana === 'resumen') cargarRech(); } };
+  useEffect(() => { if (!aviso) return; const t = setTimeout(() => setAviso(null), 6000); return () => clearTimeout(t); }, [aviso]);
+
+  const PESTANAS: { id: Pestana; nombre: string; icono: React.ElementType }[] = [
+    { id: 'resumen', nombre: 'Resumen', icono: BarChart3 },
+    { id: 'clientes', nombre: 'Clientes', icono: Users },
+    { id: 'rechazados', nombre: 'Rechazados', icono: AlertTriangle },
+    { id: 'facturacion', nombre: 'Facturación Siigo', icono: Receipt },
+    { id: 'mesa', nombre: 'Mesa OTC', icono: ArrowLeftRight },
+  ];
+
+  return (
+    <div className="space-y-5 animate-in fade-in duration-300">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex gap-1 bg-slate-100 rounded-xl p-1 overflow-x-auto max-w-full">
+          {PESTANAS.map(p => (
+            <button key={p.id} onClick={() => cambiar(p.id)}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${pestana === p.id ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+              <p.icono size={14} className={pestana === p.id ? (p.id === 'rechazados' ? 'text-red-600' : 'text-[#16A34A]') : ''} /> {p.nombre}
+              {p.id === 'rechazados' && rechPorAnular > 0 && <span className="ml-0.5 text-[10px] font-bold text-white bg-red-600 rounded-full px-1.5 py-px">{rechPorAnular}</span>}
+            </button>
+          ))}
+        </div>
+        {conPeriodo && (
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <select value={periodo.tipo} onChange={e => cambiarTipo(e.target.value as TipoPeriodo)} aria-label="Período" className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-700">
+              {TIPOS_PERIODO.map(p => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+            </select>
+            {periodo.tipo === 'mes_elegido' && (
+              <select value={periodo.mes || mesesElegibles[1]} onChange={e => setPeriodo({ tipo: 'mes_elegido', mes: e.target.value })} aria-label="Mes" className="border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold bg-white text-slate-700">
+                {mesesElegibles.map(m => <option key={m} value={m}>{nombreMes(m)}</option>)}
+              </select>
+            )}
+            {periodo.tipo === 'rango' && (
+              <div className="flex items-center gap-1.5">
+                <input type="date" value={periodo.desde ?? ''} max={hoyBogota()} onChange={e => e.target.value && setPeriodo({ ...periodo, desde: e.target.value })} aria-label="Desde"
+                  className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-700" />
+                <span className="text-xs text-slate-400">a</span>
+                <input type="date" value={periodo.hasta ?? ''} max={hoyBogota()} onChange={e => e.target.value && setPeriodo({ ...periodo, hasta: e.target.value })} aria-label="Hasta"
+                  className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold bg-white text-slate-700" />
+              </div>
+            )}
+            <button onClick={actualizar} disabled={pestana === 'rechazados' ? rechCargando : cargando} className="p-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Actualizar"><RefreshCw size={14} className={(pestana === 'rechazados' ? rechCargando : cargando) ? 'animate-spin' : ''} /></button>
+            {pestana === 'resumen' && <BotonInforme clientes={datos?.clientes ?? []} sel={sel} listo={!cargando && !!datos} onAviso={(m, ok) => setAviso({ m, ok })} />}
+          </div>
+        )}
+      </div>
+
+      {conPeriodo && (
+        <p className="text-[11px] text-slate-500 -mt-2">
+          {sel.valido
+            ? <>Período: <span className="font-semibold text-slate-700">{sel.texto}</span> · hora de Colombia{(pestana === 'rechazados' ? rechCargando : cargando) ? ' · cargando…' : ''}</>
+            : <span className="text-red-600 font-semibold">La fecha inicial tiene que ser anterior o igual a la final.</span>}
+        </p>
+      )}
+
+      {aviso && (
+        <div className={`rounded-xl border px-4 py-2.5 text-xs flex items-start gap-2 ${aviso.ok ? 'bg-green-50 border-green-200 text-[#16A34A]' : 'bg-red-50 border-red-200 text-red-700'}`}>
+          {aviso.ok ? <Check size={14} className="shrink-0 mt-0.5" /> : <AlertTriangle size={14} className="shrink-0 mt-0.5" />}
+          <span className="flex-1 break-words">{aviso.m}</span>
+          <button onClick={() => setAviso(null)} className="opacity-60 hover:opacity-100"><X size={13} /></button>
+        </div>
+      )}
+      {(pestana === 'resumen' || pestana === 'clientes') && error && <Aviso tono="error">{error}</Aviso>}
+      {(pestana === 'resumen' || pestana === 'clientes') && datos?.truncado && <Aviso>Hay más de 40.000 movimientos en el período: los totales cubren solo los más recientes. Elegí un período más corto.</Aviso>}
+      {(pestana === 'resumen' || pestana === 'clientes') && datos && !datos.conFacturas && <Aviso>El estado de las facturas no se puede mostrar todavía: falta correr la migración 2026_zz9_facturacion_lincoin.sql.</Aviso>}
+
+      {pestana === 'resumen' && rechPorAnular > 0 && (
+        <Aviso tono="error">
+          <span>{rechPorAnular === 1 ? '1 movimiento rechazado o devuelto tiene' : `${rechPorAnular} movimientos rechazados o devueltos tienen`} factura vigente en el período (del cliente o de Lincoin): hay que anularla con nota crédito. </span>
+          <button onClick={() => cambiar('rechazados')} className="font-bold underline underline-offset-2">Ver rechazados</button>
+        </Aviso>
+      )}
+      {pestana === 'resumen' && <Resumen datos={datos} cargando={cargando} />}
+      {pestana === 'rechazados' && <Rechazados datos={rech} cargando={rechCargando} error={rechError} />}
+      {pestana === 'clientes' && <Clientes datos={datos} cargando={cargando} sel={sel} onAviso={(m, ok) => { setAviso({ m, ok }); cargar(); }} />}
+      {pestana === 'facturacion' && <Facturacion onAviso={(m, ok) => setAviso({ m, ok })} />}
+      {pestana === 'mesa' && <AdminOtcSection />}
+    </div>
+  );
+};

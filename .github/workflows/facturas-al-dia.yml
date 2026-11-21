@@ -1,0 +1,57 @@
+name: Facturas al día
+
+# POR QUE EXISTE
+#   La factura automática se pide cuando una operación se completa. Si ese
+#   aviso se corta a mitad (Siigo tarda, la función se reinicia), la factura
+#   queda sin emitir. Cada operación nueva retoma las atrasadas de su cuenta,
+#   pero una cuenta que no tiene movimientos nuevos se quedaría esperando.
+#   Esto las retoma cada 30 minutos sin depender de nadie.
+#
+# Usa los mismos secretos que "Conciliar Bre-B" (SUPABASE_URL y
+# SUPABASE_SERVICE_ROLE_KEY). Sin ellos no hace nada y no falla.
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: facturas-al-dia
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ponerse-al-dia:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emitir facturas atrasadas
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then
+            echo "⏭️  Todavía sin configurar: faltan los secretos SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY."
+            echo "    GitHub → Settings → Secrets and variables → Actions."
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then exit 1; fi
+            exit 0
+          fi
+
+          RESP=$(curl -sS --max-time 150 -w '\n%{http_code}' \
+            -X POST "$SUPABASE_URL/functions/v1/facturacion" \
+            -H "Content-Type: application/json" \
+            -H "apikey: $SERVICE_KEY" \
+            -H "Authorization: Bearer $SERVICE_KEY" \
+            -d '{"action":"ponerse_al_dia"}')
+
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+
+          # Solo contadores: el detalle trae ids de clientes.
+          echo "HTTP $CODE"
+          echo "$BODY" | jq -r '"cuentas: \(.cuentas // 0)"' || true
+          echo "$BODY" | jq -r '[.resultados[]? | .emitidos // 0] | add // 0 | "emitidas: \(.)"' || true
+          echo "$BODY" | jq -r '[.resultados[]? | (.errores // []) | length] | add // 0 | "con error: \(.)"' || true
+
+          if [ "$CODE" -ge 400 ]; then exit 1; fi

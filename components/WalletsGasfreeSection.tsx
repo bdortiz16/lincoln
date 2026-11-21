@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   ArrowLeft, Plus, Send, Archive, ArchiveRestore, Pencil, Copy, Check,
   RefreshCw, Wallet, Star, ChevronDown, ChevronUp, X,
@@ -81,7 +81,15 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
     setRenaming(null); setRenameVal('');
   };
 
+  // Candado síncrono contra el doble toque: se marca antes de cualquier await
+  // (el estado de React tarda un render y dos toques seguidos pasaban los dos).
+  const runSendEnCursoRef = useRef(false);
   const runSend = async () => {
+    if (runSendEnCursoRef.current) return;
+    runSendEnCursoRef.current = true;
+    try { return await runSendUnaVez(); } finally { runSendEnCursoRef.current = false; }
+  };
+  const runSendUnaVez = async () => {
     if (!sendFrom) return;
     const amt = Number(sendAmount);
     if (!amt || amt <= 0) { showToast('Monto inválido', 3000, 'error'); return; }
@@ -127,7 +135,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
         <button onClick={() => setDepositWallet(w)} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#4ADE80] text-[#0C0E0D] hover:bg-[#6EE7A0]">
           <Plus size={13} /> Cargar
         </button>
-        <button onClick={() => { setSendFrom(w); setSendDest('principal'); }} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#0C0E0D] text-white hover:bg-[#152e52]">
+        <button onClick={() => { setSendFrom(w); setSendDest('principal'); }} className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#0C0E0D] text-white hover:bg-[#161A17]">
           <Send size={12} /> Enviar
         </button>
         <button onClick={() => { setRenaming(w); setRenameVal(w.name); }} title="Renombrar" className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><Pencil size={13} /></button>
@@ -215,7 +223,7 @@ export const WalletsGasfreeSection: React.FC<Props> = ({ userId, callGasfree, sh
           <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between"><h3 className="font-extrabold text-[#0C0E0D] text-lg">Renombrar wallet</h3><button onClick={() => setRenaming(null)}><X size={20} className="text-slate-400" /></button></div>
             <input value={renameVal} onChange={(e) => setRenameVal(e.target.value)} maxLength={40} className="w-full px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#4ADE80]" />
-            <button onClick={doRename} disabled={busy || !renameVal.trim()} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#152e52] rounded-xl text-sm font-extrabold text-white disabled:opacity-60">{busy ? 'Guardando…' : 'Guardar'}</button>
+            <button onClick={doRename} disabled={busy || !renameVal.trim()} className="w-full h-11 bg-[#0C0E0D] hover:bg-[#161A17] rounded-xl text-sm font-extrabold text-white disabled:opacity-60">{busy ? 'Guardando…' : 'Guardar'}</button>
           </div>
         </div>
       )}
