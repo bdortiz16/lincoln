@@ -281,11 +281,14 @@ async function finityFetchAbs(url: string, init: RequestInit = {}): Promise<Resp
 // del portal lo expone (GET /convert/copBalance, /status…), y exige el JWT
 // que devuelve su propio login (data.signed). Se inicia sesión con las
 // credenciales del portal guardadas como secrets y se cachea el token.
-// Configurable (22 nov): el login al servidor del portal empezó a quedarse
-// sin respuesta desde Supabase. Si Finity lo movió, se cambia la variable
-// FINITY_PORTAL_BASE en Supabase (no es secreta) sin tocar código. El
-// servidor actual se ve en portal.finity.com.co → DevTools → Red → login.
-const PORTAL_BASE = ((Deno.env.get('FINITY_PORTAL_BASE') ?? '').trim().replace(/\/+$/, '')) || 'https://prod.finity.com.co:444'
+// 22 nov: Finity avisó que el ÚNICO dominio que queda activo es
+// https://api.finity.com.co. El backend del portal estaba en
+// prod.finity.com.co:444 y dejó de responder (el login se quedaba sin
+// respuesta y la bolsa no mostraba saldo). Si alguna ruta cambió, se ajusta
+// con la variable FINITY_PORTAL_BASE en Supabase (no es secreta) sin tocar
+// código; a dónde va hoy el login se ve en portal.finity.com.co → DevTools →
+// Red → login.
+const PORTAL_BASE = ((Deno.env.get('FINITY_PORTAL_BASE') ?? '').trim().replace(/\/+$/, '')) || 'https://api.finity.com.co'
 // Los secrets del portal se leen EN CADA LLAMADA (no al arrancar): así, apenas
 // se agregan/cambian en Supabase, la función los toma sin necesidad de que la
 // instancia se reinicie. `.trim()` en el email; en la contraseña solo se
