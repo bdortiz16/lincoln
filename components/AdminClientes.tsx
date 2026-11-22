@@ -5,7 +5,7 @@ import { descargarMovimientosCliente, direccionDe, TIPOS } from './excelMovimien
 import { descargarXlsx } from '../lib/xlsx';
 import { CuentaBrasilCliente, SolicitudesBrasil } from './AdminCuentasBrasil';
 import { useDatabase } from '../context/DatabaseContext';
-import { nombreCuenta } from '../lib/nombreCuenta';
+import { nombreCuenta, cuentaAchDe } from '../lib/nombreCuenta';
 import { BanderaPais } from './BanderaPais';
 import { banderaExterior } from '../lib/banderaPais';
 
@@ -1451,8 +1451,11 @@ const ENVIO_MAL = ['Fallido', 'Rechazado'];
 const esCop = (t: any) => String(t.currency ?? '').toUpperCase().startsWith('COP');
 const rielEnvio = (t: any): string => {
   const cur = String(t.currency ?? '').toUpperCase();
+  // El riel guardado manda sobre la moneda: ACH · Cuenta 1 paga con el saldo
+  // Bre-B (COP_BREB) y Bre-B · Cuenta 2 con el ACH.
+  if (t.rail === 'ACH') return `ACH · ${nombreCuenta(cuentaAchDe(t))}`;
   if (t.rail === 'BREB' || cur === 'COP_BREB') { const n = Number(t.cuentaBreb) || 1; return n >= 2 ? `Bre-B · ${nombreCuenta(n)}` : 'Bre-B'; }
-  if (t.rail === 'ACH' || cur === 'COP_ACH') return Number(t.cuentaAch) >= 3 ? `ACH · ${nombreCuenta(Number(t.cuentaAch))}` : 'ACH';
+  if (cur === 'COP_ACH') return `ACH · ${nombreCuenta(cuentaAchDe(t))}`;
   if (cur === 'COP_C3') return `Saldo ${nombreCuenta(3)}`;
   if (cur === 'COP_C4') return `Saldo ${nombreCuenta(4)}`;
   if (cur === 'COP') return 'Saldo Lincoin';

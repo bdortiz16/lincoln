@@ -98,7 +98,7 @@ import { useExchangeRates } from '../context/ExchangeRateContext';
 import { useSystemConfig } from '../context/SystemConfigContext'; 
 import { useDatabase } from '../context/DatabaseContext';
 import { celdaCsv } from '../lib/csv';
-import { nombreCuenta } from '../lib/nombreCuenta';
+import { nombreCuenta, esBrebTx, cuentaAchDe } from '../lib/nombreCuenta';
 
 interface PersonalDashboardProps {
   onLogout: () => void;
@@ -2539,14 +2539,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           const ben = titleCase(t.beneficiary || t.recipient?.holderName || rd.beneficiary || '');
           const acct = String(t.account ?? t.recipient?.key ?? t.recipient?.accountNumber ?? rd.account ?? '');
           const last4 = acct ? `···${acct.slice(-4)}` : '';
-          const isBreb = t.currency === 'COP_BREB' || (t.type === 'dispersion' && (t.rail ?? rd.rail) === 'BREB');
-          // Cuenta 2 y 3 se nombran; la 1 es "Bre-B" o "ACH" a secas.
+          // Manda el riel guardado: ACH · Cuenta 1 paga con el saldo Bre-B.
+          const isBreb = t.type === 'dispersion' ? esBrebTx({ ...t, raw_data: rd }) : t.currency === 'COP_BREB';
+          // Bre-B nombra la 2, la 3 y la 4 (la 1 es "Bre-B" a secas); ACH
+          // nombra siempre su cuenta (las filas viejas sin cuenta son de la 2).
           const nCuentaB = isBreb ? Number(t.cuentaBreb ?? rd.cuentaBreb) || 1 : 1;
-          const nCuentaA = !isBreb ? Number(t.cuentaAch ?? rd.cuentaAch) || 1 : 1;
+          const nCuentaA = !isBreb ? cuentaAchDe({ ...t, raw_data: rd }) : 2;
           let title = t.title || ROW_LABELS[t.type] || t.type;
           // ACH nombra la Cuenta 3 y la 4 (revisión del 6 nov: con
           // `nCuentaA === 3` un envío por la Cuenta 4 salía como "ACH" a secas).
-          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · ${nombreCuenta(nCuentaB)}` : 'Bre-B') : (nCuentaA >= 3 ? `ACH · ${nombreCuenta(nCuentaA)}` : 'ACH')}${ben ? ` · ${ben}` : ''}`;
+          if (t.type === 'dispersion') title = `Dispersión ${isBreb ? (nCuentaB >= 2 ? `Bre-B · ${nombreCuenta(nCuentaB)}` : 'Bre-B') : `ACH · ${nombreCuenta(nCuentaA)}`}${ben ? ` · ${ben}` : ''}`;
           else if (t.type === 'convert') title = t.title || 'Cambio USDT → COP';
           else if (ben && (t.type === 'send' || t.type === 'pay_sent')) title = `Envío a ${ben}`;
           const time = t.createdAt ? new Date(t.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -3935,7 +3937,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       const n = Number(tx?.cuentaBreb ?? rd.cuentaBreb) || 1;
       return n >= 2 ? `Bre-B · ${nombreCuenta(n)}` : 'Bre-B';
     }
-    { const nA = Number(tx?.cuentaAch ?? rd.cuentaAch); if (tx?.type === 'dispersion' && (nA === 3 || nA === 4)) return `ACH · ${nombreCuenta(nA)}`; }
+    // ACH nombra su cuenta: la 1 paga con el saldo Bre-B y por la moneda se
+    // leería "Bre-B".
+    if (tx?.type === 'dispersion' && (tx?.rail === 'ACH' || rd.rail === 'ACH')) return `ACH · ${nombreCuenta(cuentaAchDe(tx))}`;
     return railOfCurrency(tx?.currency);
   };
 
@@ -4071,11 +4075,14 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
     const dispKeyTypeLabel: string = ({ celular: 'Celular', cedula: 'Cédula', correo: 'Correo', alfanumerico: 'Alfanumérica' } as Record<string, string>)[String(dispRecipient.keyType ?? '').toLowerCase()] ?? '';
     // Bre-B · Cuenta 2 sale del saldo ACH (moneda COP_ACH) pero es un envío
     // por llave: se reconoce por el riel, no por la moneda.
-    const esBrebDisp = tx.currency === 'COP_BREB' || (tx as any).rail === 'BREB' || rawData.rail === 'BREB';
+    // ACH · Cuenta 1 paga con el saldo Bre-B (moneda COP_BREB): manda el riel.
+    const esBrebDisp = tx.type === 'dispersion' ? esBrebTx({ ...(tx as any), raw_data: rawData }) : (tx.currency === 'COP_BREB' || (tx as any).rail === 'BREB' || rawData.rail === 'BREB');
     const nCuentaTx = esBrebDisp ? (Number((tx as any).cuentaBreb ?? rawData.cuentaBreb) || 1) : 1;
     // ACH por la Cuenta 3 o la 4 (el número se muestra tal cual).
-    const nAchCs = !esBrebDisp ? Number((tx as any).cuentaAch ?? rawData.cuentaAch) : 0;
-    const achCuenta3 = nAchCs === 3 || nAchCs === 4;
+    // Y la cuenta ACH de cualquier envío ACH (1 a 4; las filas viejas son de la 2).
+    const esAchDisp = tx.type === 'dispersion' && !esBrebDisp && ((tx as any).rail === 'ACH' || rawData.rail === 'ACH' || tx.currency === 'COP_ACH' || rawData.cuentaAch != null);
+    const nAchCs = esAchDisp ? cuentaAchDe({ ...(tx as any), raw_data: rawData }) : 0;
+    const achCuenta3 = nAchCs > 0;
 
     // EMISOR: el titular de la cuenta que originó el movimiento (ej. XATECH).
     // Esta es la app del CLIENTE, así que el movimiento es SUYO → se muestra el

@@ -438,16 +438,17 @@ export const ContactsSection: React.FC<{
 }> = ({ onBack, onSendTo, vista = 'beneficiarios', onVerMovimiento, conCuentasAchExtra = false }) => {
     const { currentUser, updateUserRawData, actualizarListaRaw, transactions, refreshData } = useDatabase();
     const { config: sysConfig } = useSystemConfig();
-    // ACH · Cuenta 3 y 4 no esperan la validación de la cuenta destino que
-    // hace ACH · Cuenta 1 (a veces tarda horas): el servidor solo la exige ahí.
-    // Si alguna está activa, a un beneficiario EN VALIDACIÓN ya se le puede
-    // enviar por ellas — con el mismo AML de siempre. Y también a uno que la
-    // validación de la Cuenta 1 RECHAZÓ: la 3 y la 4 no usan esa validación;
-    // su proveedor valida el destino al enviar y, si no corresponde, el envío
-    // se rechaza y el saldo vuelve. Antes quedaba sin poder recibir por ninguna
-    // aunque por la 3 o la 4 sí le llegaba (pedido del dueño, 2026-11-05).
+    // ACH · Cuentas 1, 3 y 4 no esperan la validación de la cuenta destino
+    // que hace ACH · Cuenta 2 (a veces tarda horas; hasta el 22 nov esa se
+    // llamaba "Cuenta 1"): el servidor solo la exige ahí. Si alguna está
+    // activa, a un beneficiario EN VALIDACIÓN ya se le puede enviar por ellas
+    // — con el mismo AML de siempre. Y también a uno que esa validación
+    // RECHAZÓ: las otras cuentas no la usan; su proveedor valida el destino al
+    // enviar y, si no corresponde, el envío se rechaza y el saldo vuelve. Antes
+    // quedaba sin poder recibir por ninguna (pedido del dueño, 2026-11-05).
+    // La 1 está encendida salvo que la config diga achCuenta1 = false.
     const cuentasAchSinValidacion = conCuentasAchExtra
-        ? [3, 4].filter(n => (sysConfig as any)?.[`cuenta${n}`]?.ach === true)
+        ? [1, 3, 4].filter(n => n === 1 ? (sysConfig as any)?.achCuenta1 !== false : (sysConfig as any)?.[`cuenta${n}`]?.ach === true)
         : [];
     const enviableSinValidar = (c: Partial<MouvContact> | null | undefined, st: string) =>
         !!c && (st === 'en_proceso' || st === 'rechazada') && c.accountKind !== 'wallet' && c.destKind !== 'breb' && cuentasAchSinValidacion.length > 0;
@@ -2443,7 +2444,7 @@ export const ContactsSection: React.FC<{
                     const sinValidar = enviableSinValidar(c, st);
                     const puedeEnviar = !!onSendTo && (st === 'aprobada' || sinValidar) && !frenado;
                     // Revisión del 6 nov: el texto de ayuda de Enviar decía "Sigue
-                    // en validación" también a un beneficiario que la Cuenta 1 ya
+                    // en validación" también a un beneficiario que la Cuenta 2 ya
                     // RECHAZÓ, y "Bloqueado por cumplimiento" a una cédula mal
                     // digitada (documento_invalido), que no es un bloqueo: se
                     // corrige el número.
@@ -2454,8 +2455,8 @@ export const ContactsSection: React.FC<{
                             : amlEsperando(c) ? 'Esperando el resultado de antecedentes. Suele tardar cerca de un minuto.' : 'Bloqueado por cumplimiento. No se puede transferir a esta persona.')
                         : sinValidar
                             ? (st === 'rechazada'
-                                ? `La validación de ACH · Cuenta 1 rechazó esta cuenta. Puedes enviarle por ${txtCuentasSinValidar}.`
-                                : `Sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}.`)
+                                ? `La validación de ACH · Cuenta 2 rechazó esta cuenta. Puedes enviarle por ${txtCuentasSinValidar}.`
+                                : `Sigue en validación para ACH · Cuenta 2. Ya puedes enviarle por ${txtCuentasSinValidar}.`)
                             : undefined;
                     const actions = (
                         <div className="flex items-center justify-end gap-2" style={{ position: 'relative' }}>
@@ -2758,8 +2759,8 @@ export const ContactsSection: React.FC<{
                                                     : 'No se puede transferir a esta persona. El envío se rechaza en el servidor, no solo en pantalla.')
                                                 : enviableSinValidar(c, st)
                                                     ? (st === 'rechazada'
-                                                        ? `La validación de ACH · Cuenta 1 rechazó la cuenta destino. Puedes enviarle por ${txtCuentasSinValidar}, que no usan esa validación; si los datos no corresponden, el envío se rechaza y el saldo vuelve.`
-                                                        : `La cuenta destino sigue en validación para ACH · Cuenta 1. Ya puedes enviarle por ${txtCuentasSinValidar}, que no esperan esa validación.`)
+                                                        ? `La validación de ACH · Cuenta 2 rechazó la cuenta destino. Puedes enviarle por ${txtCuentasSinValidar}, que no usan esa validación; si los datos no corresponden, el envío se rechaza y el saldo vuelve.`
+                                                        : `La cuenta destino sigue en validación para ACH · Cuenta 2. Ya puedes enviarle por ${txtCuentasSinValidar}, que no esperan esa validación.`)
                                                     : st !== 'aprobada'
                                                         ? 'La cuenta destino todavía no está validada por el banco. Hasta entonces no se puede enviar.'
                                                         : 'Se puede operar con esta persona. El veredicto se repite solo si cambian las listas.'}

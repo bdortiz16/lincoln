@@ -16,7 +16,7 @@ import { X, Copy, FileText, ExternalLink, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
 import { ReenvioDianModal } from './ReenvioDianModal';
 import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
-import { nombreCuenta } from '../lib/nombreCuenta';
+import { nombreCuenta, esBrebTx, cuentaAchDe } from '../lib/nombreCuenta';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, Menlo, monospace';
@@ -192,9 +192,11 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
   const banco = String(v('bank') ?? dest.bankName ?? '').split('·')[0].trim();
   // Bre-B · Cuenta 2 se paga con el saldo ACH (moneda COP_ACH) pero es un
   // envío por llave: manda el riel del envío, no la moneda.
-  const esBreb = tx.currency === 'COP_BREB' || (tx.type === 'dispersion' && v('rail') === 'BREB');
+  // Y ACH · Cuenta 1 paga con el saldo Bre-B (COP_BREB): también manda el riel.
+  const esBreb = tx.type === 'dispersion' ? esBrebTx(tx) : tx.currency === 'COP_BREB';
+  const esAch = tx.type === 'dispersion' && !esBreb && (v('rail') === 'ACH' || tx.currency === 'COP_ACH' || v('cuentaAch') != null);
   const nCuenta = Number(v('cuentaBreb')) || 1;
-  const riel = esBreb ? (nCuenta >= 2 ? `Bre-B · ${nombreCuenta(nCuenta)}` : 'Bre-B') : [3, 4].includes(Number(v('cuentaAch'))) ? `ACH · ${nombreCuenta(Number(v('cuentaAch')))} · Colombia` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : tx.currency === 'COP_C3' ? nombreCuenta(3) : tx.currency === 'COP_C4' ? nombreCuenta(4) : '';
+  const riel = esBreb ? (nCuenta >= 2 ? `Bre-B · ${nombreCuenta(nCuenta)}` : 'Bre-B') : esAch ? `ACH · ${nombreCuenta(cuentaAchDe(tx))} · Colombia` : tx.currency === 'COP_ACH' ? 'ACH · Colombia' : tx.currency === 'COP_C3' ? nombreCuenta(3) : tx.currency === 'COP_C4' ? nombreCuenta(4) : '';
   const ref = String(v('providerRef') ?? v('providerTraceId') ?? v('reference') ?? v('txHash') ?? '').trim();
   const motivoPago = String(v('motivo') ?? v('reason') ?? '').trim();
   const nota = String(v('note') ?? v('description') ?? '').trim();

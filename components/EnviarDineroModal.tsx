@@ -114,7 +114,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const [sendStep, setSendStep] = useState(1);
   // Resultado del envío para el paso 5 ("Envío en camino" / fallo): datos
   // reales de la dispersión — referencia del proveedor, costo, riel, hora.
-  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2 | 3 | 4; cuentaAch?: 1 | 3 | 4; desconocido?: boolean } | null>(null);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; message?: string; providerRef?: string | null; feeCop?: number; rail?: string; at?: string; viaBreb?: boolean; cuentaBreb?: 1 | 2 | 3 | 4; cuentaAch?: 1 | 2 | 3 | 4; desconocido?: boolean } | null>(null);
   // Buscador del selector de contactos inscritos (envíos COP · banco)
   const [contactSearch, setContactSearch] = useState('');
   // ID de la external account de Mouv del contacto elegido — con él la
@@ -151,9 +151,13 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // saldo ACH. El beneficiario y la llave son los mismos; cambia de qué
   // saldo sale y por dónde viaja.
   const [brebCuenta, setBrebCuenta] = useState<1 | 2 | 3 | 4>(1);
-  // ACH también tiene cuentas: la 1 (la de siempre), y la 3 y la 4 cuando el
-  // admin las activa. La 2 todavía no existe (se ve como "Próximamente").
-  const [achCuenta, setAchCuenta] = useState<1 | 3 | 4>(1);
+  // ACH también tiene cuentas (22 nov, pedido del dueño): la 1 sale por el
+  // mismo proveedor que Bre-B · Cuenta 1 y paga con el saldo Bre-B; la 2 es
+  // la de siempre (saldo ACH, con validación de la cuenta destino), que hasta
+  // ese día se llamaba "Cuenta 1"; la 3 y la 4 cuando el admin las activa.
+  // Arranca en la 2: los atajos (Beneficiarios → Enviar, operadores) siguen
+  // saliendo por donde salían; en "¿Cómo lo enviamos?" se elige la cuenta.
+  const [achCuenta, setAchCuenta] = useState<1 | 2 | 3 | 4>(2);
   const metodoFijoRef = useRef(false);
   // Qué conciliación vigilar después de enviar: la de Bre-B · Cuenta 1, la de
   // ACH/Bre-B · Cuenta 2, o la de las Cuentas 3 y 4 ('c3' cubre las dos).
@@ -216,32 +220,40 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   }, [sendContact, sendForm.beneficiaryName, sendForm.documentType, sendForm.documentNumber, sendForm.bankName, sendForm.accountType, sendForm.accountNumber]);
 
   // Método elegido en el paso 2 del flujo (diseño Flujo Enviar): lista radio.
-  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'breb3' | 'breb4' | 'brebX' | 'ach' | 'ach3' | 'ach4' | 'pay' | 'cash' | null>(null);
+  const [sendMethodSel, setSendMethodSel] = useState<'breb' | 'breb2' | 'breb3' | 'breb4' | 'brebX' | 'ach' | 'ach1' | 'ach3' | 'ach4' | 'pay' | 'cash' | null>(null);
   // Cuentas 3 y 4 de Bre-B y de ACH: las enciende el admin (config pública
   // cuenta3 / cuenta4). Apagadas se ven como "Próximamente". El servidor las
   // vuelve a revisar en cada envío. Cada una paga con su propio saldo
   // (Saldo Cuenta 3 = COP_C3, Saldo Cuenta 4 = COP_C4).
   const c3 = { breb: (config as any)?.cuenta3?.breb === true, ach: (config as any)?.cuenta3?.ach === true };
   const c4 = { breb: (config as any)?.cuenta4?.breb === true, ach: (config as any)?.cuenta4?.ach === true };
-  // ACH · Cuenta 3 y 4 no esperan la validación de la cuenta destino que hace
-  // ACH · Cuenta 1 (a veces tarda horas): el servidor solo la exige ahí. A un
-  // beneficiario EN VALIDACIÓN ya se le puede pagar por ellas, con el mismo
-  // AML de siempre. Solo empresas (los operadores no tienen Cuentas 3 y 4).
-  const cuentasAchSinValidacion: (3 | 4)[] = !metodos && !saldoUnificado
-    ? ([c3.ach && 3, c4.ach && 4].filter(Boolean) as (3 | 4)[])
+  // ACH · Cuenta 1 (22 nov): encendida salvo que la config diga
+  // achCuenta1 = false (el servidor revisa lo mismo en cada envío). Solo
+  // empresas: los operadores tienen una lista cerrada y siguen por la 2.
+  const achC1 = (config as any)?.achCuenta1 !== false && !metodos && !saldoUnificado;
+  // ACH · Cuentas 1, 3 y 4 no esperan la validación de la cuenta destino que
+  // hace ACH · Cuenta 2 (a veces tarda horas): el servidor solo la exige ahí.
+  // A un beneficiario EN VALIDACIÓN ya se le puede pagar por ellas, con el
+  // mismo AML de siempre. Solo empresas.
+  const cuentasAchSinValidacion: (1 | 3 | 4)[] = !metodos && !saldoUnificado
+    ? ([achC1 && 1, c3.ach && 3, c4.ach && 4].filter(Boolean) as (1 | 3 | 4)[])
     : [];
   const txtAchSinValidacion = cuentasAchSinValidacion.map(n => `ACH · ${nombreCuenta(n)}`).join(' o ');
   const esContactoAch = (c: any) => !!c && c.accountKind !== 'wallet' && c.destKind !== 'breb';
   const enValidacionAch = (c: any) => esContactoAch(c) && contactStatus(c) === 'en_proceso';
-  // Cuenta ACH que la validación de ACH · Cuenta 1 todavía no aprueba o que
-  // RECHAZÓ. Por la Cuenta 1 no sale; por la 3 o la 4 sí, porque no usan esa
-  // validación: el proveedor de esas cuentas valida el destino al enviar y,
-  // si los datos no corresponden, el envío se rechaza y el saldo vuelve. Antes
-  // una cuenta rechazada en la Cuenta 1 quedaba sin poder recibir por ninguna,
-  // aunque por la 3 o la 4 sí le llegaba (pedido del dueño, 2026-11-05). Los
-  // antecedentes (AML) se revisan igual.
+  // Cuenta ACH que la validación de ACH · Cuenta 2 todavía no aprueba o que
+  // RECHAZÓ. Por la Cuenta 2 no sale; por la 1, la 3 o la 4 sí, porque no
+  // usan esa validación: el proveedor de esas cuentas valida el destino al
+  // enviar y, si los datos no corresponden, el envío se rechaza y el saldo
+  // vuelve. Antes una cuenta rechazada en esa validación quedaba sin poder
+  // recibir por ninguna (pedido del dueño, 2026-11-05). Los antecedentes
+  // (AML) se revisan igual.
   const sinValidarAch = (c: any) => esContactoAch(c) && ['en_proceso', 'rechazada'].includes(contactStatus(c));
   const railCuenta = (n: number) => n === 4 ? 'COP_C4' : 'COP_C3';
+  // El saldo que paga cada cuenta ACH: la 1 el Bre-B (su bolsa es la misma
+  // que la de Bre-B · Cuenta 1), la 2 el ACH, la 3 y la 4 el suyo.
+  const railAch = (n: number) => n === 1 ? 'COP_BREB' : n === 2 ? 'COP_ACH' : railCuenta(n);
+  const rutaAch = (n: number) => n === 1 ? 'ACH1' : n === 2 ? 'ACH' : `ACH${n}`;
   // Cotización de la comisión del proveedor para el paso Confirmar:
   // Bre-B → Mouv (fija + variable + IVA, cotizada en vivo y cobrada al
   // cliente) · ACH → Finity (precio fijo por transferencia, se descuenta al
@@ -385,7 +397,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   const quoteEsBreb = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
   const rutaQuote = quoteEsBreb
       ? (brebCuenta === 2 ? 'BREB2' : brebCuenta === 3 ? 'BREB3' : brebCuenta === 4 ? 'BREB4' : 'BREB')
-      : (achCuenta === 3 ? 'ACH3' : achCuenta === 4 ? 'ACH4' : 'ACH');
+      : rutaAch(achCuenta);
   const rutaQuoteRef = useRef(rutaQuote);
   rutaQuoteRef.current = rutaQuote;
   useEffect(() => {
@@ -397,7 +409,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       const aplica = () => vivo && rutaQuoteRef.current === rail;
       setPayoutQuote({ loading: true });
       callMouvProxy({ action: 'payout_quote', userId: currentUser.id, rail, amount: amt, ...(isBrebM ? { keyValue: sendContact?.brebKey ?? sendForm.accountNumber } : {}) })
-          .then(r => { if (!aplica()) return; setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: isBrebM && brebCuenta !== 2 ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }); })
+          .then(r => { if (!aplica()) return; setPayoutQuote(r?.ok ? { loading: false, feeCop: Number(r.feeCop ?? 0), provider: (isBrebM ? brebCuenta !== 2 : achCuenta === 1) ? 'mouv' : 'finity' } : { loading: false, error: r?.message ?? 'No se pudo cotizar' }); })
           .catch(e => { if (!aplica()) return; setPayoutQuote({ loading: false, error: String(e?.message ?? e) }); });
       return () => { vivo = false; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -477,14 +489,14 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           // "Beneficiarios frecuentes" se saltaba la aprobación de la cuenta y
           // los antecedentes, y llevaba a confirmar un envío que iba a fallar.
           if (sendContact && sendMode && sendForm.beneficiaryName) {
-              // En validación y saliendo por la Cuenta 1: en vez de frenar, se
-              // pasa a elegir la cuenta, con la 3 o la 4 ya marcada.
-              if (sinValidarAch(sendContact) && achCuenta < 3 && cuentasAchSinValidacion.length && !metodoFijoRef.current) {
-                  const conSaldo = cuentasAchSinValidacion.find(n => getBalance(n === 3 ? 'COP_C3' : 'COP_C4') >= rawAmount) ?? cuentasAchSinValidacion[0];
-                  setSendMethodSel(conSaldo === 3 ? 'ach3' : 'ach4');
+              // En validación y saliendo por la Cuenta 2: en vez de frenar, se
+              // pasa a elegir la cuenta, con la 1, la 3 o la 4 ya marcada.
+              if (sinValidarAch(sendContact) && achCuenta === 2 && cuentasAchSinValidacion.length && !metodoFijoRef.current) {
+                  const conSaldo = cuentasAchSinValidacion.find(n => getBalance(railAch(n)) >= rawAmount) ?? cuentasAchSinValidacion[0];
+                  setSendMethodSel(conSaldo === 1 ? 'ach1' : conSaldo === 3 ? 'ach3' : 'ach4');
                   showToast(contactStatus(sendContact) === 'rechazada'
-                      ? `La validación de ACH · Cuenta 1 rechazó esta cuenta. Envíale por ${txtAchSinValidacion}.`
-                      : `Este beneficiario sigue en validación para ACH · Cuenta 1. Envíale por ${txtAchSinValidacion}.`, 6000);
+                      ? `La validación de ACH · Cuenta 2 rechazó esta cuenta. Envíale por ${txtAchSinValidacion}.`
+                      : `Este beneficiario sigue en validación para ACH · Cuenta 2. Envíale por ${txtAchSinValidacion}.`, 6000);
                   setSendStep(2); return;
               }
               const motivo = motivoContactoNoSirve(sendContact);
@@ -507,20 +519,20 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
   // ¿Por qué NO se le puede enviar a este beneficiario ahora? null = sí se
   // puede. Mismo criterio que la lista del paso 3 (aprobación de la cuenta y
   // veredicto de antecedentes); el servidor igual tiene la última palabra.
-  const motivoContactoNoSirve = (c: any, cuentaAch: 1 | 3 | 4 = achCuenta): string | null => {
+  const motivoContactoNoSirve = (c: any, cuentaAch: 1 | 2 | 3 | 4 = achCuenta): string | null => {
       if (!c) return null;
       const st = contactStatus(c);
-      // En validación o rechazada por la Cuenta 1: por ACH · Cuenta 3/4 sí sale
-      // (no usan esa validación; ver sinValidarAch).
-      const porCuentaSinValidacion = esContactoAch(c) && cuentaAch >= 3 && cuentasAchSinValidacion.includes(cuentaAch as 3 | 4);
+      // En validación o rechazada por la Cuenta 2: por ACH · Cuenta 1, 3 o 4 sí
+      // sale (no usan esa validación; ver sinValidarAch).
+      const porCuentaSinValidacion = esContactoAch(c) && cuentaAch !== 2 && cuentasAchSinValidacion.includes(cuentaAch as 1 | 3 | 4);
       if (st === 'rechazada' && !porCuentaSinValidacion) {
           return esContactoAch(c) && cuentasAchSinValidacion.length
-              ? `La validación de ACH · Cuenta 1 rechazó la cuenta de este beneficiario. Puedes enviarle por ${txtAchSinValidacion}.`
+              ? `La validación de ACH · Cuenta 2 rechazó la cuenta de este beneficiario. Puedes enviarle por ${txtAchSinValidacion}.`
               : 'El banco rechazó la cuenta de este beneficiario. Revísala en Beneficiarios.';
       }
       if (st !== 'aprobada' && !porCuentaSinValidacion) {
           return esContactoAch(c) && cuentasAchSinValidacion.length
-              ? `La cuenta de este beneficiario sigue en validación para ACH · Cuenta 1. Puedes enviarle ya por ${txtAchSinValidacion}.`
+              ? `La cuenta de este beneficiario sigue en validación para ACH · Cuenta 2. Puedes enviarle ya por ${txtAchSinValidacion}.`
               : 'La cuenta de este beneficiario todavía está en validación. Podrás enviarle apenas la aprueben.';
       }
       const benefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
@@ -701,15 +713,18 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           const cuenta3B = isBreb && nCs !== null;
           const cuenta3A = !isBreb && nCs !== null;
           const cuenta3 = nCs !== null;
+          // ACH · Cuenta 1: sale por el proveedor de Bre-B · Cuenta 1, con el
+          // saldo Bre-B. Solo si está encendida (achC1); si no, la 2.
+          const achMouv = !isBreb && achCuenta === 1 && achC1;
           // El saldo que se descuenta.
-          const rail = nCs ? railCuenta(nCs) : isBreb && !cuenta2 ? 'COP_BREB' : 'COP_ACH';
+          const rail = nCs ? railCuenta(nCs) : (isBreb && !cuenta2) || achMouv ? 'COP_BREB' : 'COP_ACH';
           // Comisión estimada para el pre-chequeo de saldo. Bre-B = fijo $1.200
           // ($800 de Mouv + $400 de utilidad); el 0,10% NO va aquí (ya se cobró
           // en el cargue). ACH = fijo $2.500. Si el servidor ya cotizó
           // (payoutQuote), se usa ese valor exacto.
           const feeCop = isBreb
               ? Number(payoutQuote?.feeCop ?? tarifa(cuenta2 ? 'BREB2' : nCs ? `BREB${nCs}` : 'BREB', cuenta3B ? 2500 : 1200))
-              : Number(payoutQuote?.feeCop ?? tarifa(nCs ? `ACH${nCs}` : 'ACH', 2500));
+              : Number(payoutQuote?.feeCop ?? tarifa(nCs ? `ACH${nCs}` : achMouv ? 'ACH1' : 'ACH', 2500));
           if (getBalance(rail) < amount + feeCop) {
               sendingRef.current = false; setIsSending(false);
               showToast(`Saldo insuficiente en ${saldoUnificado ? 'tu cuenta' : nCs ? `${nombreCuenta(nCs)}` : rail === 'COP_BREB' ? 'Bre-B' : 'ACH'}: necesitas ${(amount + feeCop).toLocaleString('es-CO')} COP (monto + comisión ${feeCop.toLocaleString('es-CO')}).`, 7000, 'error');
@@ -752,7 +767,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
               : { bankCode: d.bank, accountType: (d.accountType === 'checking' ? 'corriente' : 'ahorros'), accountNumber: d.accountNumber, documentType: d.docType, documentNumber: d.docNumber, holderName: d.name, reference: sendForm.reason, motivo: sendForm.motivo, ...ordenante, ...(sendContact?.finityId ? { finityId: sendContact.finityId } : {}), ...direccion };
           try {
               const r = await Promise.race([
-                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : cuenta3B ? `payout_breb${nCs}` : 'payout_breb') : (cuenta3A ? `payout_ach${nCs}` : 'payout_ach'), userId: currentUser.id, amount, recipient, otp: sentOtpRef.current, idemKey }),
+                  callMouvProxy({ action: isBreb ? (cuenta2 ? 'payout_breb2' : cuenta3B ? `payout_breb${nCs}` : 'payout_breb') : (cuenta3A ? `payout_ach${nCs}` : achMouv ? 'payout_ach1' : 'payout_ach'), userId: currentUser.id, amount, recipient, otp: sentOtpRef.current, idemKey }),
                   // La Cuenta 2 hace dos llamadas al proveedor (crear y
                   // confirmar): se le da más margen antes de declarar
                   // "no sabemos si salió".
@@ -760,7 +775,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                   new Promise<any>((_, rej) => setTimeout(() => rej(new Error('timeout')), cuenta2 || cuenta3 ? 120000 : 60000)),
               ]);
               const cuentaBreb = isBreb ? (cuenta2 ? 2 : nCs ?? 1) as 1 | 2 | 3 | 4 : undefined;
-              const cuentaAch = !isBreb ? (nCs ?? 1) as 1 | 3 | 4 : undefined;
+              const cuentaAch = !isBreb ? (nCs ?? (achMouv ? 1 : 2)) as 1 | 2 | 3 | 4 : undefined;
               if (r?.ok) {
                   // desenlaceDesconocido: el proveedor no confirmó. Se dice tal
                   // cual ("lo estamos verificando, no lo repitas"); antes salía
@@ -769,7 +784,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                   // Arranca la vigilancia rápida: 4 minutos preguntando cada 12 s
                   // por el desenlace de ESTE envío. Si se devolvió, el cliente
                   // se entera mientras todavía está en la pantalla.
-                  vigilarModo.current = cuenta3 ? 'c3' : cuenta2 || !isBreb ? 'ach' : 'breb';
+                  // ACH · Cuenta 1 se concilia con Bre-B · Cuenta 1 (mismo proveedor).
+                  vigilarModo.current = cuenta3 ? 'c3' : cuenta2 || (!isBreb && !achMouv) ? 'ach' : 'breb';
                   vigilarEtiqueta.current = cuenta3 ? '' : isBreb ? 'Bre-B ' : 'ACH ';
                   vigilarHasta.current = Date.now() + 4 * 60 * 1000;
                   sendingRef.current = false; setIsSending(false); setSendStep(5);
@@ -904,7 +920,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       // Revisión del 6 nov: la cuenta ACH elegida (3 o 4) sobrevivía al
       // cierre y el siguiente envío ACH arrancaba en esa cuenta sin que el
       // cliente la hubiera elegido.
-      setAchCuenta(1);
+      setAchCuenta(2);
       idemRef.current = '';
       setPayUnknown(false);
       metodoFijoRef.current = false;
@@ -921,7 +937,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
     if (p?.metodo) {
       setSendMethodSel(p.metodo);
       setBrebCuenta(p.metodo === 'breb2' ? 2 : p.metodo === 'breb3' ? 3 : p.metodo === 'breb4' ? 4 : 1);
-      setAchCuenta(p.metodo === 'ach3' ? 3 : p.metodo === 'ach4' ? 4 : 1);
+      setAchCuenta(p.metodo === 'ach3' ? 3 : p.metodo === 'ach4' ? 4 : (p.metodo as string) === 'ach1' ? 1 : 2);
       setSendForm(prev => ({ ...prev, destinationCountry: 'Colombia', destinationCurrency: 'COP' }));
     }
     setMouvDestId(null);
@@ -994,7 +1010,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 3 }}>
                                   {sendStep === 1 && (sendForm.destinationCurrency === 'USD' ? 'Desde tu billetera USDT' : 'Desde tu cuenta en pesos colombianos')}
                                   {sendStep === 2 && <>Enviando <span style={{ color: '#F4F4F2', fontWeight: 700 }}>{formatMoney(getRawAmount(sendForm.amount), sendForm.destinationCurrency)} {displayCurrency(sendForm.destinationCurrency)}</span> · <button onClick={() => setSendStep(1)} style={{ textDecoration: 'underline', color: '#F4F4F2' }}>cambiar</button></>}
-                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? (saldoUnificado ? 'Bre-B' : 'Bre-B · Cuenta 2') : sendSourceRail === 'COP_ACH' ? (achCuenta >= 3 ? `ACH · ${nombreCuenta(achCuenta)}` : 'ACH') : brebCuenta >= 3 ? `Bre-B · ${nombreCuenta(brebCuenta)}` : 'Bre-B'} · solo beneficiarios inscritos</>}
+                                  {sendStep === 3 && sendMode === 'bank' && <>{formatMoney(getRawAmount(sendForm.amount), 'COP')} COP · {brebCuenta === 2 ? (saldoUnificado ? 'Bre-B' : 'Bre-B · Cuenta 2') : sendSourceRail === 'COP_ACH' ? (achCuenta !== 2 || (!saldoUnificado && !metodos) ? `ACH · ${nombreCuenta(achCuenta)}` : 'ACH') : brebCuenta >= 3 ? `Bre-B · ${nombreCuenta(brebCuenta)}` : 'Bre-B'} · solo beneficiarios inscritos</>}
                                   {sendStep === 4 && sendMode !== 'pay' && 'Revisa los datos antes de confirmar'}
                               </p>
                           </div>
@@ -1173,9 +1189,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               ...(c3.breb && conCs ? [{ key: 'breb3' as const, n: 3, rail: 'COP_C3', railLabel: nombreCuenta(3), fee: tarifa('BREB3', 2500) }] : []),
                               ...(c4.breb && conCs ? [{ key: 'breb4' as const, n: 4, rail: 'COP_C4', railLabel: nombreCuenta(4), fee: tarifa('BREB4', 2500) }] : []),
                           ] as CuentaRiel[]).filter(c => permitido(c.key));
-                          // ACH · Cuenta 3 y ACH · Cuenta 4, cuando el admin las activa.
-                          type CuentaAch = { key: 'ach3' | 'ach4'; n: 3 | 4; rail: string; railLabel: string; fee: number };
+                          // ACH · Cuenta 1 (con el saldo Bre-B) y ACH · Cuentas 3 y 4,
+                          // cuando el admin las activa. La 2 es el método "ach" de abajo.
+                          type CuentaAch = { key: 'ach1' | 'ach3' | 'ach4'; n: 1 | 3 | 4; rail: string; railLabel: string; fee: number };
                           const ACH_EXTRA: CuentaAch[] = [
+                              ...(achC1 && conCs ? [{ key: 'ach1' as const, n: 1 as const, rail: 'COP_BREB', railLabel: 'Bre-B', fee: tarifa('ACH1', 2500) }] : []),
                               ...(c3.ach && conCs ? [{ key: 'ach3' as const, n: 3 as const, rail: 'COP_C3', railLabel: nombreCuenta(3), fee: tarifa('ACH3', 2500) }] : []),
                               ...(c4.ach && conCs ? [{ key: 'ach4' as const, n: 4 as const, rail: 'COP_C4', railLabel: nombreCuenta(4), fee: tarifa('ACH4', 2500) }] : []),
                           ];
@@ -1193,7 +1211,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const lblSaldo = (railLabel: string) => saldoUnificado ? 'Saldo disponible' : railLabel.startsWith('Saldo') ? railLabel : `Saldo ${railLabel}`;
                           const selMeta = [...BREB_CUENTAS, ...METHODS, ...ACH_EXTRA].find(x => x.key === sendMethodSel);
                           // Beneficiario ya elegido que sigue en validación: por
-                          // ACH · Cuenta 1 todavía no le llega; por la 3 o la 4 sí.
+                          // ACH · Cuenta 2 todavía no le llega; por la 1, la 3 o la 4 sí.
                           const contactoEnValidacion = sinValidarAch(sendContact);
                           const selOk = !!selMeta && getBalance(selMeta.rail) >= amtStep2 + selMeta.fee
                               && !(sendMethodSel === 'ach' && contactoEnValidacion);
@@ -1207,6 +1225,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // app "no dejaba enviar" (30 oct, $35 M en Saldo Lincoin y
                           // $66.958 en ACH). Se le dice qué hacer.
                           const achM = METHODS.find(m => m.key === 'ach');
+                          // La primera que alcanza, en orden: la 1 antes que la 3 y la 4.
                           const achExtraAlcanza = ACH_EXTRA.find(c => getBalance(c.rail) >= amtStep2 + c.fee) ?? null;
                           const achAlcanza = (!!achM && getBalance(achM.rail) >= amtStep2 + achM.fee) || !!achExtraAlcanza;
                           const moverPrimero = !saldoUnificado && amtStep2 > 0 && !brebAlcanza && !achAlcanza
@@ -1221,8 +1240,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           // lista cerrada y no las ven).
                           const proximas = !metodos && !saldoUnificado;
                           const brebProx = proximas ? [3, 4].filter(n => !BREB_CUENTAS.some(c => c.n === n)) : [];
-                          const achProx = proximas ? [2, 3, 4].filter(n => !ACH_EXTRA.some(c => c.n === n)) : [];
-                          const achSel = sendMethodSel === 'ach' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4';
+                          const achProx = proximas ? [1, 3, 4].filter(n => !ACH_EXTRA.some(c => c.n === n)) : [];
+                          const achSel = sendMethodSel === 'ach' || sendMethodSel === 'ach1' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4';
                           const filaProxima = (titulo: string) => (
                               <div key={titulo} aria-disabled="true" className="w-full flex items-center gap-3"
                                   style={{ padding: '11px 14px', borderRadius: 11, opacity: 0.6, cursor: 'not-allowed', border: '1px dashed rgba(255,255,255,0.12)', background: 'transparent' }}>
@@ -1290,11 +1309,15 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                   {METHODS.map(m => {
                                       const bal = getBalance(m.rail);
                                       const need = amtStep2 + m.fee;
-                                      const enough = bal >= need;
+                                      // ACH se puede tocar si ALGUNA de sus cuentas alcanza.
+                                      const enough = bal >= need || (m.key === 'ach' && !!achExtraAlcanza);
                                       const sel = m.key === 'ach' ? achSel : sendMethodSel === m.key;
                                       return (
                                           <React.Fragment key={m.key}>
-                                          <button type="button" onClick={() => { if (m.key === 'ach' && achSel) return; if (m.key === 'ach' && contactoEnValidacion) { if (achExtraAlcanza) setSendMethodSel(achExtraAlcanza.key); return; } if (enough) setSendMethodSel(m.key as any); else if (m.key === 'ach' && achExtraAlcanza) setSendMethodSel(achExtraAlcanza.key); }}
+                                          {/* Al tocar ACH se marca la Cuenta 1 si alcanza; si
+                                              no, la 2; si tampoco (o el beneficiario sigue en
+                                              validación de la 2), la 3 o la 4. */}
+                                          <button type="button" onClick={() => { if (m.key === 'ach' && achSel) return; if (m.key === 'ach' && contactoEnValidacion) { if (achExtraAlcanza) setSendMethodSel(achExtraAlcanza.key); return; } if (m.key === 'ach' && achExtraAlcanza?.n === 1) { setSendMethodSel('ach1'); return; } if (bal >= need) setSendMethodSel(m.key as any); else if (m.key === 'ach' && achExtraAlcanza) setSendMethodSel(achExtraAlcanza.key); }}
                                               className="w-full flex items-center gap-3 text-left transition-colors"
                                               style={{ padding: '13px 15px', borderRadius: 12, opacity: enough ? 1 : 0.55, cursor: enough ? 'pointer' : 'not-allowed',
                                                   border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)', background: sel ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.025)' }}>
@@ -1307,26 +1330,29 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                       {m.time}{m.fee > 0 ? ` · $${m.fee.toLocaleString('es-CO')} por envío` : ''}
                                                   </span>
                                                   <span style={{ display: 'block', fontSize: 11.5, marginTop: 3, fontWeight: 600, color: enough ? '#4ADE80' : '#878E88' }}>
-                                                      {m.key === 'ach' && proximas && !achSel
-                                                          ? <>{lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')} · {unirCuentas([1, ...ACH_EXTRA.map(c => c.n)])}{textoProx(achProx)}</>
+                                                      {m.key === 'ach' && proximas
+                                                          // Cada cuenta ACH paga con un saldo distinto: el de cada una
+                                                          // se ve abajo, en la lista de cuentas.
+                                                          ? (achSel ? 'Elige de qué cuenta sale' : <>{unirCuentas([2, ...ACH_EXTRA.map(c => c.n)].sort((a, b) => a - b))}{textoProx(achProx)}</>)
                                                           : <>{lblSaldo(m.railLabel)}: ${Math.round(bal).toLocaleString('es-CO')}</>}
                                                       {!enough && amtStep2 > 0 ? ` · te faltan $${Math.ceil(need - bal).toLocaleString('es-CO')}` : ''}
                                                   </span>
                                               </span>
                                               {radio(sel)}
                                           </button>
-                                          {/* ACH: la Cuenta 1 se elige sola al tocar ACH; la 3 y la 4
-                                              salen cuando el admin las activa; las demás se ven, apagadas. */}
+                                          {/* ACH: al tocarlo se marca una cuenta sola (ver arriba). La 1
+                                              paga con el saldo Bre-B y la 2 con el ACH; la 3 y la 4 salen
+                                              cuando el admin las activa; las demás se ven, apagadas. */}
                                           {m.key === 'ach' && achSel && proximas && (
                                               <div className="space-y-2" style={{ marginLeft: 14, paddingLeft: 12, borderLeft: '1px solid rgba(74,222,128,0.25)' }}>
                                                   <p style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', paddingTop: 2 }}>¿DESDE QUÉ CUENTA ACH?</p>
                                                   {[1, 2, 3, 4].map(nA => {
                                                       const ex = ACH_EXTRA.find(x => x.n === nA);
-                                                      const c = nA === 1 ? { key: 'ach' as const, n: 1, fee: m.fee, rail: m.rail, railLabel: m.railLabel, extra: null as string | null }
-                                                          : ex ? { ...ex, extra: 'Llega en 6 a 24 horas' as string | null } : null;
+                                                      const c = nA === 2 ? { key: 'ach' as const, n: 2, fee: m.fee, rail: m.rail, railLabel: m.railLabel, extra: null as string | null }
+                                                          : ex ? { ...ex, extra: (nA >= 3 ? 'Llega en 6 a 24 horas' : null) as string | null } : null;
                                                       if (!c) return achProx.includes(nA) ? filaProxima(`ACH · ${nombreCuenta(nA)}`) : null;
                                                       const balC = getBalance(c.rail);
-                                                      const bloqueadaC = nA === 1 && contactoEnValidacion;
+                                                      const bloqueadaC = nA === 2 && contactoEnValidacion;
                                                       const okC = balC >= amtStep2 + c.fee && !bloqueadaC;
                                                       const selC = sendMethodSel === c.key;
                                                       return (
@@ -1387,13 +1413,16 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           if (sendContact) {
                                               const esBrebContacto = (sendContact as any).destKind === 'breb';
                                               const esBrebMetodo = sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4';
-                                              const esAchMetodo = sendMethodSel === 'ach' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4';
+                                              const esAchMetodo = sendMethodSel === 'ach' || sendMethodSel === 'ach1' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4';
                                               if (esBrebContacto !== esBrebMetodo || (!esAchMetodo && !esBrebMetodo)) setSendContact(null);
                                           }
-                                          if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' || sendMethodSel === 'ach' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4') {
+                                          if (sendMethodSel === 'breb' || sendMethodSel === 'breb2' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' || sendMethodSel === 'ach' || sendMethodSel === 'ach1' || sendMethodSel === 'ach3' || sendMethodSel === 'ach4') {
                                               setSendMode('bank');
                                               setBrebCuenta(sendMethodSel === 'breb2' ? 2 : sendMethodSel === 'breb3' ? 3 : sendMethodSel === 'breb4' ? 4 : 1);
-                                              setAchCuenta(sendMethodSel === 'ach3' ? 3 : sendMethodSel === 'ach4' ? 4 : 1);
+                                              setAchCuenta(sendMethodSel === 'ach1' ? 1 : sendMethodSel === 'ach3' ? 3 : sendMethodSel === 'ach4' ? 4 : 2);
+                                              // 'COP_ACH' marca "envío ACH" (también para la 1, la 3 y la 4,
+                                              // que pagan con otro saldo): de acá salen la lista de
+                                              // beneficiarios ACH y los textos. El saldo real lo da achCuenta.
                                               setSendSourceRail(sendMethodSel === 'breb' || sendMethodSel === 'breb3' || sendMethodSel === 'breb4' ? 'COP_BREB' : 'COP_ACH');
                                           } else {
                                               setSendMode(sendMethodSel);
@@ -1527,8 +1556,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       {list.map((c: any) => {
                                           const st = contactStatus(c);
                                           const aml = amlEtiqueta(c);
-                                          // En validación: elegible solo si sale por ACH · Cuenta 3/4.
-                                          const sinValidarOk = (st === 'en_proceso' || st === 'rechazada') && railKind === 'ach' && achCuenta >= 3 && cuentasAchSinValidacion.includes(achCuenta as 3 | 4);
+                                          // En validación: elegible solo si sale por ACH · Cuenta 1, 3 o 4.
+                                          const sinValidarOk = (st === 'en_proceso' || st === 'rechazada') && railKind === 'ach' && achCuenta !== 2 && cuentasAchSinValidacion.includes(achCuenta as 1 | 3 | 4);
                                           const selectable = (st === 'aprobada' || sinValidarOk) && !amlFrena(c);
                                           const sel = sendContact?.id === c.id;
                                           const railLine = c.destKind === 'breb'
@@ -1556,7 +1585,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                       {st === 'aprobada'
                                                           ? <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>VERIFICADA</span>
                                                           // En validación va en naranja: es un "todavía no", no un error.
-                                                          : <span style={{ border: `1px solid ${st === 'rechazada' ? 'rgba(255,255,255,0.14)' : 'rgba(251,191,36,0.32)'}`, color: st === 'rechazada' ? '#878E88' : '#FBBF24', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? (sinValidarOk ? 'RECHAZADA EN C1' : 'RECHAZADA') : 'EN VALIDACIÓN'}</span>}
+                                                          : <span style={{ border: `1px solid ${st === 'rechazada' ? 'rgba(255,255,255,0.14)' : 'rgba(251,191,36,0.32)'}`, color: st === 'rechazada' ? '#878E88' : '#FBBF24', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{st === 'rechazada' ? (sinValidarOk ? 'RECHAZADA EN C2' : 'RECHAZADA') : 'EN VALIDACIÓN'}</span>}
                                                       {aml && (
                                                           <span style={{ border: `1px solid ${AML_TONO[aml.tono].b}`, color: AML_TONO[aml.tono].c, fontSize: 9, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, whiteSpace: 'nowrap' }}>{aml.t}</span>
                                                       )}
@@ -1565,10 +1594,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                           );
                                       })}
                                       {railKind === 'ach' && cuentasAchSinValidacion.length > 0 && list.some((c: any) => ['en_proceso', 'rechazada'].includes(contactStatus(c))) && (
-                                          <p style={{ fontSize: 11.5, color: achCuenta >= 3 ? '#878E88' : '#FBBF24', lineHeight: 1.5, padding: '2px 2px' }}>
-                                              {achCuenta >= 3
-                                                  ? `Los beneficiarios en validación o rechazados por la Cuenta 1 también reciben por ACH · ${nombreCuenta(achCuenta)}: esta cuenta no usa esa validación. Los antecedentes se revisan igual.`
-                                                  : `Los beneficiarios en validación o rechazados por la Cuenta 1 no reciben por ACH · Cuenta 1. Por ${txtAchSinValidacion} sí: vuelve atrás y elige una de ellas.`}
+                                          <p style={{ fontSize: 11.5, color: achCuenta !== 2 ? '#878E88' : '#FBBF24', lineHeight: 1.5, padding: '2px 2px' }}>
+                                              {achCuenta !== 2
+                                                  ? `Los beneficiarios en validación o rechazados por la Cuenta 2 también reciben por ACH · ${nombreCuenta(achCuenta)}: esta cuenta no usa esa validación. Los antecedentes se revisan igual.`
+                                                  : `Los beneficiarios en validación o rechazados por la Cuenta 2 no reciben por ACH · Cuenta 2. Por ${txtAchSinValidacion} sí: vuelve atrás y elige una de ellas.`}
                                           </p>
                                       )}
                                       {list.length === 0 && (
@@ -1758,11 +1787,11 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                       {sendStep === 4 && sendMode === 'bank' && (() => {
                           const amt = getRawAmount(sendForm.amount);
                           const isBrebM = (sendContact?.destKind ?? (sendSourceRail === 'COP_BREB' || brebCuenta === 2 ? 'breb' : 'ach')) === 'breb';
-                          const railLbl = isBrebM ? (brebCuenta >= 2 && !saldoUnificado ? `Bre-B · ${nombreCuenta(brebCuenta)}` : 'Bre-B') : (achCuenta >= 3 ? `ACH · ${nombreCuenta(achCuenta)}` : 'ACH');
+                          const railLbl = isBrebM ? (brebCuenta >= 2 && !saldoUnificado ? `Bre-B · ${nombreCuenta(brebCuenta)}` : 'Bre-B') : (achCuenta !== 2 || (!saldoUnificado && !metodos) ? `ACH · ${nombreCuenta(achCuenta)}` : 'ACH');
                           // Las cuentas que se pueden elegir en Confirmar (la 3 y la 4
-                          // solo si el admin las activó).
+                          // solo si el admin las activó; la 1 de ACH si está encendida).
                           const nsBreb = [1, 2, ...(c3.breb ? [3] : []), ...(c4.breb ? [4] : [])] as (1 | 2 | 3 | 4)[];
-                          const nsAch = [1, ...(c3.ach ? [3] : []), ...(c4.ach ? [4] : [])] as (1 | 3 | 4)[];
+                          const nsAch = [...(achC1 ? [1] : []), 2, ...(c3.ach ? [3] : []), ...(c4.ach ? [4] : [])] as (1 | 2 | 3 | 4)[];
                           const initials = (n: string) => { const p = String(n || '').trim().split(/\s+/); return ((p[0]?.[0] ?? '') + (p[1]?.[0] ?? '')).toUpperCase() || '·'; };
                           // Todo de `destinatario`: con un beneficiario inscrito, la
                           // pantalla no puede mostrar la llave de uno y el nombre de otro.
@@ -1845,23 +1874,23 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                       </div>
                                   </div>
                               )}
-                              {/* ENVIAR POR (ACH): Cuenta 1 (saldo ACH), y la 3 y la 4 con su propio saldo. */}
+                              {/* ENVIAR POR (ACH): Cuenta 1 (saldo Bre-B), Cuenta 2 (saldo ACH), y la 3 y la 4 con su propio saldo. */}
                               {!isBrebM && nsAch.length > 1 && !saldoUnificado && !metodos && (
                                   <div style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 13, padding: '13px 16px', background: 'rgba(255,255,255,0.025)' }}>
                                       <span style={{ color: '#878E88', fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px' }}>ENVIAR POR</span>
                                       <div className={`grid ${nsAch.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`} style={{ gap: 8, marginTop: 8 }}>
                                           {nsAch.map(n => {
-                                              const bal = getBalance(n >= 3 ? railCuenta(n) : 'COP_ACH');
+                                              const bal = getBalance(railAch(n));
                                               const sel = achCuenta === n;
-                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : tarifa(n === 1 ? 'ACH' : `ACH${n}`, 2500);
+                                              const feeN = sel && payoutQuote?.feeCop != null ? payoutQuote.feeCop : tarifa(rutaAch(n), 2500);
                                               const alcanza = bal >= amt + feeN;
-                                              // Beneficiario en validación: por la Cuenta 1 todavía no.
-                                              const enValidacion = n === 1 && sinValidarAch(sendContact);
-                                              const rechazadaC1 = enValidacion && contactStatus(sendContact) === 'rechazada';
+                                              // Beneficiario en validación: por la Cuenta 2 todavía no.
+                                              const enValidacion = n === 2 && sinValidarAch(sendContact);
+                                              const rechazadaC2 = enValidacion && contactStatus(sendContact) === 'rechazada';
                                               const bloqueada = !sel && (!alcanza || enValidacion);
                                               return (
                                                   <button key={n} type="button" disabled={bloqueada || isSending}
-                                                      title={enValidacion ? (rechazadaC1 ? 'La validación de ACH · Cuenta 1 rechazó esta cuenta.' : 'Tu beneficiario sigue en validación para ACH · Cuenta 1.') : undefined}
+                                                      title={enValidacion ? (rechazadaC2 ? 'La validación de ACH · Cuenta 2 rechazó esta cuenta.' : 'Tu beneficiario sigue en validación para ACH · Cuenta 2.') : undefined}
                                                       onClick={() => setAchCuenta(n)}
                                                       style={{ textAlign: 'left', padding: '10px 12px', borderRadius: 10, minWidth: 0,
                                                           border: sel ? '1px solid rgba(74,222,128,0.35)' : '1px solid rgba(255,255,255,0.1)',
@@ -1869,7 +1898,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                                                           opacity: bloqueada ? 0.5 : 1, cursor: bloqueada ? 'not-allowed' : 'pointer' }}>
                                                       <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{nombreCuenta(n)}</span>
                                                       <span style={{ display: 'block', fontSize: 11, color: sel ? '#4ADE80' : '#878E88', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                          {enValidacion ? <span style={{ color: '#FBBF24' }}>{rechazadaC1 ? 'Rechazada' : 'En validación'}</span> : <>{n >= 3 ? 'Llega en 6 a 24 h' : 'Ciclos ACH'} · {!alcanza ? 'no alcanza' : `$${Math.round(bal).toLocaleString('es-CO')}`}</>}
+                                                          {enValidacion ? <span style={{ color: '#FBBF24' }}>{rechazadaC2 ? 'Rechazada' : 'En validación'}</span> : <>{n >= 3 ? 'Llega en 6 a 24 h' : n === 1 ? 'Saldo Bre-B' : 'Saldo ACH'} · {!alcanza ? 'no alcanza' : `$${Math.round(bal).toLocaleString('es-CO')}`}</>}
                                                       </span>
                                                   </button>
                                               );
@@ -1885,7 +1914,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               {/* Desglose — la comisión del proveedor se cobra al cliente */}
                               <div style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 13, overflow: 'hidden' }}>
                                   {[
-                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${isBrebM && brebCuenta >= 3 ? `Saldo ${nombreCuenta(brebCuenta)}` : !isBrebM && achCuenta >= 3 ? `Saldo ${nombreCuenta(achCuenta)}` : sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
+                                      { l: 'Sale de', v: saldoUnificado ? 'Tu cuenta Lincoin · COP' : `${isBrebM && brebCuenta >= 3 ? `Saldo ${nombreCuenta(brebCuenta)}` : !isBrebM && achCuenta >= 3 ? `Saldo ${nombreCuenta(achCuenta)}` : !isBrebM && achCuenta === 1 ? 'Bre-B' : sendSourceRail === 'COP' ? 'Saldo Lincoin' : sendSourceRail === 'COP_BREB' ? 'Bre-B' : 'ACH'} · COP` },
                                       { l: saldoUnificado ? 'Comisión del envío' : `Comisión fija ${railLbl} · sin variable`, v: payoutQuote?.loading ? 'cotizando…'
                                           : payoutQuote?.error ? '—'
                                           : payoutQuote?.feeCop != null ? `${formatMoney(payoutQuote.feeCop, 'COP')} COP`
@@ -2127,7 +2156,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const isBrebS = sendResult?.viaBreb ?? ((sendResult?.rail ?? sendSourceRail) === 'COP_BREB');
                           const cuenta2S = isBrebS && sendResult?.cuentaBreb === 2;
                           const cuentaBS = isBrebS ? (sendResult?.cuentaBreb ?? 1) : 1;
-                          const cuentaAS = !isBrebS ? (sendResult?.cuentaAch ?? 1) : 1;
+                          const cuentaAS = !isBrebS ? (sendResult?.cuentaAch ?? 2) : 2;
                           const amt = getRawAmount(sendForm.amount);
                           const isWalletSend = sendMode === 'wallet' || sendResult?.rail === 'USDT';
                           // El comprobante es lo que el cliente guarda como soporte:
@@ -2142,7 +2171,7 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                           const methodLine = isWalletSend ? `Wallet ···${last4} · TRC-20`
                               : !isCop ? `Cuenta ···${last4}`
                               : isBrebS ? `Llave ···${last4} · Bre-B${cuentaBS >= 2 && !saldoUnificado ? ` · ${nombreCuenta(cuentaBS)}` : ''}`
-                              : `${dR.bank ?? 'Banco'} ···${last4} · ACH${cuentaAS >= 3 ? ` · ${nombreCuenta(cuentaAS)}` : ''}`;
+                              : `${dR.bank ?? 'Banco'} ···${last4} · ACH${cuentaAS !== 2 || (!saldoUnificado && !metodos) ? ` · ${nombreCuenta(cuentaAS)}` : ''}`;
                           const subOk = isWalletSend
                               ? 'Tu envío ya salió de tu billetera. Te avisamos cuando la red lo confirme.'
                               : !isCop
@@ -2185,8 +2214,8 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
                               id: realMov?.id ?? (sendResult?.providerRef || `TX-${Date.now()}`),
                               type: isWalletSend ? 'send' : 'dispersion',
                               amount: amt,
-                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS >= 3 ? railCuenta(cuentaBS) : 'COP_BREB') : (isCop ? (cuentaAS >= 3 ? railCuenta(cuentaAS) : 'COP_ACH') : sendForm.destinationCurrency)),
-                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : cuentaAS >= 3 ? { cuentaAch: cuentaAS } : {}) } : {}),
+                              currency: isWalletSend ? 'USDT_TRON' : (isBrebS ? (cuenta2S ? 'COP_ACH' : cuentaBS >= 3 ? railCuenta(cuentaBS) : 'COP_BREB') : (isCop ? railAch(cuentaAS) : sendForm.destinationCurrency)),
+                              ...(isCop && !isWalletSend ? { rail: isBrebS ? 'BREB' : 'ACH', ...(isBrebS ? { cuentaBreb: cuentaBS } : { cuentaAch: cuentaAS }) } : {}),
                               status: receiptStatus,
                               createdAt: sendResult?.at || new Date().toISOString(),
                               beneficiary: name,

@@ -17,7 +17,8 @@
 // Dispersión REAL cableada (quickstart de la doc):
 //   POST /api/transfers/resolve-key  → titular oficial de la llave (SARLAFT)
 //   POST /api/transfers/send         → retiro BREB (destino inline) / ACH
-//   Valores en CENTAVOS. Ver mouvPayout. ACH aún con destino best-guess.
+//   Valores en CENTAVOS. Ver mouvPayout. ACH (ACH · Cuenta 1, desde el
+//   22 nov) con la forma de la doc oficial: _shared/mouv-ach.ts.
 // ─────────────────────────────────────────────
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -32,6 +33,7 @@ import { leerTarifasEnvio, tarifaFija } from '../_shared/tarifas-envio.ts'
 import { ClienteCoinsenda, configCoinsenda, billeteraCop, proveedorCop, costoCoinsenda, montoBruto, aliasBreb, resolverLlave, destinoBreb, destinoBanco, crearRetiro, confirmarRetiro, leerRetiro, esquemaMetodo } from '../_shared/coinsenda.ts'
 import { inicioMesBogota, cupoGeneral, cupoAprobado, cupoVigente, solicitudEnProceso, claveBeneficiario, clavesBeneficiario, enviosDelMes, usadoPara, idsMismaPersona as idsDeLaPersona, normDoc, tipoCupo } from '../_shared/cupos.ts'
 import { nombreCuenta } from '../_shared/nombre-cuenta.ts'
+import { bancosDeDiccionario, bancoMouv, destinoAchMouv, nombreBanco, type BancoMouv, type DestinoAchMouv } from '../_shared/mouv-ach.ts'
 // Verificación TOTP en el SERVIDOR (2FA), con Web Crypto NATIVO (sin
 // dependencias externas que pudieran no cargar y tumbar el proxy). Mismo
 // algoritmo que el cliente: SHA1, 6 dígitos, período 30s, ventana ±2. Sin
@@ -602,6 +604,7 @@ async function mouvPayout(
   rail: 'BREB' | 'ACH',
   recipient: Record<string, any>,
   amountCop: number,
+  destinoAch?: DestinoAchMouv,
 ): Promise<{ ok: boolean; status: number; data: any; providerRef?: string; referencia?: string; notImplemented?: boolean; targetName?: string; targetDocument?: string }> {
   // Mouv trabaja en CENTAVOS (confirmado contra el saldo real). El monto que
   // llega es en PESOS → se convierte a centavos para /transfers/send.
@@ -697,27 +700,85 @@ async function mouvPayout(
     return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), referencia: refUniq, targetName, targetDocument }
   }
 
-  // ── ACH — mismo endpoint /transfers/send con destino de cuenta bancaria.
-  // ⚠️ La forma EXACTA del destino ACH no está en el quickstart (la página
-  // "Retiros ACH" → /api-reference/transfers/send la tiene). Este body es la
-  // forma más probable; ajústalo aquí cuando veas esa página.
-  const r = await mouvFetch('/transfers/send', {
-    method: 'POST',
-    body: JSON.stringify({
-      amount: amountCents,
-      destination: {
-        bankAccount: {
-          bankCode: recipient.bankCode,
-          accountType: (recipient.accountType || '').toUpperCase(),  // AHORROS | CORRIENTE | DEPOSITO
-          accountNumber: recipient.accountNumber,
-        },
-      },
-      targetName: recipient.holderName,
-      targetDocument: recipient.documentNumber,
-      reference: recipient.reference ?? 'Pago Lincoin',
-    }),
+  // ── ACH (ACH · Cuenta 1) — mismo endpoint con destination.bankAccount.
+  // La forma sale de la doc oficial (ver _shared/mouv-ach.ts). Antes aquí iba
+  // un cuerpo "más probable" ({ bankCode, accountType } en texto, sin
+  // documento ni titular) que Mouv habría rechazado siempre. El destino llega
+  // ya armado y validado ANTES de debitar (mouvPrepararAch); sin él no se
+  // llama a Mouv.
+  if (!destinoAch) {
+    return { ok: false, status: 422, data: { error: 'sin_destino_ach', noSalio: true, message: 'Faltan los datos de la cuenta destino.' } }
+  }
+  const refBaseAch = (cleanField(recipient.reference) ?? 'Pago Lincoin').slice(0, 90)
+  const refUniqAch = `${refBaseAch} ${Date.now().toString(36).slice(-5)}`
+  const cuerpoAch = JSON.stringify({ amount: amountCents, destination: { bankAccount: destinoAch }, reference: refUniqAch })
+  const t0Ach = Date.now()
+  let r = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoAch })
+  // Igual que Bre-B: un 5xx o un timeout no significan "no salió". Se repite
+  // UNA vez con la misma referencia (idempotente 60 s) y solo se toma el
+  // reintento si confirma que la transferencia existe.
+  if ((r.status === 0 || r.status >= 500) && Date.now() - t0Ach < 45_000) {
+    const reintento = await mouvFetch('/transfers/send', { method: 'POST', body: cuerpoAch })
+    if (reintento.ok) r = reintento
+  }
+  const titularAch = `${destinoAch.holderFirstName}${destinoAch.holderLastName && destinoAch.holderLastName !== destinoAch.holderFirstName ? ` ${destinoAch.holderLastName}` : ''}`
+  return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), referencia: refUniqAch, targetName: titularAch, targetDocument: destinoAch.documentNumber }
+}
+
+// ── ACH · Cuenta 1: PREPARAR antes de tocar el saldo ─────────────────
+// Diccionario de bancos de Mouv (GET /dictionaries/banks/ach). Cambia poco:
+// se guarda 30 minutos por instancia para no pedirlo en cada envío.
+let cacheBancosAch: { at: number; lista: BancoMouv[]; crudo: string } | null = null
+async function bancosAchMouv(forzar = false): Promise<{ ok: boolean; lista: BancoMouv[]; status: number; crudo: string }> {
+  if (!forzar && cacheBancosAch && Date.now() - cacheBancosAch.at < 30 * 60_000) {
+    return { ok: true, lista: cacheBancosAch.lista, status: 200, crudo: cacheBancosAch.crudo }
+  }
+  const r = await mouvFetch('/dictionaries/banks/ach', { method: 'GET' })
+  let crudo = ''
+  try { crudo = (typeof r.data === 'string' ? r.data : JSON.stringify(r.data ?? '')).slice(0, 1500) } catch { crudo = '(ilegible)' }
+  if (!r.ok) return { ok: false, lista: [], status: r.status, crudo }
+  const lista = bancosDeDiccionario(r.data)
+  if (lista.length) cacheBancosAch = { at: Date.now(), lista, crudo }
+  return { ok: lista.length > 0, lista, status: r.status, crudo }
+}
+type PrepAchMouv =
+  | { ok: true; destino: DestinoAchMouv; banco: BancoMouv; costoProveedor: number | null }
+  | { ok: false; mensaje: string; motivo: string; detalle?: unknown }
+// Arma el destino (banco, tipo de cuenta, documento, titular) y cotiza con
+// /transfers/quote/ach, que no mueve plata. Si el banco no cruza, el
+// documento no lo acepta Mouv o la billetera ACH no alcanza, el envío no
+// arranca: sin débito, sin fila Fallido y sin devolución. Es el mismo
+// criterio de las Cuentas 2, 3 y 4.
+async function mouvPrepararAch(recipient: Record<string, any>, amountCop: number): Promise<PrepAchMouv> {
+  const noDisponible = 'ACH · Cuenta 1 no está disponible en este momento.'
+  const bancos = await bancosAchMouv()
+  if (!bancos.ok) return { ok: false, motivo: 'diccionario', mensaje: noDisponible, detalle: { httpStatus: bancos.status, crudo: bancos.crudo.slice(0, 300) } }
+  const armado = destinoAchMouv(bancos.lista, {
+    banco: String(recipient.bankCode ?? ''),
+    tipoCuenta: String(recipient.accountTypeRaw ?? recipient.accountType ?? ''),
+    numero: String(recipient.accountNumber ?? ''),
+    docTipo: String(recipient.documentType ?? ''),
+    docNumero: String(recipient.documentNumber ?? ''),
+    titular: String(recipient.holderName ?? ''),
   })
-  return { ok: r.ok, status: r.status, data: r.data, providerRef: refDeMouv(r.data), targetName: recipient.holderName, targetDocument: recipient.documentNumber }
+  if (!armado.ok) {
+    const f = armado as Extract<typeof armado, { ok: false }>
+    return { ok: false, motivo: f.motivo, mensaje: f.error, detalle: f.motivo === 'banco_sin_cruce' ? { banco: recipient.bankCode ?? null, bancosMouv: bancos.lista.length } : undefined }
+  }
+  // La cotización dice si la billetera ACH de Mouv alcanza (canAfford) y
+  // cuánto cobra Mouv. Si no responde, se sigue: el envío decide.
+  let costoProveedor: number | null = null
+  try {
+    const q = await mouvFetch('/transfers/quote/ach', { method: 'POST', body: JSON.stringify({ amount: Math.round(amountCop * 100) }) })
+    if (q.ok && q.data && typeof q.data === 'object') {
+      const tc = Number((q.data as any)?.feeBreakdown?.totalCharged)
+      if (Number.isFinite(tc)) costoProveedor = Math.round(tc) / 100
+      if ((q.data as any).canAfford === false) {
+        return { ok: false, motivo: 'billetera_ach', mensaje: noDisponible, detalle: { saldoAchMouv: (q.data as any).currentBalance ?? null, totalCost: (q.data as any).totalCost ?? null } }
+      }
+    }
+  } catch { /* sin cotización: decide el envío */ }
+  return { ok: true, destino: armado.destino, banco: armado.banco, costoProveedor }
 }
 
 // ── Estado REAL de una transferencia Mouv ───────────────────────────
@@ -1301,6 +1362,9 @@ async function tarifaEnvio(ruta: string, amount?: number): Promise<number> {
     case 'BREB4': return feeCoinsenda(4, 'BREB')
     case 'ACH3': return feeCoinsenda(3, 'ACH')
     case 'ACH4': return feeCoinsenda(4, 'ACH')
+    // ACH · Cuenta 1 (Mouv) cobra lo mismo que la Cuenta 2 mientras el dueño
+    // no fije otra; lo que cobra Mouv queda en costoProveedorCop de cada envío.
+    case 'ACH1': return ACH_FEE_COP
     case 'ACH': return ACH_FEE_COP
     default: return brebFeeCop(amount)
   }
@@ -1318,6 +1382,16 @@ async function topeComisionReembolso(amount: number): Promise<number> {
 // ¿Está activa para los clientes? La enciende el dueño en Admin → Coinsenda
 // (app_config.settings.cuenta3 / cuenta4). El servidor lo revisa en cada
 // envío: que la pantalla la muestre no basta.
+// ACH · Cuenta 1 (Mouv) queda ENCENDIDA desde el 22 nov (pedido del dueño).
+// Se apaga sin redesplegar con app_config.settings.achCuenta1 = false; la
+// pantalla lee lo mismo. Si la lectura falla se deja pasar: el envío igual
+// pasa por todos los controles y por la cotización de Mouv.
+async function achCuenta1Activa(): Promise<boolean> {
+  try {
+    const { data } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
+    return (data as any)?.settings?.achCuenta1 !== false
+  } catch { return true }
+}
 async function cuentaCoinsendaActiva(cuenta: CuentaCoinsenda, tipo: 'breb' | 'ach'): Promise<boolean> {
   try {
     const { data } = await db.from('app_config').select('settings').eq('id', 1).maybeSingle()
@@ -2867,7 +2941,7 @@ serve(async (req: Request) => {
     const BREB2_MAX = Number(Deno.env.get('BREB2_MAX_COP') ?? '') || BREB_MAX
     // Lo que cuesta cada ruta, para que la pantalla de envío no muestre un
     // número fijo distinto al que cobra el servidor.
-    const rutas = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH', 'ACH3', 'ACH4']
+    const rutas = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH1', 'ACH', 'ACH3', 'ACH4']
     const tarifas = Object.fromEntries(await Promise.all(rutas.map(async r => [r, await tarifaEnvio(r)] as const)))
     return json(200, { ok: true, achMax: t.max, achMaxPersona: tPersona.max, brebMax: BREB_MAX, breb2Max: BREB2_MAX, breb2FeeCop: tarifas.BREB2, tarifas })
   }
@@ -2885,6 +2959,24 @@ serve(async (req: Request) => {
       base: MOUV_BASE,
       message: r.ok ? 'Credenciales Mouv válidas — conectado.' : `Mouv respondió ${r.status}.`,
       data: r.data,
+    })
+  }
+
+  // ── Bancos ACH de Mouv y su cruce con los de Lincoin — SOLO ADMIN ──
+  // ACH · Cuenta 1 cruza el banco del beneficiario (por nombre) con el id de
+  // Mouv. Esto deja ver el cruce de cada banco SIN mandar plata: si alguno
+  // sale sin cruce o con el banco que no es, se ve acá antes que en un envío.
+  if (action === 'mouv_bancos_ach') {
+    if (!caller.admin) return json(403, { error: 'forbidden', message: 'Solo admin.' })
+    const b = await bancosAchMouv(true)
+    const NUESTROS = ['Bancolombia', 'Banco de Bogotá', 'Davivienda', 'BBVA Colombia', 'Banco de Occidente', 'Banco Popular',
+      'Scotiabank Colpatria', 'Banco AV Villas', 'Banco Agrario', 'Banco Caja Social', 'Itaú', 'Banco Falabella', 'Banco Pichincha',
+      'Bancoomeva', 'GNB Sudameris', 'Citibank', 'Coopcentral', 'Nequi', 'Daviplata', 'Nu Colombia', 'Lulo Bank', 'Movii']
+    const cruce = NUESTROS.map(n => { const m = bancoMouv(b.lista, n); return { banco: n, normalizado: nombreBanco(n), bankId: m?.id ?? null, bancoMouv: m?.nombre ?? null } })
+    return json(200, {
+      ok: b.ok, httpStatus: b.status, total: b.lista.length,
+      sinCruce: cruce.filter(c => c.bankId == null).map(c => c.banco),
+      cruce, bancos: b.lista, crudo: b.ok ? undefined : b.crudo,
     })
   }
 
@@ -4783,7 +4875,7 @@ serve(async (req: Request) => {
     const amount = Number(payload.amount)
     if (!isFinite(amount) || amount <= 0) return json(400, { error: 'bad_amount' })
     const pedido = String(payload.rail ?? 'BREB').toUpperCase()
-    const rail = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH', 'ACH3', 'ACH4'].includes(pedido) ? pedido : 'ACH'
+    const rail = ['BREB', 'BREB2', 'BREB3', 'BREB4', 'ACH1', 'ACH', 'ACH3', 'ACH4'].includes(pedido) ? pedido : 'ACH'
     // Todas fijas por envío, sin componente variable: la de la cuenta, o la
     // tarifa fija por riel si el dueño la activó (tarifaEnvio).
     const fee = await tarifaEnvio(rail, amount)
@@ -4798,8 +4890,14 @@ serve(async (req: Request) => {
   //   BREB → $1.200 fijos por envío (BREB_FEE_COP); se debita monto + 1.200.
   //   ACH  → precio fijo Finity (ACH_FEE_COP); se debita monto + tarifa.
   // Si el proveedor falla, se REINTEGRA todo lo debitado.
-  if (action === 'payout_breb' || action === 'payout_breb2' || action === 'payout_ach' || action === 'payout_breb3' || action === 'payout_ach3' || action === 'payout_breb4' || action === 'payout_ach4') {
-    const rail: 'BREB' | 'ACH' = action === 'payout_ach' || action === 'payout_ach3' || action === 'payout_ach4' ? 'ACH' : 'BREB'
+  if (action === 'payout_breb' || action === 'payout_breb2' || action === 'payout_ach' || action === 'payout_ach1' || action === 'payout_breb3' || action === 'payout_ach3' || action === 'payout_breb4' || action === 'payout_ach4') {
+    const rail: 'BREB' | 'ACH' = action === 'payout_ach' || action === 'payout_ach1' || action === 'payout_ach3' || action === 'payout_ach4' ? 'ACH' : 'BREB'
+    // ACH también tiene cuentas (22 nov): la 1 sale por Mouv con el saldo de
+    // la Cuenta 1 (COP_BREB, el que respalda la bolsa de Mouv) y la 2 por
+    // Finity con el saldo ACH (payout_ach, la de siempre). Inscripción, AML,
+    // cupo, topes y candados son los mismos; la Cuenta 1 no espera la
+    // validación de la cuenta destino de Finity (Mouv valida al enviar).
+    const achMouv = action === 'payout_ach1'
     // Bre-B tiene DOS cuentas. La 1 sale por Mouv con el saldo Bre-B; la 2 sale
     // por Finity con el saldo ACH, porque Finity usa una sola bolsa para los dos
     // rieles. Todo lo demás —inscripción, AML, titular de la llave, motivo,
@@ -4814,8 +4912,8 @@ serve(async (req: Request) => {
     // Cuenta 4" (COP_C4) y la llave, el correo y la billetera de esa cuenta.
     const cuentaCs: CuentaCoinsenda | null = action === 'payout_breb3' || action === 'payout_ach3' ? 3 : action === 'payout_breb4' || action === 'payout_ach4' ? 4 : null
     const porCoinsenda = cuentaCs !== null   // Cuenta 3 o 4
-    const railCol = cuentaCs === 4 ? 'COP_C4' : cuentaCs === 3 ? 'COP_C3' : rail === 'BREB' && !brebFinity ? 'COP_BREB' : 'COP_ACH'
-    const saldoLabel = cuentaCs ? `${nombreCuenta(cuentaCs)}` : railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
+    const railCol = cuentaCs === 4 ? 'COP_C4' : cuentaCs === 3 ? 'COP_C3' : (rail === 'BREB' && !brebFinity) || achMouv ? 'COP_BREB' : 'COP_ACH'
+    const saldoLabel = cuentaCs ? `${nombreCuenta(cuentaCs)}` : achMouv ? 'Cuenta 1' : railCol === 'COP_BREB' ? 'Bre-B' : 'ACH'
     // Los nombres que conocemos del beneficiario. Con la Cuenta 2 se comparan
     // con el titular que devuelve Finity antes de confirmar el envío.
     const nombresTitular: string[] = []
@@ -4847,6 +4945,9 @@ serve(async (req: Request) => {
     // Las Cuentas 3 y 4 solo salen si el dueño las activó en Admin → Coinsenda.
     if (cuentaCs && !(await cuentaCoinsendaActiva(cuentaCs, rail === 'BREB' ? 'breb' : 'ach'))) {
       return json(403, { error: `cuenta${cuentaCs}_inactiva`, message: `${rail === 'BREB' ? 'Bre-B' : 'ACH'} · ${nombreCuenta(cuentaCs)} todavía no está disponible. Envíalo por otra cuenta.` })
+    }
+    if (achMouv && !(await achCuenta1Activa())) {
+      return json(403, { error: 'ach_cuenta1_inactiva', message: 'ACH · Cuenta 1 no está disponible en este momento. Envíalo por ACH · Cuenta 2.' })
     }
 
     // ── Seguridad de la cuenta: bloqueo y 2FA ────────────────────────────────
@@ -5082,6 +5183,9 @@ serve(async (req: Request) => {
             holderName: String(hit.name ?? rec.holderName ?? ''),
             ...(hit.bank ? { bankCode: String(hit.bank) } : {}),
             ...(hit.accountType ? { accountType: String(hit.accountType) === 'checking' ? 'corriente' : 'ahorros' } : {}),
+            // El tipo tal como quedó inscrito: la Cuenta 1 (Mouv) distingue el
+            // depósito electrónico, que arriba se aplana a "ahorros".
+            ...(hit.accountType ? { accountTypeRaw: String(hit.accountType) } : {}),
             finityId: hit.finityId ? String(hit.finityId) : null,
           }
         }
@@ -5389,8 +5493,10 @@ serve(async (req: Request) => {
     //    en revisión se debitó, quedó "Fallido" y hubo que devolverlo — y la
     //    pantalla la mostraba como aprobada. Ahora no arranca, y el contacto
     //    vuelve a "en validación" para que la pantalla diga la verdad.
-    // (Las Cuentas 3 y 4 no pasan por Finity: su destino lo inscribe Coinsenda al preparar.)
-    if (rail === 'ACH' && !porCoinsenda) {
+    // (Las Cuentas 3 y 4 no pasan por Finity: su destino lo inscribe Coinsenda
+    // al preparar. La Cuenta 1 tampoco: Mouv valida la cuenta al enviar y, si
+    // no corresponde, la devuelve y la conciliación reintegra el saldo.)
+    if (rail === 'ACH' && !porCoinsenda && !achMouv) {
       const accD = String(recipient.accountNumber ?? '').replace(/\D/g, '')
       const rev = await revisarDestinoFinity(userId, recipient.finityId ? String(recipient.finityId) : null, accD, String(recipient.documentNumber ?? '').replace(/\D/g, ''))
       if (rev.bloqueo) {
@@ -5419,8 +5525,10 @@ serve(async (req: Request) => {
       feeCop = await tarifaEnvio(brebFinity ? 'BREB2' : cuentaCs ? `BREB${cuentaCs}` : 'BREB', amount)
       feeDetail = { feeCop, feeFixedCop: feeCop, feeVariableCop: 0, feeIvaCop: 0, feeProvider: 'lincoin' }
     } else {
-      feeCop = await tarifaEnvio(cuentaCs ? `ACH${cuentaCs}` : 'ACH', amount)
-      feeDetail = { feeCop, feeProvider: porCoinsenda ? 'lincoin' : 'finity' }
+      feeCop = await tarifaEnvio(cuentaCs ? `ACH${cuentaCs}` : achMouv ? 'ACH1' : 'ACH', amount)
+      // feeProvider decide a quién se le pregunta el estado en una devolución
+      // forzada: 'finity' manda a Finity, y un ACH de Mouv no existe allá.
+      feeDetail = { feeCop, feeProvider: porCoinsenda ? 'lincoin' : achMouv ? 'mouv' : 'finity' }
     }
     const totalDebit = Number((amount + feeCop).toFixed(2))
 
@@ -5580,6 +5688,21 @@ serve(async (req: Request) => {
       }
     }
 
+    // ── ACH · Cuenta 1 (Mouv): PREPARAR antes de tocar el saldo ───────────
+    // Banco en el diccionario de Mouv, tipo de cuenta y de documento que Mouv
+    // acepta, y billetera ACH con fondos. Si algo no cuadra, no arranca.
+    let prepAchMouv: Extract<PrepAchMouv, { ok: true }> | null = null
+    if (achMouv) {
+      const p = await mouvPrepararAch(recipient, amount)
+      if (!p.ok) {
+        const f = p as Extract<PrepAchMouv, { ok: false }>
+        await logAudit(userId, `mouv.${action}.no_preparada`, { amount, motivo: f.motivo, banco: recipient.bankCode ?? null, detalle: f.detalle ?? null })
+        await soltarCandados()
+        return json(200, { error: 'payout_failed', refunded: false, sinDebito: true, message: `${f.mensaje} No salió nada y no se descontó nada de tu saldo. Envíalo por ACH · Cuenta 2.` })
+      }
+      prepAchMouv = p as Extract<PrepAchMouv, { ok: true }>
+    }
+
     // ── Cuentas PERSONA: su COP llega al Saldo Lincoin ('COP'), no a un
     //    riel. Antes de debitar el riel del envío se cubre lo que falte desde
     //    'COP' y, si aún falta, desde el otro riel. Es un movimiento interno
@@ -5655,8 +5778,18 @@ serve(async (req: Request) => {
       source: 'mouv_payout', rail,
       ...(rail === 'BREB'
         ? { cuentaBreb: brebFinity ? 2 : cuentaCs ?? 1, proveedor: brebFinity ? 'finity' : cuentaCs ? 'coinsenda' : 'mouv' }
-        : cuentaCs ? { cuentaAch: cuentaCs, proveedor: 'coinsenda' } : {}),
-      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : cuentaCs ? `Dispersión ${railLabel} · ${nombreCuenta(cuentaCs)}` : `Dispersión ${railLabel}`,
+        // ACH: desde el 22 nov la fila dice su cuenta. Las de antes no traen
+        // cuentaAch y son todas de Finity (hoy la Cuenta 2).
+        : cuentaCs ? { cuentaAch: cuentaCs, proveedor: 'coinsenda' }
+        : achMouv ? { cuentaAch: 1, proveedor: 'mouv' }
+        : { cuentaAch: 2, proveedor: 'finity' }),
+      title: brebFinity ? 'Dispersión Bre-B · Cuenta 2' : cuentaCs ? `Dispersión ${railLabel} · ${nombreCuenta(cuentaCs)}` : rail === 'ACH' ? `Dispersión ACH · Cuenta ${achMouv ? 1 : 2}` : `Dispersión ${railLabel}`,
+      // ACH · Cuenta 1: con qué banco de Mouv se cruzó y lo que cobra Mouv.
+      // Sin esto, un envío al banco equivocado no se podría rastrear.
+      ...(prepAchMouv ? {
+        destinoMouv: { bankId: prepAchMouv.destino.bankId, banco: prepAchMouv.banco.nombre, accountTypeId: prepAchMouv.destino.accountTypeId, documentTypeId: prepAchMouv.destino.documentTypeId },
+        ...(prepAchMouv.costoProveedor != null ? { costoProveedorCop: prepAchMouv.costoProveedor } : {}),
+      } : {}),
       // Cuentas 3 y 4: el retiro ya existe en Coinsenda (pending) desde antes
       // de debitar, así que su id va desde el primer registro. Sin él no se
       // podría conciliar si algo se cae a mitad de camino. `cuenta` dice con
@@ -5861,8 +5994,10 @@ serve(async (req: Request) => {
       return json(200, { error: 'payout_failed', refunded: reintF.ok, newBalance: restoredF, message: conReintegro(friendlyF, reintF.ok) })
     }
 
-    if (rail === 'BREB') {
-      const pay = await mouvPayout(rail, recipient, amount)
+    // Bre-B · Cuenta 1 y ACH · Cuenta 1 salen por Mouv con el mismo manejo:
+    // aceptada no es pagada, 5xx no es "no salió", rechazo claro reintegra.
+    if (rail === 'BREB' || achMouv) {
+      const pay = await mouvPayout(rail, recipient, amount, prepAchMouv?.destino)
       // ACEPTADA NO ES PAGADA.
       //
       // Mouv responde /transfers/send con 201 { status: 'PENDING' }: eso
@@ -6048,7 +6183,14 @@ serve(async (req: Request) => {
       // Un 401/403 es NUESTRA credencial con Mouv ("Invalid API key"), no la
       // llave del beneficiario: decirle al cliente que su llave está mal lo
       // mandaba a corregir algo que estaba bien.
-      const isKeyProblem = ![0, 401, 403].includes(Number(pay.status)) && /brebkey|destination|no existe|not\s*found|inv[aá]lid|no.{0,3}activ|resolver la llave|llave no|unknown\s*key|key\s*not/.test(errText)
+      // En ACH · Cuenta 1 no hay llave: el mismo texto de error ("destination
+      // inválido") habla de la cuenta bancaria, y decirle al cliente que
+      // revise una llave Bre-B lo mandaba a buscar donde no es.
+      const errorDeDestino = ![0, 401, 403].includes(Number(pay.status))
+      const isKeyProblem = !achMouv && errorDeDestino && /brebkey|destination|no existe|not\s*found|inv[aá]lid|no.{0,3}activ|resolver la llave|llave no|unknown\s*key|key\s*not/.test(errText)
+      // El saldo de la billetera no es un problema de la cuenta destino.
+      const isCuentaProblem = achMouv && errorDeDestino && !/saldo|balance|fondos|insufficient/.test(errText)
+        && /bankaccount|bankid|accountnumber|accounttype|documentnumber|documenttype|holder|destination|no existe|not\s*found|inv[aá]lid/.test(errText)
       let friendly: string
       if (provCode === 'STRUCTURING_WINDOW_BLOCKED' || (pay.status === 409 && !provMsg)) {
         const secs = retryAfterSeconds ?? 0
@@ -6056,6 +6198,8 @@ serve(async (req: Request) => {
         friendly = `Ya hiciste un envío a este mismo beneficiario hace poco. Por seguridad, espera ${mins} minuto${mins === 1 ? '' : 's'} antes de repetir un pago al mismo destino. Tu saldo fue devuelto.`
       } else if (isKeyProblem) {
         friendly = `La llave Bre-B del beneficiario no es válida o no está activa. Pídele que te confirme su llave Bre-B exacta (celular, correo, cédula o alias) y vuelve a intentarlo. Tu saldo fue devuelto.`
+      } else if (isCuentaProblem) {
+        friendly = `ACH · Cuenta 1 no aceptó la cuenta del beneficiario. Revisa el banco, el tipo y el número de cuenta y el documento, o envíalo por ACH · Cuenta 2. Tu saldo fue devuelto.`
       } else if (provMsg && /cumplimiento|compliance|restringid|sarlaft|listas?\s+restrictiv|lavado/i.test(provMsg)) {
         // Cuando el rechazo es por CUMPLIMIENTO, decir de quién viene. Este
         // mensaje llega tal cual del operador del riel y se mostraba sin

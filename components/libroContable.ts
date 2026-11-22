@@ -94,7 +94,8 @@ export function datosTercero(tx: any, contraparte: string): DatosTercero {
   const rd = tx?.raw_data && typeof tx.raw_data === 'object' ? tx.raw_data : {};
   const v = (k: string) => tx?.[k] ?? rd?.[k];
   const rec = (v('recipient') && typeof v('recipient') === 'object') ? v('recipient') : {};
-  const breb = tx?.currency === 'COP_BREB' || v('rail') === 'BREB' || !!rec.keyType;
+  // El riel manda: ACH · Cuenta 1 paga con el saldo Bre-B (COP_BREB).
+  const breb = v('rail') === 'ACH' ? false : (tx?.currency === 'COP_BREB' || v('rail') === 'BREB' || !!rec.keyType);
   const nombre = String(v('beneficiary') ?? rec.holderName ?? v('beneficiaryName') ?? v('senderName') ?? v('pagador') ?? v('payerName') ?? v('recipientName') ?? contraparte ?? '').trim();
   const tipoRaw = String(v('documentType') ?? rec.documentType ?? rec.docType ?? v('payerDocumentType') ?? '').trim();
   const docNum = String(v('documentNumber') ?? rec.documentNumber ?? rec.docNumber ?? v('payerDocument') ?? v('senderDocument') ?? '').trim();

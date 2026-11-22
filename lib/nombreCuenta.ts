@@ -18,6 +18,27 @@ export const nombreCuenta = (n: number | string | null | undefined): string => {
   return TITULAR_CUENTA[k] ? `Cuenta ${k} · ${TITULAR_CUENTA[k]}` : `Cuenta ${k}`;
 };
 
+// ¿Un envío salió por llave Bre-B o a una cuenta (ACH)? Manda el riel
+// guardado en la fila. La moneda ya no alcanza: desde el 22 nov ACH · Cuenta
+// 1 paga con el saldo Bre-B (COP_BREB), y Bre-B · Cuenta 2 con el ACH. La
+// moneda queda solo para filas sin riel (cargues, movimientos viejos).
+export const esBrebTx = (tx: any): boolean => {
+  const rd = (tx?.raw_data ?? {}) as Record<string, any>;
+  const rail = String(tx?.rail ?? rd.rail ?? '').toUpperCase();
+  if (rail === 'BREB') return true;
+  if (rail === 'ACH') return false;
+  return String(tx?.currency ?? '') === 'COP_BREB';
+};
+
+// La cuenta ACH de un envío. Desde el 22 nov la fila la guarda (cuentaAch).
+// Sin ella, el envío es de antes y salió por la que hoy se llama Cuenta 2
+// (hasta ese día era "Cuenta 1"; la Cuenta 1 nueva no existía).
+export const cuentaAchDe = (tx: any): number => {
+  const rd = (tx?.raw_data ?? {}) as Record<string, any>;
+  const n = Number(tx?.cuentaAch ?? rd.cuentaAch);
+  return n >= 1 && n <= 4 ? n : 2;
+};
+
 // Panel: el nombre de la bolsa para mostrar.
 export const NOMBRE_BOLSA: Record<string, string> = { Coinsenda: 'Coinsenda Jero', 'Coinsenda 2': 'Coinsenda Kaupaloki' };
 export const nombreBolsa = (p: string): string => NOMBRE_BOLSA[p] ?? p;

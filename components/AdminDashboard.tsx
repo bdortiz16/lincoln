@@ -101,6 +101,7 @@ import { AdminOperadores } from './AdminOperadores';
 import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminApiExterna } from './AdminApiExterna';
 import { AdminCoinsenda } from './AdminCoinsenda';
+import { AdminBancosAchMouv } from './AdminBancosAchMouv';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
@@ -2615,6 +2616,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           <span style={{ whiteSpace: 'nowrap' }}>− comprometido {Math.round(b.oblig).toLocaleString('es-CO')}</span>
                         </p>
                         {b.detalle && <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{b.detalle}</p>}
+                        {/* Desde el 22 nov el saldo Bre-B también paga ACH · Cuenta 1:
+                            el cruce de bancos se revisa acá sin mandar plata. */}
+                        {b.rail === 'COP_BREB' && esDueno && <AdminBancosAchMouv />}
                       </>
                     )}
                   </div>
@@ -5520,6 +5524,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       // sin la llave raw_data): leer solo t.raw_data dejaba cada envío de
       // Coinsenda como "ACH" y con la cuenta adivinada por la moneda.
       const rd = { ...t, ...(t.raw_data ?? {}) };
+      // ACH por Mouv (ACH · Cuenta 1, desde el 22 nov) paga con COP_BREB: por
+      // la moneda se leía "Bre-B" y el fallo se buscaba en el riel equivocado.
+      if (String(rd.rail ?? '').toUpperCase() === 'ACH' && String(rd.proveedor ?? '') === 'mouv') return 'ACH · Cuenta 1 · Mouv';
+      if (String(rd.rail ?? '').toUpperCase() === 'BREB' && String(rd.proveedor ?? '') === 'finity') return 'Bre-B · Cuenta 2 · Finity';
       if (String(t.proveedor ?? rd.proveedor ?? '') !== 'coinsenda') return railLabel(t.currency);
       const cuenta = rd.coinsenda?.cuenta ?? rd.cuentaAch ?? rd.cuentaBreb ?? (String(t.currency) === 'COP_C4' ? 4 : 3);
       const riel = rd.rail ?? rd.riel ?? (rd.cuentaBreb ? 'Bre-B' : 'ACH');

@@ -40,7 +40,7 @@ const SALE = new Set(['dispersion', 'send', 'withdraw', 'otc_withdraw', 'pay_sen
 
 export const monedaDe = (t: any): string => {
   const c = txt(t?.currency);
-  if (c === 'COP_BREB') return 'COP · Bre-B';
+  if (c === 'COP_BREB') return t?.rail === 'ACH' ? 'COP · Bre-B (ACH Cuenta 1)' : 'COP · Bre-B';
   if (c === 'COP_ACH') return t?.rail === 'BREB' ? 'COP · ACH (Bre-B Cuenta 2)' : 'COP · ACH';
   if (c === 'COP') return 'COP · Saldo Lincoin';
   return c;
@@ -79,13 +79,14 @@ export function reversosDe(movimientos: any[]): InfoReverso {
 }
 
 const ESTADOS_OK = new Set(['Completado', 'Liquidado', 'Aprobado']);
-// La cuenta por donde pasó, con los nombres que ve el cliente: Bre-B es la
-// Cuenta 1 y ACH la Cuenta 2 (también el Bre-B que sale de la Cuenta 2).
+// La cuenta por donde pasó, con los nombres que ve el cliente: el saldo
+// Bre-B es la Cuenta 1 y el ACH la Cuenta 2. Cada una paga los dos rieles: el
+// Bre-B que sale de la Cuenta 2 y, desde el 22 nov, el ACH de la Cuenta 1.
 export const cuentaRielDe = (t: any): string => {
   const c = txt(t?.currency).toUpperCase();
   const rail = txt(t?.rail).toUpperCase();
   const riel = rail === 'BREB' ? ' · Bre-B' : rail === 'ACH' ? ' · ACH' : '';
-  if (c === 'COP_BREB') return 'Cuenta 1 · Bre-B';
+  if (c === 'COP_BREB') return rail === 'ACH' ? 'Cuenta 1 · ACH' : 'Cuenta 1 · Bre-B';
   if (c === 'COP_ACH') return rail === 'BREB' || Number(t?.cuentaBreb) === 2 ? 'Cuenta 2 · Bre-B' : 'Cuenta 2 · ACH';
   if (c === 'COP_C3') return `Cuenta 3 · Jero${riel}`;
   if (c === 'COP_C4') return `Cuenta 4 · Kaupaloki${riel}`;
