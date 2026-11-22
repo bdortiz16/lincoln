@@ -348,15 +348,34 @@ function motivoLoginPortal(l: { status: number | string; snippet: string; frenad
   return `${motivo}${txt ? ` Respuesta del portal (${st}): ${txt.slice(0, 160)}` : ` (${st})`}${hora ? ` · Para no bloquear la cuenta no se reintenta hasta las ${hora}; el botón de actualizar prueba ya.` : ''}`
 }
 
-// Saldo por la API de socios, con su token OAuth. Primero las rutas /v0 de
-// saldo (se acepta solo una lista con la moneda de cada fila) y, si falta
-// alguna cifra, las rutas del portal a través de la API. Se guarda 60 s si
-// funcionó y 5 min si no: el panel relee cada 30 s por pestaña abierta.
+// Saldo por la API de socios, con su token OAuth (el mismo de los envíos).
+// Primero la ruta oficial /v0/account/{COP|USD}; si falta alguna cifra, las
+// otras rutas /v0 de saldo (solo una lista con la moneda de cada fila) y las
+// del portal a través de la API. Se guarda 60 s si funcionó y 5 min si no:
+// el panel relee cada 30 s por pestaña abierta (el botón ↻ fuerza).
 let saldoApiCache: { hasta: number; r: { cop: number | null; usdt: number | null; intentos: Record<string, any> } } | null = null
-async function saldoPorApi(amountOf: (d: any) => number | null, deepFind: (o: any, t: string[]) => number | null) {
-  if (saldoApiCache && Date.now() < saldoApiCache.hasta) return saldoApiCache.r
+async function saldoPorApi(amountOf: (d: any) => number | null, deepFind: (o: any, t: string[]) => number | null, forzar = false) {
+  if (!forzar && saldoApiCache && Date.now() < saldoApiCache.hasta) return saldoApiCache.r
   const intentos: Record<string, any> = {}
   let cop: number | null = null, usdt: number | null = null
+  // La ruta OFICIAL (doc de Finity, "Get account balance by asset"):
+  // GET /v0/account/{asset} con asset COP o USD, con el token de la API.
+  for (const [asset, campo] of [['COP', 'cop'], ['USD', 'usdt']] as const) {
+    try {
+      const r = await finityFetch(`/v0/account/${asset}`, { signal: AbortSignal.timeout(10000) })
+      const raw = await r.json().catch(() => null)
+      intentos[`account_${asset}`] = { status: r.status, raw }
+      if (!r.ok) continue
+      const n = amountOf(raw) ?? deepFind(raw, ['available', 'balance', 'amount'])
+      if (n == null) continue
+      if (campo === 'cop') cop = n; else usdt = n
+    } catch (e) { intentos[`account_${asset}`] = { status: 'throw', err: String(e).slice(0, 120) } }
+  }
+  if (cop != null && usdt != null) {
+    const r = { cop, usdt, intentos }
+    saldoApiCache = { hasta: Date.now() + 60_000, r }
+    return r
+  }
   try {
     const { res, path } = await finityTry('balance')
     const raw = await res.json().catch(() => null)
@@ -831,16 +850,18 @@ Deno.serve(async (req) => {
         return null
       }
 
+      // 22 nov: el saldo sale de la API de socios, por la ruta oficial
+      // GET /v0/account/{COP|USD} (doc de Finity), con el token de los
+      // envíos. El portal (con su usuario y contraseña) queda de respaldo:
+      // su servidor viejo dejó de existir cuando Finity dejó un solo dominio.
+      const forzar = payload?.forzar === true
+      const b = await saldoPorApi(amountOf, deepFind, forzar)
+      if (b.cop != null || b.usdt != null) {
+        return json(200, { ok: true, usdt: b.usdt, cop: b.cop, sandbox: false, source: 'api', raw: b.intentos })
+      }
       // forzar: lo pide el botón de actualizar de la bolsa (salta el freno).
-      const token = await getPortalToken({ forzar: payload?.forzar === true })
+      const token = await getPortalToken({ forzar })
       if (!token) {
-        // Plan B (22 nov): sin sesión del portal, se intenta leer el saldo
-        // con el token de la API de socios (api.finity.com.co, el mismo de
-        // los envíos). Solo se aceptan cifras con su moneda clara.
-        const b = await saldoPorApi(amountOf, deepFind)
-        if (b.cop != null || b.usdt != null) {
-          return json(200, { ok: true, usdt: b.usdt, cop: b.cop, sandbox: false, source: 'api', aviso: motivoLoginPortal(lastPortalLogin), raw: b.intentos })
-        }
         return json(200, {
           ok: false, usdt: null, cop: null,
           error: (portalEmail() && portalPassword())
