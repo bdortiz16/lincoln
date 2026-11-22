@@ -295,12 +295,59 @@ const PORTAL_COOKIE_NAME = 'plentiapp-prod-server-only'
 // Se cachea la cookie completa ("nombre=valor") lista para reenviar.
 let portalTokenCache: { cookie: string; exp: number } | null = null
 // Detalle del último intento de login (para diagnosticar en el admin).
-let lastPortalLogin: { status: number | string; snippet: string } | null = null
+let lastPortalLogin: { status: number | string; snippet: string; frenadoHasta?: number } | null = null
 
-async function getPortalToken(): Promise<string | null> {
+// ── Freno de logins rechazados (22 nov) ────────────────────────────
+// El panel relee las bolsas cada 30 s por pestaña abierta, y cada lectura
+// sin sesión intentaba entrar al portal otra vez. Con la contraseña mala eso
+// es un login fallido cada 30 s, y un portal puede bloquear la cuenta por
+// intentos. Tras un rechazo se deja de intentar un rato (lo dice el panel);
+// el botón de actualizar de la bolsa prueba ya (forzar). Va en private_config
+// porque guarda lo que contestó el portal y system_config lo lee el navegador.
+const FRENO_LOGIN_KEY = 'finity_portal_login_freno'
+async function leerFrenoLogin(): Promise<{ hasta: number; status: number | string; snippet: string } | null> {
+  try {
+    const { data } = await db.from('private_config').select('value').eq('key', FRENO_LOGIN_KEY).maybeSingle()
+    const v = data?.value ? JSON.parse(String(data.value)) : null
+    return v && Number(v.hasta) > Date.now() ? { hasta: Number(v.hasta), status: v.status, snippet: String(v.snippet ?? '') } : null
+  } catch { return null }
+}
+async function ponerFrenoLogin(status: number | string, snippet: string) {
+  // Un rechazo de credenciales o un bloqueo (4xx): 15 min. Una falla de red o
+  // del portal (5xx, sin respuesta): 2 min, es pasajera.
+  const espera = typeof status === 'number' && status >= 400 && status < 500 ? 15 * 60_000 : 2 * 60_000
+  try {
+    await db.from('private_config').upsert({ key: FRENO_LOGIN_KEY, value: JSON.stringify({ hasta: Date.now() + espera, status, snippet: snippet.slice(0, 300), at: new Date().toISOString() }) }, { onConflict: 'key' })
+  } catch { /* el freno es una protección; si falla, no tumba la lectura */ }
+}
+async function quitarFrenoLogin() {
+  try { await db.from('private_config').delete().eq('key', FRENO_LOGIN_KEY) } catch { /* */ }
+}
+
+// Lo que contestó el portal, dicho para el panel.
+function motivoLoginPortal(l: { status: number | string; snippet: string; frenadoHasta?: number } | null): string {
+  if (!l) return 'El login del portal Finity fue rechazado.'
+  const st = l.status
+  const txt = String(l.snippet ?? '').replace(/\s+/g, ' ').trim()
+  let motivo: string
+  if (st === 'throw') motivo = 'El portal de Finity no respondió (red o tiempo de espera).'
+  else if (st === 429 || st === 423 || /bloque|blocked|locked|too many|demasiad/i.test(txt)) motivo = 'Finity bloqueó el ingreso por intentos: hay que desbloquear la cuenta en portal.finity.com.co.'
+  else if (st === 400 || st === 401 || /contrase|password|credencial|credential|incorrect|inv[aá]lid/i.test(txt)) motivo = 'Finity rechazó el correo o la contraseña del portal. Si la contraseña se cambió o venció en portal.finity.com.co, hay que actualizar el secret FINITY_PORTAL_PASSWORD en Supabase.'
+  else if (st === 403) motivo = 'El portal de Finity negó el ingreso (403): puede ser su protección de seguridad o la cuenta bloqueada.'
+  else if (typeof st === 'number' && st >= 500) motivo = `El portal de Finity tiene una falla (${st}).`
+  else motivo = 'El login del portal Finity fue rechazado.'
+  const hora = l.frenadoHasta ? new Date(l.frenadoHasta).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit' }) : null
+  return `${motivo}${txt ? ` Respuesta del portal (${st}): ${txt.slice(0, 160)}` : ` (${st})`}${hora ? ` · Para no bloquear la cuenta no se reintenta hasta las ${hora}; el botón de actualizar prueba ya.` : ''}`
+}
+
+async function getPortalToken(opts: { forzar?: boolean } = {}): Promise<string | null> {
   if (portalTokenCache && Date.now() < portalTokenCache.exp - 30_000) return portalTokenCache.cookie
   const PORTAL_EMAIL = portalEmail(), PORTAL_PASSWORD = portalPassword()
   if (!PORTAL_EMAIL || !PORTAL_PASSWORD) return null
+  if (!opts.forzar) {
+    const freno = await leerFrenoLogin()
+    if (freno) { lastPortalLogin = { status: freno.status, snippet: freno.snippet, frenadoHasta: freno.hasta }; return null }
+  }
   const res = await fetch(`${PORTAL_BASE}/auth/login`, {
     method: 'POST',
     // Se replican EXACTAMENTE los headers de navegador del portal — su
@@ -323,7 +370,7 @@ async function getPortalToken(): Promise<string | null> {
     body: JSON.stringify({ email: PORTAL_EMAIL, password: PORTAL_PASSWORD, remember_me: false }),
     signal: AbortSignal.timeout(12000),
   }).catch((e) => { lastPortalLogin = { status: 'throw', snippet: String(e).slice(0, 200) }; return null })
-  if (!res) return null
+  if (!res) { await ponerFrenoLogin('throw', lastPortalLogin?.snippet ?? ''); return null }
   const text = await res.text().catch(() => '')
   let body: any = {}
   try { body = JSON.parse(text) } catch { /* respuesta no-JSON */ }
@@ -331,8 +378,10 @@ async function getPortalToken(): Promise<string | null> {
   const token = body?.data?.signed ?? body?.signed ?? body?.data?.token ?? body?.data?.access_token ?? body?.access_token ?? body?.token
   if (!res.ok || !token) {
     console.warn('[finity-portal] login rechazado:', res.status, text.slice(0, 200))
+    await ponerFrenoLogin(res.status, text)
     return null
   }
+  await quitarFrenoLogin()
   // La cookie de auth: se prefiere la que el login setee vía Set-Cookie; si
   // no la expone, se arma con el token del body (data.signed).
   let cookieVal = token
@@ -732,12 +781,13 @@ Deno.serve(async (req) => {
         return null
       }
 
-      const token = await getPortalToken()
+      // forzar: lo pide el botón de actualizar de la bolsa (salta el freno).
+      const token = await getPortalToken({ forzar: payload?.forzar === true })
       if (!token) {
         return json(200, {
           ok: false, usdt: null, cop: null,
           error: (portalEmail() && portalPassword())
-            ? 'El login del portal Finity fue rechazado (revisa FINITY_PORTAL_EMAIL / FINITY_PORTAL_PASSWORD).'
+            ? motivoLoginPortal(lastPortalLogin)
             : 'Faltan credenciales del portal Finity (define los secrets FINITY_PORTAL_EMAIL y FINITY_PORTAL_PASSWORD).',
           needsPortalCreds: !(portalEmail() && portalPassword()),
           loginDebug: lastPortalLogin,

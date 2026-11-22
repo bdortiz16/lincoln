@@ -1096,7 +1096,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     else alert(r?.error ? `No se pudo: ${r.error}` : 'No se pudo confirmar.');
   };
 
-  const loadFinityPool = async (opts?: { silencioso?: boolean }): Promise<boolean> => {
+  // forzar: el botón de actualizar de la bolsa. Tras un login rechazado el
+  // servidor deja de intentar un rato (para no bloquear la cuenta del portal
+  // con un intento cada 30 s); el botón prueba ya.
+  const loadFinityPool = async (opts?: { silencioso?: boolean; forzar?: boolean }): Promise<boolean> => {
     const silencioso = opts?.silencioso === true;
     const ponerError = (error: string) => setFinityPool(prev => (silencioso && prev && !prev.error && !prev.loading) ? prev : { loading: false, error });
     if (!silencioso) setFinityPool({ loading: true });
@@ -1112,7 +1115,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const r = await fetch(`${SURL}/functions/v1/finity-proxy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader },
-        body: JSON.stringify({ action: 'treasury_balances' }),
+        body: JSON.stringify({ action: 'treasury_balances', ...(opts?.forzar === true ? { forzar: true } : {}) }),
       });
       const d = await r.json();
       if (d?.error) { ponerError(d.error); return false; }
@@ -2514,7 +2517,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const bolsas = [
         { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
           detalle: mouvPool && !mouvPool.loading && !mouvPool.error ? `Bre-B ${mouvPool.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'} · ACH ${mouvPool.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}` : null },
-        { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool, detalle: null },
+        { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: () => loadFinityPool({ forzar: true }), detalle: null },
         { rail: 'COP_C3' as const, label: nombreBolsa('Coinsenda'), icon: Send, pool: c3Pool, oblig: obligC3, free: freeC3, loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 3 · billetera COP' },
         { rail: 'COP_C4' as const, label: nombreBolsa('Coinsenda 2'), icon: Send, pool: c4Pool, oblig: obligC4, free: freeC4, loading: coinsenda2Pool?.loading, error: coinsenda2Pool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 4 · billetera COP' },
       ];
@@ -3462,7 +3465,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         ? obligaciones.valor[code] : allUsers.reduce((acc, u) => acc + Number((u.balances as any)?.[code] ?? 0), 0);
       const bolsas = [
         { n: 'Mouv', icon: Zap, pool: Number(mouvPool?.breb ?? mouvPool?.total ?? 0), oblig: obligOf('COP_BREB'), loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool },
-        { n: 'Finity', icon: Landmark, pool: Number(finityPool?.cop ?? 0), oblig: obligOf('COP_ACH'), loading: finityPool?.loading, error: finityPool?.error, reload: loadFinityPool },
+        { n: 'Finity', icon: Landmark, pool: Number(finityPool?.cop ?? 0), oblig: obligOf('COP_ACH'), loading: finityPool?.loading, error: finityPool?.error, reload: () => loadFinityPool({ forzar: true }) },
         { n: 'Coinsenda', icon: Send, pool: Number(coinsendaPool?.cop ?? 0), oblig: obligOf('COP_C3'), loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool },
         { n: 'Coinsenda 2', icon: Send, pool: Number(coinsenda2Pool?.cop ?? 0), oblig: obligOf('COP_C4'), loading: coinsenda2Pool?.loading, error: coinsenda2Pool?.error, reload: loadCoinsendaPool },
       ];
@@ -4376,7 +4379,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                       {esMesActual && fila(<span style={{ color: 'rgba(244,244,242,0.45)' }}>Bolsa en vivo − saldos de clientes</span>, v?.pool == null ? null : Math.round((v.pool as number) - v.clientes), { signo: (v?.pool ?? 0) - (v?.clientes ?? 0) < 0 ? '−' : '' })}
                                       {esMesActual && (() => { const bolsa = c.proveedor === 'Mouv' ? mouvPool : c.proveedor === 'Coinsenda' ? coinsendaPool : c.proveedor === 'Coinsenda 2' ? coinsenda2Pool : finityPool; return (
                                           <div className="flex justify-end">
-                                              <button onClick={() => (c.proveedor === 'Mouv' ? loadMouvPool : c.proveedor === 'Coinsenda' || c.proveedor === 'Coinsenda 2' ? loadCoinsendaPool : loadFinityPool)()} disabled={!!bolsa?.loading}
+                                              <button onClick={() => (c.proveedor === 'Mouv' ? loadMouvPool : c.proveedor === 'Coinsenda' || c.proveedor === 'Coinsenda 2' ? loadCoinsendaPool : () => loadFinityPool({ forzar: true }))()} disabled={!!bolsa?.loading}
                                                   className="inline-flex items-center" style={{ gap: 5, background: 'none', border: 'none', padding: '2px 0', color: '#878E88', fontSize: 11, cursor: 'pointer' }}>
                                                   <RefreshCw size={11} className={bolsa?.loading ? 'animate-spin' : ''} /> {bolsa?.loading ? 'Leyendo la bolsa…' : 'Leer la bolsa de nuevo'}
                                               </button>
