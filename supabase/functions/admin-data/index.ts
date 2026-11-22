@@ -6548,9 +6548,15 @@ Deno.serve(async (req: Request) => {
         if (nDias > 400) return json({ ok: false, error: 'Elige un periodo de hasta 400 días.' }, 400)
         const aUtc = (ymd: string, fin = false) => new Date(Date.parse(`${ymd}T00:00:00Z`) + 5 * 3600_000 + (fin ? 86_400_000 : 0)).toISOString()
         const { filas } = await leerPorPaginas(() => db.from('transactions')
-          .select(`id, created_at, currency, user_id, ${SELECT_UTILIDAD}`)
+          .select(`id, created_at, currency, user_id, ${SELECT_UTILIDAD}, usdt:raw_data->acct->>usdtGross, tasaVenta:raw_data->acct->>sellRate, tasaCliente:raw_data->acct->>clientRate, nota:raw_data->>note`)
           .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
           .gte('created_at', aUtc(desde)).lt('created_at', aUtc(hasta, true)), { tope: 100_000 })
+        // La lista de cargues del periodo, cada uno con su utilidad (pedido
+        // del dueño, 22 nov: "cuánto gané de un día a otro, con los cargues y
+        // la sumatoria"). Hasta 3.000; el total de arriba es de todos.
+        const TOPE_LISTA = 3000
+        const listaCargues: any[] = []
+        let totalCargado = 0, totalUsdt = 0
         const fuente = (c: unknown) => provDeRiel(c) ?? 'Saldo Lincoin'
         const porFuente: Record<string, { total: number; cargues: number; conContabilidad: number }> = {}
         const porDia: Record<string, Record<string, number>> = {}
@@ -6564,6 +6570,20 @@ Deno.serve(async (req: Request) => {
           const c = (porCliente[String(t.user_id ?? '')] ??= { total: 0, cargues: 0, conContabilidad: 0, fuentes: {} })
           x.cargues++
           c.cargues++
+          const montoC = Number(t.montoFila) || 0
+          if (!t.oculto) { totalCargado += montoC; totalUsdt += Number(t.usdt) || 0 }
+          if (listaCargues.length < TOPE_LISTA) {
+            const rev = t.reverso && typeof t.reverso === 'object' ? t.reverso : null
+            listaCargues.push({
+              id: String(t.id), fecha: t.created_at, clienteId: String(t.user_id ?? ''), fuente: f, monto: montoC,
+              usdt: t.usdt != null && t.usdt !== '' ? Number(t.usdt) : null,
+              tasaVenta: t.tasaVenta != null && t.tasaVenta !== '' ? Number(t.tasaVenta) : null,
+              tasaCliente: t.tasaCliente != null && t.tasaCliente !== '' ? Number(t.tasaCliente) : null,
+              utilidad: Math.round(utilidadLincoin(t)), conContabilidad: t.utilidad != null && t.utilidad !== '',
+              oculto: !!t.oculto, revertido: rev ? (rev.anulado === true ? 'anulado' : Number(rev.montoCop) > 0 ? 'parcial' : null) : null,
+              nota: t.nota ? String(t.nota).slice(0, 200) : null,
+            })
+          }
           if (t.oculto) continue
           if (t.utilidad != null && t.utilidad !== '') { x.conContabilidad++; c.conContabilidad++ }
           const u = utilidadLincoin(t)
@@ -6579,6 +6599,8 @@ Deno.serve(async (req: Request) => {
           const { data: us } = await db.from('users').select('id, full_name, company_name, email, role').in('id', idsCli.slice(i, i + 200))
           for (const u of (us ?? []) as any[]) fichaCli[String(u.id)] = { nombre: String(u.company_name || u.full_name || u.email || '—'), empresa: u.role === 'business' }
         }
+        for (const c of listaCargues) c.cliente = fichaCli[c.clienteId]?.nombre ?? 'Cliente eliminado'
+        listaCargues.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
         const clientes = idsCli
           .map(id => ({ id, nombre: fichaCli[id]?.nombre ?? 'Cliente eliminado', empresa: fichaCli[id]?.empresa ?? false, ...porCliente[id],
             total: Math.round(porCliente[id].total), fuentes: Object.fromEntries(Object.entries(porCliente[id].fuentes).map(([k, v]) => [k, Math.round(v)])) }))
@@ -6591,6 +6613,8 @@ Deno.serve(async (req: Request) => {
           fuentes: ['Finity', 'Mouv', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin'].map(n => ({ n, ...(porFuente[n] ?? { total: 0, cargues: 0, conContabilidad: 0 }), total: Math.round(porFuente[n]?.total ?? 0) })),
           porDia: nDias <= 92 ? porDia : null,
           clientes,
+          cargues: listaCargues, carguesTruncado: (filas as any[]).length > TOPE_LISTA,
+          totalCargado: Math.round(totalCargado), totalUsdt: Math.round(totalUsdt * 100) / 100,
           cajaMes: await cajaDelMes(desde, hasta, aUtc(desde), aUtc(hasta, true)),
           movimientos: movs.map(m => ({ id: m.id, fecha: m.fecha, tipo: m.tipo, proveedor: m.proveedor, monto: Number(m.monto), descripcion: m.descripcion,
             soporte: m.soporte_nombre ?? null, por: quien(m.por), esMio: String(m.por?.id ?? '') === yoIdL,

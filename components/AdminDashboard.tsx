@@ -106,6 +106,7 @@ import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
 import { ReporteFinanciero } from './ReporteFinanciero';
 import { AuditoriaMovimientos } from './AuditoriaMovimientos';
+import { descargarXlsx } from '../lib/xlsx';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
@@ -1457,20 +1458,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [linMes, setLinMes] = useState(() => hoyBog().slice(0, 7));
   const [linData, setLinData] = useState<any>(null);
   const [linCargando, setLinCargando] = useState(false);
-  // Un solo día dentro del mes (null = el mes entero). Se pide aparte: el
+  // Un periodo de un día a otro (null = el mes entero). Se pide aparte: el
   // tablero del mes sigue mandando en la gráfica por día y en Bolsas y envíos
-  // (el cierre de caja es del mes), y el del día en utilidades, clientes y
-  // movimientos. Antes solo se podía ver el mes completo.
-  const [linDia, setLinDia] = useState<string | null>(null);
+  // (el cierre de caja es del mes), y el del periodo en utilidades, cargues,
+  // clientes y movimientos. Antes solo se podía elegir el mes o UN día
+  // (pedido del dueño, 22 nov: "cuánto gané de un día a otro").
+  const [linRango, setLinRango] = useState<{ desde: string; hasta: string } | null>(null);
   const [linDiaData, setLinDiaData] = useState<any>(null);
+  // Cargues y utilidad: buscador.
+  const [linCarBusca, setLinCarBusca] = useState('');
   // Utilidad por cliente: buscador y si se ven todos o los primeros.
   const [linCliBusca, setLinCliBusca] = useState('');
   const [linCliTodos, setLinCliTodos] = useState(false);
   // Tesorería › Lincoin en secciones (como Contabilidad): el tablero ya no es
   // una sola página larga. Se recuerda la última abierta.
-  type LinSeccion = 'resumen' | 'clientes' | 'bolsas' | 'movimientos';
+  type LinSeccion = 'resumen' | 'cargues' | 'clientes' | 'bolsas' | 'movimientos';
   const [linSeccion, setLinSeccionState] = useState<LinSeccion>(() => {
-    try { const v = localStorage.getItem('lincoin_admin_lin_seccion'); return (['resumen', 'clientes', 'bolsas', 'movimientos'].includes(String(v)) ? v : 'resumen') as LinSeccion; } catch { return 'resumen'; }
+    try { const v = localStorage.getItem('lincoin_admin_lin_seccion'); return (['resumen', 'cargues', 'clientes', 'bolsas', 'movimientos'].includes(String(v)) ? v : 'resumen') as LinSeccion; } catch { return 'resumen'; }
   });
   const setLinSeccion = (v: LinSeccion) => { setLinSeccionState(v); try { localStorage.setItem('lincoin_admin_lin_seccion', v); } catch { /* sin storage */ } };
   const [linVer, setLinVer] = useState(0);
@@ -1663,13 +1667,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
     return () => { vigente = false; };
   }, [activeTab, linMes, linVer]);
   useEffect(() => {
-    if (activeTab !== 'lincoin' || !linDia) return;
+    if (activeTab !== 'lincoin' || !linRango) return;
     let vigente = true;
-    pedirAdmin({ action: 'lincoin_resumen', desde: linDia, hasta: linDia })
-      .then(d => { if (!vigente) return; if (d?.ok) setLinDiaData(d); else { showToast(d?.error ?? 'No se pudo cargar ese día.'); setLinDia(null); } })
-      .catch(() => { if (vigente) { showToast('No se pudo cargar ese día.'); setLinDia(null); } });
+    pedirAdmin({ action: 'lincoin_resumen', desde: linRango.desde, hasta: linRango.hasta })
+      .then(d => { if (!vigente) return; if (d?.ok) setLinDiaData(d); else { showToast(d?.error ?? 'No se pudo cargar ese periodo.'); setLinRango(null); } })
+      .catch(() => { if (vigente) { showToast('No se pudo cargar ese periodo.'); setLinRango(null); } });
     return () => { vigente = false; };
-  }, [activeTab, linDia, linVer]);
+  }, [activeTab, linRango?.desde, linRango?.hasta, linVer]); // eslint-disable-line react-hooks/exhaustive-deps
   // Los envíos a la empresa que siguen en camino se le preguntan al
   // proveedor al abrir el tablero (como mucho tres): así «En proceso» pasa
   // solo a «Llegó» o, si lo devolvieron, el retiro se anula.
@@ -4053,12 +4057,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           ingreso: { l: 'Ingreso externo', signo: 1, desc: 'Entró plata a la bolsa por fuera de Lincoin' },
           aporte: { l: 'Aporte de Lincoin', signo: 1, desc: 'Lincoin pone plata en la bolsa' },
       };
-      // Con un día elegido, utilidades, clientes y movimientos salen de ese
-      // día (dd); la gráfica por día y Bolsas y envíos siguen con el mes (d).
-      const dd = linDia ? (linDiaData?.desde === linDia ? linDiaData : null) : d;
-      const cargandoDia = !!linDia && !dd;
-      const diaTxt = linDia ? new Date(`${linDia}T12:00:00`).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-      const periodoTxt = linDia ? diaTxt : linMes;
+      // Con un periodo elegido, utilidades, cargues, clientes y movimientos
+      // salen de ese periodo (dd); la gráfica por día y Bolsas y envíos siguen
+      // con el mes (d).
+      const dd = linRango ? (linDiaData?.desde === linRango.desde && linDiaData?.hasta === linRango.hasta ? linDiaData : null) : d;
+      const cargandoDia = !!linRango && !dd;
+      const unDia = !!linRango && linRango.desde === linRango.hasta;
+      // El día resaltado en la gráfica (solo si el periodo es de un día).
+      const linDia = unDia ? linRango!.desde : null;
+      const fCorta = (x: string) => new Date(`${x}T12:00:00`).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' });
+      const diaTxt = linRango ? (unDia ? fCorta(linRango.desde) : `${fCorta(linRango.desde)} – ${fCorta(linRango.hasta)}`) : '';
+      const periodoTxt = linRango ? diaTxt : linMes;
       const fuentesMes: any[] = d?.fuentes ?? [];
       const fuentes: any[] = dd?.fuentes ?? [];
       const utilidad = fuentes.reduce((a, f) => a + f.total, 0);
@@ -4167,23 +4176,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   <p style={{ margin: '4px 0 0', fontSize: 12, color: '#878E88' }}>{linCargando || cargandoDia ? 'Actualizando…' : 'Lo que es de Lincoin dentro de las bolsas, de dónde salen sus utilidades y lo que se mueve por fuera'}</p>
               </div>
               <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
-                  <input type="month" value={linMes} max={hoyBog().slice(0, 7)} onChange={e => { if (e.target.value) { setLinMes(e.target.value); setLinDia(null); } }}
-                      style={{ background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, fontWeight: 700, colorScheme: 'dark' as any }} />
-                  <select value={linDia ?? ''} onChange={e => setLinDia(e.target.value || null)} aria-label="Día"
-                      style={{ background: '#070808', border: `1px solid ${linDia ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`, borderRadius: 999, color: '#F4F4F2', padding: '6px 12px', fontSize: 12.5, fontWeight: 700, colorScheme: 'dark' as any, cursor: 'pointer' }}>
-                      <option value="">Todo el mes</option>
-                      {[...dias].reverse().map(x => <option key={x} value={x}>{Number(x.slice(8))} de {mesCorto}</option>)}
-                  </select>
                   <button onClick={nuevo} className="inline-flex items-center" style={{ gap: 6, background: '#4ADE80', color: '#0C0E0D', border: 'none', borderRadius: 10, padding: '9px 14px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>
                       <Plus size={15} /> Registrar movimiento
                   </button>
               </div>
           </div>
 
+          {/* Periodo: de un día a otro, con atajos. Sin periodo, el mes. */}
+          {(() => {
+              const hoy = hoyBog();
+              const mas = (x: string, n: number) => new Date(Date.parse(`${x}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+              const finMes = (ym: string) => { const [a, m] = ym.split('-').map(Number); const f = new Date(Date.UTC(a, m, 0)).toISOString().slice(0, 10); return f > hoy ? hoy : f; };
+              const mesAnt = (() => { const [a, m] = hoy.slice(0, 7).split('-').map(Number); return m === 1 ? `${a - 1}-12` : `${a}-${String(m - 1).padStart(2, '0')}`; })();
+              const desdeV = linRango?.desde ?? `${linMes}-01`;
+              const hastaV = linRango?.hasta ?? finMes(linMes);
+              // El mes de la gráfica y de Bolsas sigue al final del periodo.
+              const poner = (desde: string, hasta: string) => { const a = desde <= hasta ? desde : hasta, b = desde <= hasta ? hasta : desde; setLinMes(b.slice(0, 7)); setLinRango({ desde: a, hasta: b }); };
+              const mesEntero = (ym: string) => { setLinMes(ym); setLinRango(null); };
+              const atajos: [string, () => void, boolean][] = [
+                  ['Hoy', () => poner(hoy, hoy), !!linRango && linRango.desde === hoy && linRango.hasta === hoy],
+                  ['Ayer', () => poner(mas(hoy, -1), mas(hoy, -1)), !!linRango && linRango.desde === mas(hoy, -1) && linRango.hasta === mas(hoy, -1)],
+                  ['Últimos 7 días', () => poner(mas(hoy, -6), hoy), !!linRango && linRango.desde === mas(hoy, -6) && linRango.hasta === hoy],
+                  ['Este mes', () => mesEntero(hoy.slice(0, 7)), !linRango && linMes === hoy.slice(0, 7)],
+                  ['Mes pasado', () => mesEntero(mesAnt), !linRango && linMes === mesAnt],
+              ];
+              const CHIP = (on: boolean): React.CSSProperties => ({ background: on ? 'rgba(74,222,128,0.12)' : 'transparent', border: `1px solid ${on ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`, color: on ? '#F4F4F2' : '#878E88', borderRadius: 999, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' });
+              const FECHA: React.CSSProperties = { background: '#070808', border: `1px solid ${linRango ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.14)'}`, borderRadius: 10, color: '#F4F4F2', padding: '6px 10px', fontSize: 12.5, fontWeight: 700, colorScheme: 'dark' as any };
+              return (
+                  <div className="flex items-center flex-wrap" style={{ gap: 8, ...CARD, padding: '12px 14px' }}>
+                      <span style={{ ...ROT, marginRight: 4 }}>Periodo</span>
+                      {atajos.map(([t, fn, on]) => <button key={t} onClick={fn} style={CHIP(on)}>{t}</button>)}
+                      <span className="flex items-center" style={{ gap: 6, marginLeft: 6 }}>
+                          <span style={{ fontSize: 12, color: '#878E88' }}>Desde</span>
+                          <input type="date" value={desdeV} max={hoy} onChange={e => { if (e.target.value) poner(e.target.value, hastaV); }} style={FECHA} aria-label="Desde" />
+                          <span style={{ fontSize: 12, color: '#878E88' }}>hasta</span>
+                          <input type="date" value={hastaV} max={hoy} onChange={e => { if (e.target.value) poner(desdeV, e.target.value); }} style={FECHA} aria-label="Hasta" />
+                      </span>
+                      <span style={{ fontSize: 12, color: 'rgba(244,244,242,0.45)', marginLeft: 'auto' }}>
+                          {cargandoDia ? 'Cargando el periodo…' : linRango ? `Viendo ${unDia ? `el ${diaTxt}` : diaTxt}` : `Viendo ${mesLargo}`}
+                      </span>
+                  </div>
+              );
+          })()}
+
           <div className="grid grid-cols-2 xl:grid-cols-4" style={{ gap: 12 }}>
               {kpi('Saldo de Lincoin en bolsas', difs.length ? fmt(saldoLincoin) : '—', difs.length ? 'apertura + utilidad − retiros ± externos' : 'la caja abre hoy a las 23:59', '#4ADE80', 'bolsas')}
-              {kpi(linDia ? `Utilidad del ${diaTxt}` : 'Utilidad del periodo', cargandoDia ? '…' : fmt(utilidad), cargandoDia ? 'cargando el día…' : `de ${cargues} cargues`, '#F4F4F2', 'resumen')}
-              {kpi('Retiros de utilidad', cargandoDia ? '…' : fmt(retiros), cargandoDia ? 'cargando el día…' : `${vivos.filter(m => m.tipo === 'retiro').length} ${linDia ? 'ese día' : 'en el periodo'}`, '#F4F4F2', 'movimientos')}
+              {kpi(linRango ? (unDia ? `Utilidad del ${diaTxt}` : `Utilidad ${diaTxt}`) : 'Utilidad del mes', cargandoDia ? '…' : fmt(utilidad), cargandoDia ? 'cargando…' : `de ${cargues} cargues · ver la lista`, '#F4F4F2', 'cargues')}
+              {kpi('Retiros de utilidad', cargandoDia ? '…' : fmt(retiros), cargandoDia ? 'cargando…' : `${vivos.filter(m => m.tipo === 'retiro').length} ${linRango ? (unDia ? 'ese día' : 'en el periodo') : 'en el mes'}`, '#F4F4F2', 'movimientos')}
               {kpi('Diferencia sin explicar', difTotal == null ? '—' : signo(difTotal), difTotal == null ? (difs.length ? 'leyendo las bolsas…' : 'cuando abra la caja') : difTotal === 0 ? 'todo cuadra' : 'falta registrar algo', difTotal == null ? 'rgba(244,244,242,0.45)' : difTotal === 0 ? '#4ADE80' : '#FBBF24', 'bolsas')}
           </div>
 
@@ -4191,6 +4230,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           <div role="tablist" aria-label="Secciones de Lincoin" className="flex flex-wrap" style={{ gap: 6, padding: 4, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12 }}>
               {([
                   ['resumen', 'Resumen', ''],
+                  ['cargues', 'Cargues y utilidad', (dd?.cargues ?? []).length ? `· ${(dd?.cargues ?? []).length}` : ''],
                   ['clientes', 'Por cliente', (dd?.clientes ?? []).length ? `· ${(dd?.clientes ?? []).length}` : ''],
                   ['bolsas', 'Bolsas y envíos', difTotal != null && difTotal !== 0 ? '· no cuadra' : ''],
                   ['movimientos', 'Movimientos', movs.length ? `· ${movs.length}` : ''],
@@ -4232,16 +4272,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               <div style={CARD}>
                   <div className="flex items-center justify-between flex-wrap" style={{ gap: 8, marginBottom: 12 }}>
                       <p style={ROT}>Utilidad por día</p>
-                      <span style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{linDia ? <>Viendo el {diaTxt} · <button onClick={() => setLinDia(null)} style={{ background: 'none', border: 'none', padding: 0, color: '#4ADE80', fontWeight: 700, cursor: 'pointer', fontSize: 11 }}>ver todo el mes</button></> : 'Toca un día para ver solo ese día'}</span>
+                      <span style={{ fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>{linRango ? <>Viendo {unDia ? `el ${diaTxt}` : diaTxt} · <button onClick={() => setLinRango(null)} style={{ background: 'none', border: 'none', padding: 0, color: '#4ADE80', fontWeight: 700, cursor: 'pointer', fontSize: 11 }}>ver todo el mes</button></> : 'Toca un día para ver solo ese día'}</span>
                   </div>
                   {!d?.porDia ? <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>{linCargando ? 'Cargando…' : '—'}</p> : <>
                       <div className="flex items-end" style={{ gap: 4, height: 170 }}>
                           {dias.map(x => {
                               const v = d.porDia[x] ?? {};
                               const neg = Object.values(v).some((y: any) => Number(y) < 0);
-                              const apagado = !!linDia && linDia !== x;
+                              const apagado = !!linRango && (x < linRango.desde || x > linRango.hasta);
                               return (
-                                  <div key={x} role="button" aria-label={`Ver el día ${Number(x.slice(8))}`} onClick={() => setLinDia(linDia === x ? null : x)}
+                                  <div key={x} role="button" aria-label={`Ver el día ${Number(x.slice(8))}`} onClick={() => setLinRango(linDia === x ? null : { desde: x, hasta: x })}
                                       title={`${Number(x.slice(8))} · ${fuentesMes.map(f => `${f.n} ${fmt(v[f.n] ?? 0)}`).join(' · ')}`}
                                       style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column-reverse', cursor: 'pointer', opacity: apagado ? 0.3 : 1, borderBottom: linDia === x ? '2px solid #F4F4F2' : '2px solid transparent' }}>
                                       {fuentesMes.map(f => { const y = Math.max(0, Number(v[f.n] ?? 0)); return y ? <div key={f.n} style={{ height: `${(y / maxDia) * 100}%`, background: COLORES[f.n], borderRadius: 2, marginTop: 1 }} /> : null; })}
@@ -4260,6 +4300,106 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
           </div>
 
           )}
+
+          {/* Cargues y utilidad: cada cargue del periodo con lo que le dejó a
+              Lincoin, y la sumatoria (pedido del dueño, 22 nov). */}
+          {linSeccion === 'cargues' && (() => {
+              const lista: any[] = dd?.cargues ?? [];
+              const q = linCarBusca.trim().toLowerCase();
+              const filtrados = q ? lista.filter(c => [c.cliente, c.fuente, c.nota].some(v => String(v ?? '').toLowerCase().includes(q))) : lista;
+              const cuentan = filtrados.filter(c => !c.oculto);
+              const tot = {
+                  monto: cuentan.reduce((a, c) => a + (Number(c.monto) || 0), 0),
+                  usdt: cuentan.reduce((a, c) => a + (Number(c.usdt) || 0), 0),
+                  utilidad: cuentan.reduce((a, c) => a + (Number(c.utilidad) || 0), 0),
+              };
+              const sinConta = cuentan.filter(c => !c.conContabilidad).length;
+              const margen = tot.monto > 0 ? tot.utilidad / tot.monto : 0;
+              const fh = (x: string) => new Date(x).toLocaleString('es-CO', { timeZone: 'America/Bogota', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+              const num2 = (n: number | null) => n == null ? '—' : n.toLocaleString('es-CO', { maximumFractionDigits: 2 });
+              const TH: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: 0.6, color: 'rgba(244,244,242,0.45)', textAlign: 'left', padding: '9px 12px', borderBottom: '1px solid rgba(255,255,255,0.10)', whiteSpace: 'nowrap', position: 'sticky', top: 0, background: '#0C0E0D' };
+              const TDc: React.CSSProperties = { padding: '9px 12px', fontSize: 12.5, color: '#F4F4F2', borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap' };
+              const NUM: React.CSSProperties = { ...TDc, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+              const excel = () => {
+                  const cab = ['Fecha y hora (Bogotá)', 'Cliente', 'Cuenta', 'Monto acreditado (COP)', 'USDT', 'Tasa de venta', 'Tasa al cliente', 'Utilidad (COP)', 'Estado', 'Nota', 'Id'];
+                  const n = filtrados.length;
+                  const filas: any[][] = [cab, ...filtrados.map(c => [new Date(c.fecha), c.cliente, c.fuente, c.oculto ? null : { v: Number(c.monto) || 0, s: 'cop' }, c.oculto ? null : c.usdt, c.tasaVenta, c.tasaCliente, c.oculto ? null : { v: Number(c.utilidad) || 0, s: 'cop' },
+                      c.oculto ? 'Oculto (no cuenta)' : c.revertido === 'anulado' ? 'Anulado' : c.revertido === 'parcial' ? 'Corregido' : !c.conContabilidad ? 'Sin contabilidad' : '', c.nota ?? '', c.id])];
+                  filas.push([{ v: 'TOTAL', s: 'totalTexto' }, { v: `${cuentan.length} cargues`, s: 'totalTexto' }, { v: '', s: 'totalTexto' },
+                      { f: `SUM(D2:D${n + 1})`, v: tot.monto, s: 'totalCop' }, { f: `SUM(E2:E${n + 1})`, v: tot.usdt, s: 'totalUsd' }, { v: '', s: 'totalTexto' }, { v: '', s: 'totalTexto' },
+                      { f: `SUM(H2:H${n + 1})`, v: tot.utilidad, s: 'totalCop' }]);
+                  const slug = linRango ? `${linRango.desde}-a-${linRango.hasta}` : linMes;
+                  descargarXlsx(`lincoin-cargues-utilidad-${slug}.xlsx`, [{ nombre: 'Cargues y utilidad', filas, anchos: [20, 34, 14, 20, 12, 12, 12, 16, 18, 40, 38] }]);
+              };
+              return (
+                  <div style={{ ...CARD, padding: 0, overflow: 'hidden' }}>
+                      <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                          <div>
+                              <p style={ROT}>Cargues y utilidad · {periodoTxt === linMes ? mesLargo : periodoTxt}</p>
+                              <p style={{ margin: '3px 0 0', fontSize: 11.5, color: 'rgba(244,244,242,0.45)' }}>Cada cargue manual con lo que le dejó a Lincoin. La fila de abajo suma lo que se ve.</p>
+                          </div>
+                          <div className="flex items-center" style={{ gap: 8 }}>
+                              <input value={linCarBusca} onChange={e => setLinCarBusca(e.target.value)} placeholder="Buscar cliente, cuenta o nota" style={{ ...CAMPO, width: 220, padding: '8px 10px' }} />
+                              <button onClick={excel} disabled={!filtrados.length} style={{ background: '#F4F4F2', color: '#0C0E0D', border: 'none', borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 800, cursor: filtrados.length ? 'pointer' : 'not-allowed', opacity: filtrados.length ? 1 : 0.5 }}>Descargar Excel</button>
+                          </div>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-5" style={{ gap: 1, background: 'rgba(255,255,255,0.06)' }}>
+                          {([
+                              ['Utilidad', fmt(tot.utilidad), '#4ADE80'],
+                              ['Cargues', String(cuentan.length), '#F4F4F2'],
+                              ['Monto cargado', fmt(tot.monto), '#F4F4F2'],
+                              ['USDT cargado', num2(Math.round(tot.usdt * 100) / 100), '#F4F4F2'],
+                              ['Margen', `${(margen * 100).toLocaleString('es-CO', { maximumFractionDigits: 2 })} %`, '#F4F4F2'],
+                          ] as [string, string, string][]).map(([l, v, c]) => (
+                              <div key={l} style={{ background: '#0C0E0D', padding: '12px 16px' }}>
+                                  <p style={{ margin: 0, fontSize: 11.5, color: '#878E88' }}>{l}</p>
+                                  <p style={{ margin: '4px 0 0', fontSize: 19, fontWeight: 800, letterSpacing: '-0.4px', color: c, fontVariantNumeric: 'tabular-nums' }}>{cargandoDia ? '…' : v}</p>
+                              </div>
+                          ))}
+                      </div>
+                      {sinConta > 0 && <p style={{ margin: 0, padding: '8px 16px', fontSize: 11.5, color: '#FBBF24', borderTop: '1px solid rgba(255,255,255,0.06)' }}>{sinConta} cargue{sinConta === 1 ? '' : 's'} sin contabilidad (sin USDT ni tasas): suman 0 de utilidad hasta que se les registre.</p>}
+                      {dd?.carguesTruncado && <p style={{ margin: 0, padding: '8px 16px', fontSize: 11.5, color: '#FBBF24' }}>Se muestran los primeros 3.000 cargues; los totales de arriba del tablero son de todos. Acortá el periodo para ver la lista completa.</p>}
+                      <div style={{ overflowX: 'auto', maxHeight: 560, overflowY: 'auto' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+                              <thead><tr>
+                                  {['FECHA', 'CLIENTE', 'CUENTA', 'MONTO ACREDITADO', 'USDT', 'TASA VENTA', 'TASA CLIENTE', 'UTILIDAD'].map((h, i) => <th key={h} style={{ ...TH, textAlign: i >= 3 ? 'right' : 'left' }}>{h}</th>)}
+                              </tr></thead>
+                              <tbody>
+                                  {cargandoDia && <tr><td colSpan={8} style={{ ...TDc, color: '#878E88' }}>Cargando el periodo…</td></tr>}
+                                  {!cargandoDia && filtrados.length === 0 && <tr><td colSpan={8} style={{ ...TDc, color: '#878E88' }}>{q ? 'Ningún cargue coincide con la búsqueda.' : 'No hubo cargues en este periodo.'}</td></tr>}
+                                  {!cargandoDia && filtrados.map(c => (
+                                      <tr key={c.id} style={{ opacity: c.oculto ? 0.45 : 1 }}>
+                                          <td style={{ ...TDc, color: '#878E88', fontVariantNumeric: 'tabular-nums' }}>{fh(c.fecha)}</td>
+                                          <td style={{ ...TDc, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.nota ?? undefined}>
+                                              {c.cliente}
+                                              {(c.oculto || c.revertido || !c.conContabilidad) && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700, color: c.oculto ? '#878E88' : '#FBBF24' }}>{c.oculto ? 'oculto' : c.revertido === 'anulado' ? 'anulado' : c.revertido === 'parcial' ? 'corregido' : 'sin contabilidad'}</span>}
+                                          </td>
+                                          <td style={{ ...TDc, color: '#878E88' }}>{c.fuente}</td>
+                                          <td style={NUM}>{fmt(c.monto)}</td>
+                                          <td style={NUM}>{num2(c.usdt)}</td>
+                                          <td style={NUM}>{num2(c.tasaVenta)}</td>
+                                          <td style={NUM}>{num2(c.tasaCliente)}</td>
+                                          <td style={{ ...NUM, fontWeight: 800, color: c.utilidad < 0 ? '#F87171' : c.utilidad > 0 ? '#4ADE80' : '#878E88' }}>{fmt(c.utilidad)}</td>
+                                      </tr>
+                                  ))}
+                              </tbody>
+                              {!cargandoDia && filtrados.length > 0 && (
+                                  <tfoot><tr>
+                                      <td style={{ ...TDc, fontWeight: 800, background: '#121413', position: 'sticky', bottom: 0 }}>TOTAL</td>
+                                      <td style={{ ...TDc, fontWeight: 700, background: '#121413', position: 'sticky', bottom: 0, color: '#878E88' }}>{cuentan.length} cargue{cuentan.length === 1 ? '' : 's'}{q ? ' (filtrados)' : ''}</td>
+                                      <td style={{ ...TDc, background: '#121413', position: 'sticky', bottom: 0 }} />
+                                      <td style={{ ...NUM, fontWeight: 800, background: '#121413', position: 'sticky', bottom: 0 }}>{fmt(tot.monto)}</td>
+                                      <td style={{ ...NUM, fontWeight: 800, background: '#121413', position: 'sticky', bottom: 0 }}>{num2(Math.round(tot.usdt * 100) / 100)}</td>
+                                      <td style={{ ...TDc, background: '#121413', position: 'sticky', bottom: 0 }} />
+                                      <td style={{ ...TDc, background: '#121413', position: 'sticky', bottom: 0 }} />
+                                      <td style={{ ...NUM, fontWeight: 800, color: '#4ADE80', background: '#121413', position: 'sticky', bottom: 0 }}>{fmt(tot.utilidad)}</td>
+                                  </tr></tfoot>
+                              )}
+                          </table>
+                      </div>
+                  </div>
+              );
+          })()}
 
           {linSeccion === 'clientes' && (<>
           {/* Cuánto le dejó cada cliente en el periodo. */}
@@ -4281,12 +4421,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       </div>
                       <div style={{ overflowX: 'auto' }}>
                           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-                              <thead><tr>{['CLIENTE', 'CARGUES', 'DE DÓNDE', 'UTILIDAD', linDia ? '% DEL DÍA' : '% DEL MES'].map((h, i) => (
+                              <thead><tr>{['CLIENTE', 'CARGUES', 'DE DÓNDE', 'UTILIDAD', linRango ? '% DEL PERIODO' : '% DEL MES'].map((h, i) => (
                                   <th key={h} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i >= 3 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>{h}</th>
                               ))}</tr></thead>
                               <tbody>
                                   {!dd && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{linCargando || cargandoDia ? 'Cargando…' : '—'}</td></tr>}
-                                  {dd && filtrados.length === 0 && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{q ? 'Ningún cliente con ese nombre.' : `No hubo cargues ${linDia ? 'ese día' : 'en este mes'}.`}</td></tr>}
+                                  {dd && filtrados.length === 0 && <tr><td colSpan={5} style={{ ...TD, fontSize: 12.5, color: '#878E88' }}>{q ? 'Ningún cliente con ese nombre.' : `No hubo cargues ${linRango ? 'en ese periodo' : 'en este mes'}.`}</td></tr>}
                                   {visibles.map(c => {
                                       const pct = positiva > 0 ? (Math.max(0, c.total) / positiva) * 100 : 0;
                                       return (
@@ -4473,7 +4613,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                           <th key={h || 'acc'} style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1.2, color: 'rgba(244,244,242,0.45)', textAlign: i === 6 ? 'right' : 'left', padding: '9px 18px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>{h}</th>
                       ))}</tr></thead>
                       <tbody>
-                          {movs.length === 0 && <tr><td colSpan={8} style={{ padding: 18, fontSize: 12.5, color: '#878E88' }}>{cargandoDia ? 'Cargando…' : `No hay movimientos registrados ${linDia ? 'ese día' : 'en este mes'}.`}</td></tr>}
+                          {movs.length === 0 && <tr><td colSpan={8} style={{ padding: 18, fontSize: 12.5, color: '#878E88' }}>{cargandoDia ? 'Cargando…' : `No hay movimientos registrados ${linRango ? 'en ese periodo' : 'en este mes'}.`}</td></tr>}
                           {movs.map(m => {
                               const t = TIPOS[m.tipo] ?? { l: m.tipo, signo: 1 };
                               return (
