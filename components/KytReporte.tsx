@@ -20,7 +20,7 @@
 // ══════════════════════════════════════════════════════════════════
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { hallazgosEnEspanol, bandaDeRiesgo } from '../lib/kytTextos';
+import { bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, ESCALA_RIESGO, FUENTES_RIESGO, ABREVIATURAS } from '../lib/kytTextos';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -55,7 +55,8 @@ const corta = (a?: string | null) => {
 const fecha = (t?: string | null, conHora = true) => {
   if (!t) return '—';
   try {
-    const d = new Date(t);
+    // Las fechas del proveedor llegan en segundos Unix en las fichas viejas.
+    const d = new Date(fechaProveedor(t) ?? t);
     return conHora
       ? d.toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
       : d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -138,19 +139,22 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
   // —"Involved Illicit Activity"— en un documento que se le entrega a un banco
   // colombiano. Lo que el traductor no reconoce queda en inglés a propósito:
   // ver lib/kytTextos.ts.
-  const motivos = Array.from(new Set([
-    ...hallazgosEnEspanol(d.detalle), ...hallazgosEnEspanol(d.hallazgos),
-  ]));
-  if (d.hackingEvent) motivos.unshift(`Incidente: ${d.hackingEvent}`);
-  const senalada = motivos.length > 0 || d.categoria === 'alto' || d.categoria === 'medio';
-
-  // LA BANDA ES NUESTRA LECTURA, NO SU PUNTAJE.
-  // MistTrack le puso 3/100 a una dirección cuyo propio detail_list dice
-  // "Involved Illicit Activity", y nosotros pintábamos ese 3 de verde con
-  // "está señalada directamente" escrito al lado. Una dirección señalada no
-  // sale en verde. Su puntaje se sigue mostrando tal cual.
-  const lectura = bandaDeRiesgo(d.categoria, motivos);
-  const b = banda(lectura.categoria);
+  // EL NIVEL ES EL DEL PROVEEDOR (22 nov). Este reporte se presenta junto al
+  // del proveedor ante bancos, entes de control e investigaciones: si uno
+  // dice "Bajo (3)" y el otro "Riesgo medio", no respaldan, se contradicen.
+  // Las etiquetas sobre la dirección y sus interacciones se muestran aparte,
+  // con sus palabras (ver bandaDeRiesgo en lib/kytTextos.ts).
+  const ind = indicadoresDe(d.detalle);
+  const propios = [...(d.hackingEvent ? [`Incidente: ${d.hackingEvent}`] : []), ...ind.propios];
+  const motivos = propios;
+  const senalada = propios.length > 0;
+  const lectura = bandaDeRiesgo(d.categoria);
+  const nivelEs = nivelProveedorEs(d.nivel, d.categoria);
+  const b = { ...banda(lectura.categoria), t: nivelEs === 'Sin clasificar' ? 'SIN CLASIFICAR' : `RIESGO ${nivelEs.toUpperCase()}` };
+  const escalaActiva = ESCALA_RIESGO.find(e => e.nivel === nivelEs) ?? null;
+  const sancionada = sancionadaPorProveedor(d.detalle, d.hallazgos);
+  const entidad = d.etiquetaProveedor || textos(d.etiquetas, 1)[0] || null;
+  const k = d.constancia;
 
   const directos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos === 1);
   const indirectos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos > 1);
@@ -230,15 +234,16 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             <div>
               <p style={{ fontSize: 9.5, fontWeight: 700, color: T.azul, margin: 0 }}>INTELIGENCIA DE RIESGO AML</p>
               <p style={{ fontSize: 19, fontWeight: 800, margin: '3px 0 0', lineHeight: 1.15 }}>
-                Reporte de posibles contaminadores
+                Reporte de riesgo AML
               </p>
               <p style={{ fontSize: 9.5, color: T.suave, margin: '4px 0 0' }}>
-                Red {d.coin} · Análisis de exposición directa e indirecta
+                Red {d.coin} · Riesgo, exposición directa e indirecta y posibles contaminadores
               </p>
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <p style={{ fontSize: 9.5, color: T.suave, margin: 0 }}>Generado el {fecha(d.generadoAt)}</p>
+            <p style={{ fontSize: 9.5, color: T.suave, margin: 0 }}>Generado el {fecha(d.generadoAt)} (hora de Colombia)</p>
+            <p style={{ fontSize: 9, color: T.tenue, margin: '2px 0 0' }}>{d.generadoAt ? `${new Date(d.generadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC` : ''}</p>
             {d.empresa && <p style={{ fontSize: 9.5, color: T.suave, margin: '2px 0 0' }}>Solicitado por {d.empresa}</p>}
           </div>
         </div>
@@ -251,6 +256,149 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           <div style={{ padding: '8px 12px', flex: 1 }}>
             <p style={{ fontFamily: MONO, fontSize: 11, margin: 0, wordBreak: 'break-all' }}>{d.address}</p>
           </div>
+        </div>
+
+        {/* ══ FICHA DE RIESGO — la misma estructura del reporte del proveedor ══
+            Red, dirección, entidad y sanciones; el puntaje con su escala; el
+            detalle del riesgo capa por capa; y las contrapartes por volumen.
+            Mismos datos y mismo orden que su primera hoja, para que los dos
+            documentos se puedan poner lado a lado y digan lo mismo. */}
+        <table style={{ width: '100%', borderCollapse: 'collapse', border: `1px solid ${T.linea}`, borderTop: 'none' }}>
+          <tbody>
+            {([
+              ['Red', d.coin],
+              ['Entidad de la dirección', entidad ?? 'Sin identificar'],
+              ['Sanciones', sancionada ? 'Sí' : 'No'],
+            ] as [string, string][]).map(([rot, val]) => (
+              <tr key={rot}>
+                <td style={{ ...td, width: 150, fontWeight: 700, background: T.fondo, fontSize: 9 }}>{rot}</td>
+                <td style={{ ...td, fontWeight: 700, color: rot === 'Sanciones' && sancionada ? T.rojo : T.tinta }}>{val}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="flex" style={{ border: `1px solid ${T.linea}`, borderTop: 'none', flexWrap: 'wrap', breakInside: 'avoid' }}>
+          <div style={{ flex: '0 0 170px', padding: '12px 14px', borderRight: `1px solid ${T.linea}`, textAlign: 'center' }}>
+            <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: 0 }}>PUNTAJE DE RIESGO</p>
+            <p style={{ fontSize: 34, fontWeight: 800, margin: '4px 0 0', lineHeight: 1, color: b.bg === T.fondo ? T.tinta : b.bg }}>{d.puntaje ?? '—'}</p>
+            <p style={{ fontSize: 10, fontWeight: 800, margin: '4px 0 0', color: b.bg === T.fondo ? T.tinta : b.bg }}>{nivelEs}</p>
+            <p style={{ fontSize: 8, color: T.tenue, margin: '3px 0 0' }}>sobre 100 · del proveedor, sin ajustes</p>
+          </div>
+          <div style={{ flex: '1 1 300px', padding: '10px 12px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <tbody>
+                {ESCALA_RIESGO.map(e => {
+                  const activo = escalaActiva?.nivel === e.nivel;
+                  return (
+                    <tr key={e.nivel} style={{ background: activo ? T.fondo : 'transparent' }}>
+                      <td style={{ ...td, fontSize: 9, fontWeight: 800, width: 70 }}>{activo ? '▸ ' : ''}{e.nivel}</td>
+                      <td style={{ ...td, fontSize: 9, width: 60 }}>{e.rango}</td>
+                      <td style={{ ...td, fontSize: 9, color: activo ? T.tinta : T.suave, fontWeight: activo ? 700 : 400 }}>{e.operacion}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <h2 style={H}>Detalle del riesgo</h2>
+        {ex?.items?.length ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={th}>TIPO DE RIESGO</th><th style={th}>ENTIDAD</th>
+              <th style={th}>TIPO DE EXPOSICIÓN</th><th style={th}>VOLUMEN (USD) / %</th>
+            </tr></thead>
+            <tbody>
+              {ex.items.map((it: any, i: number) => {
+                const capas: any[] = Array.isArray(it.camino) && it.camino.length ? it.camino : (Array.isArray(ex.caminoGeneral) ? ex.caminoGeneral : []);
+                return (
+                  <React.Fragment key={i}>
+                    <tr>
+                      <td style={{ ...td, fontWeight: 700, textTransform: 'capitalize' }}>{it.tipoEs ?? '—'}</td>
+                      <td style={{ ...td, fontWeight: 700 }}>{it.entidad ?? '—'}</td>
+                      <td style={td}>
+                        {it.exposicion === 'direct' ? 'directa' : it.exposicion === 'indirect' ? 'indirecta' : '—'}
+                        {it.saltos != null ? ` (${it.saltos} ${it.saltos === 1 ? 'salto' : 'saltos'})` : ''}
+                      </td>
+                      <td style={td}>
+                        {it.volumen != null ? `USD ${n(it.volumen)}` : '—'}{it.pct != null ? ` (${it.pct} %)` : ''}
+                      </td>
+                    </tr>
+                    {capas.length > 0 && (
+                      <tr>
+                        <td colSpan={4} style={{ ...td, background: T.fondo }}>
+                          {capas.map((c: any, j: number) => (
+                            <p key={j} style={{ fontFamily: MONO, fontSize: 8.5, margin: '1px 0', wordBreak: 'break-all' }}>
+                              Capa {c.nivel}: {(c.direcciones ?? []).join(', ')}
+                              {(c.direcciones ?? []).some((a: string) => String(a).toLowerCase() === String(d.address).toLowerCase())
+                                ? <span style={{ fontFamily: FONT, color: T.rojo, fontWeight: 700 }}> ← dirección consultada</span> : null}
+                            </p>
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <Vacio>El proveedor no reportó exposición a entidades de riesgo para esta dirección.</Vacio>
+        )}
+
+        <h2 style={H}>Contrapartes de la dirección</h2>
+        {cp?.items?.length ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={{ ...th, width: 30 }}>#</th><th style={th}>ENTIDAD</th>
+              <th style={th}>VOLUMEN (USD)</th><th style={th}>PORCENTAJE</th>
+            </tr></thead>
+            <tbody>
+              {cp.items.map((x: any, i: number) => (
+                <tr key={i}>
+                  <td style={td}>{i + 1}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{x.nombre ?? 'Sin identificar'}</td>
+                  {/* Hasta 3 decimales, como los da el proveedor, sin rellenar ceros:
+                      "2.485,000" parecía un dato distinto de "2485" en su PDF. */}
+                  <td style={td}>{x.montoUsd != null && Number.isFinite(Number(x.montoUsd)) ? `USD ${Number(x.montoUsd).toLocaleString('es-CO', { maximumFractionDigits: 3 })}` : '—'}</td>
+                  <td style={td}>{x.pct != null ? `${x.pct} %` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : cp?.noSoportada ? (
+          <Vacio>
+            El proveedor no analiza contrapartes para este tipo de dirección (la reporta como billetera
+            caliente de un servicio). No es una falla de la consulta ni ausencia de actividad.
+          </Vacio>
+        ) : <PorQueVacio f={fu?.contrapartes} que="las contrapartes de la dirección" />}
+
+        {/* CONSTANCIA: el reporte del proveedor quedó archivado con su huella
+            y el proveedor registró la consulta. Con esto, cualquiera puede
+            comprobar después que este documento dice lo mismo que él. */}
+        <div style={{ marginTop: 12, border: `1px solid ${T.linea}`, padding: '9px 12px', background: T.fondo, breakInside: 'avoid' }}>
+          <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: '0 0 4px', letterSpacing: '0.4px' }}>CONSTANCIA DEL ANÁLISIS</p>
+          <p style={{ fontSize: 9.5, margin: 0, lineHeight: 1.6 }}>
+            Consulta al proveedor de analítica on-chain: <b>{fecha(d.consultadoAt)}</b>
+            {d.consultadoAt ? ` (${new Date(fechaProveedor(d.consultadoAt) ?? d.consultadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC)` : ''}.
+            {k?.str?.at
+              ? <> El proveedor registró la consulta el <b>{k.str.at} UTC</b>{k.str.puntaje != null ? <> con puntaje <b>{k.str.puntaje}</b></> : null}{k.str.nivel ? <> y nivel <b>{nivelProveedorEs(k.str.nivel).toLowerCase()}</b></> : null}.</>
+              : null}
+          </p>
+          {k?.sha256 ? (
+            <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.suave }}>
+              El reporte original del proveedor quedó archivado por Lincoin ({fecha(k.archivadoAt)}) con huella SHA-256:{' '}
+              <span style={{ fontFamily: MONO, color: T.tinta, wordBreak: 'break-all' }}>{k.sha256}</span>.
+              Se entrega a la autoridad que lo requiera.
+            </p>
+          ) : (
+            <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.tenue, fontStyle: 'italic' }}>
+              El reporte original del proveedor no quedó archivado para esta consulta (consultas anteriores
+              al 22 de noviembre de 2026 o enlace vencido). Una consulta nueva lo archiva.
+            </p>
+          )}
         </div>
 
         {/* Mesa OTC (solo cuando lo abre Cumplimiento desde KYT): quién cargó
@@ -400,23 +548,24 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             debajo de una dirección marcada como maliciosa. */}
         {senalada && (
           <p style={{ fontSize: 10.5, margin: '0 0 7px', lineHeight: 1.65, color: T.rojo, fontWeight: 700 }}>
-            Esta dirección está señalada directamente: {motivos.slice(0, 6).join(' · ')}. El hallazgo
-            recae sobre la dirección analizada, no sobre su entorno.
+            El proveedor etiqueta esta dirección: {motivos.slice(0, 6).join(' · ')}. La etiqueta recae
+            sobre la dirección analizada, no sobre su entorno.
+          </p>
+        )}
+        {/* "Interact With …" son interacciones, no etiquetas de la dirección:
+            así lo define el proveedor. Se dicen como lo que son. */}
+        {ind.interacciones.length > 0 && (
+          <p style={{ fontSize: 10.5, margin: '0 0 7px', lineHeight: 1.65 }}>
+            <b>Interacciones reportadas por el proveedor:</b> {ind.interacciones.slice(0, 6).join(' · ')}.
+            Indican con quién operó la dirección, no que ella misma esté señalada; el proveedor ya las
+            ponderó en el puntaje de {d.puntaje ?? '—'}.
           </p>
         )}
         {/* POR QUÉ LA BANDA NO COINCIDE CON EL PUNTAJE.
             Sin esta explicación, un lector ve "RIESGO ALTO" arriba de un
             "Puntaje: 3" y no sabe a cuál de los dos creerle — que es peor que
             cualquiera de los dos solo. */}
-        {lectura.elevada && (
-          <p style={{ fontSize: 10, margin: '0 0 7px', lineHeight: 1.6, color: T.suave,
-                      borderLeft: `3px solid ${T.ambar}`, paddingLeft: 9 }}>
-            <b style={{ color: T.tinta }}>Sobre el puntaje:</b> {lectura.motivo} Por eso el nivel de
-            riesgo de este reporte es <b style={{ color: T.tinta }}>{b.t.replace('RIESGO ', '').toLowerCase()}</b>{' '}
-            y no el que sugiere el puntaje{d.puntaje != null ? ` de ${d.puntaje}` : ''}. El número del
-            proveedor se muestra sin alterar.
-          </p>
-        )}
+
         {/* LOS MONTOS SALEN DE `investigacion`, NO DEL RASTREO.
             Antes esta línea solo sabía sumar si alguien había apretado
             "Rastrear intermediarios" antes de imprimir; si no, decía "no se
@@ -439,7 +588,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             <>No hay detalle de transacciones con contrapartes (ver el motivo en la sección 2).{' '}</>
           )}
           {ex?.items?.length
-            ? <>Se identificaron <b>{ex.items.length}</b> {ex.items.length === 1 ? 'vínculo' : 'vínculos'} con
+            ? <>{ex.items.length === 1 ? 'Se identificó' : 'Se identificaron'} <b>{ex.items.length}</b> {ex.items.length === 1 ? 'vínculo' : 'vínculos'} con
                 entidades de riesgo{ex.saltoMinimo != null && ex.saltoMinimo < 99
                   ? `, el más cercano a ${ex.saltoMinimo} ${ex.saltoMinimo === 1 ? 'salto' : 'saltos'}` : ''}.{' '}</>
             : senalada
@@ -457,6 +606,11 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           <p style={{ fontSize: 9, fontWeight: 700, color: T.suave, margin: '0 0 5px', letterSpacing: '0.4px' }}>
             QUÉ IMPLICA
           </p>
+          {escalaActiva && (
+            <p style={{ fontSize: 10.5, margin: '0 0 5px', lineHeight: 1.6 }}>
+              Operación sugerida por el proveedor para el nivel <b>{escalaActiva.nivel.toLowerCase()}</b> ({escalaActiva.rango}): <b>{escalaActiva.operacion}</b>
+            </p>
+          )}
           <p style={{ fontSize: 10.5, margin: 0, lineHeight: 1.65 }}>
             {lectura.categoria === 'alto' ? (
               <><b style={{ color: T.rojo }}>No operar con esta dirección.</b> Un exchange o un banco
@@ -468,7 +622,14 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 que no alcanzan para descartar la dirección pero sí para pedir el origen de los fondos
                 y dejarlo por escrito.</>
             ) : lectura.categoria === 'bajo' ? (
-              <>Sin señalamientos en la información disponible hoy. <b>No es una garantía:</b> una
+              <>{senalada
+                  ? 'El proveedor etiqueta la dirección pero la ubica en riesgo bajo: revisar las etiquetas antes de operar.'
+                  /* "Sin etiquetas" contradecía la ficha cuando el proveedor
+                     identifica al titular (ej. "binance"): esa etiqueta dice de
+                     quién es la dirección, no la señala. */
+                  : entidad
+                    ? `El proveedor identifica la dirección como de «${entidad}» y no le pone etiquetas de riesgo propias en la información disponible hoy.`
+                    : 'Sin etiquetas de riesgo sobre la dirección en la información disponible hoy.'} <b>No es una garantía:</b> una
                 dirección limpia hoy puede aparecer señalada mañana, y este reporte no vuelve a
                 consultarse solo. Para eso está el monitoreo.</>
             ) : (
@@ -556,38 +717,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             </tbody>
           </table>
         ) : <PorQueVacio f={fu?.investigacion} que="la investigación de transacciones" />}
-
-        {/* ── 2b. Contrapartes por monto (address_counterparty) ──
-            Otra consulta que se paga (USD 0,50) y no se dibujaba. Es el
-            "con quién opera y por cuánta plata", agrupado por entidad. */}
-        {cp?.items?.length ? (
-          <>
-            <h2 style={H}>2b. Contrapartes por volumen</h2>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr>
-                <th style={th}>CONTRAPARTE</th><th style={th}>MONTO (USD)</th><th style={th}>% DEL VOLUMEN</th>
-              </tr></thead>
-              <tbody>
-                {cp.items.map((x: any, i: number) => (
-                  <tr key={i}>
-                    <td style={{ ...td, fontWeight: 700 }}>{x.nombre ?? '—'}</td>
-                    <td style={td}>{n(x.montoUsd) ?? '—'}</td>
-                    <td style={td}>{x.pct != null ? `${x.pct} %` : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        ) : cp?.noSoportada ? (
-          <>
-            <h2 style={H}>2b. Contrapartes por volumen</h2>
-            <Vacio>
-              El proveedor no analiza contrapartes para este tipo de dirección (la reporta como
-              billetera caliente de un servicio). No es una falla de la consulta ni ausencia de
-              actividad.
-            </Vacio>
-          </>
-        ) : null}
 
         {/* ── 2c. Quién es esta dirección ──
             address_labels y address_trace: dos consultas más que se pagan
@@ -857,6 +986,14 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               ))}
             </tbody>
           </table>
+        ) : ex?.items?.length ? (
+          // Con rutas en la sección 3 y sin rastreo, "no hay contaminadores"
+          // se leía como que la sección 3 no contaba. Se dice de dónde sale
+          // cada cosa: las rutas, del proveedor; el ranking, del rastreo.
+          <Vacio>
+            Este ranking sale del rastreo de intermediarios, que no se corrió para este reporte. Los
+            vínculos que el proveedor sí reportó, con su camino completo, están en la sección 3.
+          </Vacio>
         ) : <Vacio>No hay contaminadores para rankear con la información obtenida.</Vacio>}
 
         {/* Alcance del rastreo — hasta dónde se miró de verdad */}
@@ -900,6 +1037,46 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             </table>
           </div>
         )}
+
+        {/* ══ ANEXOS — los mismos del reporte del proveedor ══
+            Qué mira cada categoría de riesgo, las abreviaturas y el descargo.
+            Sin esto, quien lee un "entidad sancionada a 3 saltos" en una
+            entidad pública tiene que ir a buscar a otro documento qué significa. */}
+        <div style={{ marginTop: 22, breakBefore: 'page' }}>
+          <h2 style={{ ...H, marginTop: 0 }}>Anexo 1. Fuentes de riesgo de lavado que identifica el proveedor</h2>
+          {FUENTES_RIESGO.map(g => (
+            <div key={g.nivel} style={{ breakInside: 'avoid' }}>
+              <p style={{ fontSize: 10, fontWeight: 800, color: g.nivel === 'Severo' || g.nivel === 'Alto' ? T.rojo : g.nivel === 'Medio' ? T.ambar : T.verde, margin: '10px 0 4px' }}>Riesgo {g.nivel.toLowerCase()}</p>
+              {g.items.map(([t, dsc], i) => (
+                <p key={t} style={{ fontSize: 9.5, margin: '0 0 3px', lineHeight: 1.55 }}>
+                  <b>{FUENTES_RIESGO.slice(0, FUENTES_RIESGO.indexOf(g)).reduce((a, x) => a + x.items.length, 0) + i + 1}. {t}:</b> {dsc}
+                </p>
+              ))}
+            </div>
+          ))}
+
+          <h2 style={H}>Anexo 2. Abreviaturas</h2>
+          <table style={{ width: '100%', borderCollapse: 'collapse', breakInside: 'avoid' }}>
+            <tbody>
+              {ABREVIATURAS.map(([a, t]) => (
+                <tr key={a}>
+                  <td style={{ ...td, width: 110, fontWeight: 700, background: T.fondo, fontSize: 9 }}>{a}</td>
+                  <td style={{ ...td, fontSize: 9 }}>{t}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h2 style={H}>Anexo 3. Descargo de responsabilidad</h2>
+          <p style={{ fontSize: 9.5, margin: 0, lineHeight: 1.65, color: T.suave }}>
+            Este reporte es informativo y es válido en la fecha de su emisión. El análisis de riesgo
+            proviene de un proveedor independiente de analítica on-chain, que no garantiza la validez
+            del resultado después de esa fecha ni responde por cambios posteriores en los supuestos o
+            por hechos nuevos o no conocidos al momento del análisis. Lincoin presenta ese resultado sin
+            alterarlo —nivel, puntaje, detalle y contrapartes— y conserva el reporte original del
+            proveedor con su huella SHA-256 para que pueda verificarse.
+          </p>
+        </div>
 
         {/* Nota metodológica */}
         <div style={{ marginTop: 22, paddingTop: 12, borderTop: `2px solid ${T.tinta}`, breakInside: 'avoid' }}>

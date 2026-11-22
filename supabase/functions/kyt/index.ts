@@ -506,14 +506,27 @@ function formatoValido(coin: string, dir: string): boolean {
 //   Ahora, si TODO viene en cero y ademas no hay ni primera ni ultima
 //   transaccion, se devuelve null: la tarjeta dice "sin dato", que es la
 //   verdad.
+// Las marcas de tiempo del proveedor vienen en segundos Unix (o en texto). Se
+// devuelven en ISO; una fecha anterior a 2008 es un cero mal leído, no un dato.
+function fechaProveedor(v: any): string | null {
+  if (v == null || v === '') return null
+  const n = typeof v === 'number' ? v : (/^\d+(\.\d+)?$/.test(String(v).trim()) ? Number(v) : NaN)
+  const d = Number.isFinite(n) ? (n > 0 ? new Date(n < 1e12 ? n * 1000 : n) : null) : new Date(String(v))
+  return d && Number.isFinite(d.getTime()) && d.getFullYear() >= 2008 ? d.toISOString() : null
+}
+// Las fichas guardadas antes del 22 nov tienen las fechas en segundos: se
+// corrigen al leerlas, sin tener que volver a pagar la consulta.
+const normActividad = (a: any) => a && typeof a === 'object'
+  ? { ...a, primera: fechaProveedor(a.primera), ultima: fechaProveedor(a.ultima) } : (a ?? null)
 function leerActividad(bruto: any): Record<string, any> | null {
   const d = desenvolver(bruto)
   if (!d || typeof d !== 'object') return null
   const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : null)
   const out = {
     txs: n(d.txs_count ?? d.txCount ?? d.transactions_count ?? d.tx_count),
-    primera: d.first_seen ?? d.firstSeen ?? d.first_tx_time ?? null,
-    ultima: d.last_seen ?? d.lastSeen ?? d.last_tx_time ?? null,
+    // En SEGUNDOS Unix: leídas como milisegundos daban "Activa desde 1970".
+    primera: fechaProveedor(d.first_seen ?? d.firstSeen ?? d.first_tx_time ?? null),
+    ultima: fechaProveedor(d.last_seen ?? d.lastSeen ?? d.last_tx_time ?? null),
     recibido: n(d.total_received ?? d.totalReceived),
     enviado: n(d.total_spent ?? d.totalSpent ?? d.total_sent),
     saldo: n(d.balance),
@@ -878,7 +891,8 @@ async function evaluarYGuardar(
   c: Config, coin: string, dir: string,
   quien: { userId: string | null; email?: string | null; empresa?: string | null },
   ficha: any,
-): Promise<{ hay: boolean; score: number | null; level: string | null; hallazgos: any[]; detalle: any[]; etiquetas: any[]; reporte: string | null; actividad: any; exposicion: any; status: number; crudo: any; error?: string }> {
+  opts: { archivar?: boolean } = {},
+): Promise<{ hay: boolean; score: number | null; level: string | null; hallazgos: any[]; detalle: any[]; etiquetas: any[]; reporte: string | null; actividad: any; exposicion: any; status: number; crudo: any; error?: string; constancia?: Constancia | null; addressLabel?: string | null; [k: string]: any }> {
   const r = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
   const v = leerVeredicto(r.data)
 
@@ -955,7 +969,13 @@ async function evaluarYGuardar(
     cadena: explorador.cadena, cadena_fuentes: explorador.fuentes,
   })
 
+  // El PDF original del proveedor y su constancia STR. No en la ronda de
+  // monitoreo (sería una descarga por dirección vigilada en cada vuelta): ahí
+  // se archiva cuando alguien consulta o arma el reporte.
+  const constancia = opts.archivar === false ? null : await archivarReporteProveedor(c, coin, dir, v.reportUrl, quien.userId)
+
   return {
+    constancia,
     hay: true, score: v.score, level: v.level,
     hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
     hackingEvent: v.hackingEvent, perfil,
@@ -965,6 +985,121 @@ async function evaluarYGuardar(
     status: r.status, crudo: r.data ?? null,
   }
 }
+
+// ── El PDF ORIGINAL del proveedor, archivado como evidencia ───────
+//
+// Cada risk_score trae risk_report_url: el reporte AML del proveedor en PDF,
+// con su marca y su fecha. Es lo que respalda a Lincoin ante un banco, un ente
+// de control o una investigación: "esto dijo el proveedor sobre esta dirección
+// en este momento". El enlace trae un token y nadie garantiza que siga vivo en
+// un año, así que se descarga y se guarda en un bucket privado, con su huella
+// SHA-256 (prueba de que el archivo no se tocó), y la constancia va a
+// audit_log, que es de solo inserción.
+//
+// Además se pide el registro STR del proveedor (/v1/str_snapshot_records): su
+// propia constancia de que la consulta existió, con hora, puntaje y nivel. Es
+// la confirmación independiente de que el número que mostramos es el suyo.
+//
+// Nada de esto bloquea la consulta: si falla, la consulta vale igual y la
+// falla queda anotada.
+const BUCKET_REPORTES = 'kyt-reportes'
+let bucketListo = false
+async function asegurarBucketReportes(): Promise<boolean> {
+  if (bucketListo) return true
+  try {
+    const { error } = await db.storage.getBucket(BUCKET_REPORTES)
+    if (error) {
+      const { error: e2 } = await db.storage.createBucket(BUCKET_REPORTES, { public: false, fileSizeLimit: 15 * 1024 * 1024 })
+      if (e2 && !/exist/i.test(e2.message ?? '')) return false
+    }
+    bucketListo = true
+    return true
+  } catch { return false }
+}
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  return Array.from(h).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+type Constancia = {
+  path: string; sha256: string; bytes: number; archivadoAt: string
+  str: { at: string | null; puntaje: number | null; nivel: string | null } | null
+}
+async function archivarReporteProveedor(c: Config, coin: string, dir: string, reportUrl: string | null, userId: string | null): Promise<Constancia | null> {
+  if (!reportUrl) return null
+  let u: URL
+  try { u = new URL(reportUrl) } catch { return null }
+  // Solo del host de archivos del proveedor: la URL llega en su respuesta,
+  // pero no se le sigue el rastro a cualquier dirección.
+  if (u.protocol !== 'https:' || u.host !== 'files.misttrack.io') {
+    await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: 'host_no_permitido', host: u.host })
+    return null
+  }
+  try {
+    const ctrl = new AbortController()
+    const reloj = setTimeout(() => ctrl.abort(), 15000)
+    const r = await fetch(u.toString(), { signal: ctrl.signal })
+    clearTimeout(reloj)
+    const bytes = new Uint8Array(await r.arrayBuffer())
+    // Tiene que ser un PDF de verdad: una página de error guardada como
+    // "evidencia" sería peor que no guardar nada.
+    const esPdf = bytes.length > 1000 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46
+    if (!r.ok || !esPdf) {
+      await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: !r.ok ? `HTTP ${r.status}` : 'no_es_pdf', bytes: bytes.length })
+      return null
+    }
+    if (!(await asegurarBucketReportes())) {
+      await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: 'bucket' })
+      return null
+    }
+    const sha256 = await sha256Hex(bytes)
+    const archivadoAt = new Date().toISOString()
+    const path = `${coin}/${dir}/${archivadoAt.replace(/[:.]/g, '-')}.pdf`
+    const { error: eUp } = await db.storage.from(BUCKET_REPORTES).upload(path, bytes, { contentType: 'application/pdf', upsert: false })
+    if (eUp) {
+      await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: `subida: ${eUp.message}` })
+      return null
+    }
+    // La constancia del proveedor. Sin filtros raros: por dirección, página 1,
+    // y se toma la más reciente de esta red.
+    let str: Constancia['str'] = null
+    try {
+      const rs = await llamarMT(c, '/v1/str_snapshot_records', { address: dir, page: '1' })
+      const lista: any[] = Array.isArray(rs.data?.risk_reports) ? rs.data.risk_reports : []
+      const mia = lista
+        .filter(x => String(x?.req_address ?? '').toLowerCase() === dir.toLowerCase())
+        .filter(x => !x?.req_coin || String(x.req_coin).toUpperCase() === coin.toUpperCase())
+        .sort((a, b) => String(b?.req_timestamp ?? '').localeCompare(String(a?.req_timestamp ?? '')))[0]
+      if (mia) {
+        str = {
+          at: typeof mia.req_timestamp === 'string' ? mia.req_timestamp : null,
+          puntaje: Number.isFinite(Number(mia.resp_risk_score)) ? Number(mia.resp_risk_score) : null,
+          nivel: typeof mia.resp_risk_level === 'string' ? mia.resp_risk_level : null,
+        }
+      }
+    } catch { /* sin constancia STR: el PDF vale igual */ }
+    const constancia: Constancia = { path, sha256, bytes: bytes.length, archivadoAt, str }
+    await logAuditKyt(userId, 'kyt.reporte_proveedor', { coin, address: dir, addressLower: dir.toLowerCase(), ...constancia })
+    return constancia
+  } catch (e) {
+    await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: String((e as Error)?.message ?? e).slice(0, 160) })
+    return null
+  }
+}
+// La constancia más reciente archivada para una dirección (de audit_log).
+async function ultimaConstancia(coin: string, dir: string): Promise<Constancia | null> {
+  try {
+    const { data } = await db.from('audit_log').select('metadata, created_at')
+      .eq('action', 'kyt.reporte_proveedor').eq('metadata->>addressLower', dir.toLowerCase())
+      .order('created_at', { ascending: false }).limit(5)
+    const fila = (data ?? []).find((f: any) => !f?.metadata?.coin || String(f.metadata.coin).toUpperCase() === coin.toUpperCase()) as any
+    const m = fila?.metadata
+    return m?.path ? { path: m.path, sha256: m.sha256, bytes: m.bytes, archivadoAt: m.archivadoAt ?? fila.created_at, str: m.str ?? null } : null
+  } catch { return null }
+}
+// Lo que ve el cliente de la constancia: la huella y las fechas. Ni la ruta
+// del archivo ni el nombre del proveedor (el PDF original lo descarga el
+// equipo de Cumplimiento desde el panel).
+const constanciaPublica = (k: Constancia | null) => k ? { sha256: k.sha256, archivadoAt: k.archivadoAt, str: k.str } : null
 
 // ── Correo de alerta de cambio de riesgo ──────────────────────────
 // La pantalla le promete al cliente que le avisamos por correo. Si esto no
@@ -1189,9 +1324,12 @@ Deno.serve(async (req) => {
           nivel: ficha.risk_level,
           hallazgos: ficha.risk_detail ?? [],
           etiquetas: ficha.labels ?? [],
+          etiquetaProveedor: ficha.address_label ?? null,
           detalle: ficha.detail_list ?? [],
-          actividad: ficha.actividad ?? null,
-          tokenActividad: ficha.token_actividad ?? null,
+          actividad: normActividad(ficha.actividad),
+          tokenActividad: normActividad(ficha.token_actividad),
+          contrapartes: ficha.contrapartes ?? null,
+          constancia: constanciaPublica(await ultimaConstancia(coin, dir)),
           cadena: ficha.cadena ?? null,
           exposicion: ficha.exposicion ?? null,
           hopDic: ficha.hop_dic ?? null,
@@ -1238,12 +1376,30 @@ Deno.serve(async (req) => {
         })
       } catch { /* que no se pierda la consulta por no poder auditar */ }
 
+      // Las contrapartes por volumen van en la consulta, no solo en el
+      // reporte: el reporte del proveedor las trae en su primera hoja ("Address
+      // Counterparties") y la pantalla tiene que decir lo mismo que él. Es una
+      // consulta más (se cuenta en el tope); si falla, la consulta vale igual.
+      let contrapartes: any = ficha?.contrapartes ?? null
+      if (!(await topeKytAgotado(c, yo))) {
+        const eCp = await llamarMT(c, c.rutaContrapartes, { coin, address: dir }).catch(() => null)
+        await anotarPagadas(yo.userId, 1, { coin, address: dir, origen: 'consultar_contrapartes' })
+        const cp = eCp ? leerContrapartes(eCp.data) : null
+        if (cp) {
+          contrapartes = cp
+          await db.from('kyt_registry').update({ contrapartes: cp }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+        }
+      }
+
       return json({
         ok: true,
         address: dir, coin,
         categoria: clasificar(c, ev.score, ev.level),
         puntaje: ev.score, nivel: ev.level,
         hallazgos: ev.hallazgos, etiquetas: ev.etiquetas, detalle: ev.detalle,
+        etiquetaProveedor: ev.addressLabel ?? null,
+        contrapartes,
+        constancia: constanciaPublica(ev.constancia ?? null),
         actividad: ev.actividad, tokenActividad: ev.tokenActividad ?? null,
         cadena: ev.cadena ?? null,
         exposicion: ev.exposicion,
@@ -1323,7 +1479,7 @@ Deno.serve(async (req) => {
       // El saldo que importa es el USDT de la red, después el nativo.
       const cad = f.cadena ?? null
       const tok = f.token_actividad ?? null
-      const act = f.actividad ?? null
+      const act = normActividad(f.actividad)
       const saldoUsdt = cad?.saldoUsdt ?? tok?.saldo ?? null
       await logAuditKyt(yo.userId, 'kyt.otc_wallet', {
         coin, address: f.address ?? dir, addressLower: dir.toLowerCase(), red: REDES_OTC[coin],
@@ -1536,7 +1692,7 @@ Deno.serve(async (req) => {
       const out: any[] = []
       for (const w of ((pend ?? []) as any[])) {
         const ficha3 = await padronBuscar(w.coin, w.address)
-        const ev = await evaluarYGuardar(c, w.coin, w.address, { userId: w.user_id }, ficha3)
+        const ev = await evaluarYGuardar(c, w.coin, w.address, { userId: w.user_id }, ficha3, { archivar: false })
         const ahora2 = new Date().toISOString()
 
         if (!ev.hay) {
@@ -1782,8 +1938,10 @@ Deno.serve(async (req) => {
         // suyo; este es el de la respuesta entera, cuando viene arriba.
         hopDic: f.hop_dic ?? null,
         etiquetaProveedor: f.address_label ?? null,
-        actividad: f.actividad ?? null,
-        tokenActividad: f.token_actividad ?? null,
+        actividad: normActividad(f.actividad),
+        tokenActividad: normActividad(f.token_actividad),
+        // La constancia del reporte del proveedor archivado (huella y fechas).
+        constancia: constanciaPublica(await ultimaConstancia(coin, dir)),
         // Lo que dice el explorador de la cadena. Es la fuente de los saldos.
         cadena: f.cadena ?? null,
         cadenaFuentes: f.cadena_fuentes ?? null,
@@ -2112,6 +2270,36 @@ Deno.serve(async (req) => {
     // la respuesta tenga una forma distinta de la que el parser espera. Las
     // tres llegaban a la pantalla como "el proveedor no devolvio X", y me
     // llevaron a inventar nombres de campo dos veces.
+    // ── PDF ORIGINAL DEL PROVEEDOR (solo Cumplimiento) ────────────
+    // Las copias archivadas de una dirección, con su huella y su constancia
+    // STR, y un enlace temporal para descargar cada una. Con `archivar`, si la
+    // ficha todavía tiene el enlace del proveedor, se archiva en el acto (las
+    // consultas de antes del 22 nov no se archivaban).
+    if (accion === 'pdf_proveedor') {
+      { const no = soloAdmin(yo); if (no) return no }
+      const coin = canonCoin(body.coin)
+      const dir = normDir(body.address)
+      if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
+      let nueva: Constancia | null = null
+      if (body.archivar === true) {
+        const f = await padronBuscar(coin, dir)
+        nueva = await archivarReporteProveedor(c, coin, dir, f?.report_url ?? null, yo.userId)
+      }
+      const { data } = await db.from('audit_log').select('metadata, created_at, user_id')
+        .eq('action', 'kyt.reporte_proveedor').eq('metadata->>addressLower', dir.toLowerCase())
+        .order('created_at', { ascending: false }).limit(20)
+      const copias = []
+      for (const fila of (data ?? []) as any[]) {
+        const m = fila.metadata ?? {}
+        if (!m.path || (m.coin && String(m.coin).toUpperCase() !== coin.toUpperCase())) continue
+        let url: string | null = null
+        try { const { data: s } = await db.storage.from(BUCKET_REPORTES).createSignedUrl(String(m.path), 600); url = s?.signedUrl ?? null } catch { url = null }
+        copias.push({ archivadoAt: m.archivadoAt ?? fila.created_at, sha256: m.sha256 ?? null, bytes: m.bytes ?? null, str: m.str ?? null, url })
+      }
+      await logAuditKyt(yo.userId, 'kyt.reporte_proveedor_descarga', { coin, addressLower: dir.toLowerCase(), copias: copias.length, archivadoAhora: !!nueva })
+      return json({ ok: true, coin, address: dir, copias, archivadoAhora: !!nueva })
+    }
+
     if (accion === 'diagnostico') {
       { const no = soloAdmin(yo); if (no) return no }
       const coin = canonCoin(body.coin)

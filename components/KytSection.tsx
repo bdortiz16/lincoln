@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Eye, EyeOff, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
-import { hallazgosEnEspanol, bandaDeRiesgo } from '../lib/kytTextos';
+import { hallazgosEnEspanol, bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor } from '../lib/kytTextos';
 import { KytReporte } from './KytReporte';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -409,8 +409,12 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   // "Riesgo alto · 3 / 100" en una sola línea se lee como un error de la
   // pantalla, no como dos fuentes distintas. Cuando nuestra banda subió por
   // encima del puntaje del proveedor, el número va aparte y con dueño.
-  const nivelTexto = (cat?: string) =>
-    cat === 'alto' ? 'Riesgo alto' : cat === 'medio' ? 'Riesgo medio' : cat === 'bajo' ? 'Riesgo bajo' : 'Sin clasificar';
+  // El nivel con el nombre que le da el proveedor (Bajo, Moderado, Alto,
+  // Severo): el mismo que dice su reporte. Ver bandaDeRiesgo en kytTextos.
+  const nivelTexto = (cat?: string, nivel?: string | null) => {
+    const n = nivelProveedorEs(nivel, cat);
+    return n === 'Sin clasificar' ? n : `Riesgo ${n.toLowerCase()}`;
+  };
 
   const btnFiltro = (k: typeof filtro, t: string) => (
     <button
@@ -522,17 +526,17 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               <Insignia v={res.coin} size={24} />
               <div style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
-                  {nivelTexto(res.categoria)}
-                  {res.puntaje != null && !res.lectura?.elevada && (
+                  {nivelTexto(res.categoria, res.nivel)}
+                  {res.puntaje != null && (
                     <span style={{ color: C.sub, fontWeight: 600 }}> · {res.puntaje} / 100</span>
                   )}
                 </p>
-                {res.lectura?.elevada && (
-                  <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
-                    Puntaje del proveedor: <b style={{ color: C.text, fontWeight: 700 }}>{res.puntaje ?? '—'} / 100</b>
-                    {' · '}elevado por señalamiento directo
-                  </p>
-                )}
+                {/* Entidad y sanciones: la ficha con que abre el reporte del
+                    proveedor ("Address Entity", "Sanctions"). */}
+                <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
+                  Entidad: <b style={{ color: C.text, fontWeight: 700 }}>{res.etiquetaProveedor || textos(res.etiquetas, 1)[0] || 'sin identificar'}</b>
+                  {' · '}Sanciones: <b style={{ color: sancionadaPorProveedor(res.detalle, res.hallazgos) ? ROJO.c : C.text, fontWeight: 700 }}>{sancionadaPorProveedor(res.detalle, res.hallazgos) ? 'Sí' : 'No'}</b>
+                </p>
                 {/* Dos líneas cortas en vez de una larga que en el celular se
                     partía en cuatro renglones. */}
                 <p style={{ fontFamily: MONO, fontSize: 12, color: C.sub, margin: '4px 0 0' }}>
@@ -627,9 +631,14 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               Ahora manda el señalamiento directo, y el aviso de "sin rutas"
               SOLO aparece cuando la dirección tampoco está señalada. */}
           {(() => {
-            const motivos = Array.from(new Set([...textos(res.detalle), ...textos(res.hallazgos)]));
-            if (res.hackingEvent) motivos.unshift(`Incidente: ${res.hackingEvent}`);
-            const senalada = motivos.length > 0 || res.categoria === 'alto' || res.categoria === 'medio';
+            // Lo que el proveedor dice de la dirección MISMA va separado de
+            // con quién interactuó. "Interact With High-risk Tag Address" en
+            // una dirección de Binance con puntaje 3 salía como "señalada
+            // directamente" y "riesgo medio", contra el "Bajo (3)" del reporte
+            // del proveedor (22 nov).
+            const ind = indicadoresDe(res.detalle);
+            const propios = [...(res.hackingEvent ? [`Incidente: ${res.hackingEvent}`] : []), ...ind.propios];
+            const senalada = propios.length > 0;
             const conRutas = Array.isArray(res.exposicion?.items) && res.exposicion.items.length > 0;
 
             return (
@@ -637,34 +646,36 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                 {senalada && (
                   <div style={{ marginBottom: 14, border: `1px solid ${tono(res.categoria).b}`, background: tono(res.categoria).f, borderRadius: 12, padding: '14px 16px' }}>
                     <p style={{ fontSize: 13.5, fontWeight: 800, color: tono(res.categoria).c, margin: 0 }}>
-                      Esta dirección está señalada directamente
+                      El proveedor etiqueta esta dirección
                     </p>
                     <p style={{ fontSize: 12.5, color: C.text, margin: '7px 0 0', lineHeight: 1.6 }}>
-                      {motivos.length ? motivos.slice(0, 8).join(' · ') : `Clasificada como ${res.nivel ?? 'de riesgo'} por el proveedor.`}
+                      {propios.slice(0, 8).join(' · ')}
                     </p>
                     <p style={{ fontSize: 11.5, color: C.sub, margin: '9px 0 0', lineHeight: 1.55 }}>
-                      No se trata de estar cerca de alguien señalado: el señalamiento es sobre esta
-                      dirección. Operar con ella expone los fondos a congelamiento.
+                      La etiqueta es sobre esta dirección, no sobre su entorno. El nivel de riesgo y el
+                      puntaje son los del proveedor, sin cambios.
                     </p>
-                    {/* Por qué la banda no coincide con el puntaje. Sin esto,
-                        ver "riesgo alto" sobre un "3/100" deja al lector sin
-                        saber a cuál de los dos creerle. */}
-                    {res.lectura?.elevada && (
-                      <p style={{ fontSize: 11.5, color: C.sub, margin: '9px 0 0', lineHeight: 1.55,
-                                  borderTop: `1px solid ${C.bdSoft}`, paddingTop: 9 }}>
-                        <b style={{ color: C.text, fontWeight: 700 }}>Sobre el puntaje de {res.puntaje ?? '—'}:</b>{' '}
-                        {res.lectura.motivo} Por eso acá figura como riesgo{' '}
-                        <b style={{ color: C.text, fontWeight: 700 }}>{res.categoria}</b>. El número del
-                        proveedor se muestra sin alterar.
-                      </p>
-                    )}
+                  </div>
+                )}
+                {ind.interacciones.length > 0 && (
+                  <div style={{ marginBottom: 14, border: `1px solid ${C.bdSoft}`, borderRadius: 12, padding: '13px 16px' }}>
+                    <p style={{ fontSize: 13, fontWeight: 800, color: C.text, margin: 0 }}>
+                      Interacciones reportadas por el proveedor
+                    </p>
+                    <p style={{ fontSize: 12.5, color: C.text, margin: '6px 0 0', lineHeight: 1.6 }}>
+                      {ind.interacciones.slice(0, 8).join(' · ')}
+                    </p>
+                    <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>
+                      Indican con quién operó la dirección, no que la dirección misma esté señalada. El
+                      proveedor ya las tuvo en cuenta en el puntaje de {res.puntaje ?? '—'} / 100.
+                    </p>
                   </div>
                 )}
 
                 {conRutas ? (
-                  <div style={{ marginBottom: 14, border: `1px solid ${ROJO.b}`, background: ROJO.f, borderRadius: 12, overflow: 'hidden' }}>
+                  <div style={{ marginBottom: 14, border: `1px solid ${tono(res.categoria).b}`, background: tono(res.categoria).f, borderRadius: 12, overflow: 'hidden' }}>
                     <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
-                      <p style={{ fontSize: 13, fontWeight: 800, color: ROJO.c, margin: 0 }}>
+                      <p style={{ fontSize: 13, fontWeight: 800, color: tono(res.categoria).c, margin: 0 }}>
                         {res.exposicion.items.length} {res.exposicion.items.length === 1 ? 'ruta hacia una entidad señalada' : 'rutas hacia entidades señaladas'}
                       </p>
                       <button
@@ -888,9 +899,12 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
             <Mini label="ACTIVIDAD">
               {res.actividad
                 ? [
-                    res.actividad.primera ? `Activa desde ${new Date(res.actividad.primera).getFullYear()}` : null,
-                    res.actividad.txs != null ? `${Number(res.actividad.txs).toLocaleString('es-CO')} transacciones` : null,
-                    res.actividad.ultima ? `último mov. ${hace(res.actividad.ultima)}` : null,
+                    // Las fechas del proveedor vienen en segundos (decía "desde 1970").
+                    fechaProveedor(res.actividad.primera) ? `Activa desde ${new Date(fechaProveedor(res.actividad.primera)!).getFullYear()}` : null,
+                    res.cadena?.transacciones != null
+                      ? `${Number(res.cadena.transacciones).toLocaleString('es-CO')} transacciones`
+                      : res.actividad.txs != null ? `${Number(res.actividad.txs).toLocaleString('es-CO')} transacciones en ${res.coin}` : null,
+                    fechaProveedor(res.actividad.ultima) ? `último mov. ${hace(fechaProveedor(res.actividad.ultima))}` : null,
                   ].filter(Boolean).join(' · ')
                 : <span style={{ color: C.sub }}>El proveedor no devolvió la actividad de la dirección.</span>}
             </Mini>
@@ -931,6 +945,46 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                 </div>
               ))}
             </div>
+          )}
+
+          {/* ── Contrapartes de la dirección (address_counterparty) ──
+              Lo que el reporte del proveedor llama "Address Counterparties":
+              con qué entidades opera y qué parte de su volumen es cada una.
+              Antes solo salía en el Reporte AML; la consulta tiene que decir
+              lo mismo que el documento del proveedor. */}
+          {Array.isArray(res.contrapartes?.items) && res.contrapartes.items.length > 0 ? (
+            <div style={{ marginTop: 12, border: `1px solid ${C.bdSoft}`, borderRadius: 11, overflow: 'hidden' }}>
+              <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: 0, padding: '11px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
+                CONTRAPARTES DE LA DIRECCIÓN
+              </p>
+              {res.contrapartes.items.slice(0, 10).map((x: any, i: number) => (
+                <div key={i} className="flex items-center justify-between" style={{ gap: 10, padding: '9px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ color: C.sub, fontWeight: 600, marginRight: 8 }}>{i + 1}</span>{x.nombre ?? 'Sin identificar'}
+                  </span>
+                  <span style={{ fontFamily: MONO, fontSize: 12, color: C.sub, flexShrink: 0 }}>
+                    {x.montoUsd != null ? `USD ${Number(x.montoUsd).toLocaleString('es-CO', { maximumFractionDigits: 3 })}` : '—'}
+                    {x.pct != null ? ` · ${x.pct} %` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : res.contrapartes?.noSoportada ? (
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
+              Contrapartes: el proveedor no las analiza para este tipo de dirección (billetera caliente de un servicio).
+            </p>
+          ) : null}
+
+          {/* Constancia: el reporte del proveedor quedó archivado (con su
+              huella) y el proveedor registró esta consulta. Es lo que permite
+              mostrar, después, que lo que dijimos es lo que dijo él. */}
+          {res.constancia && (
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.6 }}>
+              <b style={{ color: C.text, fontWeight: 700 }}>Constancia:</b> reporte del proveedor archivado el{' '}
+              {new Date(res.constancia.archivadoAt).toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              {' · '}huella SHA-256 <span style={{ fontFamily: MONO }}>{String(res.constancia.sha256 ?? '').slice(0, 16)}…</span>
+              {res.constancia.str?.at ? <> · registrado por el proveedor el {res.constancia.str.at} UTC{res.constancia.str.puntaje != null ? ` con puntaje ${res.constancia.str.puntaje}` : ''}{res.constancia.str.nivel ? ` (${nivelProveedorEs(res.constancia.str.nivel).toLowerCase()})` : ''}</> : null}
+            </p>
           )}
 
           {/* Plataformas y eventos (address_trace): el puntaje dice cuánto,

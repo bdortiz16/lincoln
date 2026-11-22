@@ -310,6 +310,66 @@ const Registro: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onA
   );
 };
 
+// ── El PDF ORIGINAL del proveedor ───────────────────────────────
+// Desde el 22 nov cada consulta archiva el reporte de MistTrack (con su marca
+// y su fecha) y su huella SHA-256, y anota el registro STR de MistTrack. Es lo
+// que se le entrega a un banco, a la UIAF o a una autoridad junto con nuestro
+// reporte: el nuestro dice lo mismo, este es la fuente. Solo Cumplimiento lo
+// descarga: el cliente nunca ve el nombre del proveedor.
+const PdfProveedor: React.FC = () => {
+  const [coin, setCoin] = useState('TRX');
+  const [dir, setDir] = useState('');
+  const [ocupado, setOcupado] = useState(false);
+  const [res, setRes] = useState<any>(null);
+  const buscar = async (archivar = false) => {
+    if (!dir.trim()) return;
+    setOcupado(true);
+    const r = await llamarFuncion('kyt', { action: 'pdf_proveedor', coin, address: dir.trim(), archivar }, 60000).catch(() => null);
+    setOcupado(false);
+    setRes(r ?? { ok: false, error: 'sin_respuesta' });
+  };
+  return (
+    <div style={TARJ}>
+      <p style={{ fontSize: 14, fontWeight: 800, color: C.texto }}>PDF original de MistTrack</p>
+      <p style={{ fontSize: 12, color: C.sub, marginTop: 4, lineHeight: 1.55 }}>
+        Las copias archivadas del reporte del proveedor para una dirección, con su huella SHA-256 y el
+        registro de la consulta en MistTrack. Se archiva solo en cada consulta desde el 22 nov; para
+        una consulta anterior, «Archivar ahora» lo descarga si el enlace sigue vigente.
+      </p>
+      <div className="flex flex-wrap items-center" style={{ gap: 8, marginTop: 12 }}>
+        <select value={coin} onChange={e => setCoin(e.target.value)} style={{ ...INP, width: 110 }}>
+          {['TRX', 'ETH', 'BNB', 'BTC', 'SOL', 'MATIC', 'ARB', 'BASE', 'OP', 'AVAX', 'TON'].map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input value={dir} onChange={e => setDir(e.target.value)} placeholder="Dirección" spellCheck={false}
+          style={{ ...INP, flex: '1 1 280px', fontFamily: 'ui-monospace, monospace' }} />
+        <button onClick={() => buscar(false)} disabled={ocupado || !dir.trim()} style={{ ...BTN2, opacity: ocupado || !dir.trim() ? 0.5 : 1 }}><Search size={14} /> Buscar copias</button>
+        <button onClick={() => buscar(true)} disabled={ocupado || !dir.trim()} style={{ ...BTN2, opacity: ocupado || !dir.trim() ? 0.5 : 1 }}><Download size={14} /> Archivar ahora</button>
+      </div>
+      {res && !res.ok && <p style={{ fontSize: 12, color: C.rojo, marginTop: 10 }}>No se pudo consultar ({res.error ?? 'error'}).</p>}
+      {res?.ok && (
+        <div style={{ marginTop: 12 }}>
+          {res.copias?.length ? res.copias.map((k: any, i: number) => (
+            <div key={i} className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '10px 0', borderTop: i ? `1px solid ${C.borde}` : 'none' }}>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ fontSize: 12.5, fontWeight: 700, color: C.texto }}>Archivado el {fechaHora(k.archivadoAt)}{k.bytes ? ` · ${Math.round(k.bytes / 1024)} KB` : ''}</p>
+                <p style={{ fontSize: 11, color: C.sub, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all', marginTop: 2 }}>SHA-256 {k.sha256 ?? '—'}</p>
+                {k.str?.at && <p style={{ fontSize: 11, color: C.sub, marginTop: 2 }}>Registro en MistTrack: {k.str.at} UTC · puntaje {k.str.puntaje ?? '—'} · {k.str.nivel ?? '—'}</p>}
+              </div>
+              {k.url
+                ? <a href={k.url} target="_blank" rel="noopener noreferrer" style={{ ...BTN, textDecoration: 'none' }}><FileText size={14} /> Descargar PDF</a>
+                : <span style={{ fontSize: 11.5, color: C.sub }}>Sin enlace</span>}
+            </div>
+          )) : (
+            <p style={{ fontSize: 12, color: C.sub }}>
+              {res.archivadoAhora ? 'Se archivó, pero no aparece todavía. Vuelve a buscar.' : 'No hay copias archivadas para esa dirección. Usa «Archivar ahora» o consulta la dirección de nuevo.'}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const AdminKyt: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onAbrirCliente }) => {
   const [estado, setEstado] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
@@ -331,6 +391,7 @@ export const AdminKyt: React.FC<{ onAbrirCliente?: (userId: string) => void }> =
         <Conexion estado={estado} onCambio={cargar} />
         <ReglasOtc config={estado?.config} onGuardado={(c) => setEstado((e: any) => ({ ...(e ?? {}), config: c }))} />
       </div>
+      <PdfProveedor />
       <Registro onAbrirCliente={onAbrirCliente} />
     </div>
   );
