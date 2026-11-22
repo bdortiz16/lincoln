@@ -19,12 +19,22 @@ export default defineConfig(({ mode, command }) => {
         throw new Error(`Faltan ${faltan.join(' y ')} en las variables de compilación (Cloudflare → Workers & Pages → lincoln → Settings → Build → Variables and secrets). Sin ellas la página sale en "Modo offline" y nadie puede ingresar, así que no se compila.`);
       }
     }
+    // Id de esta compilación: va en el código (__BUILD_ID__) y en
+    // /version.json. Si el de la página abierta no coincide con el publicado,
+    // la pestaña tiene código viejo y se le avisa (AvisoVersionNueva).
+    const BUILD_ID = command === 'build' ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}` : 'dev';
     return {
       server: {
         port: 3000,
         host: '0.0.0.0',
       },
-      plugins: [react()],
+      plugins: [react(), {
+        name: 'lincoin-version-json',
+        apply: 'build',
+        generateBundle() {
+          this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ id: BUILD_ID, at: new Date().toISOString() }) });
+        },
+      }],
       define: {
         // Acá se horneaban GEMINI_API_KEY y API_KEY en el bundle del
         // navegador. Hoy no las lee nadie —quedaron del andamiaje inicial—
@@ -34,6 +44,7 @@ export default defineConfig(({ mode, command }) => {
         // Sello de versión visible en la UI — para saber al instante si el
         // navegador tiene el bundle nuevo o uno cacheado.
         __BUILD_TS__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'),
+        __BUILD_ID__: JSON.stringify(BUILD_ID),
       },
       resolve: {
         alias: {

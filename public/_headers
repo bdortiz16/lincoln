@@ -17,3 +17,8 @@
 
 /sitemap.xml
   Cache-Control: public, max-age=3600
+
+# El id de la versión publicada: nunca de caché, o el aviso de versión nueva
+# (AvisoVersionNueva) compararía contra uno viejo.
+/version.json
+  Cache-Control: no-store

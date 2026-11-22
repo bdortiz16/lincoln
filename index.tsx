@@ -8,6 +8,7 @@ import { DatabaseProvider } from './context/DatabaseContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { lazyNamed } from './lib/lazyRetry';
 import { registrarSW } from './components/pushLincoin';
+import { AvisoVersionNueva } from './components/AvisoVersionNueva';
 
 // Service worker: lo único que hace es recibir notificaciones push con la app
 // cerrada. No cachea nada a propósito — ver public/sw.js.
@@ -111,6 +112,8 @@ root.render(
         </ThemeProvider>
       )}
       </Suspense>
+      {/* Si se publicó una versión nueva con la pestaña abierta, se avisa. */}
+      <AvisoVersionNueva />
     </ErrorBoundary>
   </React.StrictMode>
 );
