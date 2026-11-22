@@ -337,7 +337,8 @@ function motivoLoginPortal(l: { status: number | string; snippet: string; frenad
   const st = l.status
   const txt = String(l.snippet ?? '').replace(/\s+/g, ' ').trim()
   let motivo: string
-  if (st === 'throw') motivo = `El servidor del portal de Finity (${PORTAL_BASE.replace(/^https?:\/\//, '')}) no respondió en 20 s: está caído, lo movieron o no acepta conexiones desde Supabase. Si portal.finity.com.co abre bien en el navegador, revisá en DevTools → Red a qué dirección va el login y, si cambió, poné esa dirección en la variable FINITY_PORTAL_BASE de Supabase. Los envíos no dependen de esto: usan la API de Finity.`
+  if (/authorization header/i.test(txt)) motivo = `En ${PORTAL_BASE.replace(/^https?:\/\//, '')} no está el ingreso del portal: ese servidor es la API de Finity y pide su autorización, no el correo y la contraseña del portal. No es la contraseña. Para la ruta nueva del login, mirá en portal.finity.com.co → DevTools → Red a qué dirección va el pedido "login" y ponela en FINITY_PORTAL_BASE.`
+  else if (st === 'throw') motivo = `El servidor del portal de Finity (${PORTAL_BASE.replace(/^https?:\/\//, '')}) no respondió en 20 s: está caído, lo movieron o no acepta conexiones desde Supabase. Si portal.finity.com.co abre bien en el navegador, revisá en DevTools → Red a qué dirección va el login y, si cambió, poné esa dirección en la variable FINITY_PORTAL_BASE de Supabase. Los envíos no dependen de esto: usan la API de Finity.`
   else if (st === 429 || st === 423 || /bloque|blocked|locked|too many|demasiad/i.test(txt)) motivo = 'Finity bloqueó el ingreso por intentos: hay que desbloquear la cuenta en portal.finity.com.co.'
   else if (st === 400 || st === 401 || /contrase|password|credencial|credential|incorrect|inv[aá]lid/i.test(txt)) motivo = 'Finity rechazó el correo o la contraseña del portal. Si la contraseña se cambió o venció en portal.finity.com.co, hay que actualizar el secret FINITY_PORTAL_PASSWORD en Supabase.'
   else if (st === 403) motivo = 'El portal de Finity negó el ingreso (403): puede ser su protección de seguridad o la cuenta bloqueada.'
@@ -345,6 +346,48 @@ function motivoLoginPortal(l: { status: number | string; snippet: string; frenad
   else motivo = 'El login del portal Finity fue rechazado.'
   const hora = l.frenadoHasta ? new Date(l.frenadoHasta).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit' }) : null
   return `${motivo}${txt ? ` Respuesta del portal (${st}): ${txt.slice(0, 160)}` : ` (${st})`}${hora ? ` · Para no bloquear la cuenta no se reintenta hasta las ${hora}; el botón de actualizar prueba ya.` : ''}`
+}
+
+// Saldo por la API de socios, con su token OAuth. Primero las rutas /v0 de
+// saldo (se acepta solo una lista con la moneda de cada fila) y, si falta
+// alguna cifra, las rutas del portal a través de la API. Se guarda 60 s si
+// funcionó y 5 min si no: el panel relee cada 30 s por pestaña abierta.
+let saldoApiCache: { hasta: number; r: { cop: number | null; usdt: number | null; intentos: Record<string, any> } } | null = null
+async function saldoPorApi(amountOf: (d: any) => number | null, deepFind: (o: any, t: string[]) => number | null) {
+  if (saldoApiCache && Date.now() < saldoApiCache.hasta) return saldoApiCache.r
+  const intentos: Record<string, any> = {}
+  let cop: number | null = null, usdt: number | null = null
+  try {
+    const { res, path } = await finityTry('balance')
+    const raw = await res.json().catch(() => null)
+    intentos.v0 = { path, status: res.status, raw }
+    const filas = !res.ok ? null : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.balances) ? raw.balances : null
+    for (const f of filas ?? []) {
+      const moneda = String(f?.asset ?? f?.currency ?? f?.coin ?? f?.symbol ?? '').toUpperCase()
+      const n = amountOf(f)
+      if (n == null) continue
+      if (moneda.startsWith('COP')) cop = cop ?? n
+      else if (moneda.startsWith('USD')) usdt = usdt ?? n
+    }
+  } catch (e) { intentos.v0 = { status: 'throw', err: String(e).slice(0, 120) } }
+  for (const [k, path] of [['copBalance', '/convert/copBalance'], ['action', '/homeFinity/action']] as const) {
+    if ((k === 'copBalance' && cop != null) || (k === 'action' && usdt != null)) continue
+    try {
+      const r = await finityFetch(path, { signal: AbortSignal.timeout(10000) })
+      const raw = await r.json().catch(() => null)
+      intentos[k] = { status: r.status, raw }
+      if (!r.ok) continue
+      if (k === 'copBalance') cop = amountOf(raw) ?? deepFind(raw, ['cop', 'balance'])
+      else {
+        const fb = raw?.data?.userFreeBalance ?? raw?.userFreeBalance
+        const n = Number(typeof fb === 'string' ? fb.replace(/,/g, '') : fb)
+        usdt = fb != null && Number.isFinite(n) ? n : deepFind(raw, ['userfreebalance', 'freebalance'])
+      }
+    } catch (e) { intentos[k] = { status: 'throw', err: String(e).slice(0, 120) } }
+  }
+  const r = { cop, usdt, intentos }
+  saldoApiCache = { hasta: Date.now() + (cop != null || usdt != null ? 60_000 : 5 * 60_000), r }
+  return r
 }
 
 async function getPortalToken(opts: { forzar?: boolean } = {}): Promise<string | null> {
@@ -791,10 +834,17 @@ Deno.serve(async (req) => {
       // forzar: lo pide el botón de actualizar de la bolsa (salta el freno).
       const token = await getPortalToken({ forzar: payload?.forzar === true })
       if (!token) {
+        // Plan B (22 nov): sin sesión del portal, se intenta leer el saldo
+        // con el token de la API de socios (api.finity.com.co, el mismo de
+        // los envíos). Solo se aceptan cifras con su moneda clara.
+        const b = await saldoPorApi(amountOf, deepFind)
+        if (b.cop != null || b.usdt != null) {
+          return json(200, { ok: true, usdt: b.usdt, cop: b.cop, sandbox: false, source: 'api', aviso: motivoLoginPortal(lastPortalLogin), raw: b.intentos })
+        }
         return json(200, {
           ok: false, usdt: null, cop: null,
           error: (portalEmail() && portalPassword())
-            ? motivoLoginPortal(lastPortalLogin)
+            ? `${motivoLoginPortal(lastPortalLogin)} Tampoco se pudo leer por la API de socios (${Object.entries(b.intentos).map(([k, v]: [string, any]) => `${k}: ${v?.status ?? '—'}`).join(', ')}).`
             : 'Faltan credenciales del portal Finity (define los secrets FINITY_PORTAL_EMAIL y FINITY_PORTAL_PASSWORD).',
           needsPortalCreds: !(portalEmail() && portalPassword()),
           loginDebug: lastPortalLogin,
