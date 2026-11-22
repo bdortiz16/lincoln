@@ -281,7 +281,11 @@ async function finityFetchAbs(url: string, init: RequestInit = {}): Promise<Resp
 // del portal lo expone (GET /convert/copBalance, /status…), y exige el JWT
 // que devuelve su propio login (data.signed). Se inicia sesión con las
 // credenciales del portal guardadas como secrets y se cachea el token.
-const PORTAL_BASE     = 'https://prod.finity.com.co:444'
+// Configurable (22 nov): el login al servidor del portal empezó a quedarse
+// sin respuesta desde Supabase. Si Finity lo movió, se cambia la variable
+// FINITY_PORTAL_BASE en Supabase (no es secreta) sin tocar código. El
+// servidor actual se ve en portal.finity.com.co → DevTools → Red → login.
+const PORTAL_BASE = ((Deno.env.get('FINITY_PORTAL_BASE') ?? '').trim().replace(/\/+$/, '')) || 'https://prod.finity.com.co:444'
 // Los secrets del portal se leen EN CADA LLAMADA (no al arrancar): así, apenas
 // se agregan/cambian en Supabase, la función los toma sin necesidad de que la
 // instancia se reinicie. `.trim()` en el email; en la contraseña solo se
@@ -330,7 +334,7 @@ function motivoLoginPortal(l: { status: number | string; snippet: string; frenad
   const st = l.status
   const txt = String(l.snippet ?? '').replace(/\s+/g, ' ').trim()
   let motivo: string
-  if (st === 'throw') motivo = 'El portal de Finity no respondió (red o tiempo de espera).'
+  if (st === 'throw') motivo = `El servidor del portal de Finity (${PORTAL_BASE.replace(/^https?:\/\//, '')}) no respondió en 20 s: está caído, lo movieron o no acepta conexiones desde Supabase. Si portal.finity.com.co abre bien en el navegador, revisá en DevTools → Red a qué dirección va el login y, si cambió, poné esa dirección en la variable FINITY_PORTAL_BASE de Supabase. Los envíos no dependen de esto: usan la API de Finity.`
   else if (st === 429 || st === 423 || /bloque|blocked|locked|too many|demasiad/i.test(txt)) motivo = 'Finity bloqueó el ingreso por intentos: hay que desbloquear la cuenta en portal.finity.com.co.'
   else if (st === 400 || st === 401 || /contrase|password|credencial|credential|incorrect|inv[aá]lid/i.test(txt)) motivo = 'Finity rechazó el correo o la contraseña del portal. Si la contraseña se cambió o venció en portal.finity.com.co, hay que actualizar el secret FINITY_PORTAL_PASSWORD en Supabase.'
   else if (st === 403) motivo = 'El portal de Finity negó el ingreso (403): puede ser su protección de seguridad o la cuenta bloqueada.'
@@ -368,7 +372,7 @@ async function getPortalToken(opts: { forzar?: boolean } = {}): Promise<string |
       'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
     },
     body: JSON.stringify({ email: PORTAL_EMAIL, password: PORTAL_PASSWORD, remember_me: false }),
-    signal: AbortSignal.timeout(12000),
+    signal: AbortSignal.timeout(20000),
   }).catch((e) => { lastPortalLogin = { status: 'throw', snippet: String(e).slice(0, 200) }; return null })
   if (!res) { await ponerFrenoLogin('throw', lastPortalLogin?.snippet ?? ''); return null }
   const text = await res.text().catch(() => '')
