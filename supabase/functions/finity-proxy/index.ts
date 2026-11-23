@@ -961,6 +961,42 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'balance') {
+      // Primero la ruta OFICIAL (GET /v0/account/COP, la misma del panel en
+      // saldoPorApi). 23 nov: un Bre-B · Cuenta 2 de 5.000.000 rechazado se le
+      // dijo al cliente "no aceptó este monto" porque el envío leía el saldo
+      // solo por las rutas adivinadas de CANDIDATES.balance, que no existen:
+      // sin saldo, el diagnóstico no podía ver que la bolsa no alcanzaba.
+      // La respuesta va como { COP: n }, que es lo que lee finityCopDisponible.
+      try {
+        const r = await finityFetch('/v0/account/COP', { signal: AbortSignal.timeout(10000) })
+        const raw = await r.json().catch(() => null)
+        if (r.ok && raw != null) {
+          const pick = (d: any): number | null => {
+            if (d == null) return null
+            if (typeof d === 'number' || typeof d === 'string') { const n = Number(String(d).replace(/,/g, '')); return Number.isFinite(n) ? n : null }
+            const c = d.available ?? d.available_balance ?? d.availableBalance ?? d.balance ?? d.amount
+              ?? d.data?.available ?? d.data?.available_balance ?? d.data?.availableBalance ?? d.data?.balance ?? d.data?.amount
+            const n = Number(String(c ?? '').replace(/,/g, ''))
+            return c != null && Number.isFinite(n) ? n : null
+          }
+          // Si viene más anidado, la primera cifra bajo available/balance/
+          // amount (lo mismo que hace el panel con deepFind).
+          const hondo = (o: any, prof = 0): number | null => {
+            if (o == null || typeof o !== 'object' || prof > 4) return null
+            for (const t of ['available', 'balance', 'amount']) {
+              for (const [k, v] of Object.entries(o)) {
+                if (!k.toLowerCase().includes(t)) continue
+                const n = Number(typeof v === 'string' ? v.replace(/,/g, '') : v)
+                if (v != null && v !== '' && Number.isFinite(n)) return n
+              }
+            }
+            for (const v of Object.values(o)) { const n = hondo(v, prof + 1); if (n != null) return n }
+            return null
+          }
+          const n = pick(raw) ?? hondo(raw)
+          if (n != null) return json(200, { ok: true, status: r.status, path: '/v0/account/COP', data: { COP: n } })
+        }
+      } catch { /* sigue con las rutas de siempre */ }
       const { res, path } = await finityTry('balance')
       return json(200, { ok: res.ok, status: res.status, path, data: await res.json().catch(() => null) })
     }
