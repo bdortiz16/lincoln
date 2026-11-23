@@ -242,6 +242,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const [ajusteCop, setAjusteCop]   = useState<number>(0);
     const [motivoSinTasa, setMotivoSinTasa] = useState<string | null>(null);
     const [cargandoTasa, setCargandoTasa]   = useState(true);
+    const [actualizadaAt, setActualizadaAt] = useState<Date | null>(null);
     // Desde el 19 nov el cliente ya NO elige en qué billetera recibe el COP:
     // la mesa decide el canal al acreditar. Lo que sí tiene que decir, para
     // vender USDT, es desde qué wallet los manda: se revisa su riesgo antes
@@ -269,6 +270,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
             setTasa(Number(r.rate));
             setReferencia(r.referencia != null ? Number(r.referencia) : null);
             setMotivoSinTasa(null);
+            setActualizadaAt(new Date());
         } else {
             setTasa(null); setReferencia(null);
             // El servidor solo manda `motivo` cuando quien pregunta es la
@@ -451,10 +453,24 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                                 <Fila k={recMoneda === 'COP' ? 'Recibes en pesos (estimado)' : 'Recibes en USDT (estimado)'}
                                     v={recibe != null ? `${nf(recibe, recMoneda === 'COP' ? 0 : 2)} ${recMoneda}` : '—'} />
                                 <Fila k="Llega" v={side === 'vende_usdt' ? 'Cuando la mesa confirme tus USDT' : 'Cuando la mesa confirme tu pago'} color="#4ADE80" />
-                                <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11.5, lineHeight: 1.5 }}>
-                                    Tasa indicativa: la mesa confirma la final antes de que envíes nada.
-                                    <button onClick={pedirTasa} style={{ marginLeft: 6, color: '#4ADE80', textDecoration: 'underline', fontSize: 11.5, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}>actualizar</button>
-                                </p>
+                                {/* La tasa se renueva sola cada minuto; el botón es para
+                                    no esperar. Era un "actualizar" subrayado pegado al
+                                    texto (23 nov, al dueño no le gustó): ahora es un
+                                    botón con la hora de la última tasa al lado. */}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginTop: 2, padding: '10px 12px', borderRadius: 11, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                                    <div style={{ minWidth: 0 }}>
+                                        <p style={{ margin: 0, color: '#F4F4F2', fontSize: 12, fontWeight: 600 }}>Tasa indicativa</p>
+                                        <p style={{ margin: '2px 0 0', color: '#878E88', fontSize: 11.5, lineHeight: 1.45 }}>
+                                            La mesa confirma la final antes de que envíes nada.
+                                            {actualizadaAt ? ` Tasa de las ${actualizadaAt.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit' })}; se renueva cada minuto.` : ''}
+                                        </p>
+                                    </div>
+                                    <button onClick={pedirTasa} disabled={cargandoTasa}
+                                        style={{ display: 'inline-flex', alignItems: 'center', gap: 7, flexShrink: 0, height: 34, padding: '0 14px', borderRadius: 999, fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit', color: '#F4F4F2', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', cursor: cargandoTasa ? 'default' : 'pointer', opacity: cargandoTasa ? 0.6 : 1 }}>
+                                        <RefreshCw size={13} strokeWidth={2} className={cargandoTasa ? 'animate-spin' : ''} style={{ color: '#4ADE80' }} />
+                                        {cargandoTasa ? 'Actualizando…' : 'Actualizar tasa'}
+                                    </button>
+                                </div>
                             </>
                         ) : (
                             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>

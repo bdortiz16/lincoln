@@ -153,8 +153,9 @@ const VENTANA_MAX = 120
 const TZ_MESA = 'America/Bogota'
 const DIAS = ['dom', 'lun', 'mar', 'mie', 'jue', 'vie', 'sab'] as const
 const DIA_NOMBRE: Record<string, string> = {
-  dom: 'domingo', lun: 'lunes', mar: 'martes', mie: 'miercoles',
-  jue: 'jueves', vie: 'viernes', sab: 'sabado',
+  // Con tildes: el cliente lo lee en "Vuelve a abrir el miércoles…".
+  dom: 'domingo', lun: 'lunes', mar: 'martes', mie: 'miércoles',
+  jue: 'jueves', vie: 'viernes', sab: 'sábado',
 }
 type Franja = { activo: boolean; desde: string; hasta: string }
 // Por defecto: lunes a viernes 8-18, sabado 9-13, domingo cerrado. Es un punto
@@ -230,7 +231,7 @@ async function estadoMesa(): Promise<EstadoMesa> {
       // Hoy solo sirve si todavia no paso la hora de apertura.
       if (k === 0 && min >= aMin(f.desde)) continue
       proxima = k === 0 ? `hoy a las ${f.desde}`
-        : k === 1 ? `manana a las ${f.desde}`
+        : k === 1 ? `mañana a las ${f.desde}`
         : `el ${DIA_NOMBRE[d]} a las ${f.desde}`
       break
     }
