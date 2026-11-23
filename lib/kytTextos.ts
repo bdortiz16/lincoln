@@ -325,6 +325,8 @@ const CATEGORIA_SB: Record<string, string> = {
 export function senalEs(code: any, category?: any): string {
   const c = String(code ?? '').toUpperCase().trim();
   if (!c) return 'Señal sin código';
+  if (c === 'NEW_WALLET') return 'Wallet nueva';
+  if (c === 'RAPID_PASS_THROUGH') return 'Paso rápido de fondos';
   const san = c.match(/^SANCTION(?:ED)?_?(.*)$/);
   if (san) return `Dirección sancionada${san[1] ? ` (${san[1].replace(/_/g, ' ')})` : ''}`;
   const inter = c.match(/^(.+?)_INTERACTION$/);

@@ -1065,6 +1065,38 @@ const proveedorDe = (ficha: any): 'sarblock' | 'misttrack' =>
 const sarblockDe = (ficha: any): SB.ResultadoSarblock | null =>
   proveedorDe(ficha) === 'sarblock' ? SB.leerResultado(ficha?.respuesta_cruda?.analisis) : null
 
+// ── WALLET NUEVA = RIESGO BAJO (23 nov, decisión del dueño) ────────
+// Sarblock marca NEW_WALLET a una wallet recién creada y por eso le pone
+// nivel MEDIUM aunque su puntaje sea bajo (el caso real: 15/100): no es un
+// hallazgo sobre la wallet sino la falta de historial. El dueño: "clasifícala
+// bajo, ya que no es riesgo". Aplica SOLO cuando NEW_WALLET es la única
+// señal y nada más la marca: sin sanción, sin recomendación de bloquear, sin
+// nivel alto, sin otros indicadores ni incidentes, y con el puntaje en la
+// franja baja de la escala del propio proveedor (menos de 50). Con cualquier
+// otra señal la clasificación vuelve a ser la del proveedor.
+//
+// El nivel del proveedor no se toca: se guarda y se devuelve tal cual
+// (`nivel`) y el reporte lo cita. Lo que cambia es la CLASIFICACIÓN de
+// Lincoin (`categoria`), y se marca con `walletNueva` para que cada pantalla
+// diga por qué.
+function soloWalletNueva(sb: SB.ResultadoSarblock | null, score: unknown, extras: { detailList?: unknown; hacking?: unknown } = {}): boolean {
+  if (!sb) return false
+  const cods = (sb.senales ?? []).map(sx => String(sx.code ?? '').toUpperCase())
+  const n = Number(score)
+  return cods.length > 0 && cods.every(k => k === 'NEW_WALLET')
+    && !sb.sancionada && sb.recomendacion !== 'BLOCK'
+    && !/SEVERE|CRITICAL|HIGH/i.test(String(sb.riskLevel ?? ''))
+    && (Array.isArray(extras.detailList) ? extras.detailList.length : 0) === 0 && !extras.hacking
+    && score !== null && score !== undefined && Number.isFinite(n) && n < 50
+}
+const walletNuevaDe = (f: any): boolean =>
+  soloWalletNueva(sarblockDe(f), f?.risk_score, { detailList: f?.detail_list, hacking: f?.hacking_event })
+// La clasificación de Lincoin de una ficha del padrón.
+function categoriaDe(c: Config, f: any): 'alto' | 'medio' | 'bajo' | 'sin_dato' {
+  const base = clasificar(c, f?.risk_score ?? null, f?.risk_level ?? null)
+  return base === 'medio' && walletNuevaDe(f) ? 'bajo' : base
+}
+
 // La consulta con Sarblock, con la MISMA forma de respuesta que la de
 // MistTrack: la usan la consulta, el reporte, la mesa OTC y el monitoreo, y
 // ninguno tiene que saber de dónde vino el veredicto para leerlo.
@@ -1849,7 +1881,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
           ok: true,
           address: ficha.address,
           coin,
-          categoria: clasificar(c, ficha.risk_score, ficha.risk_level),
+          categoria: categoriaDe(c, ficha), walletNueva: walletNuevaDe(ficha),
           puntaje: ficha.risk_score,
           nivel: ficha.risk_level,
           hallazgos: ficha.risk_detail ?? [],
@@ -1957,7 +1989,11 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
       return json({
         ok: true,
         address: dir, coin,
-        categoria: clasificar(c, ev.score, ev.level),
+        ...(() => {
+          const nueva = soloWalletNueva(ev.sarblock ?? null, ev.score)
+          const base = clasificar(c, ev.score, ev.level)
+          return { categoria: base === 'medio' && nueva ? 'bajo' : base, walletNueva: nueva }
+        })(),
         puntaje: ev.score, nivel: ev.level,
         hallazgos: ev.hallazgos, etiquetas: ev.etiquetas, detalle: ev.detalle,
         etiquetaProveedor: ev.addressLabel ?? null,
@@ -2039,7 +2075,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         ficha = await padronBuscar(coin, dir)
       }
       const f = ficha ?? {}
-      const categoria = clasificar(c, f.risk_score ?? null, f.risk_level ?? null)
+      const categoria = categoriaDe(c, f)
       const motivos = [
         ...(Array.isArray(f.detail_list) ? f.detail_list : []),
         ...(Array.isArray(f.risk_detail) ? f.risk_detail : []).map((x: any) => x?.risk_type ?? x?.entity ?? 'exposición señalada'),
@@ -2051,24 +2087,12 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
       // más estricta, como con MistTrack.
       const sbOtc = sarblockDe(f)
       const recomendacion = sbOtc?.recomendacion ?? null
-      // WALLET NUEVA (23 nov, decisión del dueño): una wallet recién creada
-      // sale con nivel MEDIUM y la señal NEW_WALLET solo porque no tiene
-      // historial, aunque no haya tocado nada riesgoso (el caso real: puntaje
-      // 15/100). La mesa la rechazaba como "riesgo medio". Se deja operar
-      // cuando NEW_WALLET es la ÚNICA señal y nada más la marca: sin sanción,
-      // sin recomendación de bloquear, sin nivel alto, sin otros indicadores
-      // y con el puntaje dentro de la franja baja de la escala del propio
-      // proveedor (1–49). Cualquier otra señal junto a ella vuelve a la regla
-      // normal. El nivel y el puntaje se guardan tal cual vinieron: lo que
-      // cambia es la decisión de la mesa, y queda anotada como excepción.
-      const codigosSb = (sbOtc?.senales ?? []).map(sx => String(sx.code ?? '').toUpperCase())
-      const puntajeSb = Number(f.risk_score)
-      const soloWalletNueva = !!sbOtc && codigosSb.length > 0 && codigosSb.every(k => k === 'NEW_WALLET')
-        && !sbOtc.sancionada && recomendacion !== 'BLOCK' && categoria !== 'alto'
-        && (Array.isArray(f.detail_list) ? f.detail_list.length : 0) === 0 && !f.hacking_event
-        && f.risk_score != null && Number.isFinite(puntajeSb) && puntajeSb < 50
-      const permitido = (categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')) || soloWalletNueva
-      const excepcion = soloWalletNueva && !(categoria === 'bajo' && motivos.length === 0 && recomendacion === 'CLEAR') ? 'wallet_nueva' : null
+      // Wallet nueva (solo la señal NEW_WALLET): riesgo bajo y puede operar
+      // (ver soloWalletNueva). La señal no cuenta como señalamiento ni la
+      // recomendación MONITOR/REVIEW que trae por ella. Queda anotada.
+      const walletNueva = walletNuevaDe(f)
+      const permitido = (categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')) || walletNueva
+      const excepcion = walletNueva ? 'wallet_nueva' : null
       const REC_ES: Record<string, string> = { MONITOR: 'operar con vigilancia', REVIEW: 'revisión de cumplimiento antes de operar', BLOCK: 'no operar' }
       const motivoBloqueo = permitido ? null
         : categoria === 'sin_dato' ? 'No hay un resultado de riesgo para esta wallet.'
@@ -2089,7 +2113,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         empresa: quien.empresa, email: quien.email, nombre,
       })
       return json({
-        ok: true, permitido, motivoBloqueo, excepcion,
+        ok: true, permitido, motivoBloqueo, excepcion, walletNueva,
         coin, red: REDES_OTC[coin], address: f.address ?? dir,
         categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
         recomendacion,
@@ -2193,7 +2217,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
 
       // El punto de partida sale del padrón, que es donde vive el veredicto.
       const ficha2 = await padronBuscar(coin, dir)
-      const banda = clasificar(c, ficha2?.risk_score ?? null, ficha2?.risk_level ?? null)
+      const banda = categoriaDe(c, ficha2)
       const ahora = new Date().toISOString()
 
       // Se reactiva si estaba dada de baja, y se reinicia la referencia: al
@@ -2311,7 +2335,8 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         }
 
         const antes = String(w.banda_actual ?? 'sin_dato')
-        const ahoraBanda = clasificar(c, ev.score, ev.level)
+        const bandaProv = clasificar(c, ev.score, ev.level)
+        const ahoraBanda = bandaProv === 'medio' && soloWalletNueva(ev.sarblock ?? null, ev.score) ? 'bajo' : bandaProv
         const ORDEN: Record<string, number> = { bajo: 1, sin_dato: 1, medio: 2, alto: 3 }
         const empeoro = (ORDEN[ahoraBanda] ?? 1) > (ORDEN[antes] ?? 1)
 
@@ -2559,7 +2584,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         generadoAt: new Date().toISOString(),
         empresa: quien.empresa, correo: quien.email,
         coin, address: f.address,
-        categoria: clasificar(c, f.risk_score, f.risk_level),
+        categoria: categoriaDe(c, f), walletNueva: walletNuevaDe(f),
         puntaje: f.risk_score, nivel: f.risk_level,
         hackingEvent: f.hacking_event ?? null,
         detalle: f.detail_list ?? [],
@@ -3021,13 +3046,13 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
           direcciones: filas.length,
           consultasPagadas: pagadas,
           consultasAhorradas: ahorradas,
-          alto: filas.filter(r => clasificar(c, r.risk_score, r.risk_level) === 'alto').length,
-          medio: filas.filter(r => clasificar(c, r.risk_score, r.risk_level) === 'medio').length,
+          alto: filas.filter(r => categoriaDe(c, r) === 'alto').length,
+          medio: filas.filter(r => categoriaDe(c, r) === 'medio').length,
           sinResultado: filas.filter(r => r.estado !== 'finalizado').length,
         },
         direcciones: filas.map(r => ({
           coin: r.coin, address: r.address,
-          categoria: clasificar(c, r.risk_score, r.risk_level),
+          categoria: categoriaDe(c, r), walletNueva: walletNuevaDe(r),
           puntaje: r.risk_score, nivel: r.risk_level,
           estado: r.estado,
           hallazgos: Array.isArray(r.risk_detail) ? r.risk_detail : [],

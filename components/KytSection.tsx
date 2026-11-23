@@ -575,7 +575,11 @@ export const KytSection: React.FC<{
   // encima del puntaje del proveedor, el número va aparte y con dueño.
   // El nivel con el nombre que le da el proveedor (Bajo, Moderado, Alto,
   // Severo): el mismo que dice su reporte. Ver bandaDeRiesgo en kytTextos.
-  const nivelTexto = (cat?: string, nivel?: string | null, proveedor?: string) => {
+  const nivelTexto = (cat?: string, nivel?: string | null, proveedor?: string, walletNueva?: boolean) => {
+    // Wallet nueva (23 nov, decisión del dueño): su única observación es no
+    // tener historial y Lincoin la clasifica riesgo bajo (el servidor ya
+    // manda categoria 'bajo'; aquí se dice por qué).
+    if (walletNueva) return 'Riesgo bajo · wallet nueva';
     // Cada proveedor con su escala: Sarblock dice Medio o Crítico donde
     // MistTrack dice Moderado o Severo. Traducir uno a la del otro sería
     // poner en su boca una palabra que no usó.
@@ -729,7 +733,7 @@ export const KytSection: React.FC<{
               <Insignia v={res.coin} size={24} />
               <div style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
-                  {nivelTexto(res.categoria, res.nivel, res.proveedor)}
+                  {nivelTexto(res.categoria, res.nivel, res.proveedor, !!res.walletNueva)}
                   {res.puntaje != null && (
                     <span style={{ color: C.sub, fontWeight: 600 }}> · {res.puntaje} / 100</span>
                   )}

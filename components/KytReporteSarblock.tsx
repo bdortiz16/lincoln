@@ -327,12 +327,16 @@ export const KytReporteSarblock: React.FC<{ d: any; onClose: () => void }> = ({ 
             </div>
             <div style={{ flex: '1 1 300px', minWidth: 0 }}>
               <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: '1.2px', color: T.verdeVivo, margin: 0 }}>● CONCLUSIÓN</p>
-              <p style={{ fontSize: 21, fontWeight: 800, margin: '5px 0 0', letterSpacing: '-0.3px' }}>{conclusionSb(sb.recomendacion)}</p>
+              {/* Wallet nueva (23 nov, decisión del dueño): Lincoin la clasifica
+                  riesgo bajo. La recomendación de SARBLOCK se sigue citando
+                  abajo, tal cual, para que el reporte no le cambie las palabras. */}
+              <p style={{ fontSize: 21, fontWeight: 800, margin: '5px 0 0', letterSpacing: '-0.3px' }}>{d.walletNueva ? 'Se puede operar · wallet nueva' : conclusionSb(sb.recomendacion)}</p>
               <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.65)', margin: '4px 0 0', lineHeight: 1.5 }}>
                 {masPesa
                   ? <>Lo que más pesa: {senalEs(masPesa.code, masPesa.category)}.</>
                   : (rec?.detalle ?? 'SARBLOCK no devolvió una recomendación.')}
                 {' '}Recomendación de SARBLOCK: <span style={{ fontFamily: MONO, color: '#F4F4F2' }}>{rec?.codigo ?? sb.recomendacion ?? '—'}</span>.
+                {d.walletNueva ? ' Su única observación es no tener historial: Lincoin la clasifica como riesgo bajo.' : ''}
               </p>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
                 {ESCALA_SB.map(e => {
@@ -358,7 +362,8 @@ export const KytReporteSarblock: React.FC<{ d: any; onClose: () => void }> = ({ 
         {/* ── Ficha ── */}
         <div style={{ marginTop: 6 }}>
           <Grilla>
-            <Dato rot="Nivel de riesgo" valor={nivelSarblockEs(sb.riskLevel ?? d.nivel)} sub={rec ? rec.titulo : null} />
+            <Dato rot="Nivel de riesgo" valor={d.walletNueva ? 'Bajo · wallet nueva' : nivelSarblockEs(sb.riskLevel ?? d.nivel)}
+              sub={d.walletNueva ? `Clasificación Lincoin · SARBLOCK: ${nivelSarblockEs(sb.riskLevel ?? d.nivel)}` : (rec ? rec.titulo : null)} />
             <Dato rot="Solicitado por" valor={empresa} sub="Cliente de Lincoin" />
             <Dato rot="Confianza del análisis" valor={cap(confianzaEs(score.confidence))}
               sub={sb.degraded ? 'Parte de la evidencia no se pudo consultar' : 'Sin fuentes caídas'} />
