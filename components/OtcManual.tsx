@@ -18,11 +18,14 @@ import { Panel, Recarga, ESTILOS as ESTILOS_RISK } from './risk/RiskCliente';
 // no en un chat de soporte aparte, porque lo que hay que poder releer despues
 // es el hilo de ESTE cierre.
 //
-// LA TASA QUE SE MUESTRA ES INDICATIVA, Y SE DICE
-//   La pantalla cotiza con la tasa viva, pero la operacion tarda minutos y se
-//   negocia. Presentar ese numero como precio cerrado seria prometer algo que
-//   no se sostiene: se muestra como indicativa y la final la fija la mesa en
-//   el hilo. Cuando la mesa la fija, la pantalla pasa a mostrar ESA.
+// LA TASA QUEDA FIJA AL PEDIR EL CIERRE, Y SE DICE
+//   Antes la pantalla decía "indicativa: la mesa confirma la final", pero el
+//   servidor fija la tasa cotizada al CREAR el cierre y desde ahí corre el
+//   plazo de pago (otc-mesa 'crear'). Prometer una confirmación que no llega
+//   deja al cliente esperando mientras se le vence el plazo (revisión del 23
+//   nov). Ahora se dice lo que pasa: la tasa en vivo se fija al solicitar. La
+//   mesa puede renegociarla en el hilo (fijar_tasa) y ahí el plazo vuelve a
+//   empezar.
 // ─────────────────────────────────────────────
 
 const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -48,7 +51,7 @@ export async function callOtcMesa(action: string, body: Record<string, unknown> 
             signal: AbortSignal.timeout(25000),
         });
         const t = await r.text();
-        if (!t) return { ok: false, error: 'El servicio no respondió. Reintentá.' };
+        if (!t) return { ok: false, error: 'El servicio no respondió. Intenta de nuevo.' };
         try { return JSON.parse(t); } catch { return { ok: false, error: `Respuesta no válida (HTTP ${r.status})` }; }
     } catch (e: any) {
         return { ok: false, error: e?.name === 'TimeoutError' ? 'La mesa tardó demasiado en responder.' : `Error de red: ${String(e?.message ?? e)}` };
@@ -110,14 +113,19 @@ export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver, saldos
     const avisados = useRef<Set<string>>(new Set());
     const primeraLectura = useRef(true);
 
+    // onAcreditado llega como función nueva en cada render del tablero. Con
+    // ella en las dependencias, cargarMios cambiaba en cada render y su efecto
+    // volvía a pedir los cierres una y otra vez. Se lee desde una ref.
+    const onAcreditadoRef = useRef(onAcreditado);
+    onAcreditadoRef.current = onAcreditado;
     const avisarAcreditado = useCallback((c: any) => {
         if (!c || c.status !== 'completada' || !c.id) return;
         if (avisados.current.has(c.id)) return;
         avisados.current.add(c.id);
         const billetera = String(c.payout?.wallet ?? (c.side === 'vende_usdt' ? 'COP' : 'USD'));
         const monto = Number(c.to_amount);
-        if (monto > 0) onAcreditado?.(billetera, monto);
-    }, [onAcreditado]);
+        if (monto > 0) onAcreditadoRef.current?.(billetera, monto);
+    }, []);
 
     const cargarMios = useCallback(async () => {
         const r = await callOtcMesa('mios', { user_id: userId });
@@ -235,30 +243,50 @@ const Fila: React.FC<{ k: React.ReactNode; v: React.ReactNode; color?: string; s
 );
 
 // ── El monto con puntos de miles (23 nov) ──
-// El dueño escribió 10.000 y la caja mostraba "10000", sin puntos. Peor: la
-// caja leía el punto como decimal, así que quien escribiera "10.000" (como se
-// escribe en Colombia) cotizaba 10 USDT. Ahora el monto se guarda limpio
-// ("10000.5") y se muestra como en Colombia ("10.000,5"): punto de miles y
-// coma decimal. Un punto escrito a mano se toma como de miles, salvo un único
-// punto con 1 o 2 cifras al final ("10.5", pegado de otro lado), que es decimal.
-const aCanonico = (txt: string, maxDec: number): string => {
+// El dueño escribió 10.000 y la caja mostraba "10000", sin puntos. Ahora el
+// monto se guarda limpio ("10000.5") y se muestra como en Colombia
+// ("10.000,5"): punto de miles y coma decimal.
+//
+// AL ESCRIBIR, los puntos que hay en la caja son SIEMPRE de miles: los puso la
+// pantalla. La primera versión adivinaba ("un punto con 1 o 2 cifras al final
+// es decimal") y borrar un cero de "10.000" dejaba "10.00" → 10 USDT, y escribir
+// "0." se comía el punto (0.5 salía 5). Un punto recién tecleado al final sí
+// es la coma decimal (el teclado numérico del celular muchas veces solo trae
+// punto). Lo pegado de otro lado se lee aparte (montoPegado).
+const aCanonico = (txt: string, maxDec: number, antes = ''): string => {
+    let t = String(txt ?? '').replace(/[^\d.,]/g, '');
+    if (maxDec > 0 && t.endsWith('.') && t.length > antes.length && !t.slice(0, -1).includes(',')) t = `${t.slice(0, -1)},`;
+    const coma = t.indexOf(',');
+    const ent = (coma >= 0 ? t.slice(0, coma) : t).replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+    if (maxDec <= 0 || coma < 0) return ent;
+    return `${ent || '0'}.${t.slice(coma + 1).replace(/\D/g, '').slice(0, maxDec)}`;
+};
+// Un monto PEGADO puede venir en cualquier formato: "1.234.567,89",
+// "1,234,567.89", "10.5", "10,5". Con los dos separadores, el último es el
+// decimal; con uno solo repetido, son miles; con uno solo seguido de tres
+// cifras exactas, también son miles ("1.234" y "1,234"); si no, es decimal.
+const montoPegado = (txt: string, maxDec: number): string => {
     const t = String(txt ?? '').replace(/[^\d.,]/g, '');
-    let ent = t;
-    let dec: string | null = null;
-    const coma = t.lastIndexOf(',');
-    // Dos o más comas: viene pegado en formato gringo ("34,198,150.5"): las
-    // comas son de miles y el punto, decimal.
-    if ((t.match(/,/g) ?? []).length > 1) {
-        const p = t.lastIndexOf('.');
-        ent = p >= 0 ? t.slice(0, p) : t; dec = p >= 0 ? t.slice(p + 1) : null;
-    } else if (coma >= 0) { ent = t.slice(0, coma); dec = t.slice(coma + 1); }
-    else {
-        const m = t.match(/^([^.]*)\.(\d{1,2})$/);
-        if (m) { ent = m[1]; dec = m[2]; }
+    const p = t.lastIndexOf('.'), c = t.lastIndexOf(',');
+    let ent = t, dec: string | null = null;
+    if (p >= 0 && c >= 0) { const i = Math.max(p, c); ent = t.slice(0, i); dec = t.slice(i + 1); }
+    else if (p >= 0 || c >= 0) {
+        const sep = p >= 0 ? '.' : ',';
+        const i = Math.max(p, c);
+        const tras = t.slice(i + 1);
+        if (t.split(sep).length === 2 && tras.length !== 3) { ent = t.slice(0, i); dec = tras; }
     }
     ent = ent.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
-    if (maxDec <= 0 || dec == null) return ent;
-    return `${ent || '0'}.${dec.replace(/\D/g, '').slice(0, maxDec)}`;
+    const d = (dec ?? '').replace(/\D/g, '').slice(0, maxDec);
+    return maxDec > 0 && d ? `${ent || '0'}.${d}` : ent;
+};
+// Lo que recibe, con el MISMO redondeo del servidor (otc-mesa
+// redondearRecibe): pesos enteros y USDT con 2 decimales, hacia abajo. Si la
+// pantalla redondeara distinto, el cliente vería un número y le acreditarían
+// otro.
+const redondearRecibe = (v: number, moneda: string) => {
+    const f = moneda === 'COP' ? 1 : 100;
+    return Math.floor(v * f + 1e-6) / f;
 };
 const aPantalla = (c: string): string => {
     if (!c) return '';
@@ -300,11 +328,19 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     // Si la mesa está cerrada, el servidor lo dice al cotizar. No se deduce del
     // reloj del navegador: ese reloj lo pone el cliente.
     const [mesa, setMesa] = useState<{ abierta: boolean; proxima: string | null } | null>(null);
+    const [ventanaMin, setVentanaMin] = useState<number | null>(null);
 
+    // Cada pedido lleva un número y solo el último se pinta. Sin esto, cambiar
+    // de "Vendo" a "Compro" con una cotización en vuelo dejaba la tasa de
+    // VENTA en la pantalla de compra cuando llegaba tarde.
+    const pedidoTasa = useRef(0);
     const pedirTasa = useCallback(async () => {
+        const mio = ++pedidoTasa.current;
         setCargandoTasa(true);
         const r = await callOtcMesa('cotizar', { user_id: userId, side });
+        if (mio !== pedidoTasa.current) return;
         if (r?.mesa) setMesa({ abierta: !!r.mesa.abierta, proxima: r.mesa.proxima ?? null });
+        if (Number(r?.ventanaMin) > 0) setVentanaMin(Number(r.ventanaMin));
         if (r?.margenPct != null) setMargenPct(Number(r.margenPct));
         if (typeof r?.exigeWallet === 'boolean') setExigeWallet(r.exigeWallet);
         if (r?.ajusteCop != null) setAjusteCop(Number(r.ajusteCop));
@@ -333,9 +369,10 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
 
     const n = Number(monto);
     const montoOk = Number.isFinite(n) && n > 0;
-    const recibe = (montoOk && tasa != null) ? (side === 'vende_usdt' ? n * tasa : n / tasa) : null;
     const envMoneda = side === 'vende_usdt' ? 'USDT' : 'COP';
     const recMoneda = side === 'vende_usdt' ? 'COP' : 'USDT';
+    const recibe = (montoOk && tasa != null) ? redondearRecibe(side === 'vende_usdt' ? n * tasa : n / tasa, recMoneda) : null;
+    const plazoTxt = ventanaMin ? `${ventanaMin} minutos` : 'un plazo corto';
     // La verificación vale para ESA wallet en ESA red: si la cambia, hay que
     // volver a verificar (el servidor exige lo mismo al crear).
     const walletLimpia = wallet.trim();
@@ -373,8 +410,12 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     // El número grande, como en ACH: la parte entera y los decimales en chico.
     const grande = (v: number | null, dec: number) => {
         if (v == null) return <span style={{ color: '#878E88' }}>0</span>;
-        const ent = Math.floor(v);
-        const d = Math.round((v - ent) * Math.pow(10, dec));
+        // Se redondea el número entero ANTES de partirlo. Partir primero
+        // daba ",100" cuando los decimales eran ,995 o más.
+        const f = Math.pow(10, dec);
+        const total = Math.round(v * f);
+        const ent = Math.floor(total / f);
+        const d = total - ent * f;
         return <>{ent.toLocaleString('es-CO')}<span style={{ fontSize: '0.65em', color: '#878E88', fontWeight: 700 }}>,{String(d).padStart(dec, '0')}</span></>;
     };
     const cerrada = !!mesa && !mesa.abierta;
@@ -391,13 +432,13 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                         {side === 'vende_usdt' ? 'Convertir USDT a pesos colombianos' : 'Comprar USDT con pesos colombianos'}
                     </h1>
                     <p style={{ fontSize: 14, color: '#878E88', marginTop: 3, lineHeight: 1.5 }}>
-                        Mesa OTC con asesor: {side === 'vende_usdt' ? 'envías tus USDT y recibes pesos' : 'pagas en pesos y recibes USDT'}. La mesa te confirma la tasa por el chat y cierra ahí mismo.
+                        Mesa OTC con asesor: {side === 'vende_usdt' ? 'envías tus USDT y recibes pesos' : 'pagas en pesos y recibes USDT'}. Al pedir el cierre la tasa queda fija y la mesa te acompaña por el chat hasta acreditar.
                     </p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#878E88', border: `1px solid ${cerrada ? 'rgba(251,191,36,0.35)' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.04)', padding: '7px 13px', borderRadius: 999 }}>
                         <span style={{ width: 7, height: 7, borderRadius: 999, background: cerrada ? '#FBBF24' : '#4ADE80', display: 'inline-block' }} />
-                        {cerrada ? 'Mesa cerrada' : 'Mesa abierta · tasa indicativa'}
+                        {cerrada ? 'Mesa cerrada' : 'Mesa abierta · tasa en vivo'}
                     </span>
                     <button onClick={pedirTasa} title="Actualizar la tasa" style={{ padding: 8, borderRadius: 9, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.04)' }}>
                         <RefreshCw size={14} strokeWidth={1.7} className={cargandoTasa ? 'animate-spin' : ''} style={{ color: '#878E88' }} />
@@ -411,7 +452,9 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                     {/* Lado */}
                     <div style={{ display: 'flex', gap: 7, marginBottom: 16 }}>
                         {([['vende_usdt', 'Vendo USDT'], ['compra_usdt', 'Compro USDT']] as const).map(([v, l]) => (
-                            <button key={v} onClick={() => { setSide(v); if (v === 'compra_usdt') setMonto(m => m.split('.')[0]); }}
+                            // Cambiar de lado cambia la moneda de la caja: 10.000
+                            // USDT no pueden quedar convertidos en 10.000 COP.
+                            <button key={v} onClick={() => { if (v !== side) { setSide(v); setMonto(''); } }}
                                 style={{ flex: 1, padding: '10px 0', borderRadius: 10, fontSize: 13, fontWeight: 700,
                                     color: side === v ? '#0C0E0D' : '#878E88', background: side === v ? '#F4F4F2' : 'rgba(255,255,255,0.045)',
                                     border: side === v ? 'none' : '1px solid rgba(255,255,255,0.10)' }}>
@@ -459,7 +502,17 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                         <div className="otc-fila">
                             <input className="otc-num"
                                 inputMode="decimal" placeholder="0" value={aPantalla(monto)}
-                                onChange={e => setMonto(aCanonico(e.target.value, envMoneda === 'USDT' ? 2 : 0))}
+                                onChange={e => setMonto(aCanonico(e.target.value, envMoneda === 'USDT' ? 2 : 0, aPantalla(monto)))}
+                                onPaste={e => {
+                                    // Pegar en la caja vacía o con todo seleccionado
+                                    // reemplaza el monto; pegar en medio de un número
+                                    // se deja al navegador.
+                                    const el = e.currentTarget;
+                                    const todo = !el.value || (el.selectionStart === 0 && el.selectionEnd === el.value.length);
+                                    if (!todo) return;
+                                    e.preventDefault();
+                                    setMonto(montoPegado(e.clipboardData.getData('text'), envMoneda === 'USDT' ? 2 : 0));
+                                }}
                                 style={{ flex: 1, minWidth: 0, background: 'transparent', outline: 'none', border: 'none', fontSize: 'clamp(26px, 7vw, 34px)', fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', fontFamily: "'Archivo', system-ui, sans-serif" }}
                             />
                             <Moneda m={envMoneda} />
@@ -467,7 +520,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                         {/* La tasa justo debajo del monto (pedido del dueño, 23 nov). */}
                         {tasa != null && (
                             <p style={{ margin: '6px 0 0', fontSize: 12.5, color: '#878E88' }}>
-                                Tasa <b style={{ color: '#F4F4F2' }}>1 USDT = {nf(tasa)} COP</b> · indicativa
+                                Tasa <b style={{ color: '#F4F4F2' }}>1 USDT = {nf(tasa)} COP</b> · queda fija al solicitar
                             </p>
                         )}
                     </div>
@@ -498,9 +551,9 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                             <p style={{ color: '#878E88', fontSize: 12.5 }}>Consultando la tasa…</p>
                         ) : tasa != null ? (
                             <>
-                                <Fila k={`Tasa aplicada (incluye margen ${margenPct} %)`} v={`1 USDT = ${nf(tasa)} COP`} />
+                                <Fila k={`Tasa aplicada (incluye margen ${nf(margenPct)} %)`} v={`1 USDT = ${nf(tasa)} COP`} />
                                 <Fila k="Tasa de referencia" v={`1 USDT = ${nf(referencia ?? 0)} COP`} suave />
-                                <Fila k="Margen Lincoin" v={`${margenPct} % · ${nf((referencia ?? 0) * margenPct / 100)} COP por USDT`} suave />
+                                <Fila k="Margen Lincoin" v={`${nf(margenPct)} % · ${nf((referencia ?? 0) * margenPct / 100)} COP por USDT`} suave />
                                 <Fila k={recMoneda === 'COP' ? 'Recibes en pesos (estimado)' : 'Recibes en USDT (estimado)'}
                                     v={recibe != null ? `${nf(recibe, recMoneda === 'COP' ? 0 : 2)} ${recMoneda}` : '—'} />
                                 <Fila k="Llega" v={side === 'vende_usdt' ? 'Cuando la mesa confirme tus USDT' : 'Cuando la mesa confirme tu pago'} color="#4ADE80" />
@@ -510,9 +563,9 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                                     botón con la hora de la última tasa al lado. */}
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginTop: 2, padding: '10px 12px', borderRadius: 11, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
                                     <div style={{ minWidth: 0 }}>
-                                        <p style={{ margin: 0, color: '#F4F4F2', fontSize: 12, fontWeight: 600 }}>Tasa indicativa</p>
+                                        <p style={{ margin: 0, color: '#F4F4F2', fontSize: 12, fontWeight: 600 }}>Tasa en vivo</p>
                                         <p style={{ margin: '2px 0 0', color: '#878E88', fontSize: 11.5, lineHeight: 1.45 }}>
-                                            La mesa confirma la final antes de que envíes nada.
+                                            Al solicitar el cierre esta tasa queda fija y tienes {plazoTxt} para enviar y subir el comprobante.
                                             {actualizadaAt ? ` Tasa de las ${actualizadaAt.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit' })}; se renueva cada minuto.` : ''}
                                         </p>
                                     </div>
@@ -565,7 +618,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                     {/* CTA, como en ACH */}
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 16, paddingTop: 16 }}>
                         <p style={{ fontSize: 12, color: '#878E88', maxWidth: 330, lineHeight: 1.5 }}>
-                            No se mueve nada de tu saldo al pedir el cierre. La mesa te escribe por el chat.
+                            No se mueve nada de tu saldo al pedir el cierre. La tasa queda fija y la mesa te escribe por el chat.
                         </p>
                         <button onClick={enviar} disabled={deshabilitado} className="lincoin-btn-white"
                             style={{ padding: '14px 30px', borderRadius: 10, fontSize: 14.5, fontWeight: 700, border: 'none', opacity: deshabilitado ? 0.45 : 1, cursor: deshabilitado ? 'not-allowed' : undefined }}>
@@ -801,6 +854,9 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     const [enviando, setEnviando] = useState(false);
     const [subiendo, setSubiendo] = useState(false);
     const [marcando, setMarcando] = useState(false);
+    // Cancelar pide un segundo toque: un toque suelto (o el pulgar sobre el
+    // botón rojo al hacer scroll) tiraba un cierre con la tasa ya fija.
+    const [confirmaCancelar, setConfirmaCancelar] = useState(false);
     const [cargando, setCargando] = useState(true);
     const [detalles, setDetalles] = useState(false);
     const [lupa, setLupa] = useState<string | null>(null);
@@ -884,11 +940,17 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
     const cara = caraDe(cierre.status);
     const tasaVigente = cierre.rate_final ?? cierre.rate_cotizada;
     const vivo  = !['completada', 'cancelada', 'anulada'].includes(cierre.status);
+    // Un cancelado (casi siempre por plazo vencido) sigue aceptando mensajes:
+    // el servidor lo permite a propósito para el cliente que alcanzó a pagar.
+    // La pantalla le escondía la caja justo en ese momento.
+    const puedeEscribir = vivo || cierre.status === 'cancelada';
     const enPago = cierre.status === 'esperando_pago';
+    // Ya marcó el pago: cancelar es decisión de la mesa (el servidor lo
+    // rechaza), así que el botón no se ofrece.
+    const puedeCancelar = vivo && cierre.status !== 'pagada';
     // Si ya subió comprobante se ve en el hilo. Es el mismo hecho que comprueba
     // el servidor antes de aceptar "ya pagué".
     const tieneComprobante = msgs.some((m: any) => m.autor === 'cliente' && m.adjunto_url);
-    const verbo = cierre.side === 'vende_usdt' ? 'Vender' : 'Comprar';
     const destino = destinoTexto(cierre.payout);
 
     return (
@@ -907,11 +969,13 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                     <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
                         <div style={{ minWidth: 0 }}>
                             <p style={{ fontSize: 16, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.4px', lineHeight: 1.3 }}>
-                                {verbo} {nf(cierre.from_amount)} {cierre.from_currency}
+                                {cierre.side === 'vende_usdt'
+                                    ? <>Vender {nf(cierre.from_amount)} USDT</>
+                                    : <>Comprar USDT con {nf(cierre.from_amount, 0)} COP</>}
                             </p>
                             <p style={{ fontSize: 13, color: '#878E88', marginTop: 2 }}>
                                 {cierre.to_amount != null
-                                    ? <>por <b style={{ color: '#F4F4F2', fontWeight: 700 }}>{nf(cierre.to_amount, 0)} {cierre.to_currency}</b></>
+                                    ? <>por <b style={{ color: '#F4F4F2', fontWeight: 700 }}>{nf(cierre.to_amount, cierre.to_currency === 'COP' ? 0 : 2)} {cierre.to_currency}</b></>
                                     : 'a cotizar'}
                             </p>
                             {/* La tasa, debajo del monto y sin abrir "Ver detalles"
@@ -921,7 +985,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                                 <p style={{ fontSize: 13, color: '#878E88', marginTop: 2 }}>
                                     Tasa <b style={{ color: '#F4F4F2', fontWeight: 700 }}>1 USDT = {nf(tasaVigente)} COP</b>
                                     <span style={{ marginLeft: 7, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.4px', color: cierre.rate_final ? '#4ADE80' : '#FBBF24', border: `1px solid ${cierre.rate_final ? 'rgba(74,222,128,0.35)' : 'rgba(251,191,36,0.35)'}`, borderRadius: 999, padding: '1px 7px', whiteSpace: 'nowrap' }}>
-                                        {cierre.rate_final ? 'CONFIRMADA' : 'INDICATIVA'}
+                                        {cierre.rate_final ? 'FIJA' : 'INDICATIVA'}
                                     </span>
                                 </p>
                             )}
@@ -943,7 +1007,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
                             <Dato label="Referencia" valor={cierre.ref} mono />
                             <Dato label="Tasa" valor={tasaVigente != null ? nf(tasaVigente) : '—'}
-                                pie={cierre.rate_final ? 'confirmada por la mesa' : cierre.rate_cotizada ? 'indicativa' : undefined} />
+                                pie={cierre.rate_final ? 'fija para este cierre' : cierre.rate_cotizada ? 'indicativa' : undefined} />
                             <Dato label="Solicitado" valor={fecha(cierre.created_at)} />
                             {destino && <Dato label={destino.label} valor={destino.valor} mono={destino.mono} />}
                             {cierre.payout?.origen?.address && (
@@ -967,11 +1031,11 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                 )}
 
                 {/* ── Acciones ── */}
-                {vivo && (
+                {(enPago || puedeCancelar) && (
                     <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
                         {enPago && !tieneComprobante && (
                             <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 9, lineHeight: 1.5 }}>
-                                Enviá el pago y adjuntá el comprobante con el <b style={{ color: '#F4F4F2' }}>+</b> de abajo. Tiene que verse el monto.
+                                Envía el pago y adjunta el comprobante con el <b style={{ color: '#F4F4F2' }}>+</b> de abajo. Tiene que verse el monto. Si todavía no sabes a dónde enviar, pregúntale a la mesa por aquí.
                             </p>
                         )}
                         {/* Apiladas en móvil, en línea en escritorio: en el ancho
@@ -992,20 +1056,44 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                                     {marcando ? 'Avisando a la mesa…' : 'Marcar como pagado'}
                                 </button>
                             )}
-                            <button
-                                onClick={() => accion('cancelar')}
-                                className="sm:w-auto transition-colors hover:bg-white/[0.04]"
-                                style={{ padding: '13px 20px', borderRadius: 11, fontWeight: 600, fontSize: 13, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.3)', whiteSpace: 'nowrap' }}
-                            >
-                                Cancelar solicitud
-                            </button>
+                            {puedeCancelar && (confirmaCancelar ? (
+                                <span style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: 12.5, color: '#878E88' }}>¿Cancelar este cierre?</span>
+                                    <button
+                                        onClick={async () => { await accion('cancelar'); setConfirmaCancelar(false); }}
+                                        style={{ padding: '11px 16px', borderRadius: 11, fontWeight: 700, fontSize: 13, color: '#0C0E0D', background: '#F87171', border: 'none', whiteSpace: 'nowrap' }}
+                                    >
+                                        Sí, cancelar
+                                    </button>
+                                    <button
+                                        onClick={() => setConfirmaCancelar(false)}
+                                        style={{ padding: '11px 16px', borderRadius: 11, fontWeight: 600, fontSize: 13, color: '#F4F4F2', background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', whiteSpace: 'nowrap' }}
+                                    >
+                                        No
+                                    </button>
+                                </span>
+                            ) : (
+                                <button
+                                    onClick={() => setConfirmaCancelar(true)}
+                                    className="sm:w-auto transition-colors hover:bg-white/[0.04]"
+                                    style={{ padding: '13px 20px', borderRadius: 11, fontWeight: 600, fontSize: 13, color: '#F87171', background: 'transparent', border: '1px solid rgba(248,113,113,0.3)', whiteSpace: 'nowrap' }}
+                                >
+                                    Cancelar solicitud
+                                </button>
+                            ))}
                         </div>
                     </div>
                 )}
 
                 {/* ── Composer, con el adjuntar adentro ── */}
-                {vivo ? (
-                    <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.07)', alignItems: 'center' }}>
+                {puedeEscribir ? (
+                    <>
+                    {!vivo && (
+                        <p style={{ padding: '12px 18px 0', borderTop: '1px solid rgba(255,255,255,0.07)', color: '#878E88', fontSize: 12, lineHeight: 1.5 }}>
+                            Este cierre está cancelado{cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}. Si ya enviaste el dinero, escríbele a la mesa: lo resuelve sobre esta misma solicitud.
+                        </p>
+                    )}
+                    <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderTop: vivo ? '1px solid rgba(255,255,255,0.07)' : 'none', alignItems: 'center' }}>
                         <input
                             ref={fileRef}
                             type="file"
@@ -1013,7 +1101,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                             onChange={e => adjuntar(e.target.files?.[0])}
                             style={{ display: 'none' }}
                         />
-                        <button
+                        {vivo && <button
                             onClick={() => fileRef.current?.click()}
                             disabled={subiendo}
                             title="Adjuntar comprobante"
@@ -1021,12 +1109,12 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                             style={{ flexShrink: 0, width: 40, height: 40, borderRadius: 999, background: 'rgba(255,255,255,0.055)', border: '1px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#F4F4F2' }}
                         >
                             {subiendo ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={18} />}
-                        </button>
+                        </button>}
                         <input
                             value={texto}
                             onChange={e => setTexto(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviar(); } }}
-                            placeholder="Escribí a la mesa…"
+                            placeholder="Escribe a la mesa…"
                             style={{ ...INPUT, fontSize: 13.5 }}
                         />
                         <button onClick={enviar} disabled={enviando || !texto.trim()}
@@ -1034,6 +1122,7 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                             {enviando ? <RefreshCw size={15} className="animate-spin" style={{ color: '#0C0E0D' }} /> : <Send size={15} style={{ color: texto.trim() ? '#0C0E0D' : '#878E88' }} />}
                         </button>
                     </div>
+                    </>
                 ) : (
                     <p style={{ padding: '13px 18px', borderTop: '1px solid rgba(255,255,255,0.07)', color: 'rgba(244,244,242,0.45)', fontSize: 12, lineHeight: 1.5 }}>
                         Este cierre está {cierre.status === 'completada' ? 'completado' : cierre.status === 'anulada' ? 'anulado' : 'cancelado'}
@@ -1145,7 +1234,7 @@ const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }
             <img src={url} alt="Comprobante" onClick={e => e.stopPropagation()}
                 style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 10 }} />
             <p style={{ position: 'absolute', bottom: 18, left: 0, right: 0, textAlign: 'center', fontSize: 11.5, color: 'rgba(244,244,242,0.55)' }}>
-                Tocá fuera de la imagen para cerrar
+                Toca fuera de la imagen para cerrar
             </p>
         </div>
     );

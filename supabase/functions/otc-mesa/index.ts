@@ -261,15 +261,15 @@ async function caducarVencidos(): Promise<void> {
     const { data } = await db.from('otc_closes')
       .update({
         status: 'cancelada', cancelada_at: ahora(), updated_at: ahora(),
-        motivo_cierre: 'Vencio el plazo para subir el comprobante',
+        motivo_cierre: 'Venció el plazo para subir el comprobante',
       })
       .eq('status', 'esperando_pago')
       .lt('vence_at', ahora())
       .select('id')
     for (const c of data ?? []) {
       await escribirMensaje((c as any).id, 'sistema',
-        'Se vencio el plazo para subir el comprobante y la solicitud quedo cancelada. '
-        + 'Si YA enviaste el dinero, escribi por aca antes de montar otra: la mesa lo verifica y lo resuelve sobre esta misma solicitud.')
+        'Se venció el plazo para subir el comprobante y la solicitud quedó cancelada. '
+        + 'Si YA enviaste el dinero, escribe por aquí antes de montar otra: la mesa lo verifica y lo resuelve sobre esta misma solicitud.')
     }
   } catch { /* nunca frena la lectura */ }
 }
@@ -408,8 +408,36 @@ async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise
 // Como quedo armada la tasa, en una linea legible. Sin columnas nuevas: el
 // expediente tiene que poder decir contra que referencia y con que margen se
 // cotizo, no solo el numero final.
-function trazaTasa(c: Cotizacion): string {
-  return `finity ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%`
+function trazaTasa(c: Cotizacion, side: string): string {
+  return `finity ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${side === 'compra_usdt' ? 'más' : 'menos'} ${pct(c.margenPct)}`
+}
+
+// El margen en formato colombiano ("0,5 %"), que es como lo lee el cliente.
+const pct = (n: number) => `${Number(n).toLocaleString('es-CO', { maximumFractionDigits: 2 })} %`
+
+// Lo que RECIBE el cliente, redondeado hacia abajo a lo que se puede pagar:
+// pesos enteros y USDT con 2 decimales. Antes se guardaba el producto crudo
+// (40.123.456,789 COP) y eso es lo que se acreditaba: un saldo con centavos
+// que ningún riel puede enviar y que no cuadra con lo que se le dijo.
+function redondearRecibe(v: number, moneda: string): number {
+  if (!Number.isFinite(v)) return v
+  const f = moneda === 'COP' ? 1 : 100
+  return Math.floor(v * f + 1e-6) / f
+}
+
+// ¿La cuenta puede operar? Las mismas banderas que usan los envíos (gasfree
+// assertNotBlocked): is_blocked y raw_data.isBlocked / blacklisted. Antes la
+// mesa no las miraba: una cuenta bloqueada o en lista negra pedía cierres y
+// se le acreditaban.
+async function cuentaBloqueada(userId: string): Promise<string | null> {
+  const { data, error } = await db.from('users').select('is_blocked, raw_data').eq('id', userId).maybeSingle()
+  // Si no se puede leer, no se opera: es plata, y "no sé" no es "sí".
+  if (error) return 'No se pudo comprobar el estado de la cuenta. Intenta de nuevo.'
+  if (!data) return 'La cuenta no existe.'
+  const raw = ((data as any).raw_data ?? {}) as Record<string, any>
+  if (raw.blacklisted === true) return 'Esta cuenta está en la lista negra y no puede operar en la mesa.'
+  if ((data as any).is_blocked === true || raw.isBlocked === true) return 'Esta cuenta está bloqueada y no puede operar en la mesa.'
+  return null
 }
 
 // ─── Referencia corta ───────────────────────────────────
@@ -431,10 +459,13 @@ async function refUnica(): Promise<string> {
 
 // ─── Mensajes ───────────────────────────────────────────
 async function escribirMensaje(closeId: string, autor: 'cliente' | 'mesa' | 'sistema', body: string, opts: { autorId?: string; autorNom?: string; adjunto?: string } = {}) {
-  await db.from('otc_messages').insert({
+  const { error } = await db.from('otc_messages').insert({
     close_id: closeId, autor, autor_id: opts.autorId ?? null,
     autor_nom: opts.autorNom ?? null, body, adjunto_url: opts.adjunto ?? null,
   })
+  // El hilo no frena la operación, pero un mensaje perdido sin rastro es un
+  // "no me avisaron" que nadie puede comprobar después.
+  if (error) console.error('[otc-mesa] mensaje sin guardar', closeId, error.message)
   await db.from('otc_closes').update({
     last_msg_at: new Date().toISOString(), last_msg_por: autor, updated_at: new Date().toISOString(),
   }).eq('id', closeId)
@@ -474,7 +505,11 @@ async function avisarMesa(titulo: string, cuerpo: string, tag: string): Promise<
 function paraCliente(c: any) {
   if (!c) return c
   const { notas_internas: _n, tomada_por: _t, tomada_por_nom: _tn, rate_fuente: _rf, ...resto } = c
-  return { ...resto, atendida: !!c.tomada_at }
+  // payout.canalPor es el nombre del operador que eligió el canal: igual que
+  // tomada_por_nom, al cliente le corresponde "la mesa".
+  const payout = c.payout && typeof c.payout === 'object'
+    ? (({ canalPor: _cp, ...p }) => p)(c.payout) : c.payout
+  return { ...resto, payout, atendida: !!c.tomada_at }
 }
 
 // ¿Ese cierre es de quien pregunta? Tener sesion no alcanza: sin esto, un
@@ -664,12 +699,15 @@ Deno.serve(async (req) => {
         })
       }
       const to = Number.isFinite(monto) && monto > 0
-        ? (side === 'vende_usdt' ? monto * c.rate : monto / c.rate)
+        ? redondearRecibe(side === 'vende_usdt' ? monto * c.rate : monto / c.rate, side === 'vende_usdt' ? 'COP' : 'USDT')
         : null
       const em = await estadoMesa()
       return json(200, {
         ok: true, rate: c.rate, referencia: c.referencia, margenPct: c.margenPct,
         toAmount: to, indicativa: true, ajusteCop: c.ajusteCop, exigeWallet,
+        // El plazo que corre desde que pide el cierre: la pantalla lo dice
+        // ANTES de que lo pida (la tasa queda fija al crear, ver 'crear').
+        ventanaMin: await ventanaPago(),
         mesa: { abierta: em.abierta, proxima: em.proxima, hoy: em.hoy, dia: em.dia },
         ...(caller.admin ? { fuente: c.fuente } : {}),
       })
@@ -680,7 +718,11 @@ Deno.serve(async (req) => {
       const uid = String(payload.user_id ?? caller.userId ?? '')
       if (!uid) return json(400, { ok: false, error: 'falta el usuario' })
       if (!caller.admin && uid !== String(caller.userId)) {
-        return json(403, { ok: false, error: 'no podes crear cierres a nombre de otro' })
+        return json(403, { ok: false, error: 'no puedes crear cierres a nombre de otro' })
+      }
+      {
+        const bloqueo = await cuentaBloqueada(uid)
+        if (bloqueo) return json(403, { ok: false, error: 'cuenta_bloqueada', message: bloqueo })
       }
 
       // LA MESA CERRADA NO TOMA ORDENES, Y SE COMPRUEBA ACA.
@@ -706,7 +748,7 @@ Deno.serve(async (req) => {
 
       const side = String(payload.side ?? 'vende_usdt')
       if (side !== 'vende_usdt' && side !== 'compra_usdt') {
-        return json(400, { ok: false, error: 'lado invalido' })
+        return json(400, { ok: false, error: 'lado inválido' })
       }
       const monto = num(payload.fromAmount)
       if (!(monto > 0)) return json(400, { ok: false, error: 'el monto tiene que ser mayor a cero' })
@@ -737,7 +779,7 @@ Deno.serve(async (req) => {
       if ((count ?? 0) >= MAX_VIVOS_POR_CLIENTE) {
         return json(409, {
           ok: false, error: 'demasiados_abiertos',
-          message: `Ya tenes ${count} cierres en curso. Cerra o cancela alguno antes de pedir otro.`,
+          message: `Ya tienes ${count} cierres en curso. Termina o cancela alguno antes de pedir otro.`,
         })
       }
 
@@ -749,7 +791,7 @@ Deno.serve(async (req) => {
       const from_currency = side === 'vende_usdt' ? 'USDT' : 'COP'
       const to_currency   = side === 'vende_usdt' ? 'COP' : 'USDT'
       const to_amount = rate != null
-        ? (side === 'vende_usdt' ? monto * rate : monto / rate)
+        ? redondearRecibe(side === 'vende_usdt' ? monto * rate : monto / rate, to_currency)
         : null
 
       // El plazo arranca al CREAR, no cuando la mesa contesta: el cliente ya vio
@@ -766,7 +808,7 @@ Deno.serve(async (req) => {
         ref, user_id: uid, side,
         from_currency, from_amount: monto,
         to_currency, to_amount,
-        rate_cotizada: rate, rate_final: rate, rate_fuente: rate != null ? trazaTasa(c) : null,
+        rate_cotizada: rate, rate_final: rate, rate_fuente: rate != null ? trazaTasa(c, side) : null,
         status: conTasa ? 'esperando_pago' : 'abierta',
         confirmada_at: conTasa ? ahora() : null,
         vence_at: conTasa ? new Date(Date.now() + mins * 60_000).toISOString() : null,
@@ -778,10 +820,11 @@ Deno.serve(async (req) => {
       const montoTxt = `${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${from_currency}`
       await escribirMensaje(creada.id, 'sistema',
         conTasa
-          ? `Solicitud de cierre por ${montoTxt} a ${rate!.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USD `
-            + `(referencia ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} menos ${c.margenPct}%). `
-            + `Tenes ${mins} minutos para enviar y subir el comprobante.`
-          : `Solicitud de cierre por ${montoTxt}. No se pudo tomar cotizacion automatica: la mesa la cotiza a mano y ahi arranca el plazo.`)
+          ? `Solicitud de cierre por ${montoTxt} a ${rate!.toLocaleString('es-CO', { maximumFractionDigits: 2 })} COP por USDT `
+            + `(referencia ${c.referencia?.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${side === 'compra_usdt' ? 'más' : 'menos'} ${pct(c.margenPct)}). `
+            + `Recibes ${to_amount!.toLocaleString('es-CO', { maximumFractionDigits: to_currency === 'COP' ? 0 : 2 })} ${to_currency}. `
+            + `La tasa quedó fija: tienes ${mins} minutos para enviar y subir el comprobante.`
+          : `Solicitud de cierre por ${montoTxt}. No se pudo tomar la cotización automática: la mesa la cotiza a mano y ahí arranca el plazo.`)
       // El motivo del proveedor NO va al hilo (lo lee el cliente y puede
       // nombrar al proveedor o detalles de la infraestructura): queda en las
       // notas internas de la mesa.
@@ -895,7 +938,7 @@ Deno.serve(async (req) => {
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       const body = String(payload.body ?? '').trim()
       const adjunto = String(payload.adjunto ?? '').trim()
-      if (!body && !adjunto) return json(400, { ok: false, error: 'mensaje vacio' })
+      if (!body && !adjunto) return json(400, { ok: false, error: 'mensaje vacío' })
       // Un adjunto solo puede ser un archivo que este servidor guardó para ESTE
       // cierre (acción 'comprobante'). Antes se aceptaba cualquier texto: con
       // eso se cumplía el "comprobante obligatorio" de marcar_pagada sin subir
@@ -933,7 +976,7 @@ Deno.serve(async (req) => {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       if (r.cierre.tomada_por && String(r.cierre.tomada_por) !== String(caller.userId)) {
-        return json(409, { ok: false, error: 'ya_tomada', message: `La esta atendiendo ${r.cierre.tomada_por_nom ?? 'otro operador'}.` })
+        return json(409, { ok: false, error: 'ya_tomada', message: `La está atendiendo ${r.cierre.tomada_por_nom ?? 'otro operador'}.` })
       }
       // CAS sobre tomada_por: dos operadores que aprietan a la vez no pueden
       // quedar los dos como responsables.
@@ -944,9 +987,11 @@ Deno.serve(async (req) => {
       }).eq('id', r.cierre.id).is('tomada_por', null).select('id')
       if (!ok?.length) {
         const { data: ahoraEs } = await db.from('otc_closes').select('tomada_por_nom').eq('id', r.cierre.id).maybeSingle()
-        return json(409, { ok: false, error: 'ya_tomada', message: `La esta atendiendo ${(ahoraEs as any)?.tomada_por_nom ?? 'otro operador'}.` })
+        return json(409, { ok: false, error: 'ya_tomada', message: `La está atendiendo ${(ahoraEs as any)?.tomada_por_nom ?? 'otro operador'}.` })
       }
-      await escribirMensaje(r.cierre.id, 'sistema', `${caller.nombre ?? 'La mesa'} esta atendiendo este cierre.`)
+      // El hilo lo lee el cliente: le corresponde "la mesa", no el nombre de
+      // quien la atiende (ese queda en tomada_por_nom, que paraCliente quita).
+      await escribirMensaje(r.cierre.id, 'sistema', 'La mesa está atendiendo este cierre.')
       return json(200, { ok: true })
     }
 
@@ -996,7 +1041,7 @@ Deno.serve(async (req) => {
       const instrucciones = String(payload.instrucciones ?? '').trim()
 
       const monto = Number(r.cierre.from_amount)
-      const to = r.cierre.side === 'vende_usdt' ? monto * rate : monto / rate
+      const to = redondearRecibe(r.cierre.side === 'vende_usdt' ? monto * rate : monto / rate, String(r.cierre.to_currency))
 
       // El reloj arranca ACA, no al crear la solicitud: antes de que la mesa
       // diga a que tasa la toma, el cliente no tiene contra que pagar.
@@ -1014,9 +1059,9 @@ Deno.serve(async (req) => {
 
       await escribirMensaje(r.cierre.id, 'sistema',
         `Tasa confirmada: ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })}. `
-        + `Recibis ${to.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.to_currency} `
+        + `Recibes ${to.toLocaleString('es-CO', { maximumFractionDigits: r.cierre.to_currency === 'COP' ? 0 : 2 })} ${r.cierre.to_currency} `
         + `por ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.from_currency}. `
-        + `Tenes ${mins} minutos para enviar y subir el comprobante.`)
+        + `Tienes ${mins} minutos para enviar y subir el comprobante.`)
       if (instrucciones) {
         await escribirMensaje(r.cierre.id, 'mesa', instrucciones.slice(0, 4000), { autorId: caller.userId, autorNom: caller.nombre ?? undefined })
       }
@@ -1028,7 +1073,7 @@ Deno.serve(async (req) => {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       if (r.cierre.status === 'completada' || r.cierre.status === 'cancelada' || r.cierre.status === 'anulada') {
-        return json(409, { ok: false, error: 'ese cierre ya esta cerrado' })
+        return json(409, { ok: false, error: 'ese cierre ya está cerrado' })
       }
       const archivo = String(payload.archivo ?? '')
       if (!archivo) return json(400, { ok: false, error: 'falta el archivo' })
@@ -1039,7 +1084,7 @@ Deno.serve(async (req) => {
       // sin querer el "ya pague" de alguien que no pago.
       const quien = caller.admin ? 'mesa' : 'cliente'
       await escribirMensaje(r.cierre.id, quien,
-        String(payload.nota ?? (quien === 'mesa' ? 'Adjunto de la mesa.' : 'Comprobante del envio.')).slice(0, 500),
+        String(payload.nota ?? (quien === 'mesa' ? 'Adjunto de la mesa.' : 'Comprobante del envío.')).slice(0, 500),
         { autorId: caller.userId, autorNom: caller.nombre ?? undefined, adjunto: sub.path })
       return json(200, { ok: true })
     }
@@ -1049,7 +1094,7 @@ Deno.serve(async (req) => {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       if (r.cierre.status !== 'esperando_pago') {
-        return json(409, { ok: false, error: 'todavia no hay instrucciones de pago para este cierre' })
+        return json(409, { ok: false, error: 'todavía no hay instrucciones de pago para este cierre' })
       }
       // El plazo se comprueba ACA tambien, no solo en el reloj de la pantalla:
       // un contador del navegador se para, se adelanta o se edita.
@@ -1057,7 +1102,7 @@ Deno.serve(async (req) => {
         await caducarVencidos()
         return json(409, {
           ok: false, error: 'vencido',
-          message: 'Se vencio el plazo. Si ya enviaste el dinero, escribi por el chat antes de montar otra solicitud.',
+          message: 'Se venció el plazo. Si ya enviaste el dinero, escribe por el chat antes de montar otra solicitud.',
         })
       }
       // El comprobante es OBLIGATORIO y tiene que estar YA SUBIDO. "Ya pague"
@@ -1070,11 +1115,21 @@ Deno.serve(async (req) => {
         .select('id', { count: 'exact', head: true })
         .eq('close_id', r.cierre.id).eq('autor', 'cliente').not('adjunto_url', 'is', null)
       if (!(count ?? 0)) {
-        return json(400, { ok: false, error: 'falta_comprobante', message: 'Subi el comprobante del envio antes de marcarlo como pagado.' })
+        return json(400, { ok: false, error: 'falta_comprobante', message: 'Sube el comprobante del envío antes de marcarlo como pagado.' })
       }
 
-      await db.from('otc_closes').update({ status: 'pagada', pagada_at: ahora(), updated_at: ahora() }).eq('id', r.cierre.id)
-      await escribirMensaje(r.cierre.id, 'sistema', 'El cliente marco el envio como realizado. La mesa verifica el ingreso antes de liberar.')
+      // CAS sobre el estado. Antes el UPDATE no tenía condición: si la mesa
+      // completaba entre la lectura de arriba y esta escritura, el cierre
+      // volvía de 'completada' a 'pagada' y se podía completar —acreditar—
+      // por segunda vez.
+      const { data: marcada, error: errMarca } = await db.from('otc_closes')
+        .update({ status: 'pagada', pagada_at: ahora(), updated_at: ahora() })
+        .eq('id', r.cierre.id).eq('status', 'esperando_pago').is('completada_at', null).select('id')
+      if (errMarca) return json(500, { ok: false, error: errMarca.message })
+      if (!marcada?.length) {
+        return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga para verlo.' })
+      }
+      await escribirMensaje(r.cierre.id, 'sistema', 'El cliente marcó el envío como realizado. La mesa verifica el ingreso antes de liberar.')
       // Este es el aviso que mas urge: hay plata enviada esperando que alguien
       // la verifique y libere.
       await avisarMesa(`Pago declarado en ${r.cierre.ref}`,
@@ -1088,8 +1143,14 @@ Deno.serve(async (req) => {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
       if (r.cierre.status === 'completada') return json(200, { ok: true, yaEstaba: true })
-      if (r.cierre.status === 'cancelada') return json(409, { ok: false, error: 'ese cierre esta cancelado' })
+      if (r.cierre.status === 'cancelada') return json(409, { ok: false, error: 'ese cierre esta cancelado', message: 'Este cierre está cancelado. Si el cliente sí pagó, fija la tasa de nuevo para reabrirlo y luego complétalo.' })
       if (r.cierre.status === 'anulada') return json(409, { ok: false, error: 'ese cierre fue anulado', message: 'Este cierre fue anulado. Si el cliente sí pagó, se monta un cierre nuevo.' })
+      {
+        const bloqueo = await cuentaBloqueada(String(r.cierre.user_id))
+        if (bloqueo) {
+          return json(409, { ok: false, error: 'cuenta_bloqueada', message: `${bloqueo.replace('Esta cuenta', 'La cuenta del cliente')} No se acreditó nada.` })
+        }
+      }
       if (!r.cierre.rate_final) {
         return json(409, { ok: false, error: 'falta_tasa', message: 'Fija la tasa final antes de completar: sin eso el cierre queda sin precio de ejecucion.' })
       }
@@ -1125,41 +1186,88 @@ Deno.serve(async (req) => {
       // Solo desde un estado vivo explícito: con un simple "distinto de
       // completada" también pasaba una cancelada que se cancelaba en paralelo.
       const COMPLETABLES = ['abierta', 'en_proceso', 'esperando_pago', 'pagada']
-      const { data: ok } = await db.from('otc_closes').update({
+      const payoutAntes = r.cierre.payout ?? null
+      const { data: ok, error: errCas } = await db.from('otc_closes').update({
         status: 'completada', completada_at: ahora(), updated_at: ahora(),
         // Dónde quedó acreditado, y quién lo eligió. Es lo que leen el
-        // detalle, la anulación y la pantalla del cliente.
-        payout: { ...(r.cierre.payout ?? {}), wallet: destino, canalPor: caller.nombre ?? null },
-      }).eq('id', r.cierre.id).in('status', COMPLETABLES).select('id')
-      if (!ok?.length) return json(200, { ok: true, yaEstaba: true })
+        // detalle, la anulación y la pantalla del cliente (sin canalPor: ver
+        // paraCliente).
+        payout: { ...(payoutAntes ?? {}), wallet: destino, canalPor: caller.nombre ?? null },
+      }).eq('id', r.cierre.id).in('status', COMPLETABLES)
+        // Nunca un cierre que ya se acreditó alguna vez, aunque una escritura
+        // vieja lo haya devuelto a un estado vivo.
+        .is('completada_at', null)
+        .not('rate_final', 'is', null).gt('to_amount', 0)
+        // Se acredita lo que dice la fila EN ESTE MOMENTO, no lo leído antes:
+        // si otro operador fijó otra tasa entre la lectura y aquí, el monto
+        // viejo ya no es el que se le prometió al cliente.
+        .select('id, to_amount, rate_final, rate_cotizada')
+      if (errCas) return json(500, { ok: false, error: errCas.message, message: 'No se pudo completar. No se acreditó nada.' })
+      if (!ok?.length) {
+        // Antes esto respondía "ok, ya estaba" pasara lo que pasara: un cierre
+        // que se cancelaba en paralelo se mostraba a la mesa como completado.
+        const { data: ahoraEs } = await db.from('otc_closes').select('status').eq('id', r.cierre.id).maybeSingle()
+        if ((ahoraEs as any)?.status === 'completada') return json(200, { ok: true, yaEstaba: true })
+        return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga: no se acreditó nada.' })
+      }
+      const fila = ok[0] as any
+      const acreditar = Number(fila.to_amount)
 
       // Completar es lo que ACREDITA. Antes solo cambiaba el estado: el cierre
       // quedaba "completado" y el cliente sin su plata ni el movimiento.
       const { data: res, error: errSaldo } = await db.rpc('adjust_balances', {
-        p_user_id: r.cierre.user_id, p_fiat: { [destino]: monto },
+        p_user_id: r.cierre.user_id, p_fiat: { [destino]: acreditar },
       })
-      if (errSaldo || (res as any)?.error) {
-        // No se acredito: el cierre NO puede quedar completado. Se devuelve al
+      // ¿La base CONTESTÓ? adjust_balances es una sola transacción: si devolvió
+      // {error} o lanzó un error de Postgres (trae código), no movió nada y se
+      // puede deshacer el completado para reintentar. Si la respuesta se perdió
+      // en la red (sin código), el saldo pudo haber quedado acreditado:
+      // devolver el cierre a su estado dejaba completarlo otra vez —un segundo
+      // crédito—. Ahí el cierre se queda completado y la mesa lo verifica.
+      const fallaSegura = !!(res as any)?.error || (!!errSaldo && !!errSaldo.code)
+      if (fallaSegura) {
+        // No se acreditó: el cierre NO puede quedar completado. Se devuelve al
         // estado anterior para que se pueda reintentar, en vez de dejar un
-        // "completado" que no movio nada.
-        await db.from('otc_closes').update({ status: r.cierre.status, completada_at: null, payout: r.cierre.payout ?? null, updated_at: ahora() }).eq('id', r.cierre.id)
+        // "completado" que no movió nada.
+        await db.from('otc_closes').update({ status: r.cierre.status, completada_at: null, payout: payoutAntes, updated_at: ahora() }).eq('id', r.cierre.id).eq('status', 'completada')
         const detalle = errSaldo?.message ?? (res as any)?.error
         // El detalle técnico va a la mesa (respuesta), no al hilo del cliente.
         await escribirMensaje(r.cierre.id, 'sistema', 'No se pudo acreditar el saldo todavía. El cierre sigue abierto y la mesa lo revisa.')
-        return json(500, { ok: false, error: 'no_acreditado', message: `No se pudo acreditar el saldo: ${detalle}. El cierre quedo como estaba.` })
+        return json(500, { ok: false, error: 'no_acreditado', message: `No se pudo acreditar el saldo: ${detalle}. El cierre quedó como estaba.` })
+      }
+      if (errSaldo) {
+        const nota = `Acreditación INCIERTA (${new Date().toISOString()}): se pidió acreditar ${acreditar} ${destino} y la respuesta no llegó (${errSaldo.message}). Verificar el saldo del cliente antes de cargar nada a mano.`
+        await db.from('otc_closes').update({
+          payout: { ...(payoutAntes ?? {}), wallet: destino, canalPor: caller.nombre ?? null, acreditacion: 'incierta' },
+          notas_internas: [r.cierre.notas_internas, nota].filter(Boolean).join('\n'),
+          updated_at: ahora(),
+        }).eq('id', r.cierre.id)
+        console.error('[otc-mesa] acreditación incierta', r.cierre.id, errSaldo.message)
+        await avisarMesa(`Revisar acreditación de ${r.cierre.ref}`, 'La respuesta del saldo no llegó. Verifica si el cliente recibió la plata antes de cargar nada a mano.', `otc-${r.cierre.ref}`)
+        return json(502, {
+          ok: false, error: 'acreditacion_incierta',
+          message: 'No llegó la confirmación del saldo. El cierre quedó completado para que NO se acredite dos veces: revisa el saldo del cliente; si no se acreditó, cárgalo a mano.',
+        })
       }
 
       // El movimiento. Si esto fallara, la plata ya esta bien y lo que falta es
       // el registro — se dice en el hilo en vez de callarlo.
-      const tasa = Number(r.cierre.rate_final ?? r.cierre.rate_cotizada) || null
+      const tasa = Number(fila.rate_final ?? fila.rate_cotizada) || null
+      const sinRegistro = async (motivo: string) => {
+        await escribirMensaje(r.cierre.id, 'sistema', 'Saldo acreditado. El movimiento todavía no aparece en tu historial: la mesa ya fue avisada.')
+        console.error('[otc-mesa] movimiento sin registrar', r.cierre.id, motivo)
+        await avisarMesa(`Movimiento sin registrar en ${r.cierre.ref}`, 'El saldo se acreditó pero el movimiento no quedó en el historial del cliente.', `otc-${r.cierre.ref}`)
+      }
       try {
-        await db.from('transactions').insert({
-          user_id: r.cierre.user_id, type: 'convert', amount: monto, currency: destino, status: 'Completado',
+        // supabase-js no lanza: el error viene en la respuesta. Con solo el
+        // try/catch, un insert rechazado pasaba callado.
+        const { error: errMov } = await db.from('transactions').insert({
+          user_id: r.cierre.user_id, type: 'convert', amount: acreditar, currency: destino, status: 'Completado',
           raw_data: {
             title: `${r.cierre.from_currency} → ${r.cierre.to_currency} · Mesa OTC ${r.cierre.ref}`,
             initials: 'FX',
             fromCurrency: r.cierre.from_currency, fromAmount: Number(r.cierre.from_amount),
-            destAmount: monto, mouvRate: tasa,
+            destAmount: acreditar, mouvRate: tasa,
             source: 'OTC_MANUAL', otcRef: r.cierre.ref, otcCloseId: r.cierre.id,
             // El cliente RECIBE: el movimiento va en positivo. Se dice
             // explicito y no se deja deducir -- un signo al reves en un
@@ -1168,32 +1276,32 @@ Deno.serve(async (req) => {
             completadaPor: caller.nombre ?? null,
           },
         })
+        if (errMov) await sinRegistro(errMov.message)
       } catch (e: any) {
-        await escribirMensaje(r.cierre.id, 'sistema', 'Saldo acreditado, pero el movimiento no quedo registrado. La mesa ya fue avisada.')
-        console.error('[otc-mesa] movimiento sin registrar', r.cierre.id, e?.message ?? e)
+        await sinRegistro(String(e?.message ?? e))
       }
 
       await escribirMensaje(r.cierre.id, 'sistema',
-        `Cierre completado por ${caller.nombre ?? 'la mesa'}. Se acreditaron `
-        + `${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} ${r.cierre.to_currency} en ${NOMBRE_BILLETERA[destino] ?? destino}.`)
-      return json(200, { ok: true, acreditado: monto, billetera: destino })
+        `Cierre completado. Se acreditaron `
+        + `${acreditar.toLocaleString('es-CO', { maximumFractionDigits: r.cierre.to_currency === 'COP' ? 0 : 2 })} ${r.cierre.to_currency} en ${NOMBRE_BILLETERA[destino] ?? destino}.`)
+      return json(200, { ok: true, acreditado: acreditar, billetera: destino })
     }
 
     // ── Cancelar (los dos lados, con reglas distintas) ──
     if (action === 'cancelar' || action === 'cancelar_mesa') {
       const r = await cargarCierre(String(payload.id ?? ''), caller)
       if (!r.ok) return json(404, { ok: false, error: r.motivo })
-      if (r.cierre.status === 'completada') return json(409, { ok: false, error: 'ese cierre ya se completo' })
+      if (r.cierre.status === 'completada') return json(409, { ok: false, error: 'ese cierre ya se completó' })
       if (r.cierre.status === 'anulada') return json(409, { ok: false, error: 'ese cierre fue anulado' })
       if (r.cierre.status === 'cancelada') return json(200, { ok: true, yaEstaba: true })
       // El cliente solo puede cancelar mientras nadie espera su plata. Una vez
       // que dijo que pago, cancelar es decision de la mesa: puede haber dinero
       // en camino.
       if (!caller.admin && r.cierre.status === 'pagada') {
-        return json(409, { ok: false, error: 'ya_pagada', message: 'Ya marcaste el envio. Escribile a la mesa por el chat para resolverlo.' })
+        return json(409, { ok: false, error: 'ya_pagada', message: 'Ya marcaste el envío. Escríbele a la mesa por el chat para resolverlo.' })
       }
       const motivo = String(payload.motivo ?? '').trim()
-      if (caller.admin && !motivo) return json(400, { ok: false, error: 'falta el motivo de la cancelacion' })
+      if (caller.admin && !motivo) return json(400, { ok: false, error: 'falta el motivo de la cancelación' })
       // CAS sobre el estado: solo se cancela un cierre VIVO. Antes el UPDATE no
       // tenía condición: si el cliente cancelaba mientras la mesa completaba,
       // `completar` acreditaba y la cancelación dejaba el cierre 'cancelada'
@@ -1207,7 +1315,7 @@ Deno.serve(async (req) => {
       if (errCancel) return json(500, { ok: false, error: errCancel.message })
       if (!cancelado?.length) return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga.' })
       await escribirMensaje(r.cierre.id, 'sistema',
-        caller.admin ? `Cierre cancelado por la mesa. Motivo: ${motivo}` : 'El cliente cancelo la solicitud.')
+        caller.admin ? `Cierre cancelado por la mesa. Motivo: ${motivo}` : 'El cliente canceló la solicitud.')
       return json(200, { ok: true })
     }
 

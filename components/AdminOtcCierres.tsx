@@ -151,6 +151,22 @@ const FILTROS: Array<{ id: string; label: string }> = [
 ];
 
 const nf = (n: any, dec = 2) => Number(n ?? 0).toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: dec });
+// Decimales de lo que recibe el cliente: pesos enteros, USDT con 2. Con 0 en
+// todo, 1.234,56 USDT se mostraba como 1.235 USDT.
+const decDe = (moneda: string) => (moneda === 'COP' ? 0 : 2);
+// La tasa como la escribe la mesa: "3.912,50" (formato colombiano), "3912.5"
+// o "3.912". Antes se borraba todo lo que no fuera dígito o punto, así que
+// "3.912,50" se leía 3,9125: la coma desaparecía y el punto quedaba de decimal.
+const leerTasa = (txt: string): number => {
+    const t = String(txt ?? '').replace(/[^\d.,]/g, '');
+    const p = t.lastIndexOf('.'), c = t.lastIndexOf(',');
+    let ent = t, dec = '';
+    if (p >= 0 && c >= 0) { const i = Math.max(p, c); ent = t.slice(0, i); dec = t.slice(i + 1); }
+    else if (c >= 0) { ent = t.slice(0, c); dec = t.slice(c + 1); }
+    else if (p >= 0 && t.split('.').length === 2 && t.slice(p + 1).length !== 3) { ent = t.slice(0, p); dec = t.slice(p + 1); }
+    const n = Number(`${ent.replace(/\D/g, '') || '0'}.${dec.replace(/\D/g, '') || '0'}`);
+    return Number.isFinite(n) ? n : NaN;
+};
 const fecha = (d: any) => {
     const t = new Date(d ?? '');
     if (!d || Number.isNaN(t.getTime())) return '—';
@@ -339,7 +355,7 @@ export const AdminOtcCierres: React.FC = () => {
                             <div style={{ minWidth: 0 }}>
                                 <p style={{ fontSize: 14.5, fontWeight: 700, color: TXT }}>{nf(c.from_amount)} {c.from_currency}</p>
                                 <p style={{ fontSize: 12, color: TXT2, marginTop: 2 }}>
-                                    {c.to_amount != null ? `→ ${nf(c.to_amount, 0)} ${c.to_currency}` : '→ a cotizar'}
+                                    {c.to_amount != null ? `→ ${nf(c.to_amount, decDe(c.to_currency))} ${c.to_currency}` : '→ a cotizar'}
                                 </p>
                                 {(c.rate_final ?? c.rate_cotizada) != null && (
                                     <p style={{ fontSize: 10.5, color: TXT3, marginTop: 2 }}>
@@ -713,7 +729,14 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
             setCierre(r.cierre); setCliente(r.cliente ?? null); setMsgs(r.mensajes ?? []);
             setCanal(prev => prev || (CANALES.some(x => x.v === r.cierre?.payout?.wallet) ? String(r.cierre.payout.wallet) : ''));
             setNotas(prev => (prev === '' ? (r.cierre?.notas_internas ?? '') : prev));
-            setTasaInput(prev => (prev === '' && r.cierre?.rate_cotizada ? String(r.cierre.rate_cotizada) : prev));
+            // La tasa VIGENTE (la fija, si ya la hay), escrita como se escribe
+            // aquí: "3.912,5". Antes se ponía la cotizada en crudo
+            // ("3912.4871") aunque la mesa ya hubiera fijado otra.
+            setTasaInput(prev => {
+                if (prev !== '') return prev;
+                const t = Number(r.cierre?.rate_final ?? r.cierre?.rate_cotizada);
+                return t > 0 ? t.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : prev;
+            });
         } else setAviso(r?.message ?? r?.error ?? 'No pude abrir el cierre.');
         setCargando(false);
     }, [id]);
@@ -732,7 +755,14 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
         setOcupado(true); setAviso(null);
         const r = await callMesa(action, { id, ...extra });
         setOcupado(false);
-        if (!r?.ok) { setAviso(r?.message ?? r?.error ?? 'No se pudo.'); return false; }
+        if (!r?.ok) {
+            setAviso(r?.message ?? r?.error ?? 'No se pudo.');
+            // El cierre cambió en el servidor aunque la acción "falló" (lo
+            // completó otro, o quedó completado con la acreditación sin
+            // confirmar): se relee para no mostrar un estado que ya no es.
+            if (r?.error === 'acreditacion_incierta' || r?.error === 'estado_invalido') { await cargar(); onCambio(); }
+            return false;
+        }
         await cargar(); onCambio();
         return true;
     };
@@ -831,7 +861,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                             {verbo} {nf(cierre.from_amount)} {cierre.from_currency}
                         </p>
                         <p style={{ fontSize: 13.5, color: TXT2, marginTop: 3 }}>
-                            recibe <b style={{ color: VERDE }}>{cierre.to_amount != null ? `${nf(cierre.to_amount, 0)} ${cierre.to_currency}` : 'a cotizar'}</b>
+                            recibe <b style={{ color: VERDE }}>{cierre.to_amount != null ? `${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}` : 'a cotizar'}</b>
                         </p>
                         {cierre.status === 'esperando_pago' && cierre.vence_at && (
                             <p style={{ fontSize: 12.5, color: TXT2, marginTop: 6 }}>
@@ -949,8 +979,10 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                     <div style={{ padding: '14px 18px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                             <MessageSquare size={15} style={{ color: TXT3, flexShrink: 0 }} />
-                            <span style={{ fontSize: 13.5, fontWeight: 700, color: mia ? TXT : TXT2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {mia ? `Atiende ${cierre.tomada_por_nom ?? 'la mesa'}` : 'Sin tomar'}
+                            <span style={{ fontSize: 13.5, fontWeight: 700, color: cierre.tomada_at ? TXT : TXT2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {/* Tomado por otro operador también es "tomado": antes
+                                    decía "Sin tomar" y dos personas lo atendían. */}
+                                {cierre.tomada_at ? (mia ? `Atiendes tú · ${cierre.tomada_por_nom ?? 'la mesa'}` : `Atiende ${cierre.tomada_por_nom ?? 'otro operador'}`) : 'Sin tomar'}
                             </span>
                         </div>
                         <button onClick={onClose} className="transition-colors hover:bg-white/[0.07]"
@@ -959,6 +991,14 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                         </button>
                     </div>
 
+                    {cierre.payout?.acreditacion === 'incierta' && (
+                        <div style={{ margin: '12px 16px 0', display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.08)', borderRadius: 9, padding: '9px 11px' }}>
+                            <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
+                            <p style={{ fontSize: 12, color: TXT, lineHeight: 1.5 }}>
+                                <b>Acreditación sin confirmar.</b> Al completar no llegó la respuesta del saldo. Revisa el saldo del cliente antes de cargar nada a mano: el cierre quedó completado para que no se acredite dos veces.
+                            </p>
+                        </div>
+                    )}
                     {aviso && (
                         <div style={{ margin: '12px 16px 0', display: 'flex', alignItems: 'flex-start', gap: 7, border: `1px solid ${AMBAR}44`, background: `${AMBAR}10`, borderRadius: 9, padding: '9px 11px' }}>
                             <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
@@ -990,11 +1030,14 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                             {/* La tasa y las instrucciones, plegadas: se usan una
                                 vez por cierre y el resto del tiempo solo estorban
                                 entre el hilo y los botones que sí se aprietan. */}
-                            {['abierta', 'en_proceso', 'esperando_pago'].includes(cierre.status) && (
+                            {/* Un cancelado que nunca se acreditó se reabre fijando
+                                una tasa nueva (el servidor lo permite): es el camino
+                                del cliente que pagó después de vencer el plazo. */}
+                            {(['abierta', 'en_proceso', 'esperando_pago'].includes(cierre.status) || (cierre.status === 'cancelada' && !cierre.completada_at)) && (
                                 <div style={{ padding: '10px 16px 0' }}>
                                     <button onClick={() => setTasaAbierta(v => !v)}
                                         style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color: VERDE, background: 'transparent', border: 'none', padding: 0 }}>
-                                        {cierre.status === 'esperando_pago' ? 'Corregir tasa e instrucciones' : 'Confirmar tasa y dar instrucciones'}
+                                        {cierre.status === 'esperando_pago' ? 'Corregir tasa e instrucciones' : cierre.status === 'cancelada' ? 'Reabrir con tasa e instrucciones' : 'Confirmar tasa y dar instrucciones'}
                                         {tasaAbierta ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                                     </button>
                                     {tasaAbierta && (
@@ -1009,8 +1052,8 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                                 />
                                                 <button
                                                     onClick={async () => {
-                                                        const n = Number(String(tasaInput).replace(/[^\d.]/g, ''));
-                                                        if (!(n > 0)) { setAviso('Escribí la tasa final.'); return; }
+                                                        const n = leerTasa(tasaInput);
+                                                        if (!(n > 0)) { setAviso('Escribe la tasa final.'); return; }
                                                         if (await hacer('fijar_tasa', { rateFinal: n, instrucciones })) { setInstrucciones(''); setTasaAbierta(false); }
                                                     }}
                                                     disabled={ocupado}
@@ -1045,7 +1088,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 <div className="flex flex-col sm:flex-row" style={{ gap: 8 }}>
                                     <button
                                         onClick={() => {
-                                            if (!cierre.rate_final) { setAviso('Fijá la tasa final antes de completar.'); return; }
+                                            if (!cierre.rate_final) { setAviso('Fija la tasa final antes de completar.'); return; }
                                             setPide('completar');
                                         }}
                                         disabled={ocupado}
@@ -1130,7 +1173,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Completar {cierre.ref}</h4>
                                 <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>Esto acredita el saldo y cierra la operación.</p>
                                 <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
-                                    <Fila icon={Wallet} label="Se acredita" valor={`${nf(cierre.to_amount, 0)} ${cierre.to_currency}`} />
+                                    <Fila icon={Wallet} label="Se acredita" valor={`${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}`} />
                                     {cierre.side !== 'vende_usdt' && <Fila icon={Landmark} label="En" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />}
                                     <Fila icon={Hash} label="A la tasa" valor={nf(cierre.rate_final)} />
                                 </div>
@@ -1153,7 +1196,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
                                     <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
                                     <p style={{ fontSize: 11.5, color: TXT2, lineHeight: 1.5 }}>
-                                        Verificá que el envío del cliente haya llegado. Lo que él marque no es prueba de que el dinero entró.
+                                        Verifica que el envío del cliente haya llegado. Lo que marque no es prueba de que el dinero entró.
                                     </p>
                                 </div>
                                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
@@ -1177,7 +1220,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Anular {cierre.ref}</h4>
                                 <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>Deshace el cierre completado: se le descuenta al cliente lo que se le acreditó.</p>
                                 <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
-                                    <Fila icon={Wallet} label="Se descuenta" valor={`${nf(cierre.to_amount, 0)} ${cierre.to_currency}`} />
+                                    <Fila icon={Wallet} label="Se descuenta" valor={`${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}`} />
                                     <Fila icon={Landmark} label="De" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />
                                     <Fila icon={User} label="Cliente" valor={cliente?.company_name || cliente?.full_name || cliente?.email || '—'} />
                                 </div>

@@ -4891,7 +4891,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                               // recibir plata, que es cuando mas se mira el numero.
                               // 1) Optimista, para que se vea al instante.
                               bumpLocalBalance?.(billetera, monto);
-                              showToast(`Recibiste ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} en tu ${billetera === 'COP_BREB' ? 'saldo Bre-B' : billetera === 'COP_ACH' ? 'saldo ACH' : billetera === 'USD' ? 'saldo USDT' : 'saldo Lincoin'} ⚡`);
+                              showToast(`Recibiste ${monto.toLocaleString('es-CO', { maximumFractionDigits: 2 })} en tu ${billetera === 'COP_BREB' ? 'saldo Bre-B' : billetera === 'COP_ACH' ? 'saldo ACH' : billetera === 'COP_C3' ? `saldo ${nombreCuenta(3)}` : billetera === 'COP_C4' ? `saldo ${nombreCuenta(4)}` : billetera === 'USD' ? 'saldo USDT' : 'saldo Lincoin'} ⚡`);
                               // 2) Autoritativo: el servidor manda. Escalonado porque la
                               //    lectura puede llegar antes de que la escritura se refleje.
                               refreshData?.();
