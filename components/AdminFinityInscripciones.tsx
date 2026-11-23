@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { llamarFuncion } from '../lib/edge';
 
 // ─────────────────────────────────────────────────────────────
@@ -82,7 +83,9 @@ export const AdminFinityInscripciones: React.FC = () => {
         style={{ marginTop: 4, background: 'transparent', border: 'none', padding: 0, color: TXT2, fontSize: 10.5, fontWeight: 600, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>
         Inscripciones · Cuenta 2
       </button>
-      {abierto && (
+      {/* Portal sobre <body>: dentro de la tarjeta de la bolsa, un contenedor
+          con animación cambia la referencia de `position: fixed`. */}
+      {abierto && createPortal(
         <div role="dialog" aria-label="Inscripciones a Finity" onClick={() => setAbierto(false)}
           style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(0,0,0,0.6)', display: 'grid', placeItems: 'center', padding: 16 }}>
           <div onClick={e => e.stopPropagation()}
@@ -221,7 +224,7 @@ export const AdminFinityInscripciones: React.FC = () => {
             )}
           </div>
         </div>
-      )}
+      , document.body)}
     </>
   );
 };

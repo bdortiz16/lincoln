@@ -104,6 +104,7 @@ import { AdminApiExterna } from './AdminApiExterna';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { AdminBancosAchMouv } from './AdminBancosAchMouv';
 import { AdminFinityInscripciones } from './AdminFinityInscripciones';
+import { AvisoVersionNueva } from './AvisoVersionNueva';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
@@ -791,6 +792,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [coinsenda2Pool, setCoinsenda2Pool] = useState<BolsaCs | null>(null);
   // Hora de la última lectura de las bolsas, para que se vea que están vivas.
   const [bolsasAt, setBolsasAt] = useState<number | null>(null);
+  // Reloj de la Billetera: avanza cada 20 s para poder decir "sin actualizar
+  // hace N min" aunque nada más cambie en pantalla.
+  const [relojBilletera, setRelojBilletera] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setRelojBilletera(Date.now()), 20_000);
+    return () => clearInterval(t);
+  }, []);
   // `silencioso`: la vuelta automática de la Billetera (abajo). No pinta
   // "Cargando…" encima de la cifra y un fallo pasajero no borra la que ya se
   // ve. Va en un objeto y no como booleano suelto porque los botones pasan
@@ -2581,6 +2589,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 <p style={{ margin: '6px 0 0', fontSize: 11, color: '#878E88' }}>
                   Saldos en vivo · se actualizan solos cada 30 s
                   {bolsasAt ? ` · última lectura ${new Date(bolsasAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}
+                  {/* 23 nov: una pestaña con la sesión vencida seguía diciendo
+                      "en vivo" con la hora de medianoche. Pasados 2 minutos
+                      sin leer las bolsas, se dice y se ofrece recargar. */}
+                  {bolsasAt && relojBilletera - bolsasAt > 120_000 && (
+                    <span style={{ color: '#FBBF24', fontWeight: 700 }}>
+                      {' '}· sin actualizar hace {Math.round((relojBilletera - bolsasAt) / 60_000)} min (la sesión pudo vencer){' '}
+                      <button type="button" onClick={() => window.location.reload()}
+                        style={{ background: 'none', border: 'none', padding: 0, color: '#FBBF24', fontWeight: 800, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11 }}>
+                        Recargar
+                      </button>
+                    </span>
+                  )}
                 </p>
               )}
             </div>
@@ -2651,6 +2671,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               <span key={p.proveedor}>{i > 0 && ' · '}<span style={{ whiteSpace: 'nowrap' }}>{p.proveedor} {p.lincoinEsperado == null ? '—' : Math.round(p.lincoinEsperado).toLocaleString('es-CO')}</span></span>
                             ))}
                           </p>
+                          {/* 23 nov: los cierres de la mesa OTC ya suman (con la
+                              tasa de venta que escribe la mesa al completar). */}
+                          {(() => {
+                            const otc = abiertas.reduce((a, p) => a + Number(p.otcDesdeApertura ?? 0), 0);
+                            return otc !== 0 ? (
+                              <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>
+                                incluye cierres OTC <span style={{ color: otc > 0 ? '#4ADE80' : '#F87171', fontWeight: 700 }}>{otc > 0 ? '+' : '−'}{Math.abs(Math.round(otc)).toLocaleString('es-CO')}</span>
+                              </p>
+                            ) : null;
+                          })()}
                         </>}
                   </div>
                 );
@@ -3636,7 +3666,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                               <p style={{ margin: '10px 0 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.8, color: 'rgba(244,244,242,0.45)' }}>AHORA</p>
                                               {linea('Bolsa en el proveedor', x.bolsaVivo)}
                                               {linea('− Saldos de los clientes', x.clientesVivo, { signo: '−' })}
-                                              {linea(<>− Lincoin esperado <span style={{ color: 'rgba(244,244,242,0.45)' }}>(apertura + {fmtCop(x.utilidadDesdeApertura)} de utilidad{x.retirosDesdeApertura ? ` − ${fmtCop(x.retirosDesdeApertura)} de retiros` : ''}{x.externosDesdeApertura ? ` ${x.externosDesdeApertura < 0 ? '−' : '+'} ${fmtCop(Math.abs(x.externosDesdeApertura))} externos` : ''})</span></>, x.lincoinEsperado, { signo: '−' })}
+                                              {linea(<>− Lincoin esperado <span style={{ color: 'rgba(244,244,242,0.45)' }}>(apertura + {fmtCop(x.utilidadDesdeApertura)} de utilidad{x.otcDesdeApertura ? `, ${fmtCop(x.otcDesdeApertura)} de cierres OTC` : ''}{x.retirosDesdeApertura ? ` − ${fmtCop(x.retirosDesdeApertura)} de retiros` : ''}{x.externosDesdeApertura ? ` ${x.externosDesdeApertura < 0 ? '−' : '+'} ${fmtCop(Math.abs(x.externosDesdeApertura))} externos` : ''})</span></>, x.lincoinEsperado, { signo: '−' })}
                                               <button onClick={() => navTo('lincoin')} style={{ background: 'none', border: 'none', padding: '2px 0', color: '#878E88', fontSize: 11.5, textDecoration: 'underline', cursor: 'pointer' }}>Retiros y movimientos externos: ver y registrar en Lincoin</button>
                                               <div className="flex justify-between" style={{ gap: 10, marginTop: 6, padding: '8px 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 800,
                                                   background: x.dif === 0 ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.10)', border: `1px solid ${x.dif === 0 ? 'rgba(74,222,128,0.25)' : 'rgba(251,191,36,0.35)'}`, color: x.dif === 0 ? '#4ADE80' : '#FBBF24' }}>
@@ -4554,7 +4584,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                : !cm?.abierta ? <p style={{ margin: '4px 0', fontSize: 12.5, color: '#878E88' }}>La caja de {nombreBolsa(c.proveedor)} abrió el {fechaAp}: en {mesLargo} todavía no había caja.</p>
                                : <>
                                   {fila(cm.abreEnElMes ? `Saldo al empezar ${mesCorto} · apertura` : `Saldo al empezar ${mesCorto}`, cm.inicio)}
-                                  {fila(`+ Utilidad de los cargues de ${mesCorto}`, cm.utilidad, { signo: cm.utilidad < 0 ? '−' : '+', color: '#4ADE80' })}
+                                  {/* Desde el 23 nov la utilidad del mes incluye los cierres de la
+                                      mesa OTC (cajaDelMes): se separa para que la línea no diga
+                                      "de los cargues" sobre plata que no lo es. */}
+                                  {fila(`+ Utilidad de los cargues de ${mesCorto}`, cm.utilidad - Number(cm.utilidadOtc ?? 0), { signo: cm.utilidad - Number(cm.utilidadOtc ?? 0) < 0 ? '−' : '+', color: '#4ADE80' })}
+                                  {Number(cm.utilidadOtc ?? 0) !== 0 && fila(`+ Utilidad de los cierres OTC de ${mesCorto}`, Number(cm.utilidadOtc), { signo: Number(cm.utilidadOtc) < 0 ? '−' : '+', color: '#4ADE80' })}
                                   {/* Cada mes suma su utilidad completa (del 1 al último día). En el
                                       mes en que se abrió la caja, el saldo de apertura se toma como el
                                       que había el 1.º: si no lo era, el dueño lo corrige. */}
@@ -6007,6 +6041,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         {/* La ventana del código 2FA que el servidor exige en las operaciones
             sensibles (lib/codigo2fa.ts). Una sola, para todo el panel. */}
         <PromptCodigo2fa />
+        {/* Una pestaña abierta desde antes de un despliegue muestra el panel
+            viejo sin decirlo (23 nov): se ofrece recargar. */}
+        <AvisoVersionNueva />
         {/* Correos que no están llegando. Va suelto y fijo arriba a la derecha
             porque el aviso tiene que verse desde CUALQUIER pestaña: quien no
             recibe el código no puede escribirnos para contarlo. */}

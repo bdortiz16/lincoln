@@ -801,6 +801,9 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     // La tasa a la que la mesa vendió (o compró) los USDT: se pide al completar
     // y con ella queda la utilidad del cierre.
     const [tasaVentaTxt, setTasaVentaTxt] = useState('');
+    // Registrar o corregir la tasa de venta de un cierre YA completado (los de
+    // antes del 23 nov no la tienen y no suman a la caja de Lincoin).
+    const [ventaEdit, setVentaEdit] = useState<null | string>(null);
     const [tasaAbierta, setTasaAbierta] = useState(false);
     const [subiendo, setSubiendo] = useState(false);
     const finRef = useRef<HTMLDivElement | null>(null);
@@ -981,6 +984,63 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 </div>
                             )}
                         </div>
+
+                        {/* Un cierre completado sin tasa de venta no suma a la
+                            utilidad de Lincoin (Billetera → Lincoin · utilidades):
+                            se registra aquí. Con tasa, se puede corregir. */}
+                        {cierre.status === 'completada' && (() => {
+                            const tiene = cierre.payout?.venta?.tasa > 0;
+                            const vende = cierre.side === 'vende_usdt';
+                            if (ventaEdit === null) {
+                                return tiene ? (
+                                    <button type="button" onClick={() => setVentaEdit(nf(cierre.payout.venta.tasa))}
+                                        style={{ alignSelf: 'flex-start', marginTop: -8, background: 'none', border: 'none', padding: 0, color: TXT2, fontSize: 11.5, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                        Corregir la tasa de {vende ? 'venta' : 'compra'}
+                                    </button>
+                                ) : (
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', padding: '10px 12px', borderRadius: 10, border: `1px solid ${AMBAR}44`, background: `${AMBAR}0D` }}>
+                                        <span style={{ fontSize: 12, color: TXT, lineHeight: 1.45 }}>Sin tasa de {vende ? 'venta' : 'compra'}: su utilidad no suma a Lincoin.</span>
+                                        <button type="button" onClick={() => setVentaEdit('')}
+                                            style={{ padding: '6px 11px', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                            Registrar tasa
+                                        </button>
+                                    </div>
+                                );
+                            }
+                            const t = leerTasa(ventaEdit);
+                            const v = ventaEdit.trim() && t > 0 ? ventaDe(cierre, t) : null;
+                            const lejos = !!v && fueraDeRango(t, Number(cierre.rate_final));
+                            const guardar = async () => {
+                                if (!v || lejos) return;
+                                const r = await hacer('registrar_venta', { tasaVenta: t });
+                                if (r) setVentaEdit(null);
+                            };
+                            return (
+                                <div style={{ padding: '11px 12px', borderRadius: 10, border: `1px solid ${BORDE2}`, background: ELEVADO, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    <p style={ROTULO}>{vende ? '¿A qué tasa vendiste los USDT?' : '¿A qué tasa compraste los USDT?'}</p>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <input autoFocus value={ventaEdit} onChange={e => setVentaEdit(e.target.value)} inputMode="decimal"
+                                            aria-label="Tasa de venta del cierre" placeholder={`Ej: ${nf(Number(cierre.rate_final) * (vende ? 1.005 : 0.995))}`}
+                                            onKeyDown={e => { if (e.key === 'Enter') guardar(); }}
+                                            style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontWeight: 700, borderColor: lejos ? `${ROJO}88` : BORDE2 }} />
+                                        <button type="button" onClick={guardar} disabled={ocupado || !v || lejos}
+                                            style={{ flexShrink: 0, padding: '0 14px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado || !v || lejos ? 0.5 : 1, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                            Guardar
+                                        </button>
+                                        <button type="button" onClick={() => setVentaEdit(null)}
+                                            style={{ flexShrink: 0, padding: '0 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                            Cancelar
+                                        </button>
+                                    </div>
+                                    {v && !lejos && (
+                                        <p style={{ fontSize: 12, color: TXT2 }}>
+                                            {v.utilidadCop < 0 ? 'Pérdida' : 'Utilidad'}: <b style={{ color: v.utilidadCop < 0 ? ROJO : VERDE }}>{signoCop(v.utilidadCop)}</b>{v.pct != null ? ` · ${pctTxt(v.pct)}` : ''}
+                                        </p>
+                                    )}
+                                    {lejos && <p style={{ fontSize: 11.5, color: ROJO }}>Se aleja más de {TOPE_VENTA * 100} % de la tasa del cliente ({nf(cierre.rate_final)}). Revisa el número.</p>}
+                                </div>
+                            );
+                        })()}
 
                         <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
                             <p style={{ ...ROTULO, marginBottom: 9 }}>Cliente</p>

@@ -213,6 +213,31 @@ async function utilidadPorProveedor(desdeIso: string): Promise<Record<string, nu
   return out
 }
 
+// La utilidad de los cierres de la mesa OTC (23 nov, el dueño: "no se están
+// sumando los cierres de OTC que acabo de hacer"). Un cierre es como un
+// cargue: el cliente entrega USDT, se le acreditan pesos en una bolsa (el
+// canal que eligió la mesa, payout.wallet) y la venta de esos USDT entra a la
+// misma bolsa; lo que queda es de Lincoin. Desde el 23 nov la mesa escribe al
+// completar la tasa a la que vendió y el cierre guarda la utilidad
+// (payout.venta). Los cierres sin ese dato no suman: no se inventa una tasa.
+// Un cierre anulado tampoco (su estado deja de ser 'completada').
+async function utilidadOtcCierres(desdeIso: string, hastaIso?: string): Promise<{ p: string; ts: number; u: number }[]> {
+  const { filas } = await leerPorPaginas(() => {
+    let q = db.from('otc_closes').select('id, completada_at, payout').eq('status', 'completada').gte('completada_at', desdeIso)
+    if (hastaIso) q = q.lt('completada_at', hastaIso)
+    return q
+  }, { tope: 50_000 })
+  const out: { p: string; ts: number; u: number }[] = []
+  for (const c of filas as any[]) {
+    const v = c?.payout?.venta
+    const u = Number(v?.utilidadCop)
+    const p = provDeRiel(c?.payout?.wallet)
+    if (!p || !(Number(v?.tasa) > 0) || !Number.isFinite(u)) continue
+    out.push({ p, ts: Date.parse(String(c.completada_at)), u })
+  }
+  return out
+}
+
 // Saldo de cada bolsa, leído en el proveedor con la llave de servicio (igual
 // que la pantalla de Billetera: Mouv = Bre-B, Finity = COP).
 async function bolsasProveedores(): Promise<Record<string, number | null>> {
@@ -532,6 +557,18 @@ async function estadoCaja() {
     const ini = a ? inicioCaja(a.abierta_at).iso : null
     porProv[c.proveedor] = a ? (ini === primera ? utilidad[c.proveedor] : (await utilidadPorProveedor(ini!))[c.proveedor]) : 0
   }
+  // Y lo que dejaron los cierres de la mesa OTC, cada bolsa desde SU inicio.
+  const otcPorProv: Record<string, number> = {}
+  if (primera) {
+    let otc: { p: string; ts: number; u: number }[] = []
+    try { otc = await utilidadOtcCierres(primera) } catch (e) { console.error('[caja] utilidad OTC', (e as Error)?.message) }
+    for (const c of CAJA) {
+      const a = aperturas.get(c.proveedor)
+      if (!a) continue
+      const ini = Date.parse(inicioCaja(a.abierta_at).iso)
+      otcPorProv[c.proveedor] = otc.filter(x => x.p === c.proveedor && x.ts >= ini).reduce((acc, x) => acc + x.u, 0)
+    }
+  }
   // Movimientos de Lincoin desde ese mismo día, en cada bolsa.
   const primeraFecha = primera ? fechaBogota(primera) : null
   const movs = primeraFecha ? (await movimientosCaja(primeraFecha)).filter(m => !m.anulado) : []
@@ -545,9 +582,12 @@ async function estadoCaja() {
     return {
       proveedor: c.proveedor, rail: c.rail,
       apertura: a ? { at: a.abierta_at, bolsa: Number(a.bolsa), clientes: Number(a.clientes), lincoin: Number(a.lincoin), nota: a.nota ?? null, editadoPor: a.editado_por ?? null, editadoAt: a.editado_at ?? null } : null,
-      utilidadDesdeApertura: Math.round(porProv[c.proveedor] ?? 0),
+      // La utilidad incluye la de los cierres OTC; otcDesdeApertura dice cuánto
+      // es de ellos para mostrarlo aparte.
+      utilidadDesdeApertura: Math.round((porProv[c.proveedor] ?? 0) + (otcPorProv[c.proveedor] ?? 0)),
+      otcDesdeApertura: Math.round(otcPorProv[c.proveedor] ?? 0),
       retirosDesdeApertura: Math.round(retiros), externosDesdeApertura: Math.round(externos),
-      lincoinEsperado: a ? Math.round(Number(a.lincoin) + (porProv[c.proveedor] ?? 0) - retiros + externos) : null,
+      lincoinEsperado: a ? Math.round(Number(a.lincoin) + (porProv[c.proveedor] ?? 0) + (otcPorProv[c.proveedor] ?? 0) - retiros + externos) : null,
       ultimaFoto: ultima ? { fecha: ultima.fecha, bolsa: ultima.bolsa == null ? null : Number(ultima.bolsa), clientes: Number(ultima.clientes), lincoinEsperado: Number(ultima.lincoin_esperado), diferencia: ultima.diferencia == null ? null : Number(ultima.diferencia) } : null,
     }
   })
@@ -583,6 +623,19 @@ async function cajaDelMes(desde: string, hasta: string, inicioIso: string, finIs
       else mes[p] = (mes[p] ?? 0) + u
     }
   }
+  // Los cierres de la mesa OTC suman igual que los cargues (ver
+  // utilidadOtcCierres): antes del mes al saldo de inicio, dentro a la utilidad.
+  const otcMes: Record<string, number> = {}
+  if (tFin > primera) {
+    let otc: { p: string; ts: number; u: number }[] = []
+    try { otc = await utilidadOtcCierres(new Date(primera).toISOString(), new Date(tFin).toISOString()) } catch (e) { console.error('[caja mes] utilidad OTC', (e as Error)?.message) }
+    for (const x of otc) {
+      const a = aperturas.get(x.p)
+      if (!a || !(x.ts >= tsAp(a))) continue
+      if (x.ts < tInicio) antes[x.p] = (antes[x.p] ?? 0) + x.u
+      else { mes[x.p] = (mes[x.p] ?? 0) + x.u; otcMes[x.p] = (otcMes[x.p] ?? 0) + x.u }
+    }
+  }
   const movs = (await movimientosCaja(fechaBogota(new Date(primera).toISOString()), hasta)).filter(m => !m.anulado)
   return CAJA.map(c => {
     const a = aperturas.get(c.proveedor)
@@ -601,7 +654,7 @@ async function cajaDelMes(desde: string, hasta: string, inicioIso: string, finIs
     const retiros = suma(delMes, 'retiro'), externos = suma(delMes, 'otros')
     return {
       proveedor: c.proveedor, abierta: true, abreEnElMes, aperturaAt: a.abierta_at,
-      inicio: Math.round(inicio), utilidad: Math.round(utilidad), retiros: Math.round(retiros), externos: Math.round(externos),
+      inicio: Math.round(inicio), utilidad: Math.round(utilidad), utilidadOtc: Math.round(otcMes[c.proveedor] ?? 0), retiros: Math.round(retiros), externos: Math.round(externos),
       cierre: Math.round(inicio + utilidad - retiros + externos),
     }
   })

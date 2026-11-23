@@ -739,7 +739,7 @@ Deno.serve(async (req) => {
     }
 
     // Acciones que solo puede hacer la mesa.
-    const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'completar', 'cancelar_mesa', 'notas', 'resumen', 'config_get', 'config_set'])
+    const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'completar', 'registrar_venta', 'cancelar_mesa', 'notas', 'resumen', 'config_get', 'config_set'])
     if (SOLO_MESA.has(action) && !caller.admin) {
       return json(403, { ok: false, error: 'solo la mesa' })
     }
@@ -1411,6 +1411,44 @@ Deno.serve(async (req) => {
         `Cierre completado. Se acreditaron `
         + `${acreditar.toLocaleString('es-CO', { maximumFractionDigits: r.cierre.to_currency === 'COP' ? 0 : 2 })} ${r.cierre.to_currency} en ${NOMBRE_BILLETERA[destino] ?? destino}.`)
       return json(200, { ok: true, acreditado: acreditar, billetera: destino, venta, ventaGuardada })
+    }
+
+    // ── La tasa de venta de un cierre YA completado (23 nov) ──
+    // Los cierres completados antes de que el modal pidiera la tasa (o uno
+    // con un número mal escrito) quedaban sin utilidad: la caja de Lincoin no
+    // los sumaba y la contabilidad los estimaba. Esto la registra o la
+    // corrige; no toca la plata del cliente (lo acreditado no cambia).
+    if (action === 'registrar_venta') {
+      const r = await cargarCierre(String(payload.id ?? ''), caller)
+      if (!r.ok) return json(404, { ok: false, error: r.motivo })
+      if (r.cierre.status !== 'completada') {
+        return json(409, { ok: false, error: 'estado_invalido', message: 'Solo se registra la tasa de venta de un cierre completado. Uno vivo la pide al completarlo.' })
+      }
+      const t = num(payload.tasaVenta)
+      const base = Number(r.cierre.rate_final)
+      if (!(t > 0)) return json(400, { ok: false, error: 'tasa_venta_invalida', message: 'La tasa de venta tiene que ser mayor a cero.' })
+      if (base > 0 && Math.abs(t - base) / base > 0.15) {
+        return json(400, {
+          ok: false, error: 'tasa_venta_fuera_de_rango',
+          message: `La tasa de venta ${t.toLocaleString('es-CO', { maximumFractionDigits: 2 })} se aleja más de 15 % de la del cliente (${base.toLocaleString('es-CO', { maximumFractionDigits: 2 })}). Revisa el número.`,
+        })
+      }
+      const anterior = r.cierre.payout?.venta ?? null
+      const venta = {
+        ...ventaDeMesa({ side: r.cierre.side, from_amount: r.cierre.from_amount, to_amount: r.cierre.to_amount }, t),
+        por: caller.nombre ?? null, at: ahora(),
+        ...(anterior ? { corregida: true, anterior: { tasa: anterior.tasa ?? null, utilidadCop: anterior.utilidadCop ?? null, por: anterior.por ?? null, at: anterior.at ?? null } } : {}),
+      }
+      // CAS sobre el estado: si lo anularon mientras tanto, no se escribe.
+      const { data: ok, error } = await db.from('otc_closes')
+        .update({ payout: { ...(r.cierre.payout ?? {}), venta }, updated_at: ahora() })
+        .eq('id', r.cierre.id).eq('status', 'completada').select('id')
+      if (error) return json(500, { ok: false, error: error.message })
+      if (!ok?.length) return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió de estado mientras tanto. Recarga.' })
+      try {
+        await db.from('audit_log').insert({ action: 'otc_manual.registrar_venta', metadata: { cierre: r.cierre.ref, de: anterior?.tasa ?? null, a: t, utilidadCop: venta.utilidadCop, por: caller.userId ?? null } })
+      } catch { /* la auditoría no frena */ }
+      return json(200, { ok: true, venta })
     }
 
     // ── Cancelar (los dos lados, con reglas distintas) ──

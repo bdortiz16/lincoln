@@ -9,6 +9,7 @@
 // número; por eso el dinero va por bolsillo, cliente y mes, y AML/KYT van en
 // consultas usadas. La pantalla lo dice para que nadie lo lea al revés.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Download, RefreshCw, Search, ShieldCheck, Wallet, Users, ScanSearch } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
 import { descargarXlsx, type CeldaX } from '../lib/xlsx';
@@ -208,9 +209,12 @@ export const AdminRiskUtilidades: React.FC<{ onCerrar: () => void }> = ({ onCerr
     background: C.base, border: `1px solid ${C.borde2}`, borderRadius: 9, color: C.texto, padding: '6px 9px', fontSize: 12.5, fontFamily: 'inherit', colorScheme: 'dark',
   };
 
-  return (
+  // En un portal sobre <body>: dentro de la Billetera, un contenedor con
+  // animación (transform) volvía `position: fixed` relativo a él y el reporte
+  // salía recortado por la izquierda, debajo del menú lateral (23 nov).
+  return createPortal(
     <div role="dialog" aria-modal="true" aria-label="Utilidades de AML y KYT"
-      style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(4,5,5,0.78)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', overflowY: 'auto', fontFamily: "'Archivo', system-ui, sans-serif" }}
+      style={{ position: 'fixed', inset: 0, zIndex: 9000, background: 'rgba(4,5,5,0.78)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', overflowY: 'auto', fontFamily: "'Archivo', system-ui, sans-serif" }}
       onClick={onCerrar}>
       <style>{`
         .ru-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
@@ -419,5 +423,5 @@ export const AdminRiskUtilidades: React.FC<{ onCerrar: () => void }> = ({ onCerr
         )}
       </div>
     </div>
-  );
+  , document.body);
 };
