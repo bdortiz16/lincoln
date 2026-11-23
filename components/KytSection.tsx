@@ -1082,6 +1082,15 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               {res.constancia.str?.at ? <> · registrado por el proveedor el {res.constancia.str.at} UTC{res.constancia.str.puntaje != null ? ` con puntaje ${res.constancia.str.puntaje}` : ''}{res.constancia.str.nivel ? ` (${nivelProveedorEs(res.constancia.str.nivel).toLowerCase()})` : ''}</> : null}
             </p>
           )}
+          {/* Si una consulta pagada no dejó constancia, se dice por qué: el
+              Reporte AML sin el original archivado respalda menos, y quien lo
+              va a presentar tiene que saberlo antes. */}
+          {!res.constancia && res.constanciaMotivo && (
+            <p style={{ fontSize: 11.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.6 }}>
+              <b style={{ color: C.text, fontWeight: 700 }}>Constancia:</b> el reporte original del proveedor no
+              quedó archivado en esta consulta ({res.constanciaMotivo.replace(/MistTrack/g, 'el proveedor')}).
+            </p>
+          )}
 
           {/* Plataformas y eventos (address_trace): el puntaje dice cuánto,
               esto dice con quién. */}

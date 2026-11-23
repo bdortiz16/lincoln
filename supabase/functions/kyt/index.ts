@@ -1112,10 +1112,11 @@ async function evaluarYGuardar(
   // El PDF original del proveedor y su constancia STR. No en la ronda de
   // monitoreo (sería una descarga por dirección vigilada en cada vuelta): ahí
   // se archiva cuando alguien consulta o arma el reporte.
-  const constancia = opts.archivar === false ? null : await archivarReporteProveedor(c, coin, dir, v.reportUrl, quien.userId)
+  const archivo = opts.archivar === false ? null : await archivarReporteProveedor(c, coin, dir, v.reportUrl, quien.userId)
 
   return {
-    constancia,
+    constancia: archivo?.constancia ?? null,
+    archivoMotivo: archivo?.motivo ?? null,
     hay: true, score: v.score, level: v.level,
     hallazgos: v.riskDetail, detalle: v.detailList, etiquetas,
     hackingEvent: v.hackingEvent, perfil,
@@ -1164,15 +1165,34 @@ type Constancia = {
   path: string; sha256: string; bytes: number; archivadoAt: string
   str: { at: string | null; puntaje: number | null; nivel: string | null } | null
 }
-async function archivarReporteProveedor(c: Config, coin: string, dir: string, reportUrl: string | null, userId: string | null): Promise<Constancia | null> {
-  if (!reportUrl) return null
+// Por qué no quedó archivado, en palabras. Antes la falla quedaba solo en
+// audit_log y el reporte decía "no quedó archivado" sin más: con eso no se
+// sabe si es MistTrack que no mandó el enlace, la descarga o el
+// almacenamiento, y cada uno se arregla en un lugar distinto.
+function motivoArchivo(m: string): string {
+  if (m === 'sin_enlace') return 'MistTrack no devolvió el enlace a su reporte PDF en esta consulta'
+  if (m === 'enlace_invalido') return 'el enlace al reporte que devolvió MistTrack no es válido'
+  if (m === 'host_no_permitido') return 'el enlace al reporte no es del dominio de archivos de MistTrack'
+  if (/^HTTP \d+/.test(m)) return `MistTrack respondió ${m} al descargar el PDF (el enlace puede haber vencido)`
+  if (m === 'no_es_pdf') return 'lo que se descargó no era un PDF'
+  if (m === 'bucket') return 'no se pudo crear el almacenamiento privado de reportes'
+  if (m.startsWith('subida: ')) return `no se pudo guardar el archivo (${m.slice(8)})`
+  return `falló la descarga (${m})`
+}
+type Archivo = { constancia: Constancia; motivo: null } | { constancia: null; motivo: string }
+
+async function archivarReporteProveedor(c: Config, coin: string, dir: string, reportUrl: string | null, userId: string | null): Promise<Archivo> {
+  const falla = async (motivo: string, extra: Record<string, unknown> = {}): Promise<Archivo> => {
+    await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo, ...extra })
+    return { constancia: null, motivo: motivoArchivo(motivo) }
+  }
+  if (!reportUrl) return await falla('sin_enlace')
   let u: URL
-  try { u = new URL(reportUrl) } catch { return null }
+  try { u = new URL(reportUrl) } catch { return await falla('enlace_invalido') }
   // Solo del host de archivos del proveedor: la URL llega en su respuesta,
   // pero no se le sigue el rastro a cualquier dirección.
   if (u.protocol !== 'https:' || u.host !== 'files.misttrack.io') {
-    await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: 'host_no_permitido', host: u.host })
-    return null
+    return await falla('host_no_permitido', { host: u.host })
   }
   try {
     const ctrl = new AbortController()
@@ -1184,20 +1204,17 @@ async function archivarReporteProveedor(c: Config, coin: string, dir: string, re
     // "evidencia" sería peor que no guardar nada.
     const esPdf = bytes.length > 1000 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46
     if (!r.ok || !esPdf) {
-      await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: !r.ok ? `HTTP ${r.status}` : 'no_es_pdf', bytes: bytes.length })
-      return null
+      return await falla(!r.ok ? `HTTP ${r.status}` : 'no_es_pdf', { bytes: bytes.length })
     }
     if (!(await asegurarBucketReportes())) {
-      await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: 'bucket' })
-      return null
+      return await falla('bucket')
     }
     const sha256 = await sha256Hex(bytes)
     const archivadoAt = new Date().toISOString()
     const path = `${coin}/${dir}/${archivadoAt.replace(/[:.]/g, '-')}.pdf`
     const { error: eUp } = await db.storage.from(BUCKET_REPORTES).upload(path, bytes, { contentType: 'application/pdf', upsert: false })
     if (eUp) {
-      await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: `subida: ${eUp.message}` })
-      return null
+      return await falla(`subida: ${eUp.message}`)
     }
     // La constancia del proveedor. Sin filtros raros: por dirección, página 1,
     // y se toma la más reciente de esta red.
@@ -1219,10 +1236,9 @@ async function archivarReporteProveedor(c: Config, coin: string, dir: string, re
     } catch { /* sin constancia STR: el PDF vale igual */ }
     const constancia: Constancia = { path, sha256, bytes: bytes.length, archivadoAt, str }
     await logAuditKyt(userId, 'kyt.reporte_proveedor', { coin, address: dir, addressLower: dir.toLowerCase(), ...constancia })
-    return constancia
+    return { constancia, motivo: null }
   } catch (e) {
-    await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), motivo: String((e as Error)?.message ?? e).slice(0, 160) })
-    return null
+    return await falla(String((e as Error)?.message ?? e).slice(0, 160))
   }
 }
 // La constancia más reciente archivada para una dirección (de audit_log).
@@ -1540,6 +1556,8 @@ Deno.serve(async (req) => {
         etiquetaProveedor: ev.addressLabel ?? null,
         contrapartes,
         constancia: constanciaPublica(ev.constancia ?? null),
+        // Si no quedó archivado, por qué (en palabras, sin rutas internas).
+        constanciaMotivo: ev.constancia ? null : (ev.archivoMotivo ?? null),
         actividad: ev.actividad, tokenActividad: ev.tokenActividad ?? null,
         cadena: ev.cadena ?? null,
         exposicion: ev.exposicion,
@@ -1924,10 +1942,18 @@ Deno.serve(async (req) => {
       const forzar = body.force === true && yo.esAdmin
       const reusar = !forzar && completo && Date.now() < vigenteHasta
 
+      // Lo que se acaba de pagar en esta llamada. El reporte lo usa aunque no
+      // se haya podido guardar en el padrón: antes se releía la ficha y, si
+      // el update había fallado (una columna que falta, p. ej. si no se
+      // corrió 2026_kyt_hop_dic.sql), salía "no se consultó las
+      // contrapartes" con la consulta pagada y la respuesta en la mano.
+      let frescos: Record<string, any> | null = null
+      let constanciaMotivo: string | null = null
       if (!reusar) {
         if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
         // El veredicto y sus enriquecimientos base.
         const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
+        constanciaMotivo = ev.constancia ? null : ((ev as any).archivoMotivo ?? null)
         await logAuditKyt(yo.userId, ev.hay ? 'kyt.consulta_pagada' : 'kyt.consulta_fallida', { coin, address: dir, origen: 'reporte' })
         if (!ev.hay) {
           return json({
@@ -1956,10 +1982,17 @@ Deno.serve(async (req) => {
           investigacion: fuenteDe(eInv, investigacion),
           comportamiento: fuenteDe(eAct, comportamiento),
         }
-        await db.from('kyt_registry').update({
+        frescos = { contrapartes, investigacion, comportamiento, fuentes }
+        const { error: eReg } = await db.from('kyt_registry').update({
           contrapartes, investigacion, comportamiento, fuentes,
           actualizado_at: new Date().toISOString(),
         }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+        if (eReg) {
+          // Queda dicho dónde mirar: sin esto, cada reporte vuelve a pagar
+          // las tres consultas porque la ficha nunca queda completa.
+          console.warn('[kyt] el reporte no pudo guardar contrapartes/investigación/fuentes en kyt_registry:', eReg.message)
+          await logAuditKyt(yo.userId, 'kyt.registro_no_guardado', { coin, addressLower: dir.toLowerCase(), error: String(eReg.message ?? '').slice(0, 200) })
+        }
       }
 
       let f = await padronBuscar(coin, dir)
@@ -2073,14 +2106,15 @@ Deno.serve(async (req) => {
         tokenActividad: normActividad(f.token_actividad),
         // La constancia del reporte del proveedor archivado (huella y fechas).
         constancia: constanciaPublica(await ultimaConstancia(coin, dir)),
+        constanciaMotivo,
         // Lo que dice el explorador de la cadena. Es la fuente de los saldos.
         cadena: f.cadena ?? null,
         cadenaFuentes: f.cadena_fuentes ?? null,
         perfil: f.perfil ?? null,
-        contrapartes: f.contrapartes ?? null,
-        investigacion: f.investigacion ?? null,
-        comportamiento: f.comportamiento ?? null,
-        fuentes: f.fuentes ?? null,
+        contrapartes: frescos ? frescos.contrapartes : (f.contrapartes ?? null),
+        investigacion: frescos ? frescos.investigacion : (f.investigacion ?? null),
+        comportamiento: frescos ? frescos.comportamiento : (f.comportamiento ?? null),
+        fuentes: frescos ? frescos.fuentes : (f.fuentes ?? null),
         rutas: trazado,
         reporte: f.report_url ?? null,
         consultadoAt: f.consultado_at,
@@ -2376,9 +2410,12 @@ Deno.serve(async (req) => {
       const dir = normDir(body.address)
       if (!coin || !dir) return json({ ok: false, error: 'faltan_datos' })
       let nueva: Constancia | null = null
+      let motivo: string | null = null
       if (body.archivar === true) {
         const f = await padronBuscar(coin, dir)
-        nueva = await archivarReporteProveedor(c, coin, dir, f?.report_url ?? null, yo.userId)
+        const a = await archivarReporteProveedor(c, coin, dir, f?.report_url ?? null, yo.userId)
+        nueva = a.constancia
+        motivo = a.motivo
       }
       const { data } = await db.from('audit_log').select('metadata, created_at, user_id')
         .eq('action', 'kyt.reporte_proveedor').eq('metadata->>addressLower', dir.toLowerCase())
@@ -2391,8 +2428,18 @@ Deno.serve(async (req) => {
         try { const { data: s } = await db.storage.from(BUCKET_REPORTES).createSignedUrl(String(m.path), 600); url = s?.signedUrl ?? null } catch { url = null }
         copias.push({ archivadoAt: m.archivadoAt ?? fila.created_at, sha256: m.sha256 ?? null, bytes: m.bytes ?? null, str: m.str ?? null, url })
       }
+      // La última vez que NO se pudo archivar, con su motivo: sin esto,
+      // "0 copias" no dice si nunca se intentó o si falla siempre igual.
+      let ultimoFallo: { at: string; motivo: string } | null = null
+      if (!copias.length || motivo) {
+        const { data: fl } = await db.from('audit_log').select('metadata, created_at')
+          .eq('action', 'kyt.reporte_proveedor_fallo').eq('metadata->>addressLower', dir.toLowerCase())
+          .order('created_at', { ascending: false }).limit(1)
+        const x = (fl ?? [])[0] as any
+        if (x) ultimoFallo = { at: x.created_at, motivo: motivoArchivo(String(x.metadata?.motivo ?? '')) }
+      }
       await logAuditKyt(yo.userId, 'kyt.reporte_proveedor_descarga', { coin, addressLower: dir.toLowerCase(), copias: copias.length, archivadoAhora: !!nueva })
-      return json({ ok: true, coin, address: dir, copias, archivadoAhora: !!nueva })
+      return json({ ok: true, coin, address: dir, copias, archivadoAhora: !!nueva, motivo, ultimoFallo })
     }
 
     if (accion === 'diagnostico') {

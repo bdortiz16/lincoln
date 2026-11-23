@@ -442,8 +442,10 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             </p>
           ) : (
             <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.tenue, fontStyle: 'italic' }}>
-              El reporte original de MistTrack no quedó archivado para esta consulta (consultas anteriores
-              al 22 de noviembre de 2026 o enlace vencido). Una consulta nueva lo archiva.
+              El reporte original de MistTrack no quedó archivado para esta consulta
+              {d.constanciaMotivo
+                ? <>: {d.constanciaMotivo}.</>
+                : <> (consultas anteriores al 22 de noviembre de 2026 o enlace vencido). Una consulta nueva lo archiva.</>}
             </p>
           )}
         </div>

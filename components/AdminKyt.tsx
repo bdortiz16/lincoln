@@ -364,6 +364,15 @@ const PdfProveedor: React.FC = () => {
               {res.archivadoAhora ? 'Se archivó, pero no aparece todavía. Vuelve a buscar.' : 'No hay copias archivadas para esa dirección. Usa «Archivar ahora» o consulta la dirección de nuevo.'}
             </p>
           )}
+          {/* Por qué no se pudo archivar: el de este intento, o el último
+              registrado. Cada motivo se arregla en un lugar distinto. */}
+          {(res.motivo || res.ultimoFallo) && (
+            <p style={{ fontSize: 12, color: C.rojo, marginTop: 8, lineHeight: 1.55 }}>
+              {res.motivo
+                ? <>No se pudo archivar: {res.motivo}.</>
+                : <>Último intento fallido ({fechaHora(res.ultimoFallo.at)}): {res.ultimoFallo.motivo}.</>}
+            </p>
+          )}
         </div>
       )}
     </div>
