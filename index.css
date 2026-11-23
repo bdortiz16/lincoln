@@ -253,6 +253,10 @@ button[class~="bg-[#4ADE80]"] {
    esto el navegador imprime el dashboard entero de fondo. */
 @media print {
   body > *:not(.lincoin-print-root) { display: none !important; }
+  /* El fondo de la app es negro (body, arriba) y con print-color-adjust:
+     exact se imprimía: la última hoja del reporte terminaba en un bloque
+     negro donde se acababa el contenido (23 nov). */
+  html, body { background-color: #FFFFFF !important; }
   /* La línea verde de arriba es de pantalla: en papel salía en cada hoja. */
   body::before { display: none !important; }
   .lincoin-print-root { position: static !important; inset: auto !important;

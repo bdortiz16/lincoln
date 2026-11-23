@@ -20,7 +20,8 @@
 // ══════════════════════════════════════════════════════════════════
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, ESCALA_RIESGO, FUENTES_RIESGO, ABREVIATURAS, caminoDe, flujoRuta, RECOMENDACIONES_SB, recomendacionSb, nivelSarblockEs, severidadEs, confianzaEs, senalEs } from '../lib/kytTextos';
+import { bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, ESCALA_RIESGO, FUENTES_RIESGO, ABREVIATURAS, caminoDe, flujoRuta } from '../lib/kytTextos';
+import { KytReporteSarblock } from './KytReporteSarblock';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -129,6 +130,10 @@ const PorQueVacio: React.FC<{ f?: any; que: string }> = ({ f, que }) => {
 };
 
 export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClose }) => {
+  // Un análisis de SARBLOCK (EVM y TRON) tiene su propio reporte, con la
+  // estructura del informe que Sarblock genera en su plataforma (pedido del
+  // dueño, 23 nov). Este archivo queda para los de MistTrack.
+  if (d?.proveedor === 'sarblock' && d?.sarblock) return <KytReporteSarblock d={d} onClose={onClose} />;
   const ac = d.actividad;
   const tk = d.tokenActividad;
   const cad = d.cadena; // el explorador de la cadena: de donde salen los saldos
@@ -153,15 +158,14 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
   // para las demás redes. Cada uno con su nombre, su escala y su respaldo:
   // un reporte de Sarblock con la escala o el nombre de MistTrack diría de
   // uno lo que dijo el otro.
-  const esSb = d.proveedor === 'sarblock' && !!d.sarblock;
-  const sb = esSb ? d.sarblock : null;
-  const recSb = esSb ? recomendacionSb(sb.recomendacion) : null;
-  const nivelEs = esSb ? nivelSarblockEs(d.nivel) : nivelProveedorEs(d.nivel, d.categoria);
+  const nivelEs = nivelProveedorEs(d.nivel, d.categoria);
   const b = { ...banda(lectura.categoria), t: nivelEs === 'Sin clasificar' || nivelEs === 'Sin riesgo' ? nivelEs.toUpperCase() : `RIESGO ${nivelEs.toUpperCase()}` };
-  const escalaActiva = esSb ? null : (ESCALA_RIESGO.find(e => e.nivel === nivelEs) ?? null);
-  const sancionada = esSb ? !!sb.sancionada : sancionadaPorProveedor(d.detalle, d.hallazgos);
+  const escalaActiva = ESCALA_RIESGO.find(e => e.nivel === nivelEs) ?? null;
+  const sancionada = sancionadaPorProveedor(d.detalle, d.hallazgos);
   const entidad = d.etiquetaProveedor || textos(d.etiquetas, 1)[0] || null;
-  const k = d.constancia;
+  // La última constancia archivada de la dirección puede ser de un análisis
+  // de SARBLOCK: esa no respalda un reporte de MistTrack.
+  const k = d.constancia?.proveedor === 'sarblock' ? null : d.constancia;
 
   const directos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos === 1);
   const indirectos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos > 1);
@@ -274,27 +278,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 public/aliados y no se redibuja ni se altera. La descripción es la que
                 MistTrack da de sí mismo en su documentación ("anti-money
                 laundering tracking system … built by SlowMist"). */}
-            {esSb ? (
-              // SARBLOCK (decisión del dueño, 23 nov: nombrarlo, como a
-              // MistTrack). El logo es el archivo que entregó el dueño (23
-              // nov), tal cual: ya venía sin fondo. Sus letras son BLANCAS
-              // (está hecho para fondo oscuro) y sobre la hoja blanca no se
-              // verían; recolorearlas sería alterar el logo, así que va sobre
-              // un recuadro oscuro que es su contenedor, no parte del logo.
-              // index.css imprime los fondos (print-color-adjust: exact), y el
-              // color claro del recuadro deja leer el texto alternativo si la
-              // imagen no carga.
-              <div style={{ display: 'inline-block', textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
-                <p style={{ fontSize: 7.5, fontWeight: 700, color: T.suave, margin: 0, letterSpacing: '0.6px' }}>ANÁLISIS ON-CHAIN PROVISTO POR</p>
-                <div style={{ display: 'inline-block', background: '#141615', color: '#F4F4F2', padding: '6px 9px', margin: '4px 0 0', lineHeight: 0 }}>
-                  <img src="/aliados/sarblock.png" alt="SARBLOCK" width={140} height={18}
-                    style={{ width: 140, height: 'auto', display: 'block', fontSize: 11, fontWeight: 800, lineHeight: 1.2 }} />
-                </div>
-                <p style={{ fontSize: 8.5, color: T.suave, margin: '4px 0 0' }}>
-                  Análisis de riesgo de wallets · sarblock.com
-                </p>
-              </div>
-            ) : (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
               <img src="/aliados/misttrack.png" alt="MistTrack" width={32} height={32}
                 style={{ width: 32, height: 32, flexShrink: 0, display: 'block' }} />
@@ -308,7 +291,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 </p>
               </div>
             </div>
-            )}
             <p style={{ fontSize: 9.5, color: T.suave, margin: 0 }}>Generado el {fecha(d.generadoAt)} (hora de Colombia)</p>
             <p style={{ fontSize: 9, color: T.tenue, margin: '2px 0 0' }}>{d.generadoAt ? `${new Date(d.generadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC` : ''}</p>
             {d.empresa && <p style={{ fontSize: 9.5, color: T.suave, margin: '2px 0 0' }}>Solicitado por {d.empresa}</p>}
@@ -319,18 +301,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             MistTrack los saldos del explorador ni nuestro rastreo propio. Y
             "quedó archivado" solo si de verdad quedó. */}
         <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', background: T.fondo, padding: '7px 12px' }}>
-          {esSb ? (
-            <p style={{ fontSize: 9, margin: 0, lineHeight: 1.6 }}>
-              <b>Este reporte está soportado por SARBLOCK.</b> La recomendación, el nivel de riesgo, el
-              puntaje, las señales y los chequeos son los que SARBLOCK devuelve para esta dirección
-              (análisis <span style={{ fontFamily: MONO }}>{sb.analisisId}</span>), sin ajustes de Lincoin.
-              Los saldos y conteos de la cadena salen del explorador público de la red, como se indica en
-              esa sección.{' '}
-              {k?.sha256 && k?.proveedor === 'sarblock'
-                ? 'La respuesta original de SARBLOCK quedó archivada con su huella SHA-256 (ver Constancia del análisis).'
-                : 'La respuesta original de SARBLOCK de esta consulta no quedó archivada (ver Constancia del análisis).'}
-            </p>
-          ) : (
           <p style={{ fontSize: 9, margin: 0, lineHeight: 1.6 }}>
             <b>Este reporte está soportado por MistTrack (SlowMist).</b> El puntaje, el nivel de riesgo, la
             exposición, las etiquetas y las contrapartes son los que MistTrack devuelve para esta dirección,
@@ -340,7 +310,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               ? 'El reporte original de MistTrack quedó archivado con su huella SHA-256 (ver Constancia del análisis).'
               : 'El reporte original de MistTrack de esta consulta no quedó archivado (ver Constancia del análisis).'}
           </p>
-          )}
         </div>
 
         {/* Dirección analizada */}
@@ -364,10 +333,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               ['Red', d.coin],
               ['Entidad de la dirección', entidad ?? 'Sin identificar'],
               ['Sanciones', sancionada ? 'Sí' : 'No'],
-              ...(esSb ? [
-                ['Recomendación', recSb ? `${recSb.titulo} (${sb.recomendacion})` : (sb.recomendacion ?? '—')],
-                ['Redes con movimientos', Array.isArray(sb.redesActivas) && sb.redesActivas.length ? sb.redesActivas.join(', ') : '—'],
-              ] : []),
             ] as [string, string][]).map(([rot, val]) => (
               <tr key={rot}>
                 <td style={{ ...td, width: 150, fontWeight: 700, background: T.fondo, fontSize: 9 }}>{rot}</td>
@@ -383,38 +348,8 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             <p style={{ fontSize: 34, fontWeight: 800, margin: '4px 0 0', lineHeight: 1, color: b.bg === T.fondo ? T.tinta : b.bg }}>{d.puntaje ?? '—'}</p>
             <p style={{ fontSize: 10, fontWeight: 800, margin: '4px 0 0', color: b.bg === T.fondo ? T.tinta : b.bg }}>{nivelEs}</p>
             <p style={{ fontSize: 8, color: T.tenue, margin: '3px 0 0' }}>sobre 100 · del proveedor, sin ajustes</p>
-            {esSb && sb.score?.confidence && <p style={{ fontSize: 8, color: T.suave, margin: '3px 0 0' }}>confianza {confianzaEs(sb.score.confidence)}</p>}
           </div>
           <div style={{ flex: '1 1 300px', padding: '10px 12px' }}>
-            {esSb ? (
-              // La recomendación de SARBLOCK es "el campo para decidir" (su
-              // documentación); el puntaje sirve para mostrar y priorizar.
-              <>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <tbody>
-                    {RECOMENDACIONES_SB.map(r => {
-                      const activo = String(sb.recomendacion ?? '').toUpperCase() === r.codigo;
-                      return (
-                        <tr key={r.codigo} style={{ background: activo ? T.fondo : 'transparent' }}>
-                          <td style={{ ...td, fontSize: 9, fontWeight: 800, width: 90, fontFamily: MONO }}>{activo ? '▸ ' : ''}{r.codigo}</td>
-                          <td style={{ ...td, fontSize: 9, color: activo ? T.tinta : T.suave, fontWeight: activo ? 700 : 400 }}>{r.titulo}. {r.detalle}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                {(sb.score?.floor === 90 || sb.score?.floor === 70) && (
-                  <p style={{ fontSize: 8.5, color: T.suave, margin: '5px 0 0', lineHeight: 1.5 }}>
-                    El puntaje tiene un mínimo de {sb.score.floor} fijado por {sb.score.floor === 90 ? 'una sanción o un congelamiento' : 'un hackeo documentado'}.
-                  </p>
-                )}
-                {sb.degraded && (
-                  <p style={{ fontSize: 8.5, color: T.ambar, margin: '5px 0 0', lineHeight: 1.5 }}>
-                    Parte de la evidencia no se pudo consultar: el resultado es válido, pero menos completo.
-                  </p>
-                )}
-              </>
-            ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <tbody>
                 {ESCALA_RIESGO.map(e => {
@@ -429,46 +364,11 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 })}
               </tbody>
             </table>
-            )}
           </div>
         </div>
 
         <h2 style={H}>Detalle del riesgo</h2>
-        {esSb ? (
-          // Las señales de SARBLOCK, con su código tal cual (el conjunto es
-          // abierto: un código nuevo se ve como llegó), y sus chequeos.
-          <>
-            {Array.isArray(sb.senales) && sb.senales.length ? (
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr>
-                  <th style={th}>SEÑAL</th><th style={th}>CÓDIGO</th><th style={th}>SEVERIDAD</th>
-                  <th style={th}>RED</th><th style={th}>ENTIDAD</th><th style={th}>EXPOSICIÓN (USD)</th>
-                </tr></thead>
-                <tbody>
-                  {sb.senales.map((x: any, i: number) => (
-                    <tr key={i}>
-                      <td style={{ ...td, fontWeight: 700 }}>{senalEs(x.code, x.category)}</td>
-                      <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>{x.code}</td>
-                      <td style={td}>{severidadEs(x.severity)}</td>
-                      <td style={td}>{x.network ?? '—'}</td>
-                      <td style={td}>{x.entity ?? '—'}</td>
-                      <td style={td}>{x.exposureUsd != null ? `USD ${n(x.exposureUsd)}` : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <Vacio>SARBLOCK no reportó señales de riesgo para esta dirección.</Vacio>
-            )}
-            <p style={{ fontSize: 9.5, margin: '6px 0 0', lineHeight: 1.6 }}>
-              <b>Chequeos:</b>{' '}
-              {sb.chequeos?.total != null ? `${sb.chequeos.clean ?? 0} de ${sb.chequeos.total} sin hallazgos` : 'sin dato'}
-              {Array.isArray(sb.chequeos?.flagged) && sb.chequeos.flagged.length ? `; con hallazgos: ${sb.chequeos.flagged.join(', ')}` : ''}.
-              {' '}<b>Exposición a exchanges:</b>{' '}
-              {sb.exposicion?.exchangeSharePct != null ? `${sb.exposicion.exchangeSharePct} % de lo recibido en los últimos 12 meses` : 'sin dato'}.
-            </p>
-          </>
-        ) : ex?.items?.length ? (
+        {ex?.items?.length ? (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>
               <th style={th}>TIPO DE RIESGO</th><th style={th}>ENTIDAD</th>
@@ -537,11 +437,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             El proveedor no analiza contrapartes para este tipo de dirección (la reporta como billetera
             caliente de un servicio). No es una falla de la consulta ni ausencia de actividad.
           </Vacio>
-        ) : esSb ? (
-          <Vacio>
-            SARBLOCK no informa contrapartes por dirección. Las rutas e intermediarios se obtienen con el
-            análisis profundo; {tr ? 'el que se hizo está en las secciones 3 y 4.' : 'no se pidió para este reporte.'}
-          </Vacio>
         ) : <PorQueVacio f={fu?.contrapartes} que="las contrapartes de la dirección" />}
 
         {/* CONSTANCIA: el reporte del proveedor quedó archivado con su huella
@@ -549,30 +444,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             comprobar después que este documento dice lo mismo que él. */}
         <div style={{ marginTop: 12, border: `1px solid ${T.linea}`, padding: '9px 12px', background: T.fondo, breakInside: 'avoid' }}>
           <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: '0 0 4px', letterSpacing: '0.4px' }}>CONSTANCIA DEL ANÁLISIS</p>
-          {esSb ? (
-            <>
-              <p style={{ fontSize: 9.5, margin: 0, lineHeight: 1.6 }}>
-                Consulta a SARBLOCK: <b>{fecha(d.consultadoAt)}</b>
-                {d.consultadoAt ? ` (${new Date(d.consultadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC)` : ''}.
-                {' '}Análisis <b style={{ fontFamily: MONO }}>{sb.analisisId}</b>
-                {sb.walletId ? <> · wallet <span style={{ fontFamily: MONO }}>{sb.walletId}</span></> : null}
-                {sb.completedAt ? <> · terminado el {new Date(sb.completedAt).toISOString().replace('T', ' ').slice(0, 19)} UTC</> : null}.
-                {' '}Se verifica en la plataforma de SARBLOCK con ese id.
-              </p>
-              {k?.sha256 && k?.proveedor === 'sarblock' ? (
-                <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.suave }}>
-                  La respuesta original de SARBLOCK quedó archivada por Lincoin ({fecha(k.archivadoAt)}) con huella SHA-256:{' '}
-                  <span style={{ fontFamily: MONO, color: T.tinta, wordBreak: 'break-all' }}>{k.sha256}</span>.
-                  Se entrega a la autoridad que lo requiera.
-                </p>
-              ) : (
-                <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.tenue, fontStyle: 'italic' }}>
-                  La respuesta original de SARBLOCK no quedó archivada para esta consulta
-                  {d.constanciaMotivo ? <>: {d.constanciaMotivo}.</> : '.'}
-                </p>
-              )}
-            </>
-          ) : (<>
           <p style={{ fontSize: 9.5, margin: 0, lineHeight: 1.6 }}>
             Consulta a MistTrack: <b>{fecha(d.consultadoAt)}</b>
             {d.consultadoAt ? ` (${new Date(fechaProveedor(d.consultadoAt) ?? d.consultadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC)` : ''}.
@@ -594,7 +465,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 : <> (consultas anteriores al 22 de noviembre de 2026 o enlace vencido). Una consulta nueva lo archiva.</>}
             </p>
           )}
-          </>)}
         </div>
 
         {/* Mesa OTC (solo cuando lo abre Cumplimiento desde KYT): quién cargó
@@ -783,17 +653,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           ) : (
             <>No hay detalle de transacciones con contrapartes (ver el motivo en la sección 2).{' '}</>
           )}
-          {/* Con SARBLOCK no hay "vínculos" por saltos: hay señales. Decir "no
-              reportó vínculos" con dos señales arriba (una de OFAC) sería
-              una frase cierta para MistTrack y falsa para este análisis. */}
-          {esSb
-            ? (Array.isArray(sb.senales) && sb.senales.length
-                ? <><span style={{ color: sb.senales.some((x: any) => /HIGH|CRITICAL/i.test(String(x.severity ?? ''))) ? T.rojo : T.tinta, fontWeight: 700 }}>
-                    SARBLOCK reportó {sb.senales.length} {sb.senales.length === 1 ? 'señal de riesgo' : 'señales de riesgo'}:{' '}
-                    {sb.senales.slice(0, 6).map((x: any) => `${senalEs(x.code, x.category)} (severidad ${severidadEs(x.severity)})`).join('; ')}.
-                  </span>{' '}</>
-                : <>SARBLOCK no reportó señales de riesgo{sb.chequeos?.total != null ? ` en los ${sb.chequeos.total} chequeos del análisis` : ''}.{' '}</>)
-            : ex?.items?.length
+          {ex?.items?.length
             ? <>{ex.items.length === 1 ? 'Se identificó' : 'Se identificaron'} <b>{ex.items.length}</b> {ex.items.length === 1 ? 'vínculo' : 'vínculos'} con
                 entidades de riesgo{ex.saltoMinimo != null && ex.saltoMinimo < 99
                   ? `, el más cercano a ${ex.saltoMinimo} ${ex.saltoMinimo === 1 ? 'salto' : 'saltos'}` : ''}.{' '}</>
@@ -812,11 +672,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
           <p style={{ fontSize: 9, fontWeight: 700, color: T.suave, margin: '0 0 5px', letterSpacing: '0.4px' }}>
             QUÉ IMPLICA
           </p>
-          {recSb && (
-            <p style={{ fontSize: 10.5, margin: '0 0 5px', lineHeight: 1.6 }}>
-              Recomendación de SARBLOCK: <b>{recSb.titulo}</b> ({recSb.codigo}). {recSb.detalle}
-            </p>
-          )}
           {escalaActiva && (
             <p style={{ fontSize: 10.5, margin: '0 0 5px', lineHeight: 1.6 }}>
               Operación sugerida por el proveedor para el nivel <b>{escalaActiva.nivel.toLowerCase()}</b> ({escalaActiva.rango}): <b>{escalaActiva.operacion}</b>
@@ -1281,22 +1136,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             Sin esto, quien lee un "entidad sancionada a 3 saltos" en una
             entidad pública tiene que ir a buscar a otro documento qué significa. */}
         <div style={{ marginTop: 22, breakBefore: 'page' }}>
-          {esSb ? (
-            <>
-              <h2 style={{ ...H, marginTop: 0 }}>Anexo 1. Recomendaciones y puntaje de SARBLOCK</h2>
-              {RECOMENDACIONES_SB.map(r => (
-                <p key={r.codigo} style={{ fontSize: 9.5, margin: '0 0 3px', lineHeight: 1.55 }}>
-                  <b style={{ fontFamily: MONO }}>{r.codigo}</b> — <b>{r.titulo}.</b> {r.detalle}
-                </p>
-              ))}
-              <p style={{ fontSize: 9.5, margin: '6px 0 0', lineHeight: 1.6 }}>
-                El puntaje va de 0 a 100 y sube con el riesgo. Tiene un mínimo de 90 cuando una sanción o un
-                congelamiento lo fija, y de 70 con un hackeo documentado. La recomendación es el campo para
-                decidir; el puntaje y las señales sirven para mostrar y priorizar. El análisis cubre todas las
-                redes de la familia de la dirección (EVM o TRON).
-              </p>
-            </>
-          ) : (<>
           <h2 style={{ ...H, marginTop: 0 }}>Anexo 1. Fuentes de riesgo de lavado que identifica MistTrack</h2>
           {FUENTES_RIESGO.map(g => (
             <div key={g.nivel} style={{ breakInside: 'avoid' }}>
@@ -1308,7 +1147,6 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               ))}
             </div>
           ))}
-          </>)}
 
           <h2 style={H}>Anexo 2. Abreviaturas</h2>
           <table style={{ width: '100%', borderCollapse: 'collapse', breakInside: 'avoid' }}>
@@ -1328,7 +1166,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             proviene de un proveedor independiente de analítica on-chain, que no garantiza la validez
             del resultado después de esa fecha ni responde por cambios posteriores en los supuestos o
             por hechos nuevos o no conocidos al momento del análisis. Lincoin presenta ese resultado sin
-            alterarlo —{esSb ? 'recomendación, nivel, puntaje y señales' : 'nivel, puntaje, detalle y contrapartes'}— y conserva {esSb ? 'la respuesta original del análisis' : 'el reporte original del proveedor'} con
+            alterarlo —nivel, puntaje, detalle y contrapartes— y conserva el reporte original del proveedor con
             su huella SHA-256 para que pueda verificarse.
           </p>
         </div>

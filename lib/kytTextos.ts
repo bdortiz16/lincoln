@@ -327,3 +327,82 @@ export function senalEs(code: any, category?: any): string {
   const t = c.replace(/_/g, ' ').toLowerCase();
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
+
+// ── Reporte AML con el diseño del informe de Sarblock (23 nov) ──
+// El dueño pidió que el reporte de Lincoin se viera como el PDF que Sarblock
+// genera en su plataforma. Ese PDF trae más de lo que la API nos entrega (los
+// hallazgos informativos, los puntos de cada hallazgo, las rutas, la fecha de
+// cada lista): acá solo se dice lo que la API devolvió. Las palabras de la
+// escala, la metodología y los chequeos son las del propio informe de
+// Sarblock (metodología v1), no nuestras.
+
+/** La categoría de una señal, como sustantivo para agrupar ("Comportamiento"). */
+const CATEGORIA_SB_NOMBRE: Record<string, string> = {
+  MIXER: 'Mezcladores', BRIDGE: 'Puentes entre redes', SANCTIONS: 'Sanciones', SANCTIONED: 'Sanciones',
+  FROZEN: 'Congelamientos', FREEZE: 'Congelamientos', SCAM: 'Estafas', HACK: 'Hackeos', PHISHING: 'Phishing',
+  RANSOMWARE: 'Ransomware', DARKNET: 'Darknet', GAMBLING: 'Apuestas', EXCHANGE: 'Exchanges',
+  TERRORISM: 'Financiación del terrorismo', BEHAVIOR: 'Comportamiento', BEHAVIOUR: 'Comportamiento',
+  PROFILE: 'Perfil de la wallet',
+};
+export function categoriaSbEs(cat: any): string {
+  const c = String(cat ?? '').toUpperCase().trim();
+  if (!c) return 'Sin categoría';
+  if (CATEGORIA_SB_NOMBRE[c]) return CATEGORIA_SB_NOMBRE[c];
+  const t = c.replace(/_/g, ' ').toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/** Qué quiere decir una señal. Solo para los códigos que conocemos de la
+ *  documentación; uno nuevo se explica por su categoría, sin inventarle un
+ *  significado. */
+export function descripcionSenalSb(code: any, category?: any): string {
+  const c = String(code ?? '').toUpperCase();
+  const cat = String(category ?? '').toUpperCase();
+  if (c === 'SANCTIONED_OFAC') return 'La dirección figura en la lista de sanciones de OFAC (Departamento del Tesoro de EE. UU.).';
+  if (/^SANCTION/.test(c)) return 'La dirección figura en una lista oficial de sanciones.';
+  if (c === 'MIXER_INTERACTION') return 'La wallet movió fondos con un mezclador, un servicio que junta fondos de muchas personas para ocultar su origen.';
+  if (/_INTERACTION$/.test(c)) return `La wallet movió fondos con ${CATEGORIA_SB[c.replace(/_INTERACTION$/, '')] ?? CATEGORIA_SB[cat] ?? 'una contraparte de riesgo'}.`;
+  if (cat && CATEGORIA_SB_NOMBRE[cat]) return `Hallazgo de la categoría «${CATEGORIA_SB_NOMBRE[cat]}».`;
+  return 'Hallazgo reportado por SARBLOCK con este código.';
+}
+
+/** La conclusión de la portada, según la recomendación (el campo para decidir). */
+export function conclusionSb(codigo: any): string {
+  const c = String(codigo ?? '').toUpperCase();
+  return c === 'CLEAR' ? 'Se puede operar' : c === 'MONITOR' ? 'Operar con vigilancia'
+    : c === 'REVIEW' ? 'Revisar antes de operar' : c === 'BLOCK' ? 'No operar' : 'Sin recomendación';
+}
+
+/** La escala del puntaje, como la publica el informe de Sarblock (metodología v1). */
+export const ESCALA_SB: { level: string; nombre: string; rango: string }[] = [
+  { level: 'LOW', nombre: 'Bajo', rango: '1–49' },
+  { level: 'MEDIUM', nombre: 'Medio', rango: '50–69' },
+  { level: 'HIGH', nombre: 'Alto', rango: '70–84' },
+  { level: 'EXTREME', nombre: 'Extremo', rango: '85–100' },
+];
+
+/** Los chequeos que corre el análisis, con los nombres y fuentes del informe
+ *  de Sarblock. La API solo nombra los que tuvieron hallazgos (`flagged`) y
+ *  cuenta el resto: la lista completa se arma SOLO si son 7 y cada nombre
+ *  marcado coincide sin duda con uno de estos; si no, se muestra lo que vino. */
+export const CHEQUEOS_SB: { nombre: string; fuente: string; alias: string[] }[] = [
+  { nombre: 'Sanciones de OFAC', fuente: 'OFAC · Departamento del Tesoro de EE. UU.', alias: ['sanciones de ofac', 'ofac'] },
+  { nombre: 'Otras listas de sanciones', fuente: 'Listas oficiales de sanciones', alias: ['otras listas de sanciones'] },
+  { nombre: 'Mezcladores y puentes', fuente: 'Contratos de servicios identificados', alias: ['mezcladores y puentes', 'mixers y puentes'] },
+  { nombre: 'Perfil de la wallet', fuente: 'Análisis del historial de la wallet', alias: ['perfil de la wallet'] },
+  { nombre: 'Congelamientos del emisor', fuente: 'Tether y Circle', alias: ['congelamientos del emisor'] },
+  { nombre: 'Estafas, hackeos y listas de terceros', fuente: 'ScamSniffer, MyEtherWallet, FBI IC3, NBCTF de Israel y hackeos documentados', alias: ['estafas, hackeos y listas de terceros', 'estafas hackeos y listas de terceros'] },
+  { nombre: 'Patrones de comportamiento', fuente: 'Análisis del historial de la wallet', alias: ['patrones de comportamiento'] },
+];
+const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+export function chequeosSb(ch: any): { completa: boolean; filas: { nombre: string; fuente: string | null; conHallazgo: boolean }[] } {
+  const marcados: string[] = Array.isArray(ch?.flagged) ? ch.flagged.map((x: any) => String(x)) : [];
+  const idx = marcados.map(m => CHEQUEOS_SB.findIndex(c => c.alias.some(a => sinTildes(a) === sinTildes(m))));
+  if (Number(ch?.total) === CHEQUEOS_SB.length && idx.every(i => i >= 0) && new Set(idx).size === idx.length) {
+    return { completa: true, filas: CHEQUEOS_SB.map((c, i) => ({ nombre: c.nombre, fuente: c.fuente, conHallazgo: idx.includes(i) })) };
+  }
+  return {
+    completa: false,
+    filas: marcados.map(m => ({ nombre: m.charAt(0).toUpperCase() + m.slice(1), fuente: null, conHallazgo: true })),
+  };
+}
