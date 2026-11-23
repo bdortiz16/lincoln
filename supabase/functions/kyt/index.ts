@@ -1173,7 +1173,9 @@ function motivoArchivo(m: string): string {
   if (m === 'sin_enlace') return 'MistTrack no devolvió el enlace a su reporte PDF en esta consulta'
   if (m === 'enlace_invalido') return 'el enlace al reporte que devolvió MistTrack no es válido'
   if (m === 'host_no_permitido') return 'el enlace al reporte no es del dominio de archivos de MistTrack'
-  if (/^HTTP \d+/.test(m)) return `MistTrack respondió ${m} al descargar el PDF (el enlace puede haber vencido)`
+  if (m === 'HTTP 401' || m === 'HTTP 403') return `MistTrack rechazó la descarga del PDF (${m})`
+  if (m === 'HTTP 404' || m === 'HTTP 410') return `el enlace al PDF ya no existe en MistTrack (${m}): puede haber vencido`
+  if (/^HTTP \d+/.test(m)) return `MistTrack respondió ${m} al descargar el PDF`
   if (m === 'no_es_pdf') return 'lo que se descargó no era un PDF'
   if (m === 'bucket') return 'no se pudo crear el almacenamiento privado de reportes'
   if (m.startsWith('subida: ')) return `no se pudo guardar el archivo (${m.slice(8)})`
@@ -1195,16 +1197,59 @@ async function archivarReporteProveedor(c: Config, coin: string, dir: string, re
     return await falla('host_no_permitido', { host: u.host })
   }
   try {
-    const ctrl = new AbortController()
-    const reloj = setTimeout(() => ctrl.abort(), 15000)
-    const r = await fetch(u.toString(), { signal: ctrl.signal })
-    clearTimeout(reloj)
-    const bytes = new Uint8Array(await r.arrayBuffer())
-    // Tiene que ser un PDF de verdad: una página de error guardada como
-    // "evidencia" sería peor que no guardar nada.
-    const esPdf = bytes.length > 1000 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46
-    if (!r.ok || !esPdf) {
-      return await falla(!r.ok ? `HTTP ${r.status}` : 'no_es_pdf', { bytes: bytes.length })
+    // 23 nov: las descargas de dos consultas recién hechas dieron HTTP 403,
+    // segundos después de recibir el enlace (no era que hubiera vencido). Lo
+    // más probable es que el host de archivos rechace a un cliente que no se
+    // presenta como navegador (el fetch de Deno se anuncia como "Deno/x"), o
+    // que pida la llave como la API. Se intenta en ese orden, y lo que
+    // contestó el servidor en cada intento queda en audit_log: la próxima
+    // falla se diagnostica leyendo, no adivinando.
+    const intentos: { nombre: string; url: string }[] = [{ nombre: 'navegador', url: u.toString() }]
+    if (MT_KEY) {
+      // Al mismo proveedor y por el mismo medio que la API (api_key en la
+      // URL, como dice su documentación); a ningún otro host.
+      const u2 = new URL(u.toString())
+      u2.searchParams.set('api_key', MT_KEY)
+      intentos.push({ nombre: 'con_llave', url: u2.toString() })
+    }
+    // Lo que contestó el servidor, sin el token del enlace ni la llave.
+    const legible = (b: Uint8Array) => {
+      let t = ''
+      try { t = new TextDecoder().decode(b.slice(0, 600)) } catch { t = '' }
+      if (MT_KEY) t = t.split(MT_KEY).join('***')
+      return t.replace(/token=[^&\s"'<]+/gi, 'token=***').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
+    }
+    let r: Response | null = null
+    let bytes = new Uint8Array()
+    let esPdf = false
+    const diagnostico: Record<string, unknown>[] = []
+    for (const it of intentos) {
+      const ctrl = new AbortController()
+      const reloj = setTimeout(() => ctrl.abort(), 15000)
+      try {
+        r = await fetch(it.url, {
+          signal: ctrl.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36',
+            Accept: 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+          },
+        })
+        bytes = new Uint8Array(await r.arrayBuffer())
+      } finally { clearTimeout(reloj) }
+      // Tiene que ser un PDF de verdad: una página de error guardada como
+      // "evidencia" sería peor que no guardar nada.
+      esPdf = bytes.length > 1000 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46
+      if (r.ok && esPdf) break
+      diagnostico.push({
+        intento: it.nombre, status: r.status,
+        servidor: r.headers.get('server'), tipo: r.headers.get('content-type'),
+        bytes: bytes.length, respuesta: legible(bytes),
+      })
+      // Solo se reintenta un rechazo de acceso: un 404 no se arregla con la llave.
+      if (r.status !== 401 && r.status !== 403) break
+    }
+    if (!r || !r.ok || !esPdf) {
+      return await falla(!r ? 'sin_respuesta' : !r.ok ? `HTTP ${r.status}` : 'no_es_pdf', { diagnostico })
     }
     if (!(await asegurarBucketReportes())) {
       return await falla('bucket')
@@ -2430,13 +2475,22 @@ Deno.serve(async (req) => {
       }
       // La última vez que NO se pudo archivar, con su motivo: sin esto,
       // "0 copias" no dice si nunca se intentó o si falla siempre igual.
-      let ultimoFallo: { at: string; motivo: string } | null = null
+      let ultimoFallo: { at: string; motivo: string; detalle?: string | null } | null = null
       if (!copias.length || motivo) {
+        // (se lee después de archivar, así que incluye el intento de recién)
         const { data: fl } = await db.from('audit_log').select('metadata, created_at')
           .eq('action', 'kyt.reporte_proveedor_fallo').eq('metadata->>addressLower', dir.toLowerCase())
           .order('created_at', { ascending: false }).limit(1)
         const x = (fl ?? [])[0] as any
-        if (x) ultimoFallo = { at: x.created_at, motivo: motivoArchivo(String(x.metadata?.motivo ?? '')) }
+        if (x) {
+          const dg: any[] = Array.isArray(x.metadata?.diagnostico) ? x.metadata.diagnostico : []
+          ultimoFallo = {
+            at: x.created_at, motivo: motivoArchivo(String(x.metadata?.motivo ?? '')),
+            // Lo que contestó el servidor de MistTrack en cada intento (sin
+            // token ni llave). Es para el dueño en el panel, no para clientes.
+            detalle: dg.map(d => `${d.intento}: HTTP ${d.status}${d.servidor ? ` · ${d.servidor}` : ''}${d.respuesta ? ` · «${d.respuesta}»` : ''}`).join(' | ') || null,
+          }
+        }
       }
       await logAuditKyt(yo.userId, 'kyt.reporte_proveedor_descarga', { coin, addressLower: dir.toLowerCase(), copias: copias.length, archivadoAhora: !!nueva })
       return json({ ok: true, coin, address: dir, copias, archivadoAhora: !!nueva, motivo, ultimoFallo })

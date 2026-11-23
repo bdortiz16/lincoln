@@ -373,6 +373,13 @@ const PdfProveedor: React.FC = () => {
                 : <>Último intento fallido ({fechaHora(res.ultimoFallo.at)}): {res.ultimoFallo.motivo}.</>}
             </p>
           )}
+          {/* Lo que contestó el servidor de MistTrack, tal cual (sin token ni
+              llave): con esto se le puede escribir a su soporte. */}
+          {res.ultimoFallo?.detalle && (
+            <p style={{ fontSize: 11, color: C.sub, marginTop: 4, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}>
+              {res.ultimoFallo.detalle}
+            </p>
+          )}
         </div>
       )}
     </div>
