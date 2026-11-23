@@ -272,3 +272,58 @@ export const flujoRuta = (r: any): string | null =>
   Array.isArray(r?.nodos) ? sentidoNorm(r.flujo)
     : (r?.intermediarios?.length || r?.intermediario) ? null
     : sentidoNorm(r?.flujo);
+
+// ── Sarblock (desde el 23 nov, la consulta normal de EVM y TRON) ──
+// Las palabras salen de su documentación (docs.sarblock.com/reference/
+// wallets): la recomendación es "el campo para decidir", y el puntaje y las
+// señales sirven para mostrar y priorizar. No se traducen a la escala de
+// MistTrack: son dos proveedores con dos escalas, y mezclarlas sería decir
+// de uno lo que dijo el otro.
+
+/** Qué hacer, según la recomendación de Sarblock (su tabla, en orden). */
+export const RECOMENDACIONES_SB: { codigo: string; titulo: string; detalle: string }[] = [
+  { codigo: 'CLEAR', titulo: 'Sin hallazgos que lo impidan', detalle: 'Se puede operar con esta dirección.' },
+  { codigo: 'MONITOR', titulo: 'Operar con vigilancia', detalle: 'Sigue, pero con seguimiento de sus movimientos.' },
+  { codigo: 'REVIEW', titulo: 'Revisión de cumplimiento', detalle: 'Que una persona de cumplimiento la revise antes de operar con esa dirección.' },
+  { codigo: 'BLOCK', titulo: 'No operar', detalle: 'Hay una sanción o un hallazgo crítico.' },
+];
+export const recomendacionSb = (codigo: any) =>
+  RECOMENDACIONES_SB.find(r => r.codigo === String(codigo ?? '').toUpperCase()) ?? null;
+
+/** Nivel de riesgo de Sarblock (riskLevel), en palabras. */
+export function nivelSarblockEs(nivel: any): string {
+  const l = String(nivel ?? '').toUpperCase();
+  return l === 'NONE' ? 'Sin riesgo' : l === 'LOW' ? 'Bajo' : l === 'MEDIUM' ? 'Medio'
+    : l === 'HIGH' ? 'Alto' : l === 'CRITICAL' ? 'Crítico' : l === 'EXTREME' ? 'Extremo' : 'Sin clasificar';
+}
+export const severidadEs = (s: any): string => {
+  const l = String(s ?? '').toUpperCase();
+  return l === 'LOW' ? 'baja' : l === 'MEDIUM' ? 'media' : l === 'HIGH' ? 'alta' : l === 'CRITICAL' ? 'crítica' : (l ? l.toLowerCase() : '—');
+};
+export const confianzaEs = (s: any): string => {
+  const l = String(s ?? '').toUpperCase();
+  return l === 'HIGH' ? 'alta' : l === 'MEDIUM' ? 'media' : l === 'LOW' ? 'baja' : '—';
+};
+
+// Las señales: el conjunto de códigos de Sarblock es ABIERTO (pueden
+// aparecer nuevos). Se traducen los que conocemos por su forma, y uno nuevo
+// se muestra con su código tal cual, legible, en vez de esconderlo.
+const CATEGORIA_SB: Record<string, string> = {
+  MIXER: 'un mezclador', SANCTIONS: 'una entidad sancionada', SANCTIONED: 'una entidad sancionada',
+  GAMBLING: 'apuestas', DARKNET: 'un mercado de la darknet', SCAM: 'una estafa', HACK: 'un hackeo',
+  RANSOMWARE: 'ransomware', BRIDGE: 'un puente entre redes', EXCHANGE: 'un exchange',
+  TERRORISM: 'financiación del terrorismo', FROZEN: 'fondos congelados', PHISHING: 'phishing',
+};
+export function senalEs(code: any, category?: any): string {
+  const c = String(code ?? '').toUpperCase().trim();
+  if (!c) return 'Señal sin código';
+  const san = c.match(/^SANCTION(?:ED)?_?(.*)$/);
+  if (san) return `Dirección sancionada${san[1] ? ` (${san[1].replace(/_/g, ' ')})` : ''}`;
+  const inter = c.match(/^(.+?)_INTERACTION$/);
+  if (inter) {
+    const q = CATEGORIA_SB[inter[1]] ?? CATEGORIA_SB[String(category ?? '').toUpperCase()] ?? inter[1].replace(/_/g, ' ').toLowerCase();
+    return `Interacción con ${q}`;
+  }
+  const t = c.replace(/_/g, ' ').toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}

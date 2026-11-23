@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Eye, EyeOff, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
-import { hallazgosEnEspanol, bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, caminoDe, flujoRuta } from '../lib/kytTextos';
+import { hallazgosEnEspanol, bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, caminoDe, flujoRuta, recomendacionSb, nivelSarblockEs, severidadEs, confianzaEs, senalEs } from '../lib/kytTextos';
 import { KytReporte } from './KytReporte';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -351,6 +351,103 @@ const Mini: React.FC<{ label: string; children: React.ReactNode }> = ({ label, c
   </div>
 );
 
+// ── El resultado cuando lo hizo Sarblock (desde el 23 nov, EVM y TRON) ──
+// Sarblock no trae caminos por saltos ni contrapartes: trae una
+// recomendación ("el campo para decidir", según su documentación), un
+// puntaje, señales y chequeos. Se muestra eso, con sus palabras, y no se
+// rellena lo que no dio. El análisis profundo (rutas) se pide aparte.
+const TONO_REC: Record<string, typeof VERDE> = { CLEAR: VERDE, MONITOR: AMBAR, REVIEW: AMBAR, BLOCK: ROJO };
+const ResultadoSarblock: React.FC<{
+  sb: any; cadena: any; rastreando: boolean; conRutas: boolean; onProfundo: () => void;
+}> = ({ sb, cadena, rastreando, conRutas, onProfundo }) => {
+  const rec = recomendacionSb(sb?.recomendacion);
+  const t = TONO_REC[String(sb?.recomendacion ?? '')] ?? NEUTRO;
+  const senales: any[] = Array.isArray(sb?.senales) ? sb.senales : [];
+  const ch = sb?.chequeos ?? {};
+  const fecha = (v: any) => { const d = v ? new Date(v) : null; return d && !isNaN(d.getTime()) ? d : null; };
+  return (
+    <>
+      <div style={{ marginBottom: 14, border: `1px solid ${t.b}`, background: t.f, borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
+          <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: '0 0 4px' }}>RECOMENDACIÓN DEL PROVEEDOR</p>
+          <p style={{ fontSize: 15, fontWeight: 800, color: t.c, margin: 0 }}>
+            {rec ? rec.titulo : 'Sin recomendación'}
+            {sb?.recomendacion && <span style={{ fontFamily: MONO, fontSize: 11, color: C.sub, fontWeight: 600, marginLeft: 8 }}>{sb.recomendacion}</span>}
+          </p>
+          {rec && <p style={{ fontSize: 12.5, color: C.text, margin: '3px 0 0', lineHeight: 1.55 }}>{rec.detalle}</p>}
+          {sb?.degraded && (
+            <p style={{ fontSize: 11.5, color: AMBAR.c, margin: '6px 0 0', lineHeight: 1.55 }}>
+              Parte de la evidencia no se pudo consultar: el resultado es válido, pero menos completo.
+            </p>
+          )}
+        </div>
+        {senales.length ? senales.map((x: any, i: number) => (
+          <div key={i} style={{ padding: '10px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
+            <p style={{ fontSize: 12.5, fontWeight: 700, margin: 0 }}>
+              {senalEs(x.code, x.category)}
+              <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.sub, fontWeight: 600, marginLeft: 8 }}>{x.code}</span>
+            </p>
+            <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.5 }}>
+              {[
+                x.severity ? `severidad ${severidadEs(x.severity)}` : null,
+                x.network ? `red ${x.network}` : null,
+                x.entity ? `entidad ${x.entity}` : null,
+                x.exposureUsd != null ? `exposición USD ${Number(x.exposureUsd).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : null,
+              ].filter(Boolean).join(' · ') || 'sin más detalle'}
+            </p>
+          </div>
+        )) : (
+          <p style={{ fontSize: 12.5, color: C.sub, margin: 0, padding: '11px 15px', lineHeight: 1.55 }}>
+            Sin señales de riesgo{ch.total != null ? ` en los ${ch.total} chequeos que corre el análisis` : ''}. No es una garantía: una dirección limpia hoy puede aparecer señalada mañana.
+          </p>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+        <Mini label="PUNTAJE">
+          {sb?.score?.value != null ? `${sb.score.value} / 100` : 'sin puntaje'}
+          {sb?.riskLevel ? ` · nivel ${nivelSarblockEs(sb.riskLevel).toLowerCase()}` : ''}
+          {sb?.score?.confidence ? ` · confianza ${confianzaEs(sb.score.confidence)}` : ''}
+          {sb?.score?.floor === 90 ? ' · mínimo 90 por una sanción o un congelamiento' : sb?.score?.floor === 70 ? ' · mínimo 70 por un hackeo documentado' : ''}
+        </Mini>
+        <Mini label="CHEQUEOS">
+          {ch.total != null ? `${ch.clean ?? 0} de ${ch.total} sin hallazgos` : 'sin dato'}
+          {Array.isArray(ch.flagged) && ch.flagged.length ? ` · con hallazgos: ${ch.flagged.join(', ')}` : ''}
+        </Mini>
+        <Mini label="EXPOSICIÓN A EXCHANGES">
+          {sb?.exposicion?.exchangeSharePct != null
+            ? `${sb.exposicion.exchangeSharePct} % de lo recibido en los últimos 12 meses vino de exchanges`
+            : <span style={{ color: C.sub }}>El proveedor no lo sabe para esta dirección.</span>}
+        </Mini>
+        <Mini label="ACTIVIDAD">
+          {[
+            Array.isArray(sb?.redesActivas) && sb.redesActivas.length ? `Movimientos en ${sb.redesActivas.join(', ')}` : null,
+            cadena?.transacciones != null ? `${Number(cadena.transacciones).toLocaleString('es-CO')} transacciones` : null,
+            fecha(cadena?.creada) ? `activa desde ${fecha(cadena.creada)!.getFullYear()}` : null,
+            fecha(cadena?.ultimaActividad) ? `último mov. ${hace(cadena.ultimaActividad)}` : null,
+          ].filter(Boolean).join(' · ') || <span style={{ color: C.sub }}>Sin datos de actividad.</span>}
+        </Mini>
+      </div>
+
+      {/* El análisis profundo: rutas por saltos e intermediarios. Lo hace
+          otro proveedor y se paga por contraparte, por eso no va en cada
+          consulta: se pide cuando hace falta. */}
+      {!conRutas && (
+        <div className="flex items-center justify-between flex-wrap" style={{ gap: 10, marginTop: 12, border: `1px solid ${C.bdSoft}`, borderRadius: 11, padding: '11px 15px' }}>
+          <p style={{ fontSize: 12, color: C.sub, margin: 0, lineHeight: 1.55, flex: '1 1 320px' }}>
+            <b style={{ color: C.text, fontWeight: 700 }}>Análisis profundo.</b> Rastrea las rutas por saltos hacia
+            entidades señaladas y los intermediarios, con otro proveedor de analítica. Usa varias consultas de tu tope diario.
+          </p>
+          <button onClick={onProfundo} disabled={rastreando}
+            style={{ fontFamily: FONT, fontSize: 12, fontWeight: 700, color: C.text, background: 'rgba(255,255,255,0.06)', border: `1px solid ${C.bdHard}`, borderRadius: 8, padding: '7px 12px', cursor: rastreando ? 'default' : 'pointer', opacity: rastreando ? 0.5 : 1, whiteSpace: 'nowrap' }}>
+            {rastreando ? 'Rastreando…' : 'Rastrear intermediarios'}
+          </button>
+        </div>
+      )}
+    </>
+  );
+};
+
 type Res = any;
 type Fila = any;
 
@@ -418,7 +515,14 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
     }
     setBusy(true); setRes(null); setRutas(null);
     try {
-      const r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
+      let r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
+      // El análisis del proveedor puede tardar más que la espera del
+      // servidor. Volver a pedirlo devuelve el mismo análisis y no se cobra
+      // otra vez, así que se reintenta solo dos veces antes de decir "en curso".
+      for (let i = 0; i < 2 && r?.error === 'en_curso'; i++) {
+        await new Promise(ok => setTimeout(ok, 6000));
+        r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
+      }
       setRes(r ? conLectura(r) : { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
     } catch {
       setRes({ ok: false, error: 'red', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
@@ -459,9 +563,12 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   // encima del puntaje del proveedor, el número va aparte y con dueño.
   // El nivel con el nombre que le da el proveedor (Bajo, Moderado, Alto,
   // Severo): el mismo que dice su reporte. Ver bandaDeRiesgo en kytTextos.
-  const nivelTexto = (cat?: string, nivel?: string | null) => {
-    const n = nivelProveedorEs(nivel, cat);
-    return n === 'Sin clasificar' ? n : `Riesgo ${n.toLowerCase()}`;
+  const nivelTexto = (cat?: string, nivel?: string | null, proveedor?: string) => {
+    // Cada proveedor con su escala: Sarblock dice Medio o Crítico donde
+    // MistTrack dice Moderado o Severo. Traducir uno a la del otro sería
+    // poner en su boca una palabra que no usó.
+    const n = proveedor === 'sarblock' ? nivelSarblockEs(nivel) : nivelProveedorEs(nivel, cat);
+    return n === 'Sin clasificar' ? n : n === 'Sin riesgo' ? n : `Riesgo ${n.toLowerCase()}`;
   };
 
   const btnFiltro = (k: typeof filtro, t: string) => (
@@ -550,6 +657,8 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
             <div>
               <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
                 {res.error === 'sin_credencial' ? 'El servicio no está habilitado todavía'
+                  : res.error === 'en_curso' ? 'El análisis sigue en curso'
+                  : res.error === 'servicio' ? 'La verificación no está disponible ahora'
                   : res.error === 'tope_diario' ? 'Llegaste al tope de consultas de hoy'
                   : res.error === 'formato_red' ? 'La dirección no coincide con la red'
                   : 'Sin resultado'}
@@ -574,7 +683,7 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               <Insignia v={res.coin} size={24} />
               <div style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
-                  {nivelTexto(res.categoria, res.nivel)}
+                  {nivelTexto(res.categoria, res.nivel, res.proveedor)}
                   {res.puntaje != null && (
                     <span style={{ color: C.sub, fontWeight: 600 }}> · {res.puntaje} / 100</span>
                   )}
@@ -583,7 +692,10 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                     proveedor ("Address Entity", "Sanctions"). */}
                 <p style={{ fontSize: 12, color: C.sub, margin: '3px 0 0', lineHeight: 1.45 }}>
                   Entidad: <b style={{ color: C.text, fontWeight: 700 }}>{res.etiquetaProveedor || textos(res.etiquetas, 1)[0] || 'sin identificar'}</b>
-                  {' · '}Sanciones: <b style={{ color: sancionadaPorProveedor(res.detalle, res.hallazgos) ? ROJO.c : C.text, fontWeight: 700 }}>{sancionadaPorProveedor(res.detalle, res.hallazgos) ? 'Sí' : 'No'}</b>
+                  {(() => {
+                    const sanc = res.proveedor === 'sarblock' ? !!res.sarblock?.sancionada : sancionadaPorProveedor(res.detalle, res.hallazgos);
+                    return <>{' · '}Sanciones: <b style={{ color: sanc ? ROJO.c : C.text, fontWeight: 700 }}>{sanc ? 'Sí' : 'No'}</b></>;
+                  })()}
                 </p>
                 {/* Dos líneas cortas en vez de una larga que en el celular se
                     partía en cuatro renglones. */}
@@ -680,7 +792,18 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
 
               Ahora manda el señalamiento directo, y el aviso de "sin rutas"
               SOLO aparece cuando la dirección tampoco está señalada. */}
-          {(() => {
+          {res.proveedor === 'sarblock' && res.sarblock && (
+            <ResultadoSarblock
+              sb={res.sarblock} cadena={res.cadena} rastreando={rastreando} conRutas={!!rutas}
+              onProfundo={async () => {
+                setRastreando(true);
+                const r = await llamarFuncion('kyt', { action: 'rutas', coin: res.coin, address: res.address }, 90000).catch(() => null);
+                setRastreando(false);
+                if (r?.ok) setRutas(r); else alert(r?.mensaje ?? 'No pudimos rastrear las rutas.');
+              }}
+            />
+          )}
+          {res.proveedor !== 'sarblock' && (() => {
             // Lo que el proveedor dice de la dirección MISMA va separado de
             // con quién interactuó. "Interact With High-risk Tag Address" en
             // una dirección de Binance con puntaje 3 salía como "señalada
@@ -958,7 +1081,7 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+          {res.proveedor !== 'sarblock' && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             {/* EL POR QUÉ, con la estructura real del proveedor.
                 `detail_list` es la descripción del riesgo en texto y
                 `hacking_event` el incidente asociado; antes se leía risk_detail
@@ -1004,7 +1127,7 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   ].filter(Boolean).join(' · ')
                 : <span style={{ color: C.sub }}>El proveedor no devolvió la actividad de la dirección.</span>}
             </Mini>
-          </div>
+          </div>}
 
           {/* ── El detalle entidad por entidad ──
               Esto es lo que de verdad explica un puntaje alto: CON QUIÉN está
@@ -1076,9 +1199,11 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
               mostrar, después, que lo que dijimos es lo que dijo él. */}
           {res.constancia && (
             <p style={{ fontSize: 11.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.6 }}>
-              <b style={{ color: C.text, fontWeight: 700 }}>Constancia:</b> reporte del proveedor archivado el{' '}
+              <b style={{ color: C.text, fontWeight: 700 }}>Constancia:</b>{' '}
+              {res.constancia.proveedor === 'sarblock' ? 'respuesta del análisis del proveedor archivada el' : 'reporte del proveedor archivado el'}{' '}
               {new Date(res.constancia.archivadoAt).toLocaleString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
               {' · '}huella SHA-256 <span style={{ fontFamily: MONO }}>{String(res.constancia.sha256 ?? '').slice(0, 16)}…</span>
+              {res.constancia.analisisId ? <> · análisis <span style={{ fontFamily: MONO }}>{res.constancia.analisisId}</span></> : null}
               {res.constancia.str?.at ? <> · registrado por el proveedor el {res.constancia.str.at} UTC{res.constancia.str.puntaje != null ? ` con puntaje ${res.constancia.str.puntaje}` : ''}{res.constancia.str.nivel ? ` (${nivelProveedorEs(res.constancia.str.nivel).toLowerCase()})` : ''}</> : null}
             </p>
           )}

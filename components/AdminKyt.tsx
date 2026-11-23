@@ -153,6 +153,56 @@ const ReglasOtc: React.FC<{ config: any; onGuardado: (c: any) => void }> = ({ co
   );
 };
 
+// ── Quién analiza las wallets ────────────────────────────────
+// 23 nov: Sarblock para EVM y TRON (1 crédito por análisis; MistTrack cobraba
+// cada llamada). Desde acá se vuelve a MistTrack sin desplegar, por si
+// Sarblock se cae o se queda sin créditos. Las redes que Sarblock no analiza
+// (BTC, SOL, TON…) y el análisis profundo van a MistTrack siempre.
+const ProveedorWallets: React.FC<{ estado: any; onGuardado: (c: any) => void }> = ({ estado, onGuardado }) => {
+  const actual: 'sarblock' | 'misttrack' = estado?.config?.proveedorWallets === 'misttrack' ? 'misttrack' : 'sarblock';
+  const [ocupado, setOcupado] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
+  const cambiar = async (v: 'sarblock' | 'misttrack') => {
+    if (v === actual) return;
+    if (v === 'misttrack' && !window.confirm('Con MistTrack cada consulta cuesta varias llamadas pagadas. ¿Pasar EVM y TRON a MistTrack?')) return;
+    setOcupado(true); setMsg(null);
+    const r = await llamarFuncion('kyt', { action: 'config_set', config: { proveedorWallets: v } }, 20000).catch(() => null);
+    setOcupado(false);
+    if (r?.ok) { setMsg({ ok: true, t: 'Guardado.' }); onGuardado(r.config); }
+    else setMsg({ ok: false, t: r?.mensaje ?? r?.error ?? 'No se pudo guardar.' });
+  };
+  const opcion = (v: 'sarblock' | 'misttrack', t: string, d: string) => (
+    <button onClick={() => cambiar(v)} disabled={ocupado}
+      style={{ ...BTN2, flex: '1 1 200px', flexDirection: 'column', alignItems: 'flex-start', gap: 3, textAlign: 'left',
+        border: actual === v ? `1px solid ${C.verde}` : BTN2.border, opacity: ocupado ? 0.5 : 1 }}>
+      <span style={{ fontSize: 13, fontWeight: 800, color: actual === v ? C.verde : C.texto }}>{actual === v ? '● ' : ''}{t}</span>
+      <span style={{ fontSize: 11, color: C.sub, fontWeight: 500, lineHeight: 1.45 }}>{d}</span>
+    </button>
+  );
+  return (
+    <div style={TARJ}>
+      <p style={{ fontSize: 15, fontWeight: 800, color: C.texto }}>Proveedor de las consultas (EVM y TRON)</p>
+      <p style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
+        La consulta normal, el monitoreo diario y la mesa OTC. BTC, SOL, TON y las demás redes que Sarblock
+        no analiza van siempre a MistTrack, igual que «Rastrear intermediarios».
+      </p>
+      {!estado?.sarblockListo && (
+        <p style={{ fontSize: 12, color: C.ambar, marginTop: 8, lineHeight: 1.5 }}>
+          Falta SARBLOCK_ORG_API_KEY en los secrets de Supabase: mientras tanto todo va a MistTrack.
+        </p>
+      )}
+      <div className="flex flex-wrap" style={{ gap: 8, marginTop: 12 }}>
+        {opcion('sarblock', 'Sarblock', '1 crédito por análisis; repetir la dirección en 24 h no se cobra.')}
+        {opcion('misttrack', 'MistTrack', 'Varias llamadas pagadas por consulta. Para volver atrás si Sarblock falla.')}
+      </div>
+      <p style={{ fontSize: 11, color: C.tenue, marginTop: 8, lineHeight: 1.5 }}>
+        La llave de Sarblock necesita los permisos wallets:analyze y wallets:read (se dan en Sarblock).
+      </p>
+      {msg && <p style={{ fontSize: 12, color: msg.ok ? C.verde : C.rojo, marginTop: 8 }}>{msg.t}</p>}
+    </div>
+  );
+};
+
 // ── Registro para Cumplimiento ───────────────────────────────
 const Registro: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onAbrirCliente }) => {
   const [dias, setDias] = useState(30);
@@ -330,11 +380,12 @@ const PdfProveedor: React.FC = () => {
   };
   return (
     <div style={TARJ}>
-      <p style={{ fontSize: 14, fontWeight: 800, color: C.texto }}>PDF original de MistTrack</p>
+      <p style={{ fontSize: 14, fontWeight: 800, color: C.texto }}>Respaldo original del proveedor</p>
       <p style={{ fontSize: 12, color: C.sub, marginTop: 4, lineHeight: 1.55 }}>
-        Las copias archivadas del reporte del proveedor para una dirección, con su huella SHA-256 y el
-        registro de la consulta en MistTrack. Se archiva solo en cada consulta desde el 22 nov; para
-        una consulta anterior, «Archivar ahora» lo descarga si el enlace sigue vigente.
+        Las copias archivadas para una dirección, con su huella SHA-256: el PDF de MistTrack (con el
+        registro de la consulta en MistTrack) o la respuesta del análisis de Sarblock (con su id, que se
+        verifica en su plataforma). Se archiva solo en cada consulta; «Archivar ahora» lo vuelve a
+        descargar si el enlace de MistTrack sigue vigente, o relee el análisis de Sarblock (gratis).
       </p>
       <div className="flex flex-wrap items-center" style={{ gap: 8, marginTop: 12 }}>
         <select value={coin} onChange={e => setCoin(e.target.value)} style={{ ...INP, width: 110 }}>
@@ -351,12 +402,15 @@ const PdfProveedor: React.FC = () => {
           {res.copias?.length ? res.copias.map((k: any, i: number) => (
             <div key={i} className="flex items-center justify-between flex-wrap" style={{ gap: 10, padding: '10px 0', borderTop: i ? `1px solid ${C.borde}` : 'none' }}>
               <div style={{ minWidth: 0 }}>
-                <p style={{ fontSize: 12.5, fontWeight: 700, color: C.texto }}>Archivado el {fechaHora(k.archivadoAt)}{k.bytes ? ` · ${Math.round(k.bytes / 1024)} KB` : ''}</p>
+                <p style={{ fontSize: 12.5, fontWeight: 700, color: C.texto }}>
+                  {k.proveedor === 'sarblock' ? 'Sarblock · respuesta JSON' : 'MistTrack · PDF'} · archivado el {fechaHora(k.archivadoAt)}{k.bytes ? ` · ${Math.max(1, Math.round(k.bytes / 1024))} KB` : ''}
+                </p>
+                {k.analisisId && <p style={{ fontSize: 11, color: C.sub, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all', marginTop: 2 }}>Análisis {k.analisisId}</p>}
                 <p style={{ fontSize: 11, color: C.sub, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all', marginTop: 2 }}>SHA-256 {k.sha256 ?? '—'}</p>
                 {k.str?.at && <p style={{ fontSize: 11, color: C.sub, marginTop: 2 }}>Registro en MistTrack: {k.str.at} UTC · puntaje {k.str.puntaje ?? '—'} · {k.str.nivel ?? '—'}</p>}
               </div>
               {k.url
-                ? <a href={k.url} target="_blank" rel="noopener noreferrer" style={{ ...BTN, textDecoration: 'none' }}><FileText size={14} /> Descargar PDF</a>
+                ? <a href={k.url} target="_blank" rel="noopener noreferrer" style={{ ...BTN, textDecoration: 'none' }}><FileText size={14} /> {k.tipo === 'json' ? 'Descargar JSON' : 'Descargar PDF'}</a>
                 : <span style={{ fontSize: 11.5, color: C.sub }}>Sin enlace</span>}
             </div>
           )) : (
@@ -407,6 +461,7 @@ export const AdminKyt: React.FC<{ onAbrirCliente?: (userId: string) => void }> =
         <Conexion estado={estado} onCambio={cargar} />
         <ReglasOtc config={estado?.config} onGuardado={(c) => setEstado((e: any) => ({ ...(e ?? {}), config: c }))} />
       </div>
+      <ProveedorWallets estado={estado} onGuardado={(c) => setEstado((e: any) => ({ ...(e ?? {}), config: c }))} />
       <PdfProveedor />
       <Registro onAbrirCliente={onAbrirCliente} />
     </div>

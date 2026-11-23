@@ -30,6 +30,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { igualSeguro, requireMfaSession } from '../_shared/admin-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { encField, decField } from '../_shared/field-crypto.ts'
+import * as SB from './sarblock.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -63,6 +64,10 @@ async function cargarLlave(forzar = false) {
   }
   llaveLeidaAt = Date.now()
 }
+// La llave de Sarblock: la misma organización y el mismo secreto que usa la
+// función `sarblock` (beneficiarios). Para wallets necesita los permisos
+// wallets:analyze y wallets:read (se dan en Sarblock, no acá).
+const SB_KEY       = Deno.env.get('SARBLOCK_ORG_API_KEY') ?? ''
 const RESEND_KEY   = Deno.env.get('RESEND_API_KEY') ?? ''
 const FROM_EMAIL   = Deno.env.get('OTP_FROM_EMAIL') ?? Deno.env.get('FROM_EMAIL') ?? 'no-reply@lincoin.me'
 
@@ -109,6 +114,11 @@ type Config = {
   // Cuántas horas sirve una consulta del padrón para la mesa. Más corto que
   // diasVigencia: acá se decide si se recibe plata de esa wallet.
   otcHorasVigencia: number
+  // Quién hace la consulta normal en EVM y TRON (23 nov: Sarblock, por
+  // costo). 'misttrack' vuelve todo a MistTrack desde el panel sin
+  // desplegar, por si Sarblock se cae o se queda sin créditos. Las redes que
+  // Sarblock no analiza van a MistTrack igual.
+  proveedorWallets: 'sarblock' | 'misttrack'
 }
 
 const CONFIG_POR_DEFECTO: Config = {
@@ -131,6 +141,7 @@ const CONFIG_POR_DEFECTO: Config = {
   puntajeMedio: 40,
   otcExigeWallet: true,
   otcHorasVigencia: 24,
+  proveedorWallets: 'sarblock',
 }
 
 async function leerConfig(): Promise<Config> {
@@ -1023,6 +1034,121 @@ async function anotarPagadas(userId: string | null, n: number, metadata: Record<
 }
 const msgTopeKyt = (c: any) => `Llegaste al tope de ${c.topeDiarioPorCliente} consultas por día.`
 
+// ── Qué proveedor consulta cada red ───────────────────────────────
+// Sarblock para lo que analiza (EVM y TRON), si hay llave y el panel no lo
+// volvió a MistTrack; todo lo demás, MistTrack. La ficha guarda quién la
+// hizo (respuesta_cruda.proveedor): una ficha de MistTrack sigue leyéndose
+// como de MistTrack aunque hoy esa red la consulte Sarblock.
+function usaSarblock(c: Config, coin: string): boolean {
+  return !!SB_KEY && c.proveedorWallets !== 'misttrack' && !!SB.redSarblock(coin)
+}
+const proveedorDe = (ficha: any): 'sarblock' | 'misttrack' =>
+  ficha?.respuesta_cruda?.proveedor === 'sarblock' ? 'sarblock' : 'misttrack'
+const sarblockDe = (ficha: any): SB.ResultadoSarblock | null =>
+  proveedorDe(ficha) === 'sarblock' ? SB.leerResultado(ficha?.respuesta_cruda?.analisis) : null
+
+// La consulta con Sarblock, con la MISMA forma de respuesta que la de
+// MistTrack: la usan la consulta, el reporte, la mesa OTC y el monitoreo, y
+// ninguno tiene que saber de dónde vino el veredicto para leerlo.
+//
+// Lo que Sarblock no trae (camino por saltos, contrapartes, etiquetas tipo
+// "Interact With") queda vacío, no inventado. Las señales van en
+// risk_detail con su código; el análisis entero, en respuesta_cruda.
+async function evaluarConSarblock(
+  c: Config, coin: string, dir: string,
+  quien: { userId: string | null; email?: string | null; empresa?: string | null },
+  ficha: any,
+  opts: { archivar?: boolean; force?: boolean; esperaMs?: number },
+): Promise<{ hay: boolean; score: number | null; level: string | null; hallazgos: any[]; detalle: any[]; etiquetas: any[]; reporte: string | null; actividad: any; exposicion: any; status: number; crudo: any; error?: string; [k: string]: any }> {
+  void c
+  const network = SB.redSarblock(coin) as string
+  const vacio = {
+    hay: false, score: null, level: null, hallazgos: [], detalle: [], etiquetas: [],
+    reporte: null, actividad: null, exposicion: null, status: 0, crudo: null, proveedor: 'sarblock',
+  }
+  let res: Awaited<ReturnType<typeof SB.analizarYEsperar>>
+  try {
+    res = await SB.analizarYEsperar(fetch, SB_KEY, {
+      address: dir, network, force: opts.force === true,
+      idempotencia: SB.claveAnalisis(coin, dir, opts.force === true),
+    }, opts.esperaMs ?? 25000)
+  } catch (e) {
+    const m = SB.motivoSarblock(e)
+    // Una falla nuestra con Sarblock (sin créditos, llave sin permiso,
+    // límite por minuto) NO es un veredicto sobre la dirección: la ficha no
+    // se toca. Marcarla "sin resultado" borraría un análisis anterior que sí
+    // vale, y el cliente leería un problema de la wallet donde no lo hay.
+    await logAuditKyt(quien.userId, 'kyt.sarblock_fallo', { coin, addressLower: dir.toLowerCase(), codigo: m.codigo, mensaje: m.mensaje })
+    return { ...vacio, error: m.codigo === 'llave' ? 'sin_credencial' : m.codigo, motivo: m.mensaje, crudo: m.mensaje }
+  }
+  // Solo un análisis nuevo se cobró: uno reutilizado (24 h, en curso o la
+  // misma clave) no, y no se cuenta en el tope.
+  const cobrado = !res.pedido.reused
+  if (res.enCurso) {
+    return { ...vacio, error: 'en_curso', motivo: 'El análisis sigue en curso.', analisisId: res.pedido.id, cobrado }
+  }
+  if (res.analisis?.status === 'FAILED') {
+    const motivo = `El proveedor no pudo terminar el análisis${res.analisis?.failureReason ? ` (${String(res.analisis.failureReason).slice(0, 160)})` : ''}.`
+    await logAuditKyt(quien.userId, 'kyt.sarblock_fallo', { coin, addressLower: dir.toLowerCase(), codigo: 'fallido', analisisId: res.pedido.id, mensaje: motivo })
+    return { ...vacio, error: 'sin_resultado', motivo, analisisId: res.pedido.id, cobrado }
+  }
+  const v = SB.leerResultado(res.analisis)
+  if (!v) return { ...vacio, error: 'sin_resultado', motivo: 'El proveedor no devolvió resultado.', cobrado }
+
+  // Saldos y transacciones: del explorador público de la red, gratis.
+  // Sarblock no los trae (y MistTrack tampoco los traía bien).
+  const explorador = await consultarExplorador(coin, dir).catch(() => ({ cadena: null, fuentes: {} }))
+  const hallazgos = v.senales.map(s => ({
+    code: s.code, severity: s.severity, network: s.network,
+    entity: s.entity, risk_type: s.category ?? s.code, volume: s.exposureUsd,
+    exposure_type: null, hop_num: null, percent: null,
+  }))
+  const etiquetas = v.exposicion.attributedEntity ? [v.exposicion.attributedEntity] : []
+  const ahora = new Date().toISOString()
+  const base = {
+    coin, address_lower: dir.toLowerCase(), address: dir,
+    risk_score: v.score.value, risk_level: v.riskLevel,
+    risk_detail: hallazgos, detail_list: [],
+    labels: etiquetas, report_url: null,
+    actividad: null, exposicion: null, perfil: null, hacking_event: null,
+    estado: 'finalizado',
+    // El análisis entero, tal cual llegó: de acá se rearma todo (sarblockDe).
+    respuesta_cruda: { proveedor: 'sarblock', analisis: res.analisis },
+    consultado_at: ahora, actualizado_at: ahora,
+    veces_consultado: Number(ficha?.veces_consultado ?? 0) + 1,
+    veces_reutilizado: Number(ficha?.veces_reutilizado ?? 0),
+    empresas: anotarEmpresa(ficha?.empresas, quien),
+  }
+  await guardarFicha(base, {
+    hop_dic: null, address_label: v.exposicion.attributedEntity, hop_at: null,
+    token_actividad: null,
+    cadena: explorador.cadena, cadena_fuentes: explorador.fuentes,
+  })
+  // Lo que quedara de una consulta anterior de MistTrack (contrapartes,
+  // rutas) ya no es de este análisis: un reporte que mezclara los dos diría
+  // de Sarblock algo que dijo MistTrack. Aparte y sin bloquear, por si falta
+  // alguna de esas columnas.
+  try {
+    await db.from('kyt_registry').update({
+      contrapartes: null, investigacion: null, comportamiento: null, fuentes: null, rutas: null, rutas_at: null,
+    }).eq('coin', coin).eq('address_lower', dir.toLowerCase())
+  } catch { /* columnas que todavía no existen: no hay nada viejo que limpiar */ }
+
+  const archivo = opts.archivar === false ? null : await archivarSarblock(coin, dir, v, res.texto, quien.userId)
+  return {
+    constancia: archivo?.constancia ?? null,
+    archivoMotivo: archivo?.motivo ?? null,
+    hay: true, score: v.score.value, level: v.riskLevel,
+    hallazgos, detalle: [], etiquetas,
+    hackingEvent: null, perfil: null,
+    hopDic: null, addressLabel: v.exposicion.attributedEntity,
+    tokenActividad: null, cadena: explorador.cadena, cadenaFuentes: explorador.fuentes,
+    reporte: null, actividad: null, exposicion: null,
+    status: 200, crudo: res.analisis,
+    proveedor: 'sarblock', sarblock: v, cobrado,
+  }
+}
+
 // ── Consulta PAGADA + guardado en el padrón ───────────────────────
 // La usan la consulta del cliente y la ronda de monitoreo. Una sola
 // implementación a propósito: dos copias de esto se habrían separado, y una de
@@ -1031,8 +1157,13 @@ async function evaluarYGuardar(
   c: Config, coin: string, dir: string,
   quien: { userId: string | null; email?: string | null; empresa?: string | null },
   ficha: any,
-  opts: { archivar?: boolean } = {},
+  opts: { archivar?: boolean; force?: boolean; esperaMs?: number; proveedor?: 'misttrack' } = {},
 ): Promise<{ hay: boolean; score: number | null; level: string | null; hallazgos: any[]; detalle: any[]; etiquetas: any[]; reporte: string | null; actividad: any; exposicion: any; status: number; crudo: any; error?: string; constancia?: Constancia | null; addressLabel?: string | null; [k: string]: any }> {
+  // EVM y TRON van a Sarblock (salvo que el panel lo haya vuelto a MistTrack
+  // o quien llama pida MistTrack a propósito).
+  if (opts.proveedor !== 'misttrack' && usaSarblock(c, coin)) {
+    return await evaluarConSarblock(c, coin, dir, quien, ficha, opts)
+  }
   const r = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
   const v = leerVeredicto(r.data)
 
@@ -1044,7 +1175,7 @@ async function evaluarYGuardar(
       actualizado_at: new Date().toISOString(),
       empresas: anotarEmpresa(ficha?.empresas, quien),
     }, { onConflict: 'coin,address_lower' })
-    return { hay: false, score: null, level: null, hallazgos: [], detalle: [], etiquetas: [], reporte: null, actividad: null, exposicion: null, status: r.status, crudo: r.data ?? r.error ?? null, error: r.error }
+    return { hay: false, score: null, level: null, hallazgos: [], detalle: [], etiquetas: [], reporte: null, actividad: null, exposicion: null, status: r.status, crudo: r.data ?? r.error ?? null, error: r.error, proveedor: 'misttrack' }
   }
 
   // Los enriquecimientos son OPCIONALES: si fallan, el veredicto vale igual.
@@ -1124,6 +1255,7 @@ async function evaluarYGuardar(
     tokenActividad, cadena: explorador.cadena, cadenaFuentes: explorador.fuentes,
     reporte: v.reportUrl, actividad, exposicion,
     status: r.status, crudo: r.data ?? null,
+    proveedor: 'misttrack',
   }
 }
 
@@ -1164,6 +1296,13 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 type Constancia = {
   path: string; sha256: string; bytes: number; archivadoAt: string
   str: { at: string | null; puntaje: number | null; nivel: string | null } | null
+  // De quién es el original: el PDF de MistTrack o la respuesta (JSON) del
+  // análisis de Sarblock, con el id con que se verifica en su plataforma.
+  proveedor?: 'misttrack' | 'sarblock'
+  tipo?: 'pdf' | 'json'
+  analisisId?: string | null
+  walletId?: string | null
+  completadoAt?: string | null
 }
 // Por qué no quedó archivado, en palabras. Antes la falla quedaba solo en
 // audit_log y el reporte decía "no quedó archivado" sin más: con eso no se
@@ -1178,6 +1317,7 @@ function motivoArchivo(m: string): string {
   if (/^HTTP \d+/.test(m)) return `MistTrack respondió ${m} al descargar el PDF`
   if (m === 'no_es_pdf') return 'lo que se descargó no era un PDF'
   if (m === 'bucket') return 'no se pudo crear el almacenamiento privado de reportes'
+  if (m === 'sin_respuesta') return 'el proveedor no devolvió la respuesta del análisis para archivarla'
   if (m.startsWith('subida: ')) return `no se pudo guardar el archivo (${m.slice(8)})`
   return `falló la descarga (${m})`
 }
@@ -1286,6 +1426,42 @@ async function archivarReporteProveedor(c: Config, coin: string, dir: string, re
     return await falla(String((e as Error)?.message ?? e).slice(0, 160))
   }
 }
+// ── El respaldo de un análisis de Sarblock ────────────────────────
+// Sarblock no entrega su PDF por API (solo en su app). Lo que se archiva es
+// su respuesta TAL CUAL llegó (el texto, no re-serializado: la huella tiene
+// que coincidir con lo que respondió), con el id del análisis, que es como
+// se verifica en su plataforma. Mismo depósito privado y mismo registro que
+// el PDF de MistTrack.
+async function archivarSarblock(coin: string, dir: string, v: SB.ResultadoSarblock, texto: string, userId: string | null): Promise<Archivo> {
+  const falla = async (motivo: string): Promise<Archivo> => {
+    await logAuditKyt(userId, 'kyt.reporte_proveedor_fallo', { coin, addressLower: dir.toLowerCase(), proveedor: 'sarblock', analisisId: v.analisisId, motivo })
+    return { constancia: null, motivo: motivoArchivo(motivo) }
+  }
+  try {
+    // El mismo análisis ya archivado (Sarblock lo devolvió reutilizado): no
+    // se guarda dos veces.
+    const previa = await ultimaConstancia(coin, dir)
+    if (previa?.proveedor === 'sarblock' && previa.analisisId === v.analisisId) return { constancia: previa, motivo: null }
+    if (!texto) return await falla('sin_respuesta')
+    if (!(await asegurarBucketReportes())) return await falla('bucket')
+    const bytes = new TextEncoder().encode(texto)
+    const sha256 = await sha256Hex(bytes)
+    const archivadoAt = new Date().toISOString()
+    const path = `${coin}/${dir}/${archivadoAt.replace(/[:.]/g, '-')}-sarblock.json`
+    const { error: eUp } = await db.storage.from(BUCKET_REPORTES).upload(path, bytes, { contentType: 'application/json', upsert: false })
+    if (eUp) return await falla(`subida: ${eUp.message}`)
+    const constancia: Constancia = {
+      path, sha256, bytes: bytes.length, archivadoAt, str: null,
+      proveedor: 'sarblock', tipo: 'json',
+      analisisId: v.analisisId, walletId: v.walletId, completadoAt: v.completedAt,
+    }
+    await logAuditKyt(userId, 'kyt.reporte_proveedor', { coin, address: dir, addressLower: dir.toLowerCase(), ...constancia })
+    return { constancia, motivo: null }
+  } catch (e) {
+    return await falla(String((e as Error)?.message ?? e).slice(0, 160))
+  }
+}
+
 // La constancia más reciente archivada para una dirección (de audit_log).
 async function ultimaConstancia(coin: string, dir: string): Promise<Constancia | null> {
   try {
@@ -1294,13 +1470,20 @@ async function ultimaConstancia(coin: string, dir: string): Promise<Constancia |
       .order('created_at', { ascending: false }).limit(5)
     const fila = (data ?? []).find((f: any) => !f?.metadata?.coin || String(f.metadata.coin).toUpperCase() === coin.toUpperCase()) as any
     const m = fila?.metadata
-    return m?.path ? { path: m.path, sha256: m.sha256, bytes: m.bytes, archivadoAt: m.archivadoAt ?? fila.created_at, str: m.str ?? null } : null
+    return m?.path ? {
+      path: m.path, sha256: m.sha256, bytes: m.bytes, archivadoAt: m.archivadoAt ?? fila.created_at, str: m.str ?? null,
+      proveedor: m.proveedor === 'sarblock' ? 'sarblock' : 'misttrack', tipo: m.tipo === 'json' ? 'json' : 'pdf',
+      analisisId: m.analisisId ?? null, walletId: m.walletId ?? null, completadoAt: m.completadoAt ?? null,
+    } : null
   } catch { return null }
 }
-// Lo que ve el cliente de la constancia: la huella y las fechas. Ni la ruta
-// del archivo ni el nombre del proveedor (el PDF original lo descarga el
-// equipo de Cumplimiento desde el panel).
-const constanciaPublica = (k: Constancia | null) => k ? { sha256: k.sha256, archivadoAt: k.archivadoAt, str: k.str } : null
+// Lo que ve el cliente de la constancia: la huella, las fechas y, de un
+// análisis de Sarblock, su id (es lo que se verifica en su plataforma). Nunca
+// la ruta del archivo: el original lo descarga Cumplimiento desde el panel.
+const constanciaPublica = (k: Constancia | null) => k ? {
+  sha256: k.sha256, archivadoAt: k.archivadoAt, str: k.str,
+  proveedor: k.proveedor ?? 'misttrack', analisisId: k.analisisId ?? null, completadoAt: k.completadoAt ?? null,
+} : null
 
 // ── Correo de alerta de cambio de riesgo ──────────────────────────
 // La pantalla le promete al cliente que le avisamos por correo. Si esto no
@@ -1383,7 +1566,7 @@ Deno.serve(async (req) => {
     if (accion === 'config_get') {
       { const no = soloAdmin(yo); if (no) return no }
       // Se dice SI hay credencial y si la puso el panel, nunca cuál.
-      return json({ ok: true, config: c, credencial: !!MT_KEY, desdePanel: llaveDesdePanel, respaldo: !!MT_KEY_ENV, llaveIlegible })
+      return json({ ok: true, config: c, credencial: !!MT_KEY, desdePanel: llaveDesdePanel, respaldo: !!MT_KEY_ENV, llaveIlegible, sarblockListo: !!SB_KEY })
     }
 
     // ── La llave de MistTrack, desde el panel ─────────────────────
@@ -1444,6 +1627,7 @@ Deno.serve(async (req) => {
       nueva.horasMonitoreo = Math.max(1, Math.min(720, Number(nueva.horasMonitoreo) || 24))
       nueva.otcExigeWallet = nueva.otcExigeWallet !== false
       nueva.otcHorasVigencia = Math.max(1, Math.min(720, Number(nueva.otcHorasVigencia) || 24))
+      nueva.proveedorWallets = nueva.proveedorWallets === 'misttrack' ? 'misttrack' : 'sarblock'
       await guardarConfig(nueva)
       await logAuditKyt(yo.userId, 'kyt.config', { cambios: Object.keys(pedida) })
       return json({ ok: true, config: nueva })
@@ -1537,6 +1721,8 @@ Deno.serve(async (req) => {
           perfil: ficha.perfil ?? null,
           hackingEvent: ficha.hacking_event ?? null,
           reporte: ficha.report_url,
+          proveedor: proveedorDe(ficha),
+          sarblock: sarblockDe(ficha),
           estado: 'finalizado',
           delPadron: true,
           consultadoAt: ficha.consultado_at,
@@ -1551,7 +1737,30 @@ Deno.serve(async (req) => {
 
       // 3) Se paga la consulta. La misma función que usa la ronda de
       //    monitoreo, para que las dos interpreten el veredicto igual.
-      const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
+      //    `force` con Sarblock pide un análisis nuevo (se cobra aunque haya
+      //    uno de las últimas 24 h): solo un admin. Un cliente que pulsa
+      //    "Consultar de nuevo" recibe el de las últimas 24 h, gratis.
+      const ev = await evaluarYGuardar(c, coin, dir, quien, ficha, { force: force && yo.esAdmin })
+
+      if (!ev.hay && ev.error === 'en_curso') {
+        // El análisis ya está pedido (y cobrado, si era nuevo). Volver a
+        // consultar devuelve el mismo, sin cobrar: no se cuenta como fallida.
+        if (ev.cobrado) await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'consultar_en_curso', proveedor: 'sarblock' })
+        return json({
+          ok: false, error: 'en_curso', enCurso: true, estado: 'en_curso',
+          mensaje: 'El análisis de esta dirección todavía está en curso. Vuelve a consultarla en unos segundos: no se cobra otra vez.',
+        })
+      }
+      if (!ev.hay && ev.proveedor === 'sarblock' && ev.error !== 'sin_resultado') {
+        // Sin créditos, llave sin permiso, límite por minuto, red: es un
+        // problema del servicio, no de la dirección, y no se le descuenta al
+        // cliente de su tope. Cumplimiento ve el motivo en audit_log.
+        return json({
+          ok: false, error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'servicio',
+          mensaje: 'La verificación de wallets no está disponible en este momento. Intenta de nuevo en unos minutos.',
+          detalle: yo.esAdmin ? ev.motivo : undefined,
+        })
+      }
 
       if (!ev.hay) {
         await logAuditKyt(yo.userId, 'kyt.consulta_fallida', { coin, address: dir, origen: 'consultar' })
@@ -1571,9 +1780,11 @@ Deno.serve(async (req) => {
       }
 
       try {
+        // Un análisis de Sarblock reutilizado (de las últimas 24 h) no se
+        // pagó: queda registrado, pero no cuenta en el tope del cliente.
         await db.from('audit_log').insert({
-          user_id: yo.userId, action: 'kyt.consulta_pagada',
-          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa },
+          user_id: yo.userId, action: ev.proveedor === 'sarblock' && !ev.cobrado ? 'kyt.consulta_reutilizada' : 'kyt.consulta_pagada',
+          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa, proveedor: ev.proveedor ?? 'misttrack', analisisId: ev.sarblock?.analisisId ?? null },
         })
       } catch { /* que no se pierda la consulta por no poder auditar */ }
 
@@ -1581,8 +1792,11 @@ Deno.serve(async (req) => {
       // reporte: el reporte del proveedor las trae en su primera hoja ("Address
       // Counterparties") y la pantalla tiene que decir lo mismo que él. Es una
       // consulta más (se cuenta en el tope); si falla, la consulta vale igual.
-      let contrapartes: any = ficha?.contrapartes ?? null
-      if (!(await topeKytAgotado(c, yo))) {
+      // Solo con MistTrack: Sarblock no las da, y pedírselas a MistTrack en
+      // cada consulta era justo el gasto que se quería quitar (23 nov). Con
+      // Sarblock salen en el análisis profundo, que se pide a propósito.
+      let contrapartes: any = ev.proveedor === 'sarblock' ? null : (ficha?.contrapartes ?? null)
+      if (ev.proveedor !== 'sarblock' && !(await topeKytAgotado(c, yo))) {
         const eCp = await llamarMT(c, c.rutaContrapartes, { coin, address: dir }).catch(() => null)
         await anotarPagadas(yo.userId, 1, { coin, address: dir, origen: 'consultar_contrapartes' })
         const cp = eCp ? leerContrapartes(eCp.data) : null
@@ -1609,6 +1823,8 @@ Deno.serve(async (req) => {
         hopDic: ev.hopDic ?? null,
         hackingEvent: ev.hackingEvent ?? null, perfil: ev.perfil ?? null,
         reporte: ev.reporte,
+        proveedor: ev.proveedor ?? 'misttrack',
+        sarblock: ev.sarblock ?? null,
         estado: 'finalizado',
         delPadron: false,
         consultadoAt: new Date().toISOString(),
@@ -1652,7 +1868,13 @@ Deno.serve(async (req) => {
       } else {
         if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: `${msgTopeKyt(c)} Escríbele a la mesa.` })
         const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
-        await logAuditKyt(yo.userId, ev.hay ? 'kyt.consulta_pagada' : 'kyt.consulta_fallida', { coin, address: dir, origen: 'otc_wallet' })
+        if (!ev.hay && ev.error === 'en_curso') {
+          if (ev.cobrado) await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'otc_wallet_en_curso', proveedor: 'sarblock' })
+          return json({ ok: false, error: 'en_curso', mensaje: 'La revisión de la wallet sigue en curso. Vuelve a intentarlo en unos segundos: no se cobra otra vez.' })
+        }
+        const reusado = ev.hay && ev.proveedor === 'sarblock' && !ev.cobrado
+        const sinVeredicto = !ev.hay && ev.proveedor === 'sarblock' && ev.error !== 'sin_resultado'
+        if (!sinVeredicto) await logAuditKyt(yo.userId, ev.hay ? (reusado ? 'kyt.consulta_reutilizada' : 'kyt.consulta_pagada') : 'kyt.consulta_fallida', { coin, address: dir, origen: 'otc_wallet', proveedor: ev.proveedor ?? 'misttrack' })
         if (!ev.hay) {
           await logAuditKyt(yo.userId, 'kyt.otc_wallet', {
             coin, address: dir, addressLower: dir.toLowerCase(), categoria: 'sin_dato', puntaje: null, nivel: null,
@@ -1674,10 +1896,18 @@ Deno.serve(async (req) => {
         ...(Array.isArray(f.risk_detail) ? f.risk_detail : []).map((x: any) => x?.risk_type ?? x?.entity ?? 'exposición señalada'),
         ...(f.hacking_event ? [`incidente: ${f.hacking_event}`] : []),
       ].map((x: any) => String(typeof x === 'string' ? x : JSON.stringify(x)).slice(0, 160))
-      const permitido = categoria === 'bajo' && motivos.length === 0
+      // Con Sarblock, además, solo pasa la recomendación CLEAR ("sin hallazgos
+      // que lo impidan"). MONITOR ("sigue, pero con vigilancia") no alcanza
+      // para recibir plata en la mesa: la regla de la mesa sigue siendo la
+      // más estricta, como con MistTrack.
+      const sbOtc = sarblockDe(f)
+      const recomendacion = sbOtc?.recomendacion ?? null
+      const permitido = categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')
+      const REC_ES: Record<string, string> = { MONITOR: 'operar con vigilancia', REVIEW: 'revisión de cumplimiento antes de operar', BLOCK: 'no operar' }
       const motivoBloqueo = permitido ? null
         : categoria === 'sin_dato' ? 'No hay un resultado de riesgo para esta wallet.'
-        : categoria === 'bajo' ? 'El puntaje es bajo, pero la wallet tiene señalamientos propios.'
+        : categoria === 'bajo' && motivos.length ? 'El puntaje es bajo, pero la wallet tiene señalamientos.'
+        : categoria === 'bajo' && sbOtc ? `El análisis recomienda ${REC_ES[recomendacion ?? ''] ?? 'revisarla'}.`
         : `La wallet salió con riesgo ${categoria === 'alto' ? 'alto' : 'medio'}.`
       // El saldo que importa es el USDT de la red, después el nativo.
       const cad = f.cadena ?? null
@@ -1687,6 +1917,7 @@ Deno.serve(async (req) => {
       await logAuditKyt(yo.userId, 'kyt.otc_wallet', {
         coin, address: f.address ?? dir, addressLower: dir.toLowerCase(), red: REDES_OTC[coin],
         categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
+        proveedor: proveedorDe(f), recomendacion, analisisId: sbOtc?.analisisId ?? null,
         permitido, motivo: motivoBloqueo, hallazgos: motivos.slice(0, 10),
         saldoUsdt, consultadoAt: f.consultado_at ?? null, delPadron,
         empresa: quien.empresa, email: quien.email, nombre,
@@ -1695,6 +1926,7 @@ Deno.serve(async (req) => {
         ok: true, permitido, motivoBloqueo,
         coin, red: REDES_OTC[coin], address: f.address ?? dir,
         categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
+        recomendacion,
         // Los hallazgos van en crudo: la pantalla los traduce con kytTextos.
         hallazgos: motivos.slice(0, 10),
         etiquetas: Array.isArray(f.labels) ? f.labels.slice(0, 8) : [],
@@ -1895,8 +2127,13 @@ Deno.serve(async (req) => {
       const out: any[] = []
       for (const w of ((pend ?? []) as any[])) {
         const ficha3 = await padronBuscar(w.coin, w.address)
-        const ev = await evaluarYGuardar(c, w.coin, w.address, { userId: w.user_id }, ficha3, { archivar: false })
+        // Espera corta: son muchas en fila. Un análisis de Sarblock que no
+        // termina a tiempo se retoma en la próxima vuelta SIN marcarla
+        // revisada: pedirlo otra vez devuelve el mismo, gratis. Marcarla
+        // revisada lo dejaría para mañana, y mañana se cobraría otro.
+        const ev = await evaluarYGuardar(c, w.coin, w.address, { userId: w.user_id }, ficha3, { archivar: false, esperaMs: 12000 })
         const ahora2 = new Date().toISOString()
+        if (!ev.hay && ev.error === 'en_curso') { out.push({ id: w.id, r: 'en_curso' }); continue }
 
         if (!ev.hay) {
           // No se pudo confirmar: se anota la revisión pero NO se toca la
@@ -1914,7 +2151,7 @@ Deno.serve(async (req) => {
 
         const motivo = empeoro
           ? (Array.isArray(ev.hallazgos) && ev.hallazgos.length
-              ? String(typeof ev.hallazgos[0] === 'string' ? ev.hallazgos[0] : (ev.hallazgos[0]?.label ?? ev.hallazgos[0]?.type ?? 'nuevo hallazgo')).slice(0, 180)
+              ? String(typeof ev.hallazgos[0] === 'string' ? ev.hallazgos[0] : (ev.hallazgos[0]?.label ?? ev.hallazgos[0]?.type ?? ev.hallazgos[0]?.risk_type ?? 'nuevo hallazgo')).slice(0, 180)
               : 'cambió la clasificación del proveedor')
           : null
 
@@ -1980,9 +2217,11 @@ Deno.serve(async (req) => {
       // Una ficha sin `fuentes` es de antes de que se guardara por que quedo
       // vacia cada seccion. Se regenera una vez: reutilizarla imprime un
       // reporte que no puede explicar sus propios huecos.
+      // Una ficha de Sarblock está completa con el análisis: lo demás
+      // (contrapartes, investigación) era de MistTrack y no se pide.
       const completo = !!ficha && ficha.estado === 'finalizado'
-        && ficha.contrapartes !== null && ficha.investigacion !== null
-        && ficha.fuentes != null
+        && (proveedorDe(ficha) === 'sarblock'
+          || (ficha.contrapartes !== null && ficha.investigacion !== null && ficha.fuentes != null))
       // force (saltarse el caché y pagar de nuevo) es solo para admins.
       const forzar = body.force === true && yo.esAdmin
       const reusar = !forzar && completo && Date.now() < vigenteHasta
@@ -1997,9 +2236,18 @@ Deno.serve(async (req) => {
       if (!reusar) {
         if (await topeKytAgotado(c, yo)) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
         // El veredicto y sus enriquecimientos base.
-        const ev = await evaluarYGuardar(c, coin, dir, quien, ficha)
+        const ev = await evaluarYGuardar(c, coin, dir, quien, ficha, { force: forzar })
         constanciaMotivo = ev.constancia ? null : ((ev as any).archivoMotivo ?? null)
-        await logAuditKyt(yo.userId, ev.hay ? 'kyt.consulta_pagada' : 'kyt.consulta_fallida', { coin, address: dir, origen: 'reporte' })
+        if (!ev.hay && ev.error === 'en_curso') {
+          if (ev.cobrado) await logAuditKyt(yo.userId, 'kyt.consulta_pagada', { coin, address: dir, origen: 'reporte_en_curso', proveedor: 'sarblock' })
+          return json({ ok: false, error: 'en_curso', mensaje: 'El análisis de esta dirección todavía está en curso. Vuelve a pedir el reporte en unos segundos: no se cobra otra vez.' })
+        }
+        const reusadoRep = ev.hay && ev.proveedor === 'sarblock' && !ev.cobrado
+        const sinVeredictoRep = !ev.hay && ev.proveedor === 'sarblock' && ev.error !== 'sin_resultado'
+        if (!sinVeredictoRep) await logAuditKyt(yo.userId, ev.hay ? (reusadoRep ? 'kyt.consulta_reutilizada' : 'kyt.consulta_pagada') : 'kyt.consulta_fallida', { coin, address: dir, origen: 'reporte', proveedor: ev.proveedor ?? 'misttrack' })
+        if (sinVeredictoRep) {
+          return json({ ok: false, error: 'servicio', mensaje: 'La verificación de wallets no está disponible en este momento. Intenta de nuevo en unos minutos.', detalle: yo.esAdmin ? ev.motivo : undefined })
+        }
         if (!ev.hay) {
           return json({
             ok: false, error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'sin_resultado',
@@ -2008,6 +2256,11 @@ Deno.serve(async (req) => {
               : 'No pudimos obtener un resultado para esa dirección. No significa que esté limpia: significa que no sabemos.',
           })
         }
+      }
+      // Las tres piezas extra del expediente son de MistTrack: con un análisis
+      // de Sarblock no se piden (eran tres llamadas pagadas por reporte).
+      const fichaAhora = reusar ? ficha : await padronBuscar(coin, dir)
+      if (!reusar && proveedorDe(fichaAhora) !== 'sarblock') {
         // Las tres piezas extra del expediente, en paralelo. Ninguna es
         // indispensable: si una falla, el reporte sale sin esa seccion y lo
         // dice, en vez de no salir.
@@ -2082,9 +2335,13 @@ Deno.serve(async (req) => {
       // (cada contraparte expandida es otra consulta pagada).
       // Cada llamada se cuenta en el tope (antes se anotaba UNA por reporte y
       // se hacían hasta 26: investigación + una por contraparte).
-      const restantesRutas = (!rutasVigentes && body.sinRutas !== true) ? await kytRestantes(c, yo) : 0
-      const sinCupoRutas = !rutasVigentes && body.sinRutas !== true && restantesRutas < 1
-      if (!rutasVigentes && body.sinRutas !== true && !sinCupoRutas) {
+      // Con un análisis de Sarblock el reporte NO rastrea solo: el rastreo es
+      // de MistTrack y se paga por contraparte. Va en el reporte si alguien
+      // lo pidió (pantalla: «Rastrear intermediarios») o con profundo: true.
+      const sinRutas = body.sinRutas === true || (proveedorDe(f) === 'sarblock' && body.profundo !== true)
+      const restantesRutas = (!rutasVigentes && !sinRutas) ? await kytRestantes(c, yo) : 0
+      const sinCupoRutas = !rutasVigentes && !sinRutas && restantesRutas < 1
+      if (!rutasVigentes && !sinRutas && !sinCupoRutas) {
         let pagadasRep = 1
         const rInv2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
         const inv2 = rInv2.ok ? leerInvestigacion(rInv2.data) : null
@@ -2147,6 +2404,8 @@ Deno.serve(async (req) => {
         // suyo; este es el de la respuesta entera, cuando viene arriba.
         hopDic: f.hop_dic ?? null,
         etiquetaProveedor: f.address_label ?? null,
+        proveedor: proveedorDe(f),
+        sarblock: sarblockDe(f),
         actividad: normActividad(f.actividad),
         tokenActividad: normActividad(f.token_actividad),
         // La constancia del reporte del proveedor archivado (huella y fechas).
@@ -2204,7 +2463,12 @@ Deno.serve(async (req) => {
       // sale se anota (ver anotarPagadas).
       const restantes = await kytRestantes(c, yo)
       const fichaR = await padronBuscar(coin, dir)
-      const base = (fichaR?.hop_at ? 0 : 1) + 1
+      // Una ficha de Sarblock no trae el camino de MistTrack: el rastreo es
+      // el análisis profundo y pide el puntaje de MistTrack (1 llamada) para
+      // tenerlo. Ese camino NO se guarda en la ficha: pisaría el veredicto de
+      // Sarblock con datos de otro proveedor en la misma fila.
+      const esSbR = proveedorDe(fichaR) === 'sarblock'
+      const base = (fichaR?.hop_at && !esSbR ? 0 : 1) + 1
       if (restantes < base) return json({ ok: false, error: 'tope_diario', mensaje: msgTopeKyt(c) })
       const presupuesto = Math.max(0, Math.min(25, Number(body.presupuesto) || 10, restantes - base))
       let pagadas = 0
@@ -2214,18 +2478,23 @@ Deno.serve(async (req) => {
       // hop_dic viene con el veredicto, y el veredicto ya se pago al consultar.
       // Se lee del padron; solo si no hay ficha se gasta una consulta de riesgo
       // -- una, no una por contraparte.
-      let hopDic: any = fichaR?.hop_dic ?? null
-      let expo: any = fichaR?.exposicion ?? null
+      let hopDic: any = esSbR ? null : (fichaR?.hop_dic ?? null)
+      let expo: any = esSbR ? null : (fichaR?.exposicion ?? null)
       let riesgoRecien = false
       // hop_at marca que YA le preguntamos al proveedor por el camino. Sin esa
       // marca no se puede distinguir "no tiene camino" de "esta ficha es
       // anterior a que empezaramos a leerlo", y sin distinguirlas o se paga una
       // consulta de mas en cada clic, o las fichas viejas nunca muestran el
       // camino que el proveedor si manda.
-      if (!fichaR?.hop_at) {
+      if (!fichaR?.hop_at || esSbR) {
         pagadas++
         const rr = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
-        if (rr.ok) {
+        if (rr.ok && esSbR) {
+          const vv = leerVeredicto(rr.data)
+          hopDic = vv.hopDic ?? null
+          expo = exposicionDe(vv.riskDetail, vv.hopDic)
+          riesgoRecien = true
+        } else if (rr.ok) {
           const vv = leerVeredicto(rr.data)
           hopDic = vv.hopDic ?? null
           expo = exposicionDe(vv.riskDetail, vv.hopDic) ?? expo
@@ -2458,7 +2727,21 @@ Deno.serve(async (req) => {
       let motivo: string | null = null
       if (body.archivar === true) {
         const f = await padronBuscar(coin, dir)
-        const a = await archivarReporteProveedor(c, coin, dir, f?.report_url ?? null, yo.userId)
+        const sb = sarblockDe(f)
+        let a: Archivo
+        if (sb && SB_KEY) {
+          // Sarblock: se relee el análisis (leer es gratis) y se archiva su
+          // respuesta tal cual llega.
+          try {
+            const { analisis, texto } = await SB.leerAnalisis(fetch, SB_KEY, sb.analisisId)
+            const v = SB.leerResultado(analisis) ?? sb
+            a = await archivarSarblock(coin, dir, v, texto, yo.userId)
+          } catch (e) {
+            a = { constancia: null, motivo: SB.motivoSarblock(e).mensaje }
+          }
+        } else {
+          a = await archivarReporteProveedor(c, coin, dir, f?.report_url ?? null, yo.userId)
+        }
         nueva = a.constancia
         motivo = a.motivo
       }
@@ -2471,7 +2754,11 @@ Deno.serve(async (req) => {
         if (!m.path || (m.coin && String(m.coin).toUpperCase() !== coin.toUpperCase())) continue
         let url: string | null = null
         try { const { data: s } = await db.storage.from(BUCKET_REPORTES).createSignedUrl(String(m.path), 600); url = s?.signedUrl ?? null } catch { url = null }
-        copias.push({ archivadoAt: m.archivadoAt ?? fila.created_at, sha256: m.sha256 ?? null, bytes: m.bytes ?? null, str: m.str ?? null, url })
+        copias.push({
+          archivadoAt: m.archivadoAt ?? fila.created_at, sha256: m.sha256 ?? null, bytes: m.bytes ?? null, str: m.str ?? null, url,
+          proveedor: m.proveedor === 'sarblock' ? 'sarblock' : 'misttrack', tipo: m.tipo === 'json' ? 'json' : 'pdf',
+          analisisId: m.analisisId ?? null,
+        })
       }
       // La última vez que NO se pudo archivar, con su motivo: sin esto,
       // "0 copias" no dice si nunca se intentó o si falla siempre igual.
@@ -2563,6 +2850,7 @@ Deno.serve(async (req) => {
         ok: true,
         config: c,
         credencial: !!MT_KEY,
+        sarblockListo: !!SB_KEY,
         resumen: {
           direcciones: filas.length,
           consultasPagadas: pagadas,
@@ -2579,6 +2867,8 @@ Deno.serve(async (req) => {
           hallazgos: Array.isArray(r.risk_detail) ? r.risk_detail : [],
           etiquetas: Array.isArray(r.labels) ? r.labels : [],
           reporte: r.report_url,
+          proveedor: proveedorDe(r),
+          recomendacion: sarblockDe(r)?.recomendacion ?? null,
           consultadoAt: r.consultado_at, actualizadoAt: r.actualizado_at,
           vecesConsultado: r.veces_consultado, vecesReutilizado: r.veces_reutilizado,
           empresas: Array.isArray(r.empresas) ? r.empresas : [],
