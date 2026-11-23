@@ -378,6 +378,96 @@ const inicioCaja = (abiertaAt: unknown) => {
   return { fecha: `${mes}-01`, iso: new Date(Date.parse(`${mes}-01T00:00:00Z`) + 5 * 3600_000).toISOString() }
 }
 
+// ── Detalle de un bolsillo y de las utilidades de Lincoin (23 nov) ──────
+// El dueño: "al darle clic en los bolsillos debe mostrar en dónde está
+// comprometido el saldo, una ventana, y lo mismo en Lincoin utilidades".
+//
+// Comprometido = la suma de los saldos de los clientes en ese riel (la misma
+// cuenta que admin_obligaciones: todos menos el equipo). Aquí va cliente por
+// cliente, para que se vea de quién es la plata que la bolsa tiene que cubrir.
+const RIEL_PROVEEDOR: Record<string, string> = { COP_BREB: 'Mouv', COP_ACH: 'Finity', COP_C3: 'Coinsenda', COP_C4: 'Coinsenda 2' }
+async function bolsilloDetalle(rielIn: string) {
+  const riel = String(rielIn ?? '').toUpperCase()
+  if (!RIEL_PROVEEDOR[riel]) throw new Error('Ese bolsillo no existe.')
+  const clientes: any[] = []
+  let total = 0, negativos = 0
+  await leerPorPaginas(() => db.from('users').select(`id, role, email, full_name, company_name, is_blocked, saldo:balances->${riel}`), {
+    tope: 100_000,
+    alLote: (lote) => {
+      for (const u of lote as any[]) {
+        if (String(u.role ?? '') === 'admin') continue
+        const n = Number(u.saldo)
+        if (!Number.isFinite(n) || Math.abs(n) < 0.005) continue
+        total += n
+        if (n < 0) negativos++
+        clientes.push({
+          userId: String(u.id), cliente: String(u.company_name || u.full_name || u.email || 'Cliente sin nombre'),
+          email: u.email ?? null, rol: u.role ?? null, bloqueado: u.is_blocked === true, saldo: Math.round(n * 100) / 100,
+        })
+      }
+    },
+  })
+  clientes.sort((a, b) => b.saldo - a.saldo)
+  return { riel, proveedor: RIEL_PROVEEDOR[riel], total: Math.round(total * 100) / 100, cantidad: clientes.length, negativos, clientes }
+}
+
+// La parte de Lincoin en cada bolsa, armada: la apertura, la utilidad de los
+// cargues y de los cierres de la mesa OTC desde entonces, y los retiros y
+// movimientos externos. Las mismas cuentas que estadoCaja(), operación por
+// operación, para que el total de la tarjeta se pueda revisar.
+async function lincoinUtilidadesDetalle() {
+  const proveedores = await estadoCaja()
+  const { data: aps } = await db.from('caja_apertura').select('proveedor, abierta_at')
+  const iniDe = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), Date.parse(inicioCaja(a.abierta_at).iso)]))
+  const primeraTs = Array.from(iniDe.values()).filter(Number.isFinite).sort((x, y) => x - y)[0]
+  const ops: any[] = []
+  const sinTasa: any[] = []
+  if (Number.isFinite(primeraTs)) {
+    const primera = new Date(primeraTs).toISOString()
+    const dentro = (p: string | null, ts: number) => !!p && iniDe.has(p) && ts >= (iniDe.get(p) as number)
+    const { filas: cargues } = await leerPorPaginas(() => db.from('transactions')
+      .select(`id, created_at, user_id, currency, ${SELECT_UTILIDAD}`)
+      .eq('type', 'load').eq('status', 'Completado').eq('raw_data->>source', 'admin_cargue')
+      .gte('created_at', primera), { tope: 100_000 })
+    for (const t of cargues as any[]) {
+      const p = provDeRiel(t.currency)
+      const ts = Date.parse(String(t.created_at))
+      if (!dentro(p, ts)) continue
+      ops.push({ tipo: 'cargue', id: String(t.id), at: t.created_at, userId: String(t.user_id ?? ''), proveedor: p, monto: Number(t.montoFila) || 0, utilidad: Math.round(utilidadLincoin(t)), sinContabilidad: t.utilidad == null || t.utilidad === '', oculto: !!t.oculto })
+    }
+    const { filas: cierres } = await leerPorPaginas(() => db.from('otc_closes')
+      .select('id, ref, user_id, completada_at, side, from_amount, from_currency, to_amount, to_currency, rate_final, payout')
+      .eq('status', 'completada').gte('completada_at', primera), { tope: 50_000 })
+    for (const c of cierres as any[]) {
+      const p = provDeRiel(c?.payout?.wallet)
+      const ts = Date.parse(String(c.completada_at))
+      if (!dentro(p, ts)) continue
+      const v = c?.payout?.venta
+      const base = { id: String(c.id), ref: c.ref, at: c.completada_at, userId: String(c.user_id ?? ''), proveedor: p, monto: Number(c.to_amount) || 0, usdt: Number(c.side === 'vende_usdt' ? c.from_amount : c.to_amount) || 0, tasaCliente: Number(c.rate_final) || null }
+      if (Number(v?.tasa) > 0 && Number.isFinite(Number(v?.utilidadCop))) ops.push({ ...base, tipo: 'otc', utilidad: Math.round(Number(v.utilidadCop)), tasaVenta: Number(v.tasa), pct: v.pct ?? null })
+      else sinTasa.push(base)
+    }
+    const movs = (await movimientosCaja(fechaBogota(primera))).filter(m => !m.anulado)
+    for (const m of movs) {
+      const p = String(m.proveedor ?? '')
+      const ini = iniDe.get(p)
+      if (ini == null || String(m.fecha) < fechaBogota(new Date(ini).toISOString())) continue
+      const signo = m.tipo === 'retiro' ? -1 : (SIGNO_MOV[m.tipo] ?? 0)
+      ops.push({ tipo: String(m.tipo), id: String(m.id), at: m.creado_at ?? m.fecha, fecha: m.fecha, proveedor: p, monto: Number(m.monto) || 0, utilidad: Math.round(signo * (Number(m.monto) || 0)), descripcion: m.descripcion ?? null })
+    }
+  }
+  const ids = Array.from(new Set([...ops, ...sinTasa].map(o => o.userId).filter(Boolean)))
+  const nombres = new Map<string, string>()
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data: us } = await db.from('users').select('id, full_name, company_name, email').in('id', ids.slice(i, i + 200))
+    for (const u of (us ?? []) as any[]) nombres.set(String(u.id), String(u.company_name || u.full_name || u.email || 'Cliente sin nombre'))
+  }
+  const conNombre = (o: any) => (o.userId ? { ...o, cliente: nombres.get(o.userId) ?? 'Cliente sin nombre' } : o)
+  ops.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+  sinTasa.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+  return { proveedores, ops: ops.slice(0, 3000).map(conNombre), opsTruncadas: ops.length > 3000, sinTasa: sinTasa.map(conNombre) }
+}
+
 // ── Utilidades de AML y KYT (23 nov) ──────────────────────────────────
 // Lo que los clientes pagan por los paquetes de consultas de Lincoin Risk
 // (AML de personas y empresas, y desde hoy KYT de wallets: gastan las
@@ -2091,6 +2181,10 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   caja_estado: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
   // El detalle de las utilidades de AML y KYT (al tocar su tarjeta en Billetera).
   risk_utilidades_detalle: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  // Al tocar un bolsillo o «Lincoin · utilidades» en la Billetera (23 nov): de
+  // quién es el saldo comprometido y de dónde sale la utilidad. Solo lectura.
+  bolsillo_detalle: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  lincoin_utilidades_detalle: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
   lincoin_resumen: ['plata.ver', 'tesoreria', 'fn.lincoin'],
@@ -6723,6 +6817,15 @@ Deno.serve(async (req: Request) => {
         })
         await auditAdmin(req, 'admin.ajuste_cripto', { userId: body.userId, currency: cur, delta, nuevoSaldo: newBal, opId: opId || null })
         return json({ success: true, newBalance: newBal })
+      }
+
+      if (body.action === 'bolsillo_detalle') {
+        try { return json({ ok: true, ...(await bolsilloDetalle(String(body.riel ?? ''))) }) }
+        catch (e: any) { return json({ ok: false, error: String(e?.message ?? e) }, 400) }
+      }
+      if (body.action === 'lincoin_utilidades_detalle') {
+        try { return json({ ok: true, ...(await lincoinUtilidadesDetalle()) }) }
+        catch (e: any) { return json({ ok: false, error: String(e?.message ?? e) }, 500) }
       }
 
       if (body.action === 'risk_utilidades_detalle') {

@@ -104,6 +104,7 @@ import { AdminApiExterna } from './AdminApiExterna';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { AdminBancosAchMouv } from './AdminBancosAchMouv';
 import { AdminFinityInscripciones } from './AdminFinityInscripciones';
+import { BolsilloDetalle, LincoinUtilidadesDetalle } from './AdminBolsilloDetalle';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
@@ -1461,6 +1462,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [caja, setCaja] = useState<any>(null);
   // El reporte detallado de las utilidades de AML y KYT (se abre al tocar su tarjeta).
   const [verUtilRisk, setVerUtilRisk] = useState(false);
+  // Tocar un bolsillo o «Lincoin · utilidades» abre su detalle (23 nov): de
+  // quién es el saldo comprometido y cómo se arma la utilidad.
+  const [verBolsillo, setVerBolsillo] = useState<null | { riel: string; nombre: string; bolsa: number | null }>(null);
+  const [verUtilLincoin, setVerUtilLincoin] = useState(false);
+  // Un clic en un botón, enlace o ventana DENTRO de la tarjeta no la abre
+  // (actualizar, «Bancos ACH», «Inscripciones»).
+  const esClicPropio = (e: React.MouseEvent) => !(e.target as HTMLElement).closest('button, a, input, [role="dialog"]');
   const [cajaVer, setCajaVer] = useState(0);
   const [cajaAbierta, setCajaAbierta] = useState(false);       // detalle del cierre desplegado
   const [cajaOcultar, setCajaOcultar] = useState<any>(null);    // cargue a revisar/ocultar
@@ -2613,7 +2621,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               {bolsas.map(b => {
                 const activa = carguesRail === b.rail;
                 return (
-                  <div key={b.rail} style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
+                  <div key={b.rail}
+                    onClick={e => { if (esClicPropio(e)) setVerBolsillo({ riel: b.rail, nombre: b.label, bolsa: b.loading || b.error ? null : b.pool }); }}
+                    title={`Ver de quién es el saldo comprometido en ${b.label}`}
+                    className="transition-colors hover:border-white/25"
+                    style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 0, cursor: 'pointer' }}>
                     <div className="flex items-center justify-between" style={{ gap: 10 }}>
                       {/* El nombre no se parte ("Coinsenda / 2"): si no cabe,
                           baja entero el "· Bre-B y ACH". */}
@@ -2659,8 +2671,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 const abiertas = ps.filter(p => p.lincoinEsperado != null);
                 const total = abiertas.reduce((a, p) => a + Number(p.lincoinEsperado), 0);
                 return (
-                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 800, color: '#F4F4F2' }}>Lincoin<span style={{ color: '#4ADE80' }}>.</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· utilidades</span></span>
+                  <div onClick={e => { if (esClicPropio(e)) setVerUtilLincoin(true); }} title="Ver cómo se arma la utilidad de Lincoin"
+                    className="transition-colors hover:border-white/25"
+                    style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 0, cursor: 'pointer' }}>
+                    <span className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 800, color: '#F4F4F2' }}>
+                      <span>Lincoin<span style={{ color: '#4ADE80' }}>.</span> <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· utilidades</span></span>
+                      <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: '#4ADE80', whiteSpace: 'nowrap' }}>Ver detalle →</span>
+                    </span>
                     {!caja ? <p style={{ margin: '4px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
                       : abiertas.length === 0 ? <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88', maxWidth: 210, lineHeight: 1.4 }}>La caja se abre hoy a las 23:59 (o desde Tesorería).</p>
                       : <>
@@ -2722,6 +2739,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 );
               })()}
               {verUtilRisk && <AdminRiskUtilidades onCerrar={() => setVerUtilRisk(false)} />}
+              {verBolsillo && <BolsilloDetalle riel={verBolsillo.riel} nombre={verBolsillo.nombre} bolsa={verBolsillo.bolsa} onCerrar={() => setVerBolsillo(null)} />}
+              {verUtilLincoin && <LincoinUtilidadesDetalle nombreBolsa={nombreBolsa} onCerrar={() => setVerUtilLincoin(false)} />}
             </div>}
           </div>
           {billeteraPais === 'US' ? (
