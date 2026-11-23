@@ -31,6 +31,7 @@ import { igualSeguro, requireMfaSession } from '../_shared/admin-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { encField, decField } from '../_shared/field-crypto.ts'
 import * as SB from './sarblock.ts'
+import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -1573,6 +1574,95 @@ async function avisarPorCorreo(userId: string, datos: {
   }
 }
 
+// ══ KYT con las consultas de Lincoin Risk (23 nov) ══════════════════
+// El dueño: "se cobran las consultas… que no pueda consultar si no tiene
+// consultas; las mismas de AML sirven para el KYT, ya que es el mismo
+// proveedor". Antes el KYT de un cliente no le costaba nada: solo lo frenaba
+// un tope diario, y cada análisis lo pagaba Lincoin.
+//
+// Mismas reglas que la consulta AML (sarblock risk_consultar):
+//   · Se reserva 1 consulta ANTES de gastar en el proveedor (risk_mover es
+//     atómico: con saldo 1, dos consultas al tiempo no pasan las dos), con un
+//     candado por empresa y dirección contra el doble clic.
+//   · Una dirección que la empresa ya pagó y sigue vigente no se cobra otra
+//     vez (la vigencia del padrón de KYT, mínimo 24 h). El reporte de esa
+//     dirección tampoco: es el documento de la consulta ya pagada.
+//   · Si no sale un resultado (servicio caído, sin resultado, análisis aún en
+//     curso), se devuelve. El análisis en curso se cobra cuando llega.
+//   · Sin consultas, no se consulta.
+// No cobra al admin (Cumplimiento con 2FA) ni a la ronda de monitoreo, ni la
+// wallet de origen de la mesa OTC: esas no son consultas del cliente.
+const ACCIONES_CON_CONSULTA = new Set(['consultar', 'reporte'])
+const pagaConConsultas = (yo: Yo) => !!yo.userId && !yo.esAdmin
+const refKyt = (coin: string, dir: string) => `kyt:${coin}:${dir.toLowerCase()}`
+
+async function saldoConsultas(uid: string): Promise<number> {
+  const { data } = await db.from('risk_saldos').select('saldo').eq('user_id', uid).maybeSingle()
+  return Number((data as any)?.saldo ?? 0)
+}
+async function moverConsultas(uid: string, tipo: 'consumo' | 'devolucion', cantidad: number, detalle: string, por: string | null, ref: string) {
+  const { data, error } = await db.rpc('risk_mover', { p_user_id: uid, p_tipo: tipo, p_cantidad: cantidad, p_detalle: detalle, p_por: por, p_ref: ref })
+  if (error) throw new Error(error.message)
+  return data as { ok?: boolean; error?: string; saldo?: number }
+}
+// ¿La empresa ya pagó esta dirección y sigue vigente? Se suma lo movido con
+// esa referencia en la ventana: un consumo devuelto suma cero.
+async function consultaKytVigente(uid: string, ref: string, dias: number): Promise<boolean> {
+  const desde = new Date(Date.now() - dias * 86400_000).toISOString()
+  const { data } = await db.from('risk_movimientos').select('cantidad').eq('user_id', uid).eq('ref', ref).gte('at', desde)
+  return ((data ?? []) as any[]).reduce((t, r) => t + Number(r.cantidad ?? 0), 0) < 0
+}
+async function nombreUsuario(id: string): Promise<string | null> {
+  const { data } = await db.from('users').select('full_name, name, email').eq('id', id).maybeSingle()
+  return (data as any)?.full_name || (data as any)?.name || (data as any)?.email || null
+}
+
+async function conConsultaRisk(yo: Yo, accion: string, body: any, seguir: () => Promise<Response>): Promise<Response> {
+  const c = await leerConfig()
+  const coin = canonCoin(body.coin)
+  const dir = normDir(body.address)
+  // Sin servicio, sin red o con un formato malo, la acción misma lo rechaza
+  // sin gastar nada: no hay que reservar.
+  if (!c.activo || !coin || dir.length < 20 || dir.length > 120 || !formatoValido(coin, dir)) return await seguir()
+  const uid = yo.userId as string
+  const ref = refKyt(coin, dir)
+  const llave = `kyt:${uid}:${ref}`
+  const cand = await reclamarCandado(db, llave, 120, uid, `kyt_${accion}`)
+  if (cand === 'ocupado') {
+    return json({ ok: false, error: 'en_curso', enCurso: true, mensaje: 'Esa dirección ya se está consultando en este momento. Espera unos segundos: no se usó ninguna consulta.' })
+  }
+  if (cand === 'error') {
+    return json({ ok: false, error: 'servicio', mensaje: 'No se pudo consultar en este momento. Intenta de nuevo en unos segundos. No se usó ninguna consulta.' })
+  }
+  try {
+    const dias = Math.max(1, Number(c.diasVigencia) || 0)
+    let reservada = false
+    if (!(await consultaKytVigente(uid, ref, dias))) {
+      const m = await moverConsultas(uid, 'consumo', -1, `Consulta KYT ${coin} ${dir}`, await nombreUsuario(uid), ref)
+      if (m?.error) {
+        return json({ ok: false, error: 'sin_consultas', sinSaldo: true, saldoConsultas: Number(m.saldo ?? 0), mensaje: 'No te quedan consultas. Compra un paquete en Lincoin Risk para seguir consultando.' })
+      }
+      reservada = true
+    }
+    const r = await seguir()
+    let datos: any = null
+    try { datos = await r.clone().json() } catch { /* sin cuerpo JSON */ }
+    if (reservada && datos?.ok !== true) {
+      try {
+        await moverConsultas(uid, 'devolucion', 1, `La consulta KYT de ${coin} ${dir} no dio resultado: se devuelve`, null, ref)
+      } catch (e) {
+        // Que quede a la vista: la consulta se reservó y no se pudo devolver.
+        console.error('[kyt] no se pudo devolver la consulta', ref, (e as Error)?.message)
+        await logAuditKyt(uid, 'kyt.consulta_no_devuelta', { ref, error: String((e as Error)?.message ?? e).slice(0, 200) })
+      }
+    }
+    if (!datos || typeof datos !== 'object') return r
+    return json({ ...datos, saldoConsultas: await saldoConsultas(uid), consultaCobrada: reservada && datos.ok === true }, r.status)
+  } finally {
+    await soltarCandado(db, llave)
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   try {
@@ -1580,7 +1670,29 @@ Deno.serve(async (req) => {
     const accion = String(body.action ?? '')
     const yo = await quienLlama(req)
     if (!yo.userId && !yo.esAdmin) return json({ error: 'no_autorizado' }, 401)
+    if (ACCIONES_CON_CONSULTA.has(accion) && pagaConConsultas(yo)) {
+      return await conConsultaRisk(yo, accion, body, () => atender(req, body, accion, yo))
+    }
+    // El análisis profundo (rastreo de intermediarios) es de una dirección que
+    // la empresa ya consultó: no se cobra aparte, pero sin esa consulta no
+    // sale (si no, sería una consulta gratis por otra puerta).
+    if (accion === 'rutas' && pagaConConsultas(yo)) {
+      const cr = await leerConfig()
+      const coin = canonCoin(body.coin), dir = normDir(body.address)
+      if (coin && dir && !(await consultaKytVigente(yo.userId as string, refKyt(coin, dir), Math.max(1, Number(cr.diasVigencia) || 0)))) {
+        return json({ ok: false, error: 'sin_consulta', mensaje: 'Consulta primero esta dirección (usa 1 consulta de Lincoin Risk) y después rastrea sus intermediarios.' })
+      }
+    }
+    return await atender(req, body, accion, yo)
+  } catch (e) {
+    return json({ error: 'interno', mensaje: (e as Error)?.message ?? String(e) }, 500)
+  }
+})
 
+// Todas las acciones. Separado de Deno.serve para que la consulta y el
+// reporte del cliente pasen primero por conConsultaRisk.
+async function atender(req: Request, body: any, accion: string, yo: Yo): Promise<Response> {
+  {
     const c = await leerConfig()
     await cargarLlave()
 
@@ -2912,7 +3024,5 @@ Deno.serve(async (req) => {
     }
 
     return json({ error: 'accion_desconocida' }, 400)
-  } catch (e) {
-    return json({ error: 'interno', mensaje: (e as Error)?.message ?? String(e) }, 500)
   }
-})
+}

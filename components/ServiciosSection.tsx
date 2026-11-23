@@ -12,7 +12,7 @@
 //  desactivado, basta bajarle la opacidad para que se entienda.
 // ══════════════════════════════════════════════════════════════════
 import React, { useState } from 'react';
-import { ArrowLeft, ArrowLeftRight, Layers, ScanSearch, ShoppingBag, TrendingUp, GraduationCap, Bell, Check } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, Layers, ShoppingBag, TrendingUp, GraduationCap, Bell, Check } from 'lucide-react';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 
@@ -50,11 +50,10 @@ export const ServiciosSection: React.FC<{
   onBack: () => void;
   onOtc: () => void;
   onMultiwallet: () => void;
-  onKyt: () => void;
   /** Avisos ya suscritos, para que el estado sobreviva a recargar la página. */
   avisos?: string[];
   onAvisar?: (id: string) => void;
-}> = ({ onBack, onOtc, onMultiwallet, onKyt, avisos = [], onAvisar }) => {
+}> = ({ onBack, onOtc, onMultiwallet, avisos = [], onAvisar }) => {
   const [locales, setLocales] = useState<string[]>([]);
   const suscrito = (id: string) => avisos.includes(id) || locales.includes(id);
 
@@ -69,13 +68,8 @@ export const ServiciosSection: React.FC<{
       desc: 'Varias billeteras USDC con nombre — ideal para separar proyectos, estudios y negocios.',
       cta: 'Crear billetera', go: onMultiwallet,
     },
-    // KYT no estaba en el diseño porque todavía no existía cuando se escribió.
-    // Va acá y no en próximamente: está funcionando.
-    {
-      Icon: ScanSearch, titulo: 'KYT',
-      desc: 'Consulta si una dirección cripto está señalada por actividad ilícita antes de operar con ella.',
-      cta: 'Consultar dirección', go: onKyt,
-    },
+    // KYT ya no va acá (23 nov, pedido del dueño): vive en Lincoin Risk, que
+    // pregunta AML o KYT al entrar, y gasta las mismas consultas.
   ];
 
   const proximos: Proximo[] = [

@@ -451,9 +451,16 @@ const ResultadoSarblock: React.FC<{
 type Res = any;
 type Fila = any;
 
-// `volverA`: a dónde lleva la flecha. Se entra desde Servicios y, desde el
-// 23 nov, desde Lincoin Risk (la ventana que pregunta AML o KYT).
-export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = ({ onBack, volverA = 'Servicios' }) => {
+// `volverA`: a dónde lleva la flecha. Se entra desde Lincoin Risk (la
+// ventana que pregunta AML o KYT, 23 nov).
+// `consultas`: el saldo de consultas de Lincoin Risk. Desde el 23 nov el KYT
+// las gasta igual que la consulta AML (pedido del dueño: "las mismas de AML
+// sirven para el KYT"); null = todavía no se sabe. `onSaldo` avisa el saldo
+// que devuelve el servidor después de cada consulta.
+export const KytSection: React.FC<{
+  onBack?: () => void; volverA?: string;
+  consultas?: number | null; onSaldo?: (n: number) => void; onRecargar?: () => void;
+}> = ({ onBack, volverA = 'Lincoin Risk', consultas = null, onSaldo, onRecargar }) => {
   const [coin, setCoin] = useState('TRX');
   // Las redes las manda el proveedor (/v1/status). Si no contesta, el servidor
   // devuelve la lista conocida: un selector vacío deja la pantalla inservible.
@@ -525,6 +532,7 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
         await new Promise(ok => setTimeout(ok, 6000));
         r = await llamarFuncion('kyt', { action: 'consultar', coin, address: a }, 45000);
       }
+      if (typeof r?.saldoConsultas === 'number') onSaldo?.(r.saldoConsultas);
       setRes(r ? conLectura(r) : { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
     } catch {
       setRes({ ok: false, error: 'red', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
@@ -558,6 +566,8 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
   );
 
   const conCambio = lista.filter(x => x.subio);
+  // Saldo conocido y en cero: no se consulta (el servidor también lo frena).
+  const sinConsultas = consultas != null && consultas <= 0;
   const visibles = filtro === 'cambio' ? conCambio : filtro === 'orden' ? lista.filter(x => !x.subio) : lista;
 
   // "Riesgo alto · 3 / 100" en una sola línea se lee como un error de la
@@ -601,6 +611,17 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
           </button>
         )}
         <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Verificación de direcciones (KYT)</h1>
+        {consultas != null && (
+          <button onClick={onRecargar} disabled={!onRecargar}
+            style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14, padding: '9px 10px 9px 15px', borderRadius: 14, cursor: onRecargar ? 'pointer' : 'default', fontFamily: FONT, color: C.text, background: C.card, border: `1px solid ${consultas <= 0 ? 'rgba(251,191,36,0.45)' : C.bdSoft}` }}
+            onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
+            <span style={{ textAlign: 'left' }}>
+              <span style={{ display: 'block', fontSize: 10, fontWeight: 700, letterSpacing: '1.2px', color: consultas <= 0 ? '#FBBF24' : C.sub }}>{consultas <= 0 ? 'SIN CONSULTAS' : 'CONSULTAS'}</span>
+              <span style={{ display: 'block', fontSize: 20, fontWeight: 800, letterSpacing: '-0.4px', color: consultas <= 0 ? '#FBBF24' : C.text }}>{consultas.toLocaleString('es-CO')}</span>
+            </span>
+            {onRecargar && <span style={{ height: 32, padding: '0 12px', borderRadius: 9, background: '#F4F4F2', color: '#15181A', fontSize: 12.5, fontWeight: 700, display: 'grid', placeItems: 'center' }}>+ Recargar</span>}
+          </button>
+        )}
       </div>
       <p style={{ fontSize: 13.5, color: C.sub, margin: '0 0 24px', maxWidth: 640, lineHeight: 1.6 }}>
         Consultá una dirección antes de operar con ella. Te decimos si está señalada por actividad
@@ -632,12 +653,12 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
               onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}
             />
           </div>
-          <button onClick={consultar} disabled={busy || !dir.trim()}
+          <button onClick={consultar} disabled={busy || !dir.trim() || sinConsultas}
             style={{
               fontFamily: FONT, fontSize: 13.5, fontWeight: 700,
               background: C.text, color: '#0A0A0A', border: 'none', borderRadius: 9,
-              padding: '12px 22px', cursor: busy || !dir.trim() ? 'default' : 'pointer',
-              opacity: busy || !dir.trim() ? 0.45 : 1,
+              padding: '12px 22px', cursor: busy || !dir.trim() || sinConsultas ? 'default' : 'pointer',
+              opacity: busy || !dir.trim() || sinConsultas ? 0.45 : 1,
               display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap',
             }}
             onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
@@ -649,6 +670,13 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
           La dirección tiene que ser de la red que elegiste. La misma cadena de caracteres en otra
           red es otra dirección y otro riesgo.
         </p>
+        {consultas != null && (
+          <p style={{ fontSize: 12, color: sinConsultas ? '#FBBF24' : C.sub, margin: '6px 0 0', lineHeight: 1.55 }}>
+            {sinConsultas
+              ? <>No te quedan consultas.{onRecargar ? <> <button onClick={onRecargar} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: FONT, fontSize: 'inherit', fontWeight: 700, color: C.text, textDecoration: 'underline' }}>Recarga para consultar</button></> : null}</>
+              : <>Usa 1 consulta de Lincoin Risk (las mismas de AML). Si la dirección ya la consultaste y sigue vigente, no se cobra otra vez; si no sale un resultado, se devuelve.</>}
+          </p>
+        )}
       </div>
 
       {/* ── Resultado ── */}
@@ -658,7 +686,9 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
             <ShieldQuestion size={19} strokeWidth={1.5} style={{ color: C.sub, flexShrink: 0, marginTop: 2 }} />
             <div>
               <p style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>
-                {res.error === 'sin_credencial' ? 'El servicio no está habilitado todavía'
+                {res.error === 'sin_consultas' ? 'No te quedan consultas'
+                  : res.error === 'sin_consulta' ? 'Primero consulta la dirección'
+                  : res.error === 'sin_credencial' ? 'El servicio no está habilitado todavía'
                   : res.error === 'en_curso' ? 'El análisis sigue en curso'
                   : res.error === 'servicio' ? 'La verificación no está disponible ahora'
                   : res.error === 'tope_diario' ? 'Llegaste al tope de consultas de hoy'
@@ -666,6 +696,12 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
                   : 'Sin resultado'}
               </p>
               <p style={{ fontSize: 13, color: C.sub, margin: '5px 0 0', lineHeight: 1.6 }}>{res.mensaje}</p>
+              {res.error === 'sin_consultas' && onRecargar && (
+                <button onClick={onRecargar}
+                  style={{ marginTop: 10, fontFamily: FONT, fontSize: 13, fontWeight: 700, background: '#F4F4F2', color: '#15181A', border: 'none', borderRadius: 9, padding: '9px 16px', cursor: 'pointer' }}>
+                  Recargar consultas
+                </button>
+              )}
               {/* El código del error del proveedor (sin su nombre). Sin esto,
                   "no está disponible" no dejaba saber si era la llave, los
                   créditos o una caída, y había que buscarlo en otro lado. */}
@@ -751,6 +787,7 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
                     // Pasa por la misma lectura que la consulta inicial: sin
                     // esto, re-consultar devolvía la banda del proveedor y una
                     // dirección señalada volvía a salir en verde.
+                    if (typeof r?.saldoConsultas === 'number') onSaldo?.(r.saldoConsultas);
                     if (r) setRes(conLectura(r));
                     setBusy(false);
                   }}
@@ -765,6 +802,7 @@ export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = (
                   setArmando(true);
                   const r = await llamarFuncion('kyt', { action: 'reporte', coin: res.coin, address: res.address }, 60000).catch(() => null);
                   setArmando(false);
+                  if (typeof r?.saldoConsultas === 'number') onSaldo?.(r.saldoConsultas);
                   // Si ya se rastrearon rutas, van al reporte: es el dato
                   // mas caro de obtener y seria absurdo dejarlo fuera.
                   // Sin rastreo en pantalla, el del servidor: `{ ...r, rutas }` lo

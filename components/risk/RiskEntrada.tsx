@@ -6,9 +6,9 @@
 //
 // La elección no se recuerda a propósito: cada entrada pregunta. Desde
 // cualquiera de las dos se vuelve a la ventana con la flecha de arriba.
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Users, Wallet, X } from 'lucide-react';
-import { RiskCliente, C } from './RiskCliente';
+import { RiskCliente, C, Panel, Recarga, ESTILOS, llamar } from './RiskCliente';
 import { Wordmark } from './Carnet';
 import { KytSection } from '../KytSection';
 
@@ -95,8 +95,30 @@ const Ventana: React.FC<{ onElegir: (m: Modo) => void; onCerrar: () => void }> =
 
 export const RiskEntrada: React.FC<{ onSalir: () => void }> = ({ onSalir }) => {
   const [modo, setModo] = useState<Modo | null>(null);
+  // El KYT gasta las mismas consultas que AML (23 nov): su pantalla muestra
+  // ese saldo y abre la misma recarga, sin pasar por la de personas.
+  const [cuenta, setCuenta] = useState<any>(null);
+  const [recarga, setRecarga] = useState(false);
+  const refrescar = useCallback(async () => {
+    const r = await llamar('risk_cuenta').catch(() => null);
+    if (r?.ok) setCuenta(r);
+  }, []);
+  useEffect(() => { if (modo === 'kyt') refrescar(); }, [modo, refrescar]);
 
-  if (modo === 'kyt') return <KytSection onBack={() => setModo(null)} volverA="Lincoin Risk" />;
+  if (modo === 'kyt') {
+    return (
+      <>
+        <style>{ESTILOS}</style>
+        <KytSection onBack={() => setModo(null)} volverA="Lincoin Risk"
+          consultas={cuenta ? Number(cuenta.saldo ?? 0) : null}
+          onSaldo={n => setCuenta((c: any) => (c ? { ...c, saldo: n } : c))}
+          onRecargar={cuenta?.tienda ? () => setRecarga(true) : undefined} />
+        <Panel titulo="Recargar consultas" abierto={recarga && !!cuenta?.tienda} cerrar={() => { setRecarga(false); refrescar(); }}>
+          {cuenta?.tienda ? <Recarga cuenta={cuenta} listo={() => { setRecarga(false); refrescar(); }} /> : null}
+        </Panel>
+      </>
+    );
+  }
   if (modo === 'aml') {
     return (
       <>

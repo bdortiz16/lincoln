@@ -231,7 +231,7 @@ const Avance: React.FC = () => {
 };
 
 // ── Recarga (panel por pasos) ───────────────────────────────────────────
-const Recarga: React.FC<{ cuenta: any; listo: () => void }> = ({ cuenta, listo }) => {
+export const Recarga: React.FC<{ cuenta: any; listo: () => void }> = ({ cuenta, listo }) => {
   const t = cuenta.tienda;
   const paquetes = useMemo(() => [t.minimoCompra, t.minimoCompra * 3, t.minimoCompra * 10].map(n => Math.max(t.minimoCompra, Math.round(n / 50) * 50)), [t.minimoCompra]);
   const [cantidad, setCantidad] = useState<number>(paquetes[1]);

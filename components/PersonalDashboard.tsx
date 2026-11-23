@@ -29,7 +29,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ShieldCheck,
-  ScanSearch,
   Lock,
   LayoutGrid,
   Share2,
@@ -86,7 +85,6 @@ import { ContactsSection, contactStatus } from './ContactsSection';
 import { ClientesSection } from './ClientesSection';
 import { EnviarDineroModal, EnviarHandle, EnviarPrefill, prefillDeContacto } from './EnviarDineroModal';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
-import { KytSection } from './KytSection';
 import { RiskEntrada } from './risk/RiskEntrada';
 import { OtcManual } from './OtcManual';
 import { CodeInput } from './CodeInput';
@@ -357,7 +355,7 @@ const PATH_VIEWS: Record<string, string> = {
 };
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }) => {
-  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'clientes' | 'contabilidad' | 'compliance' | 'risk' | 'walletsGasfree' | 'kyt'>(() => {
+  const [activeView, setActiveView] = useState<'dashboard' | 'movements' | 'wallet-detail' | 'profile' | 'notifications' | 'referrals' | 'affiliates' | 'settings' | 'servicios' | 'mouv' | 'contactos' | 'clientes' | 'contabilidad' | 'compliance' | 'risk' | 'walletsGasfree'>(() => {
     // Vista inicial según la URL (deep-link / recarga en /movimientos, etc.).
     // /billetera necesita una billetera seleccionada, que NO sobrevive a la
     // recarga (no va en la URL) → si se recarga ahí, se abre Inicio (donde
@@ -2000,16 +1998,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
             <span style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2' }}>Servicios</span>
             <button onClick={() => setActiveView('servicios')} style={{ fontSize: 12, color: '#878E88' }} className="hover:text-[#F4F4F2] transition-colors">Ver más ›</button>
           </div>
-          {/* CUATRO accesos, no cinco.
+          {/* TRES accesos (23 nov: KYT se fue a Lincoin Risk, donde gasta las
+              mismas consultas que AML). Antes, CUATRO y no cinco:
               Eran cinco y dos de ellos no llevaban a ningún lado: iconos en
               gris que ocupaban lugar y no hacían nada. Una fila de accesos
               rápidos donde casi la mitad no responde deja de leerse como
               accesos. Quedan los tres que funcionan y uno que viene; el resto
               vive en "Ver más". */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginTop: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginTop: 10 }}>
             {([
               { Icon: ArrowLeftRight, t: 'Mesa OTC',    go: () => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); } },
-              { Icon: ScanSearch,     t: 'KYT',         go: () => setActiveView('kyt') },
               { Icon: Layers,         t: 'Multiwallet', go: () => setActiveView('walletsGasfree') },
               { Icon: TrendingUp,     t: 'Rendimientos', go: null },
             ] as const).map(({ Icon, t, go }) => (
@@ -3903,7 +3901,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
       onBack={() => setActiveView('dashboard')}
       onOtc={() => { setOtcRail(null); setMouvMode('converter'); setActiveView('mouv'); }}
       onMultiwallet={() => setActiveView('walletsGasfree')}
-      onKyt={() => setActiveView('kyt')}
       avisos={avisosServicios}
       onAvisar={(id) => {
         if (!currentUser?.id) return;
@@ -4815,7 +4812,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {activeView === 'affiliates' && renderAffiliates()}
           {activeView === 'settings' && renderSettings()}
       {activeView === 'servicios' && renderServicios()}
-      {activeView === 'kyt' && <KytSection onBack={() => setActiveView('servicios')} />}
       {/* Lincoin Risk pregunta primero AML o KYT (ventana de RiskEntrada). */}
       {activeView === 'risk' && <RiskEntrada onSalir={() => setActiveView('dashboard')} />}
       {activeView === 'walletsGasfree' && currentUser?.id && (
