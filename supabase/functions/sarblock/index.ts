@@ -1406,17 +1406,10 @@ Deno.serve(async (req) => {
         const espera = Math.min(5 * 60_000 * 2 ** (n - 1), 6 * 3600_000)
         return Date.now() - (Date.parse(f.at) || 0) >= espera
       }
-      // Ficha de la época de TusDatos que no bloquea (23 nov): ya no habilita
-      // envíos. Antes se reverificaba solo al intentar enviar, y la pantalla
-      // mostraba «Por actualizar» hasta entonces; ahora se reverifica sola al
-      // abrir Beneficiarios. Los bloqueos de TusDatos (riesgo alto, nombre o
-      // documento) se quedan como están: esos los resuelve Cumplimiento.
-      const tusdatosPorActualizar = (f: any) => !!f && f.estado === 'finalizado' && f.proveedor !== 'sarblock'
-        && f.operable !== false && f.categoria !== 'alto' && f.nombreCoincide !== false && f.documentoVigente !== false
       // Archivada = la de un beneficiario borrado; si vuelve a estar inscrito
       // se retoma (del padrón, sin costo, si sigue vigente).
       const faltan = contactos.filter(x => x?.accountKind !== 'wallet' && soloDigitos(x?.docNumber)
-        && (!fichaDe(x) || fichaDe(x).estado === 'archivado' || errorVencido(fichaDe(x)) || renombrado(x) || tusdatosPorActualizar(fichaDe(x))))
+        && (!fichaDe(x) || fichaDe(x).estado === 'archivado' || errorVencido(fichaDe(x)) || renombrado(x)))
       let lanzados = 0, tope = false
       for (const x of faltan.slice(0, limite)) {
         const r: any = await lanzar(uid, { documento: String(x.docNumber), tipoDocumento: String(x.docType ?? 'CC'), nombre: x.name }, c, yo.esAdmin)
