@@ -202,6 +202,50 @@ const ROTULO: React.CSSProperties = {
     fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase',
 };
 
+// ── ¿Hay tasa automática? (23 nov) ──────────────────────────────────
+// Cuando el proveedor no devuelve tasa, el cliente solo lee "No hay
+// cotización automática" (no le corresponde saber quién ni por qué) y la
+// mesa no tenía dónde ver el motivo: el servidor se lo manda solo a la mesa
+// (`motivo`, `crudo`), pero ninguna pantalla lo pedía. Esto cotiza como la
+// mesa cada minuto y dice la tasa o por qué no hay.
+const TasaAutomatica: React.FC = () => {
+    const [r, setR] = useState<any>(null);
+    const [ver, setVer] = useState(false);
+    const probar = useCallback(async () => {
+        const x = await callMesa('cotizar', { side: 'vende_usdt' });
+        setR({ ...x, at: new Date() });
+    }, []);
+    useEffect(() => { probar(); const t = setInterval(probar, 60_000); return () => clearInterval(t); }, [probar]);
+    if (!r) return null;
+    const hay = r.ok && Number(r.rate) > 0;
+    const hora = r.at.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit' });
+    return (
+        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '4px 10px', borderRadius: 999, border: `1px solid ${hay ? VERDE + '44' : AMBAR + '55'}`, background: hay ? VERDE + '10' : AMBAR + '12', color: TXT }}>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: hay ? VERDE : AMBAR }} />
+                {hay
+                    ? <>Tasa automática · venta 1 USDT = <b>{nf(r.rate, 2)}</b> COP <span style={{ color: TXT2 }}>· {hora}</span></>
+                    : <>Sin tasa automática <span style={{ color: TXT2 }}>· {hora}</span></>}
+            </span>
+            {!hay && (
+                <span style={{ display: 'block', marginTop: 5, color: TXT2, maxWidth: 560 }}>
+                    {r.motivo ? <>Motivo: <span style={{ color: TXT }}>{String(r.motivo)}</span>. </> : r.error ? <>Error: <span style={{ color: TXT }}>{String(r.error)}</span>. </> : null}
+                    Los clientes pueden pedir el cierre igual y la mesa lo cotiza a mano.
+                    {r.crudo && (
+                        <button onClick={() => setVer(v => !v)} style={{ marginLeft: 6, color: VERDE, background: 'transparent', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                            {ver ? 'Ocultar respuesta' : 'Ver respuesta del proveedor'}
+                        </button>
+                    )}
+                    {ver && r.crudo && (
+                        <pre style={{ marginTop: 6, padding: '8px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: `1px solid ${BORDE}`, color: TXT2, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560 }}>{String(r.crudo)}</pre>
+                    )}
+                    <button onClick={probar} style={{ marginLeft: 6, color: VERDE, background: 'transparent', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Probar de nuevo</button>
+                </span>
+            )}
+        </div>
+    );
+};
+
 export const AdminOtcCierres: React.FC = () => {
     const [filtro, setFiltro]   = useState('vivos');
     const [filas, setFilas]     = useState<any[]>([]);
@@ -277,6 +321,7 @@ export const AdminOtcCierres: React.FC = () => {
                 <div>
                     <h2 style={{ fontSize: 18, fontWeight: 800, color: TXT, letterSpacing: '-0.4px' }}>Cierres OTC</h2>
                     <p style={{ fontSize: 12, color: TXT2, marginTop: 3 }}>Solicitudes de la mesa manual. Se atienden por orden de llegada.</p>
+                    <TasaAutomatica />
                 </div>
                 <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
                     <button onClick={() => { setCargando(true); cargar(); }}
