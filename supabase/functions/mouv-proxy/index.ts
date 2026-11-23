@@ -1969,6 +1969,16 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
         await avisarAdminBreb2('rechazo', 'Bre-B Cuenta 2: Finity rechazó un envío',
           `Finity rechazó un envío Bre-B Cuenta 2 de ${monto.toLocaleString('es-CO')} COP: "${motivoFinity}". ${disponible == null ? 'No se pudo leer el saldo de la cuenta Finity.' : `El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP.`} No salió nada y no se descontó nada del saldo del cliente.`)
       }
+    } else {
+      // Falla del lado de Finity (5xx, 401/403, 408, 429 o sin respuesta). 23
+      // nov, 3:00 p. m.: un Bre-B de 3.437.000 salió "tiene una falla en este
+      // momento" y al equipo no le llegaba nada; el código y el texto de
+      // Finity solo quedaban en audit_log. Ahora llegan por correo.
+      const st = Number(ultimo?.status ?? 0)
+      const crudo = (() => { try { return JSON.stringify(ultimo?.data ?? ultimo ?? null).slice(0, 600) } catch { return '' } })()
+      const limpio = (v: string) => v.replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' } as Record<string, string>)[ch])
+      await avisarAdminBreb2(`proveedor_${st || 'sin_respuesta'}`, `Bre-B Cuenta 2: Finity respondió ${st || 'sin respuesta'} al crear un envío`,
+        `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity respondió ${st ? `HTTP ${st}` : 'sin respuesta (tiempo de espera o conexión)'}${motivoFinity ? `: "${limpio(motivoFinity)}"` : ''}. ${st === 401 || st === 403 ? 'Es un rechazo de acceso: la credencial de la API de Finity o un bloqueo de su lado. ' : st === 429 ? 'Finity pidió esperar: demasiadas solicitudes. ' : ''}No salió nada y no se descontó nada del saldo del cliente.<br><br>Respuesta completa: <code>${limpio(crudo)}</code>`)
     }
     await logAudit(userId, 'finity.breb.diagnostico', { monto, diagnostico, directorio: directorio.tipo ? { tipo: directorio.tipo, llave: enmascarar(String(directorio.llave ?? '')) } : null, tipoInscrito, intentos: rastro })
     return { ok: false, paso: 'crear', httpStatus: Number(ultimo?.status ?? 0) || null, body: ultimo?.data ?? ultimo ?? null, ...(mensaje ? { mensaje } : {}) }
