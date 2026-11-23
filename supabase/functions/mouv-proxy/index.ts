@@ -1928,48 +1928,46 @@ async function finityPrepararBreb(userId: string, recipient: Record<string, any>
     if (![400, 404, 422].includes(Number(c?.status ?? 0))) break
   }
   if (!creada) {
-    // ¿Es la llave o es el monto? Crear no mueve plata: se prueba la misma
-    // llave con el mínimo (5.000). Si así sí la acepta, la llave está bien y lo
-    // que no pasa es el monto — o la bolsa de la Cuenta 2 no lo cubre.
+    // ¿Por qué no lo aceptó? Antes se probaba la misma llave con 5.000 COP
+    // ("crear no mueve plata") para separar la llave del monto. 23 nov: cada
+    // prueba quedó en el portal de Finity como una "Transferencia Bre-B ·
+    // COP 5.000 · Por aprobar" (seis en una tarde) y el dueño pensó que nos
+    // estaban atacando. Además, una pendiente que alguien apruebe en el
+    // portal paga 5.000 a esa llave. Ya no se crea nada de prueba: decide lo
+    // que dice Finity (sin fondos, tope, llave) y el saldo de la bolsa, que
+    // ahora sí se lee (finity-proxy balance → /v0/account/COP).
     let diagnostico: 'llave' | 'monto' | 'cupo' | 'desconocido' = 'desconocido'
     let mensaje: string | undefined
     const rechazoPorDatos = [400, 404, 422].includes(Number(ultimo?.status ?? 0))
     const avisarSinFondos = (disponible: number | null) => avisarAdminBreb2('sin_fondos', 'Bre-B Cuenta 2 sin fondos: hay que recargar la billetera Bre-B',
       `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity respondió "${motivoCreacion(ultimo)}": la billetera Bre-B (Kamin) de la cuenta Finity no tiene saldo para ese envío. ${disponible == null ? '' : `El saldo en pesos de la cuenta Finity (el de ACH) es ${disponible.toLocaleString('es-CO')} COP, pero la billetera Bre-B es aparte. `}Hay que recargar la billetera Bre-B (pedírselo a Finity). Mientras tanto los clientes pueden enviar por Bre-B Cuenta 1 o ACH.`)
+    const motivoFinity = motivoCreacion(ultimo)
     // Al cliente no se le dice "no tiene fondos": se preocupaba por SU saldo
     // (3 nov). Se le dice que la cuenta no está disponible; el equipo recibe la causa real.
     if (sinFondosBreb2(ultimo)) {
-      // Lo dice el proveedor: no hace falta adivinar con la prueba de 5.000.
       diagnostico = 'cupo'
       mensaje = 'Bre-B · Cuenta 2 no está disponible de momento. Intenta en unos minutos.'
       await avisarSinFondos(await finityCopDisponible(userId).catch(() => null))
-    } else if (rechazoPorDatos && monto > 5000 && intentos.length) {
-      const base = intentos[0]
-      const p = await finityCall('breb_crear', userId, { data: { amount: 5000, key_type: base.tipo, key_value: base.valor } })
-      const okPrueba = !!(p?.ok && (p?.data?.data?.id ?? p?.data?.id))
-      rastro.push({ prueba: 5000, tipo: base.tipo, llave: enmascarar(base.valor), status: Number(p?.status ?? 0) || null, motivo: p?.ok ? null : motivoCreacion(p) })
-      if (okPrueba) {
-        const disponible = await finityCopDisponible(userId)
-        rastro.push({ saldoCuenta2: disponible })
-        if (disponible != null && disponible < monto + 5000) {
-          diagnostico = 'cupo'
-          mensaje = 'Bre-B · Cuenta 2 no está disponible de momento. Intenta en unos minutos.'
-          await avisarAdminBreb2('cupo', 'Bre-B Cuenta 2: la bolsa de Finity no cubre los envíos',
-            `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity lo rechazó. Con el mínimo (5.000) la misma llave sí pasa, y el saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP. Hay que fondear la cuenta Finity: de esa misma bolsa salen también los envíos ACH.`)
-        } else {
-          diagnostico = 'monto'
-          mensaje = 'La Bre-B · Cuenta 2 no aceptó este monto, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o en montos más pequeños.'
-          await avisarAdminBreb2('monto', 'Bre-B Cuenta 2: Finity rechaza montos altos',
-            `Finity rechazó un envío Bre-B Cuenta 2 de ${monto.toLocaleString('es-CO')} COP ("${motivoCreacion(ultimo)}"), pero aceptó la misma llave con 5.000 COP. ${disponible == null ? 'No se pudo leer el saldo de la cuenta Finity.' : `El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP, que sí alcanza.`} Puede ser un tope por transferencia de Finity o de Kamin: conviene preguntárselo a Finity.`)
-        }
-      } else if (sinFondosBreb2(p)) {
-        // Ni el mínimo pasa porque la billetera está vacía: no es la llave.
+    } else if (rechazoPorDatos) {
+      const disponible = await finityCopDisponible(userId).catch(() => null)
+      rastro.push({ saldoCuenta2: disponible })
+      if (disponible != null && disponible < monto) {
         diagnostico = 'cupo'
         mensaje = 'Bre-B · Cuenta 2 no está disponible de momento. Intenta en unos minutos.'
-        await avisarSinFondos(null)
-      } else if (rechazoPorDatos) {
+        await avisarAdminBreb2('cupo', 'Bre-B Cuenta 2: la bolsa de Finity no cubre los envíos',
+          `Un cliente intentó enviar ${monto.toLocaleString('es-CO')} COP por Bre-B Cuenta 2 y Finity lo rechazó ("${motivoFinity}"). El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP. Hay que fondear la cuenta Finity: de esa misma bolsa salen también los envíos ACH.`)
+      } else if (/l[ií]mite|limit|exce[de]|m[aá]xim|maximum|tope|cupo|amount/i.test(motivoFinity)) {
+        diagnostico = 'monto'
+        mensaje = 'La Bre-B · Cuenta 2 no aceptó este monto, así que no salió nada. Envíalo por Bre-B · Cuenta 1 o por ACH, o en montos más pequeños.'
+        await avisarAdminBreb2('monto', 'Bre-B Cuenta 2: Finity rechaza el monto',
+          `Finity rechazó un envío Bre-B Cuenta 2 de ${monto.toLocaleString('es-CO')} COP: "${motivoFinity}". ${disponible == null ? 'No se pudo leer el saldo de la cuenta Finity.' : `El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP.`} Conviene preguntarle a Finity por ese tope.`)
+      } else {
+        // Lo más común aquí es la llave (Kamin responde 400 "Bad request");
+        // sin una prueba que lo confirme no se afirma: se dice las dos cosas.
         diagnostico = 'llave'
-        mensaje = 'La Bre-B · Cuenta 2 no reconoce esa llave, así que no salió nada. Pídele al beneficiario que te confirme su llave exacta, o envíalo por Bre-B · Cuenta 1 o por ACH.'
+        mensaje = 'La Bre-B · Cuenta 2 no aceptó este envío, así que no salió nada. Revisa con el beneficiario que la llave esté exacta, o envíalo por Bre-B · Cuenta 1 o por ACH.'
+        await avisarAdminBreb2('rechazo', 'Bre-B Cuenta 2: Finity rechazó un envío',
+          `Finity rechazó un envío Bre-B Cuenta 2 de ${monto.toLocaleString('es-CO')} COP: "${motivoFinity}". ${disponible == null ? 'No se pudo leer el saldo de la cuenta Finity.' : `El saldo en pesos de la cuenta Finity es ${disponible.toLocaleString('es-CO')} COP.`} No salió nada y no se descontó nada del saldo del cliente.`)
       }
     }
     await logAudit(userId, 'finity.breb.diagnostico', { monto, diagnostico, directorio: directorio.tipo ? { tipo: directorio.tipo, llave: enmascarar(String(directorio.llave ?? '')) } : null, tipoInscrito, intentos: rastro })
