@@ -3,7 +3,7 @@
 // gastar créditos.
 //   ~/.deno/bin/deno test supabase/functions/kyt/sarblock.test.ts
 import { assert, assertEquals } from 'jsr:@std/assert@1';
-import { analizarYEsperar, leerResultado, motivoSarblock, claveAnalisis, redSarblock, probarLlave } from './sarblock.ts';
+import { analizarYEsperar, leerResultado, motivoSarblock, claveAnalisis, redSarblock, probarLlave, conPuntajeSb } from './sarblock.ts';
 
 // Los casos fijos de docs.sarblock.com/reference/wallets (modo de pruebas).
 const CASOS: Record<string, any> = {
@@ -130,4 +130,41 @@ Deno.test('probar llave: con wallets analyze y read', async () => {
   };
   const p = await probarLlave(f, 'k');
   assertEquals([p.lectura.ok, p.analizar, p.creditos], [true, true, 50]);
+});
+
+// 23 nov: la wallet TRON real (TNMCov…aqhq) dio 20/100, nivel del puntaje LOW
+// y nivel general MEDIUM, con NEW_WALLET e INDEX_EXPOSURE_ISSUER_FROZEN de
+// severidad media. Lincoin la mostraba "Riesgo medio"; el dueño: es bajo.
+const sb = (o: any) => leerResultado({ id: 'a', status: 'COMPLETE', result: {
+  riskLevel: 'MEDIUM', recommendation: 'MONITOR', degraded: false,
+  score: { value: 20, level: 'LOW', floor: null, confidence: 'HIGH' },
+  signals: [
+    { code: 'NEW_WALLET', severity: 'MEDIUM', network: 'TRON' },
+    { code: 'INDEX_EXPOSURE_ISSUER_FROZEN', severity: 'MEDIUM', network: 'TRON', entity: 'Tether (USDT)', exposureUsd: 40000 },
+  ],
+  checks: { total: 7, clean: 5, flagged: [] }, exposure: {}, activeNetworks: ['TRON'], ...o,
+} });
+
+Deno.test('clasificación: 20/100 con nivel general MEDIUM es bajo (el del puntaje)', () => {
+  assertEquals(conPuntajeSb('medio', sb({})), 'bajo');
+});
+
+Deno.test('clasificación: nunca baja un HIGH, una sanción ni un BLOCK', () => {
+  assertEquals(conPuntajeSb('alto', sb({ riskLevel: 'HIGH' })), 'alto');
+  const sanc = sb({ signals: [{ code: 'SANCTIONED_OFAC', severity: 'CRITICAL' }] });
+  assertEquals(conPuntajeSb('medio', sanc), 'medio');
+  assertEquals(conPuntajeSb('medio', sb({ recommendation: 'BLOCK' })), 'medio');
+});
+
+Deno.test('clasificación: sigue la escala del puntaje hacia arriba y sin nivel usa el número', () => {
+  assertEquals(conPuntajeSb('medio', sb({ score: { value: 75, level: 'HIGH' } })), 'alto');
+  assertEquals(conPuntajeSb('medio', sb({ score: { value: 55, level: 'MEDIUM' } })), 'medio');
+  assertEquals(conPuntajeSb('medio', sb({ score: { value: 30, level: null } })), 'bajo');
+  assertEquals(conPuntajeSb('medio', sb({ score: { value: 60, level: null } })), 'medio');
+  assertEquals(conPuntajeSb('medio', sb({ score: { value: null, level: null } })), 'medio');
+  assertEquals(conPuntajeSb('medio', null), 'medio');
+  // Los casos de la documentación quedan igual.
+  assertEquals(conPuntajeSb('bajo', leerResultado({ id: '1', status: 'COMPLETE', result: CASOS['0x7e57000000000000000000000000000000000001'] })), 'bajo');
+  assertEquals(conPuntajeSb('medio', leerResultado({ id: '2', status: 'COMPLETE', result: CASOS['0x7e57000000000000000000000000000000000002'] })), 'medio');
+  assertEquals(conPuntajeSb('alto', leerResultado({ id: '3', status: 'COMPLETE', result: CASOS['0x7e57000000000000000000000000000000000003'] })), 'alto');
 });

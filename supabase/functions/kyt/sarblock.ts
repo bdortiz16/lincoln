@@ -199,6 +199,33 @@ export function leerResultado(a: any): ResultadoSarblock | null {
   }
 }
 
+// ── La clasificación de Lincoin sale del puntaje (23 nov) ──────────
+// Sarblock da el nivel del puntaje (score.level, escala de su informe: Bajo
+// 1–49, Medio 50–69, Alto 70–84, Extremo 85–100) y un nivel general
+// (riskLevel) que sube con la severidad de cualquier señal. Una wallet con
+// 20/100 salía "Riesgo medio" por el general. Clasifica el del puntaje; lo
+// que nunca baja: HIGH/CRITICAL del general, sanción o BLOCK. Ver el
+// comentario largo en kyt/index.ts.
+export type Banda = 'alto' | 'medio' | 'bajo' | 'sin_dato'
+const ORDEN_BANDA: Record<string, number> = { sin_dato: 0, bajo: 1, medio: 2, alto: 3 }
+export function bandaPorPuntajeSb(sb: ResultadoSarblock): 'alto' | 'medio' | 'bajo' | null {
+  const l = String(sb.score?.level ?? '').toUpperCase()
+  if (/EXTREME|CRITICAL|SEVERE|HIGH/.test(l)) return 'alto'
+  if (/MEDIUM|MODERATE/.test(l)) return 'medio'
+  if (/LOW|NONE/.test(l)) return 'bajo'
+  // Sin el nivel del puntaje, el número con la misma escala.
+  const n = sb.score?.value
+  if (n === null || n === undefined || !Number.isFinite(Number(n))) return null
+  return Number(n) >= 70 ? 'alto' : Number(n) >= 50 ? 'medio' : 'bajo'
+}
+export function conPuntajeSb(base: Banda, sb: ResultadoSarblock | null): Banda {
+  if (!sb) return base
+  const porPuntaje = bandaPorPuntajeSb(sb)
+  if (!porPuntaje) return base
+  const firme = base === 'alto' || sb.sancionada || sb.recomendacion === 'BLOCK'
+  return firme && (ORDEN_BANDA[base] ?? 0) > (ORDEN_BANDA[porPuntaje] ?? 0) ? base : porPuntaje
+}
+
 // Por qué falló un análisis o una llamada, en palabras para Cumplimiento.
 export function motivoSarblock(e: unknown): { codigo: string; mensaje: string; referencia: string | null } {
   const m = motivoBase(e)

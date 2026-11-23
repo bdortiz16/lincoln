@@ -187,6 +187,17 @@ export const KytReporteSarblock: React.FC<{ d: any; onClose: () => void }> = ({ 
   const level = String(score.level ?? '').toUpperCase();
   const cNivel = colorNivel(level);
   const nivelPuntaje = nivelSarblockEs(level);
+  // La clasificación de Lincoin (d.categoria, del servidor) con las palabras
+  // de la escala de SARBLOCK. Si no vino, la del puntaje.
+  const cat = String(d.categoria ?? '');
+  const nivelLincoin = cat === 'alto' ? (level === 'EXTREME' || level === 'CRITICAL' ? 'Extremo' : 'Alto')
+    : cat === 'medio' ? 'Medio'
+    : cat === 'bajo' ? (level === 'NONE' ? 'Sin riesgo' : 'Bajo')
+    : nivelPuntaje;
+  // El nivel general de SARBLOCK, cuando dice otra cosa que la clasificación.
+  const general = String(sb.riskLevel ?? '').toUpperCase();
+  const generalDistinto = !!general && nivelSarblockEs(general) !== 'Sin clasificar'
+    && nivelSarblockEs(general).toLowerCase() !== nivelLincoin.toLowerCase();
   const red = sb.network || sb.family || d.coin;
 
   const senales: any[] = [...(sb.senales ?? [])].sort((a, b) =>
@@ -362,8 +373,17 @@ export const KytReporteSarblock: React.FC<{ d: any; onClose: () => void }> = ({ 
         {/* ── Ficha ── */}
         <div style={{ marginTop: 6 }}>
           <Grilla>
-            <Dato rot="Nivel de riesgo" valor={d.walletNueva ? 'Bajo · wallet nueva' : nivelSarblockEs(sb.riskLevel ?? d.nivel)}
-              sub={d.walletNueva ? `Clasificación Lincoin · SARBLOCK: ${nivelSarblockEs(sb.riskLevel ?? d.nivel)}` : (rec ? rec.titulo : null)} />
+            {/* El nivel es la clasificación de Lincoin, que sale del puntaje
+                con la escala de SARBLOCK (la misma del anillo). Antes decía su
+                nivel general (riskLevel) y una hoja con el anillo en "Riesgo
+                bajo · 20" decía "Nivel de riesgo: Medio" (23 nov). Si el nivel
+                general es otro, se cita tal cual debajo: es su dato. */}
+            <Dato rot="Nivel de riesgo" valor={d.walletNueva ? 'Bajo · wallet nueva' : nivelLincoin}
+              sub={d.walletNueva
+                ? `Clasificación Lincoin · SARBLOCK: ${nivelSarblockEs(sb.riskLevel ?? d.nivel)}`
+                : generalDistinto
+                  ? `Por el puntaje · nivel general de SARBLOCK: ${nivelSarblockEs(sb.riskLevel).toLowerCase()}`
+                  : (rec ? rec.titulo : null)} />
             <Dato rot="Solicitado por" valor={empresa} sub="Cliente de Lincoin" />
             <Dato rot="Confianza del análisis" valor={cap(confianzaEs(score.confidence))}
               sub={sb.degraded ? 'Parte de la evidencia no se pudo consultar' : 'Sin fuentes caídas'} />

@@ -1065,6 +1065,24 @@ const proveedorDe = (ficha: any): 'sarblock' | 'misttrack' =>
 const sarblockDe = (ficha: any): SB.ResultadoSarblock | null =>
   proveedorDe(ficha) === 'sarblock' ? SB.leerResultado(ficha?.respuesta_cruda?.analisis) : null
 
+// ── EL NIVEL SALE DEL PUNTAJE (23 nov, decisión del dueño) ─────────
+// Sarblock manda DOS niveles: el del puntaje (score.level, con la escala de
+// su informe y del nuestro: Bajo 1–49, Medio 50–69, Alto 70–84, Extremo
+// 85–100) y uno general (riskLevel) que sube con la severidad de cualquier
+// señal. Una wallet TRON con 20/100 salió "Riesgo medio" porque riskLevel
+// era MEDIUM (dos señales de severidad media: wallet nueva y exposición
+// indirecta a fondos que congeló el emisor), mientras el anillo del reporte
+// —que lee el puntaje— decía "Riesgo bajo". Dos niveles distintos en la misma
+// hoja. El dueño: "debería ser bajo". La clasificación de Lincoin sigue la
+// escala del puntaje, que ya pesa cada señal según su gravedad, cercanía,
+// monto y fecha.
+//
+// Lo que esta regla NUNCA baja: si el proveedor dice HIGH o CRITICAL, si la
+// wallet está sancionada o si recomienda BLOCK, se queda el más alto de los
+// dos. El riskLevel se guarda y se cita tal cual; no se reescribe.
+// La regla vive en sarblock.ts (conPuntajeSb) para probarla sin red.
+const conPuntajeSb = SB.conPuntajeSb
+
 // ── WALLET NUEVA = RIESGO BAJO (23 nov, decisión del dueño) ────────
 // Sarblock marca NEW_WALLET a una wallet recién creada y por eso le pone
 // nivel MEDIUM aunque su puntaje sea bajo (el caso real: 15/100): no es un
@@ -1093,7 +1111,7 @@ const walletNuevaDe = (f: any): boolean =>
   soloWalletNueva(sarblockDe(f), f?.risk_score, { detailList: f?.detail_list, hacking: f?.hacking_event })
 // La clasificación de Lincoin de una ficha del padrón.
 function categoriaDe(c: Config, f: any): 'alto' | 'medio' | 'bajo' | 'sin_dato' {
-  const base = clasificar(c, f?.risk_score ?? null, f?.risk_level ?? null)
+  const base = conPuntajeSb(clasificar(c, f?.risk_score ?? null, f?.risk_level ?? null), sarblockDe(f))
   return base === 'medio' && walletNuevaDe(f) ? 'bajo' : base
 }
 
@@ -1662,6 +1680,45 @@ async function avisarCambioMonitoreo(userId: string, d: {
 // así no se vuelve a consultar —se revisa en la ronda— y el cliente no gasta
 // consultas cada vez. Solo si no está ya activa (no se reinicia la
 // referencia de una que ya se vigila) y si hay cupo (topeMonitoreadas).
+// ¿La ficha del padrón es el mismo análisis que quedó anotado en la fila del
+// monitoreo? Mismo puntaje y mismo nivel del proveedor. Sirve para volver a
+// clasificar con la regla de hoy algo que no cambió, sin confundirlo con un
+// cambio real de la wallet (otro análisis, con otro puntaje).
+function mismoAnalisis(w: any, f: any): boolean {
+  if (!w || !f || f.estado !== 'finalizado') return false
+  const n = (v: any) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? null : Number(v)
+  return n(f.risk_score) !== null && n(f.risk_score) === n(w.score_actual)
+    && String(f.risk_level ?? '') === String(w.nivel_actual ?? '')
+}
+
+// La banda anotada de cada monitoreada, con la regla de hoy. Cuando la regla
+// cambia (23 nov: el nivel de Sarblock sale del puntaje), la fila conserva la
+// banda con que se anotó hasta la próxima ronda, que puede tardar un día: la
+// lista seguía diciendo "medio" de una wallet que la consulta ya mostraba
+// "bajo". Se corrige al leer, SOLO si es el mismo análisis, y se guarda sin
+// alerta ni correo: la wallet no cambió, cambió cómo se lee.
+async function bandasAlDia(c: Config, filas: any[]): Promise<void> {
+  const conBanda = filas.filter(w => w && w.coin && w.address_lower)
+  if (!conBanda.length) return
+  try {
+    const { data } = await db.from('kyt_registry')
+      .select('coin, address_lower, estado, risk_score, risk_level, detail_list, hacking_event, respuesta_cruda')
+      .in('address_lower', Array.from(new Set(conBanda.map(w => w.address_lower))).slice(0, 500))
+    const padron = new Map(((data ?? []) as any[]).map(f => [`${f.coin}:${f.address_lower}`, f]))
+    for (const w of conBanda) {
+      const f = padron.get(`${w.coin}:${w.address_lower}`)
+      if (!mismoAnalisis(w, f)) continue
+      const hoy = categoriaDe(c, f)
+      if (hoy === 'sin_dato' || hoy === w.banda_actual) continue
+      w.banda_actual = hoy
+      if (w.id) await db.from('kyt_watchlist').update({ banda_actual: hoy }).eq('id', w.id)
+    }
+  } catch (e) {
+    // Si no se pudo, la lista sale con la banda anotada: igual que antes.
+    console.error('[kyt] bandas al día', (e as Error)?.message)
+  }
+}
+
 async function estaMonitoreada(uid: string, coin: string, dir: string): Promise<boolean> {
   const { data } = await db.from('kyt_watchlist').select('id')
     .eq('user_id', uid).eq('coin', coin).eq('address_lower', dir.toLowerCase()).eq('activo', true).maybeSingle()
@@ -2093,7 +2150,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         address: dir, coin,
         ...(() => {
           const nueva = soloWalletNueva(ev.sarblock ?? null, ev.score)
-          const base = clasificar(c, ev.score, ev.level)
+          const base = conPuntajeSb(clasificar(c, ev.score, ev.level), ev.sarblock ?? null)
           return { categoria: base === 'medio' && nueva ? 'bajo' : base, walletNueva: nueva }
         })(),
         puntaje: ev.score, nivel: ev.level,
@@ -2322,8 +2379,9 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
       }
       const lista = Array.from(vistas.values())
       if (lista.length) {
-        const { data: wl } = await db.from('kyt_watchlist').select('coin, address_lower, banda_actual, revisado_at')
+        const { data: wl } = await db.from('kyt_watchlist').select('id, coin, address_lower, score_actual, nivel_actual, banda_actual, revisado_at')
           .eq('user_id', yo.userId).eq('activo', true).in('address_lower', lista.map(x => x.addressLower))
+        await bandasAlDia(c, (wl ?? []) as any[])
         const mon = new Map(((wl ?? []) as any[]).map(w => [`${w.coin}:${w.address_lower}`, w]))
         for (const x of lista) {
           const w = mon.get(`${x.coin}:${x.addressLower}`)
@@ -2408,6 +2466,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         return json({ ok: false, error: error.message, base }, 500)
       }
       const filas = (data ?? []) as any[]
+      await bandasAlDia(c, filas)
       // Hora de la última ronda: la revisión más reciente de esta cuenta.
       const ultima = filas.reduce<string | null>((a, r) => {
         const t = r.revisado_at
@@ -2479,8 +2538,12 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
           continue
         }
 
-        const antes = String(w.banda_actual ?? 'sin_dato')
-        const bandaProv = clasificar(c, ev.score, ev.level)
+        // La banda anterior, con la regla de HOY si es el mismo análisis que
+        // quedó anotado: si no, el cambio de regla del 23 nov (el nivel sale
+        // del puntaje) le habría mandado a cada cliente un correo de "bajó el
+        // riesgo" sin que la wallet cambiara en nada.
+        const antes = mismoAnalisis(w, ficha3) ? categoriaDe(c, ficha3) : String(w.banda_actual ?? 'sin_dato')
+        const bandaProv = conPuntajeSb(clasificar(c, ev.score, ev.level), ev.sarblock ?? null)
         const ahoraBanda = bandaProv === 'medio' && soloWalletNueva(ev.sarblock ?? null, ev.score) ? 'bajo' : bandaProv
         const ORDEN: Record<string, number> = { bajo: 1, sin_dato: 1, medio: 2, alto: 3 }
         const empeoro = (ORDEN[ahoraBanda] ?? 1) > (ORDEN[antes] ?? 1)
