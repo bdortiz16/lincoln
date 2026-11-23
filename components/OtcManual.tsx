@@ -1242,7 +1242,7 @@ const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }
 
 // Como se describe cada destino del COP en el detalle del cierre.
 export const NOMBRE_BILLETERA: Record<string, string> = {
-    COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
+    COP: 'Saldo Lincoin', COP_BREB: nombreCuenta(1), COP_ACH: nombreCuenta(2), USD: 'Saldo USDT',
     COP_C3: nombreCuenta(3), COP_C4: nombreCuenta(4),
 };
 

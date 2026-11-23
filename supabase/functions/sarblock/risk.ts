@@ -43,13 +43,16 @@ export const CONFIG_INICIAL: ConfigRisk = {
   minimoCompra: 300,
   ivaPct: 0,
   // Todas las cuentas en pesos del cliente, con el nombre que ve en su app.
+  // Desde el 22 nov las cuentas se llaman por número (Cuenta 1 = el saldo que
+  // antes se llamaba Bre-B, Cuenta 2 = el de ACH): "Pesos · Bre-B" ya no
+  // existe para el cliente (23 nov, pedido del dueño).
   // Antes solo estaban Bre-B y ACH, con el nombre del aliado entre
   // paréntesis (el cliente nunca ve a los aliados), y un "Coincenda" con una
   // clave que no es la de ningún saldo: la empresa con plata en la Cuenta 3
   // o 4 no podía pagar con ella (2026-11).
   bolsillos: {
-    COP_BREB: { etiqueta: 'Pesos · Bre-B', activo: true },
-    COP_ACH: { etiqueta: 'Pesos · ACH', activo: true },
+    COP_BREB: { etiqueta: 'Pesos · Cuenta 1', activo: true },
+    COP_ACH: { etiqueta: 'Pesos · Cuenta 2', activo: true },
     COP_C3: { etiqueta: 'Pesos · Cuenta 3 · Jero', activo: true },
     COP_C4: { etiqueta: 'Pesos · Cuenta 4 · Kaupaloki', activo: true },
     COP: { etiqueta: 'Pesos · Saldo Lincoin', activo: true },

@@ -124,14 +124,14 @@ const Pill: React.FC<{ estado: string }> = ({ estado }) => {
 // dónde entra la plata. Al cliente le llega solo "Bre-B", "ACH", "Cuenta 3 ·
 // Jero" o "Cuenta 4 · Kaupaloki" (otc-mesa, NOMBRE_BILLETERA).
 const BILLETERA: Record<string, string> = {
-    COP: 'Saldo Lincoin', COP_BREB: 'Mouv · Bre-B', COP_ACH: 'Finity · ACH', USD: 'Saldo USDT',
+    COP: 'Saldo Lincoin', COP_BREB: 'Cuenta 1 · Mouv', COP_ACH: 'Cuenta 2 · Finity', USD: 'Saldo USDT',
     COP_C3: 'Coinsenda Jero · Cuenta 3', COP_C4: 'Coinsenda Kaupaloki · Cuenta 4',
 };
 // Los canales donde la mesa puede acreditar una venta de USDT (la misma lista
 // cerrada que valida el servidor, CANALES_MESA).
 const CANALES: Array<{ v: string; l: string; pie: string }> = [
-    { v: 'COP_BREB', l: 'Mouv', pie: 'Bre-B' },
-    { v: 'COP_ACH', l: 'Finity', pie: 'ACH' },
+    { v: 'COP_BREB', l: 'Mouv', pie: 'Cuenta 1' },
+    { v: 'COP_ACH', l: 'Finity', pie: 'Cuenta 2' },
     { v: 'COP_C3', l: 'Coinsenda Jero', pie: 'Cuenta 3' },
     { v: 'COP_C4', l: 'Coinsenda Kaupaloki', pie: 'Cuenta 4' },
 ];

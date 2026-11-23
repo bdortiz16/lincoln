@@ -563,7 +563,9 @@ function billeteraDestino(side: string, pedida?: unknown): string | null {
 // mensaje que le queda en el hilo tiene que decir el mismo riel que el que ve
 // en su pantalla de saldos.
 const NOMBRE_BILLETERA: Record<string, string> = {
-  COP: 'Saldo Lincoin', COP_BREB: 'Bre-B', COP_ACH: 'ACH', USD: 'Saldo USDT',
+  // Las cuentas por número, como las ve el cliente en su app (Cuenta 1 era
+  // "Bre-B" y Cuenta 2 "ACH").
+  COP: 'Saldo Lincoin', COP_BREB: nombreCuenta(1), COP_ACH: nombreCuenta(2), USD: 'Saldo USDT',
   COP_C3: nombreCuenta(3), COP_C4: nombreCuenta(4),
 }
 
