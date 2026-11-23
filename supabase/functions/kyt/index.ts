@@ -1053,12 +1053,12 @@ async function ultimoFalloSarblock(): Promise<{ at: string; codigo: string | nul
 // como de MistTrack aunque hoy esa red la consulte Sarblock.
 function usaSarblock(c: Config, coin: string): boolean {
   return !!SB_KEY && c.proveedorWallets !== 'misttrack' && !!SB.redSarblock(coin)
-    && Date.now() >= sarblockPausadoHasta
 }
-// Si Sarblock rechaza la llave o no tiene créditos, cada consulta volvería a
-// chocar con lo mismo (y a dejar una fila en audit_log). Se lo deja de
-// llamar 5 minutos en esta instancia; mientras, responde MistTrack.
-let sarblockPausadoHasta = 0
+// El proveedor que HOY hace la consulta de esta red. Una ficha de otro
+// proveedor no se reutiliza (ver consultar): el dueño pidió que TRON y EVM
+// salgan de Sarblock, y mostrar la ficha vieja de MistTrack de la misma
+// wallet era justo lo contrario (23 nov).
+const proveedorActual = (c: Config, coin: string): 'sarblock' | 'misttrack' => usaSarblock(c, coin) ? 'sarblock' : 'misttrack'
 const proveedorDe = (ficha: any): 'sarblock' | 'misttrack' =>
   ficha?.respuesta_cruda?.proveedor === 'sarblock' ? 'sarblock' : 'misttrack'
 const sarblockDe = (ficha: any): SB.ResultadoSarblock | null =>
@@ -1095,9 +1095,8 @@ async function evaluarConSarblock(
     // límite por minuto) NO es un veredicto sobre la dirección: la ficha no
     // se toca. Marcarla "sin resultado" borraría un análisis anterior que sí
     // vale, y el cliente leería un problema de la wallet donde no lo hay.
-    await logAuditKyt(quien.userId, 'kyt.sarblock_fallo', { coin, addressLower: dir.toLowerCase(), codigo: m.codigo, mensaje: m.mensaje })
-    if (m.codigo === 'llave' || m.codigo === 'sin_creditos') sarblockPausadoHasta = Date.now() + 5 * 60_000
-    return { ...vacio, error: m.codigo === 'llave' ? 'sin_credencial' : m.codigo, motivo: m.mensaje, crudo: m.mensaje }
+    await logAuditKyt(quien.userId, 'kyt.sarblock_fallo', { coin, addressLower: dir.toLowerCase(), codigo: m.codigo, mensaje: m.mensaje, referencia: m.referencia })
+    return { ...vacio, error: m.codigo === 'llave' ? 'sin_credencial' : m.codigo, motivo: m.mensaje, referencia: m.referencia, crudo: m.mensaje }
   }
   // Solo un análisis nuevo se cobró: uno reutilizado (24 h, en curso o la
   // misma clave) no, y no se cuenta en el tope.
@@ -1179,21 +1178,13 @@ async function evaluarYGuardar(
 ): Promise<{ hay: boolean; score: number | null; level: string | null; hallazgos: any[]; detalle: any[]; etiquetas: any[]; reporte: string | null; actividad: any; exposicion: any; status: number; crudo: any; error?: string; constancia?: Constancia | null; addressLabel?: string | null; [k: string]: any }> {
   // EVM y TRON van a Sarblock (salvo que el panel lo haya vuelto a MistTrack
   // o quien llama pida MistTrack a propósito).
+  // SIN respaldo automático a MistTrack (23 nov). Se probó: con la llave de
+  // Sarblock rechazada, una wallet TRON salió analizada por MistTrack y el
+  // dueño lo marcó como un error — TRON y EVM van por Sarblock. Si Sarblock
+  // falla, se dice (con la referencia del error) y se arregla Sarblock. Para
+  // volver a MistTrack a propósito está el selector del panel.
   if (opts.proveedor !== 'misttrack' && usaSarblock(c, coin)) {
-    const sbr = await evaluarConSarblock(c, coin, dir, quien, ficha, opts)
-    // 22 nov, 10:29 p. m.: la primera consulta real con Sarblock le dijo al
-    // cliente "el servicio no está habilitado" porque la llave no tenía
-    // permiso de wallets. El cliente aprieta "Consultar" y tiene que recibir
-    // un resultado: si Sarblock falla por un problema del SERVICIO (llave,
-    // créditos, límite, red, análisis fallido) se consulta en el acto con
-    // MistTrack. Solo "en curso" se espera: ese análisis ya está pedido y
-    // pedirlo otra vez no cuesta. El motivo queda en audit_log
-    // (kyt.sarblock_fallo) y en el panel, junto a «Probar Sarblock».
-    if (!sbr.hay && sbr.error !== 'en_curso' && MT_KEY) {
-      const mt = await evaluarYGuardar(c, coin, dir, quien, ficha, { ...opts, proveedor: 'misttrack' })
-      return { ...mt, respaldoDeSarblock: sbr.motivo ?? sbr.error ?? null }
-    }
-    return sbr
+    return await evaluarConSarblock(c, coin, dir, quien, ficha, opts)
   }
   const r = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
   const v = leerVeredicto(r.data)
@@ -1644,9 +1635,6 @@ Deno.serve(async (req) => {
       { const no = soloAdmin(yo); if (no) return no }
       if (!SB_KEY) return json({ ok: false, listo: false, mensaje: 'Falta SARBLOCK_ORG_API_KEY en los secrets de Supabase.' })
       const p = await SB.probarLlave(fetch, SB_KEY)
-      // Si la llave ya lee wallets, se vuelve a intentar Sarblock de una vez
-      // en vez de esperar los 5 minutos de pausa.
-      if (p.lectura.ok) sarblockPausadoHasta = 0
       return json({ ok: true, listo: true, ...p, ultimoFallo: await ultimoFalloSarblock() })
     }
     if (accion === 'config_set') {
@@ -1734,6 +1722,7 @@ Deno.serve(async (req) => {
       // exposicion) y reutilizarla deja la pantalla a medias sin explicacion.
       const force = body.force === true
       const sirve = !force && !!ficha && ficha.estado === 'finalizado' && Date.now() < vigenteHasta
+        && proveedorDe(ficha) === proveedorActual(c, coin)
 
       if (sirve) {
         await db.from('kyt_registry').update({
@@ -1800,6 +1789,9 @@ Deno.serve(async (req) => {
         return json({
           ok: false, error: ev.error === 'sin_credencial' ? 'sin_credencial' : 'servicio',
           mensaje: 'La verificación de wallets no está disponible en este momento. Intenta de nuevo en unos minutos.',
+          // El código del error, sin nombre de proveedor: con él el dueño
+          // sabe desde esta misma pantalla por qué no salió (23 nov).
+          referencia: ev.referencia ?? null,
           detalle: yo.esAdmin ? ev.motivo : undefined,
         })
       }
@@ -1826,7 +1818,7 @@ Deno.serve(async (req) => {
         // pagó: queda registrado, pero no cuenta en el tope del cliente.
         await db.from('audit_log').insert({
           user_id: yo.userId, action: ev.proveedor === 'sarblock' && !ev.cobrado ? 'kyt.consulta_reutilizada' : 'kyt.consulta_pagada',
-          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa, proveedor: ev.proveedor ?? 'misttrack', analisisId: ev.sarblock?.analisisId ?? null, respaldoDeSarblock: ev.respaldoDeSarblock ?? null },
+          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa, proveedor: ev.proveedor ?? 'misttrack', analisisId: ev.sarblock?.analisisId ?? null },
         })
       } catch { /* que no se pierda la consulta por no poder auditar */ }
 
@@ -1900,6 +1892,7 @@ Deno.serve(async (req) => {
       let ficha = await padronBuscar(coin, dir)
       const vigente = !!ficha && ficha.estado === 'finalizado' && !!ficha.consultado_at
         && Date.now() - new Date(ficha.consultado_at).getTime() < c.otcHorasVigencia * 3600_000
+        && proveedorDe(ficha) === proveedorActual(c, coin)
       const delPadron = vigente
       if (vigente) {
         await db.from('kyt_registry').update({
@@ -2266,7 +2259,7 @@ Deno.serve(async (req) => {
           || (ficha.contrapartes !== null && ficha.investigacion !== null && ficha.fuentes != null))
       // force (saltarse el caché y pagar de nuevo) es solo para admins.
       const forzar = body.force === true && yo.esAdmin
-      const reusar = !forzar && completo && Date.now() < vigenteHasta
+      const reusar = !forzar && completo && Date.now() < vigenteHasta && proveedorDe(ficha) === proveedorActual(c, coin)
 
       // Lo que se acaba de pagar en esta llamada. El reporte lo usa aunque no
       // se haya podido guardar en el padrón: antes se releía la ficha y, si
@@ -2288,7 +2281,7 @@ Deno.serve(async (req) => {
         const sinVeredictoRep = !ev.hay && ev.proveedor === 'sarblock' && ev.error !== 'sin_resultado'
         if (!sinVeredictoRep) await logAuditKyt(yo.userId, ev.hay ? (reusadoRep ? 'kyt.consulta_reutilizada' : 'kyt.consulta_pagada') : 'kyt.consulta_fallida', { coin, address: dir, origen: 'reporte', proveedor: ev.proveedor ?? 'misttrack' })
         if (sinVeredictoRep) {
-          return json({ ok: false, error: 'servicio', mensaje: 'La verificación de wallets no está disponible en este momento. Intenta de nuevo en unos minutos.', detalle: yo.esAdmin ? ev.motivo : undefined })
+          return json({ ok: false, error: 'servicio', mensaje: 'La verificación de wallets no está disponible en este momento. Intenta de nuevo en unos minutos.', referencia: ev.referencia ?? null, detalle: yo.esAdmin ? ev.motivo : undefined })
         }
         if (!ev.hay) {
           return json({

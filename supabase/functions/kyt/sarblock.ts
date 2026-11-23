@@ -191,7 +191,14 @@ export function leerResultado(a: any): ResultadoSarblock | null {
 }
 
 // Por qué falló un análisis o una llamada, en palabras para Cumplimiento.
-export function motivoSarblock(e: unknown): { codigo: string; mensaje: string } {
+export function motivoSarblock(e: unknown): { codigo: string; mensaje: string; referencia: string | null } {
+  const m = motivoBase(e)
+  // La referencia es el estado y el tipo tal cual los devolvió (ej.
+  // "403 · FORBIDDEN"): sirve para saber por qué sin nombrar al proveedor.
+  const referencia = e instanceof ErrorSarblock ? `${e.status || 'sin estado'} · ${e.tipo}` : 'sin respuesta'
+  return { ...m, referencia }
+}
+function motivoBase(e: unknown): { codigo: string; mensaje: string } {
   if (e instanceof ErrorSarblock) {
     if (e.status === 402) return { codigo: 'sin_creditos', mensaje: 'Sarblock no tiene créditos de análisis disponibles (402).' }
     if (e.status === 401 || e.status === 403) return { codigo: 'llave', mensaje: `La llave de Sarblock no está autorizada para analizar wallets (${e.status}): revisa que tenga los permisos wallets:analyze y wallets:read.` }

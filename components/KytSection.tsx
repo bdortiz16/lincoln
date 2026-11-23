@@ -664,6 +664,14 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   : 'Sin resultado'}
               </p>
               <p style={{ fontSize: 13, color: C.sub, margin: '5px 0 0', lineHeight: 1.6 }}>{res.mensaje}</p>
+              {/* El código del error del proveedor (sin su nombre). Sin esto,
+                  "no está disponible" no dejaba saber si era la llave, los
+                  créditos o una caída, y había que buscarlo en otro lado. */}
+              {res.referencia && (
+                <p style={{ fontSize: 11.5, color: C.sub, margin: '6px 0 0' }}>
+                  Referencia: <span style={{ fontFamily: MONO, color: C.text }}>{res.referencia}</span>
+                </p>
+              )}
               {res.error === 'sin_resultado' && (
                 <p style={{ fontSize: 12.5, color: C.text, margin: '9px 0 0', fontWeight: 600, lineHeight: 1.55 }}>
                   Que no haya resultado no significa que la dirección esté limpia. Significa que no
