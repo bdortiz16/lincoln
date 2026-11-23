@@ -2245,18 +2245,27 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         ...(Array.isArray(f.risk_detail) ? f.risk_detail : []).map((x: any) => x?.risk_type ?? x?.entity ?? 'exposición señalada'),
         ...(f.hacking_event ? [`incidente: ${f.hacking_event}`] : []),
       ].map((x: any) => String(typeof x === 'string' ? x : JSON.stringify(x)).slice(0, 160))
-      // Con Sarblock, además, solo pasa la recomendación CLEAR ("sin hallazgos
-      // que lo impidan"). MONITOR ("sigue, pero con vigilancia") no alcanza
-      // para recibir plata en la mesa: la regla de la mesa sigue siendo la
-      // más estricta, como con MistTrack.
+      // Con Sarblock, además, pasa la recomendación CLEAR ("sin hallazgos que
+      // lo impidan").
       const sbOtc = sarblockDe(f)
       const recomendacion = sbOtc?.recomendacion ?? null
       // Wallet nueva (solo la señal NEW_WALLET): riesgo bajo y puede operar
       // (ver soloWalletNueva). La señal no cuenta como señalamiento ni la
       // recomendación MONITOR/REVIEW que trae por ella. Queda anotada.
       const walletNueva = walletNuevaDe(f)
-      const permitido = (categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')) || walletNueva
-      const excepcion = walletNueva ? 'wallet_nueva' : null
+      // RIESGO BAJO CON VIGILANCIA (23 nov, decisión del dueño: "sí,
+      // acéptalas"). Una wallet TRON de 20/100 con la recomendación MONITOR
+      // ("sigue, pero con seguimiento de sus movimientos") y dos señales de
+      // severidad media quedaba fuera de la mesa. Ahora pasa si es de riesgo
+      // BAJO por el puntaje y la recomendación es MONITOR, aunque tenga
+      // señales: el seguimiento que pide el proveedor es el monitoreo, al que
+      // la wallet entra sola al verificarla para la mesa. REVIEW y BLOCK siguen
+      // sin pasar, igual que una sanción o un incidente. Queda anotada como
+      // excepción 'vigilancia' para que Cumplimiento y la mesa la vean.
+      const conVigilancia = !walletNueva && !!sbOtc && categoria === 'bajo' && recomendacion === 'MONITOR'
+        && !sbOtc.sancionada && !f.hacking_event
+      const permitido = (categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')) || walletNueva || conVigilancia
+      const excepcion = walletNueva ? 'wallet_nueva' : conVigilancia ? 'vigilancia' : null
       const REC_ES: Record<string, string> = { MONITOR: 'operar con vigilancia', REVIEW: 'revisión de cumplimiento antes de operar', BLOCK: 'no operar' }
       const motivoBloqueo = permitido ? null
         : categoria === 'sin_dato' ? 'No hay un resultado de riesgo para esta wallet.'
@@ -2277,7 +2286,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         empresa: quien.empresa, email: quien.email, nombre,
       })
       return json({
-        ok: true, permitido, motivoBloqueo, excepcion, walletNueva,
+        ok: true, permitido, motivoBloqueo, excepcion, walletNueva, conVigilancia,
         coin, red: REDES_OTC[coin], address: f.address ?? dir,
         categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
         recomendacion,

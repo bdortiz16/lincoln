@@ -5,7 +5,7 @@ import { pedirAdmin } from './adminApi';
 import {
     RefreshCw, Send, X, MessageSquare, CheckCircle2, Clock, XCircle,
     AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap, Paperclip,
-    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp, Settings, Play, Smartphone,
+    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp, Settings, Play, Smartphone, Eye,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────
@@ -1107,6 +1107,11 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                             <Fila icon={Hash} label="Dirección" valor={o.address} mono onCopy={() => copiar(String(o.address ?? ''))} />
                                             <Fila icon={Wallet} label="Red" valor={o.coin === 'TRX' ? 'TRON (TRC20)' : o.coin === 'ETH' ? 'Ethereum (ERC20)' : o.coin === 'BNB' ? 'BNB Chain (BEP20)' : o.coin} />
                                             <Fila icon={AlertTriangle} label="Riesgo" valor={<span style={{ color: rz.c, fontWeight: 800 }}>{rz.t}{o.puntaje != null ? ` · ${o.puntaje}/100` : ''}</span>} />
+                                            {/* Aceptada con vigilancia (23 nov): riesgo bajo, pero el
+                                                proveedor recomendó seguir sus movimientos. La mesa
+                                                tiene que saberlo antes de completar. */}
+                                            {o.excepcion === 'vigilancia' && <Fila icon={Eye} label="Aceptada" valor={<span style={{ color: '#FBBF24', fontWeight: 700 }}>Con vigilancia · tiene señales, queda en monitoreo</span>} />}
+                                            {o.excepcion === 'wallet_nueva' && <Fila icon={Eye} label="Aceptada" valor="Wallet nueva, sin otras señales" />}
                                             {o.saldoUsdt != null && <Fila icon={Wallet} label="Saldo USDT al revisar" valor={nf(o.saldoUsdt)} />}
                                             <Fila icon={Clock} label="Verificada" valor={fecha(o.verificadaAt ?? o.consultadoAt)} />
                                             <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5, marginTop: 2 }}>

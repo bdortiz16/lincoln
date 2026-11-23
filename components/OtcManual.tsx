@@ -763,7 +763,7 @@ const WalletOrigen: React.FC<{
                 )}
             </div>
             <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 10, lineHeight: 1.5 }}>
-                Revisamos su riesgo antes de abrir el cierre. Solo se aceptan wallets de riesgo bajo, y los USDT tienen que salir de esta misma wallet.
+                Revisamos su riesgo antes de abrir el cierre. Solo se aceptan wallets de riesgo bajo (si el análisis recomienda vigilarla, queda en monitoreo), y los USDT tienen que salir de esta misma wallet.
             </p>
             <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                 {REDES_OTC.map(o => {
@@ -919,7 +919,11 @@ const WalletOrigen: React.FC<{
                             {verif.permitido
                                 ? (nueva
                                     ? 'Wallet nueva, sin historial y sin otras señales: riesgo bajo. Ya puedes solicitar el cierre.'
-                                    : 'Wallet aprobada para la mesa. Ya puedes solicitar el cierre.')
+                                    // Riesgo bajo con vigilancia (23 nov): pasa, y el
+                                    // seguimiento que recomienda el análisis es el monitoreo.
+                                    : verif.excepcion === 'vigilancia'
+                                        ? `Riesgo bajo: aprobada para la mesa con vigilancia. El análisis recomienda seguir sus movimientos${verif.monitoreoNuevo || verif.monitoreada ? ' y la dejamos en monitoreo' : ''}. Ya puedes solicitar el cierre.`
+                                        : 'Wallet aprobada para la mesa. Ya puedes solicitar el cierre.')
                                 : `${verif.motivoBloqueo ?? 'Esta wallet no pasó la revisión de riesgo.'} No se puede usar para la mesa.`}
                         </p>
                     </div>

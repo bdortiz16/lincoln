@@ -291,7 +291,7 @@ const Registro: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onA
     const COL = ['Fecha (Bogotá)', 'Empresa', 'Persona', 'Correo', 'Id cliente', 'Red', 'Wallet', 'Riesgo', 'Puntaje', 'Nivel del proveedor', 'Resultado', 'Motivo', 'Hallazgos', 'Saldo USDT al revisar', 'Revisión del proveedor', 'Cierres OTC', 'Empresas que la cargaron'];
     const fila = (f: any) => [
       fechaPlana(f.fecha), f.empresa ?? '', f.nombre ?? '', f.email ?? '', f.userId ?? '', RED[f.coin] ?? f.coin ?? '', f.address ?? '',
-      RIESGO[f.categoria]?.t ?? f.categoria ?? '', f.puntaje ?? '', f.nivel ?? '', f.permitido ? (f.excepcion === 'wallet_nueva' ? 'Permitida (wallet nueva: riesgo bajo)' : 'Permitida') : 'Bloqueada', f.motivo ?? '',
+      RIESGO[f.categoria]?.t ?? f.categoria ?? '', f.puntaje ?? '', f.nivel ?? '', f.permitido ? (f.excepcion === 'wallet_nueva' ? 'Permitida (wallet nueva: riesgo bajo)' : f.excepcion === 'vigilancia' ? 'Permitida con vigilancia (riesgo bajo, recomendación MONITOR)' : 'Permitida') : 'Bloqueada', f.motivo ?? '',
       hallazgosEnEspanol(f.hallazgos ?? [], 10).join(' · '), f.saldoUsdt ?? '', fechaPlana(f.consultadoAt),
       (f.cierres ?? []).map((c: any) => `${c.ref} (${c.status})`).join(' · '), f.empresasDistintas ?? 1,
     ];
@@ -384,6 +384,9 @@ const Registro: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onA
                       {/* Wallet nueva (23 nov): Lincoin la clasifica riesgo bajo aunque el
                           proveedor diga medio; Cumplimiento tiene que ver por qué. */}
                       {f.permitido && f.excepcion === 'wallet_nueva' && <p style={{ color: C.sub, marginTop: 4, maxWidth: 200, lineHeight: 1.4 }}>Riesgo bajo por ser wallet nueva (sin otras señales)</p>}
+                      {/* 23 nov, decisión del dueño: riesgo bajo con la recomendación
+                          MONITOR pasa aunque tenga señales, y queda en monitoreo. */}
+                      {f.permitido && f.excepcion === 'vigilancia' && <p style={{ color: C.ambar, marginTop: 4, maxWidth: 200, lineHeight: 1.4 }}>Con vigilancia: riesgo bajo, el proveedor recomienda seguir sus movimientos (queda en monitoreo)</p>}
                       {!f.permitido && f.motivo && <p style={{ color: C.sub, marginTop: 4, maxWidth: 200, lineHeight: 1.4 }}>{f.motivo === 'sin_resultado' ? 'Sin resultado del proveedor' : f.motivo}</p>}
                     </td>
                     <td style={{ padding: '10px', color: C.texto }}>

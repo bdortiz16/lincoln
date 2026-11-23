@@ -647,7 +647,9 @@ const NOMBRE_BILLETERA: Record<string, string> = {
 // ─── La wallet desde donde el cliente manda los USDT ────
 // Para VENDER USDT, el cliente dice desde qué wallet los manda y esa wallet se
 // revisa en la KYT (kyt, acción otc_wallet) ANTES de pedir el cierre. Solo
-// pasa una de riesgo BAJO y sin señalamientos.
+// pasa una de riesgo BAJO y sin señalamientos, o una de las excepciones que
+// decide kyt (wallet nueva; riesgo bajo con vigilancia, 23 nov), que quedan
+// anotadas en la ficha del cierre.
 //
 // La prueba es la fila de auditoría que escribe kyt (audit_log solo lo
 // escribe el servidor): de ESTE usuario, de ESTA wallet, de las últimas 2
@@ -675,6 +677,7 @@ async function walletVerificada(uid: string, coin: string, address: string): Pro
   if (m.permitido !== true) return { ok: false, motivo: 'Esa wallet no pasó la revisión de riesgo: no se puede usar para la mesa.' }
   return { ok: true, ficha: {
     coin, address, categoria: m.categoria ?? null, puntaje: m.puntaje ?? null, nivel: m.nivel ?? null,
+    excepcion: m.excepcion ?? null, recomendacion: m.recomendacion ?? null,
     saldoUsdt: m.saldoUsdt ?? null, consultadoAt: m.consultadoAt ?? null, verificadaAt: fila.created_at,
   } }
 }

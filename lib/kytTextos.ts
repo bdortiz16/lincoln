@@ -83,6 +83,9 @@ function cosaEnEspanol(s: string): string | null {
 const CODIGO_SENAL_ES: Record<string, string> = {
   NEW_WALLET: 'Wallet nueva: todavía tiene poco o ningún historial en la red',
   RAPID_PASS_THROUGH: 'Paso rápido de fondos: el dinero entra y sale enseguida',
+  // 23 nov: llegó en crudo a la mesa OTC. Traducción literal del código (sin
+  // documentación que diga más): exposición a fondos que congeló el emisor.
+  INDEX_EXPOSURE_ISSUER_FROZEN: 'Exposición a fondos congelados por el emisor',
 };
 
 /**
@@ -327,6 +330,7 @@ export function senalEs(code: any, category?: any): string {
   if (!c) return 'Señal sin código';
   if (c === 'NEW_WALLET') return 'Wallet nueva';
   if (c === 'RAPID_PASS_THROUGH') return 'Paso rápido de fondos';
+  if (c === 'INDEX_EXPOSURE_ISSUER_FROZEN') return 'Exposición a fondos congelados por el emisor';
   const san = c.match(/^SANCTION(?:ED)?_?(.*)$/);
   if (san) return `Dirección sancionada${san[1] ? ` (${san[1].replace(/_/g, ' ')})` : ''}`;
   const inter = c.match(/^(.+?)_INTERACTION$/);
