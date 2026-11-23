@@ -534,6 +534,9 @@ export const KytSection: React.FC<{
       }
       if (typeof r?.saldoConsultas === 'number') onSaldo?.(r.saldoConsultas);
       setRes(r ? conLectura(r) : { ok: false, error: 'sin_respuesta', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
+      // La consulta deja la wallet en monitoreo (23 nov): se refresca la
+      // lista para que aparezca sin recargar la pantalla.
+      if (r?.monitoreoNuevo) cargarLista();
     } catch {
       setRes({ ok: false, error: 'red', mensaje: 'No obtuvimos respuesta. Probá de nuevo.' });
     }

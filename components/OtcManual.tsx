@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ArrowDown, Send, RefreshCw, ChevronLeft, MessageSquare,
-    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, ShieldCheck, Paperclip, Plus, ChevronDown, ChevronUp, X, ScanLine,
+    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, ShieldCheck, Paperclip, Plus, ChevronDown, ChevronUp, X, ScanLine, Eye,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 import { llamarFuncion } from '../lib/edge';
@@ -700,15 +700,36 @@ const WalletOrigen: React.FC<{
     const esEvm = /^0x/i.test(w);
     const sinConsultas = consultas != null && consultas <= 0;
 
-    const verificar = async () => {
-        if (!w || cargando || sinConsultas) return;
+    // Las wallets que ya verificó (23 nov): para elegir una sin escribirla.
+    // Una que está en monitoreo se vuelve a verificar sin usar consultas.
+    const [misWallets, setMisWallets] = useState<any[]>([]);
+    const leerMisWallets = useCallback(async () => {
+        const r = await llamarFuncion('kyt', { action: 'mis_wallets' }, 20000).catch(() => null);
+        if (r?.ok && Array.isArray(r.wallets)) setMisWallets(r.wallets);
+    }, []);
+    useEffect(() => { leerMisWallets(); }, [leerMisWallets]);
+    // ¿La wallet escrita es una de las que están en monitoreo? Esa se
+    // verifica sin consultas, aunque no le queden.
+    const actualMonitoreada = !!w && misWallets.some(x => x.monitoreada && x.coin === red && String(x.address).toLowerCase() === w.toLowerCase());
+    const hayMonitoreadas = misWallets.some(x => x.monitoreada);
+    const puedeVerificar = !!w && (!sinConsultas || actualMonitoreada);
+
+    // dir/net explícitos: al elegir una wallet de la lista se verifica en el
+    // mismo toque, antes de que el estado del padre alcance a actualizarse.
+    const verificar = async (dirArg?: string, netArg?: RedOtc) => {
+        const dir = (dirArg ?? w).trim();
+        const net = netArg ?? red;
+        if (!dir || cargando) return;
+        const yaMonitoreada = misWallets.some(x => x.monitoreada && x.coin === net && String(x.address).toLowerCase() === dir.toLowerCase());
+        if (sinConsultas && !yaMonitoreada) return;
         setCargando(true); setError(null); onVerificado(null);
-        const r = await llamarFuncion('kyt', { action: 'otc_wallet', coin: red, address: w }, 60000).catch(() => null);
+        const r = await llamarFuncion('kyt', { action: 'otc_wallet', coin: net, address: dir }, 60000).catch(() => null);
         setCargando(false);
         if (typeof r?.saldoConsultas === 'number') onSaldo?.(r.saldoConsultas);
         if (r?.error === 'sin_consultas') { onSaldo?.(0); return; }
         if (!r?.ok) { setError(r?.mensaje ?? r?.error ?? 'No se pudo revisar la wallet. Intenta de nuevo.'); return; }
         onVerificado(r);
+        leerMisWallets();
     };
 
     // Wallet nueva (23 nov, decisión del dueño): riesgo bajo, porque su única
@@ -769,15 +790,57 @@ const WalletOrigen: React.FC<{
                     <ScanLine size={15} style={{ color: '#4ADE80' }} />
                     <span className="otc-esc-txt">Escanear</span>
                 </button>
-                <button onClick={verificar} disabled={!w || cargando || sinConsultas}
-                    style={{ flexShrink: 0, padding: '0 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: !w || sinConsultas ? 'not-allowed' : 'pointer',
-                        color: w && !sinConsultas ? '#0C0E0D' : '#878E88', background: w && !sinConsultas ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', opacity: cargando ? 0.6 : 1 }}>
+                <button onClick={() => verificar()} disabled={!puedeVerificar || cargando}
+                    style={{ flexShrink: 0, padding: '0 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: puedeVerificar ? 'pointer' : 'not-allowed',
+                        color: puedeVerificar ? '#0C0E0D' : '#878E88', background: puedeVerificar ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', opacity: cargando ? 0.6 : 1 }}>
                     {cargando ? 'Revisando…' : verif ? 'Revisar de nuevo' : 'Verificar'}
                 </button>
             </div>
 
-            {/* Sin consultas: no se verifica, y la compra queda a un clic. */}
-            {sinConsultas ? (
+            {/* Tus wallets verificadas: un toque la llena y, si está en
+                monitoreo, la verifica sin usar consultas. */}
+            {misWallets.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                    <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, letterSpacing: '1px', color: '#878E88' }}>TUS WALLETS VERIFICADAS</p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {misWallets.slice(0, 5).map(x => {
+                            const cat = x.categoriaHoy ?? x.categoria;
+                            const cr = CARA_RIESGO[cat] ?? CARA_RIESGO.sin_dato;
+                            const elegida = String(x.address).toLowerCase() === w.toLowerCase() && x.coin === red;
+                            const corta = String(x.address).length > 18 ? `${String(x.address).slice(0, 8)}…${String(x.address).slice(-6)}` : String(x.address);
+                            return (
+                                <button key={`${x.coin}:${x.address}`} disabled={cargando}
+                                    onClick={() => {
+                                        onWallet(String(x.address));
+                                        if (x.coin !== 'TRX') onRed(x.coin as RedOtc);
+                                        if (x.monitoreada) verificar(String(x.address), x.coin as RedOtc);
+                                    }}
+                                    className="transition-colors hover:bg-white/[0.04]"
+                                    style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', fontFamily: 'inherit', cursor: 'pointer', padding: '8px 11px', borderRadius: 10,
+                                        background: elegida ? 'rgba(74,222,128,0.06)' : 'rgba(255,255,255,0.02)', border: `1px solid ${elegida ? 'rgba(74,222,128,0.35)' : 'rgba(255,255,255,0.08)'}` }}>
+                                    <span style={{ fontSize: 10, fontWeight: 800, color: '#878E88', minWidth: 30 }}>{x.coin === 'TRX' ? 'TRON' : x.coin === 'BNB' ? 'BNB' : 'ETH'}</span>
+                                    <span style={{ flex: 1, minWidth: 0, fontFamily: 'ui-monospace, monospace', fontSize: 12, color: '#F4F4F2', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{corta}</span>
+                                    {x.monitoreada && (
+                                        <span title="En monitoreo: verificarla no usa consultas" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700, color: '#4ADE80', whiteSpace: 'nowrap' }}>
+                                            <Eye size={11} /> <span className="otc-esc-txt">En monitoreo</span>
+                                        </span>
+                                    )}
+                                    <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: '0.5px', color: cr.c, border: `1px solid ${cr.c}55`, borderRadius: 999, padding: '2px 8px', whiteSpace: 'nowrap' }}>{cr.t}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {/* Sin consultas: no se verifica, y la compra queda a un clic. Una
+                wallet en monitoreo sí se puede verificar: ahí no hace falta. */}
+            {sinConsultas && actualMonitoreada ? (
+                <p style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '8px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                    <Eye size={12} style={{ color: '#4ADE80', flexShrink: 0 }} />
+                    Esta wallet está en monitoreo: verificarla no usa consultas.
+                </p>
+            ) : sinConsultas ? (
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderRadius: 12, padding: '12px 14px',
                     border: '1px solid rgba(251,191,36,0.35)', background: 'linear-gradient(135deg, rgba(251,191,36,0.08), rgba(251,191,36,0.02))' }}>
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0, flex: '1 1 260px' }}>
@@ -787,7 +850,7 @@ const WalletOrigen: React.FC<{
                         <div style={{ minWidth: 0 }}>
                             <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>No tienes consultas para verificar la wallet</p>
                             <p style={{ margin: '3px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
-                                La revisión de riesgo usa 1 consulta de Lincoin Risk, las mismas de AML y KYT. Compra un paquete y verifica en el acto.
+                                La revisión de riesgo usa 1 consulta de Lincoin Risk, las mismas de AML y KYT. Compra un paquete y verifica en el acto{hayMonitoreadas ? ', o elige una de tus wallets en monitoreo: esas no usan consultas' : ''}.
                             </p>
                         </div>
                     </div>
@@ -801,7 +864,7 @@ const WalletOrigen: React.FC<{
             ) : consultas != null && !verif ? (
                 <p style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '8px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
                     <ShieldCheck size={12} style={{ color: '#4ADE80', flexShrink: 0 }} />
-                    Verificar usa 1 consulta de Lincoin Risk. Una wallet que ya verificaste y sigue vigente no se cobra otra vez; si la revisión no da resultado, se devuelve.
+                    Verificar usa 1 consulta de Lincoin Risk. La wallet queda en monitoreo: volver a verificarla no usa consultas, y si cambia de estado te avisamos por correo. Si la revisión no da resultado, la consulta se devuelve.
                 </p>
             ) : null}
 
@@ -855,6 +918,19 @@ const WalletOrigen: React.FC<{
                                 : `${verif.motivoBloqueo ?? 'Esta wallet no pasó la revisión de riesgo.'} No se puede usar para la mesa.`}
                         </p>
                     </div>
+                    {(verif.monitoreoNuevo || verif.monitoreada) && (
+                        <p style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11.5, color: '#878E88', marginTop: 8, lineHeight: 1.5 }}>
+                            <Eye size={12} style={{ color: '#4ADE80', marginTop: 2, flexShrink: 0 }} />
+                            {verif.monitoreoNuevo
+                                ? 'Quedó en tu monitoreo de Lincoin Risk: la revisamos sola, sin usar consultas, y si cambia de estado te avisamos por correo.'
+                                : 'En monitoreo: esta verificación no usó consultas. Si cambia de estado te avisamos por correo.'}
+                        </p>
+                    )}
+                    {verif.monitoreoTope && (
+                        <p style={{ fontSize: 11.5, color: '#FBBF24', marginTop: 6, lineHeight: 1.5 }}>
+                            No se pudo agregar al monitoreo: llegaste al tope de wallets monitoreadas. Quita alguna en Lincoin Risk → KYT.
+                        </p>
+                    )}
                     <p style={{ fontSize: 10.5, color: 'rgba(244,244,242,0.45)', marginTop: 6 }}>
                         Revisado el {fecha(verif.consultadoAt)}. El resultado refleja la información disponible hoy.
                     </p>

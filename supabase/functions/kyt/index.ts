@@ -1547,62 +1547,151 @@ const constanciaPublica = (k: Constancia | null) => k ? {
 // van a avisar.
 //
 // Devuelve si se envio, para no marcar aviso_enviado cuando no salio.
-async function avisarPorCorreo(userId: string, datos: {
-  alias: string | null; address: string; coin: string;
-  antes: number | null; despues: number | null; motivo: string | null;
-}): Promise<boolean> {
+// ── Correos del monitoreo (23 nov, pedido del dueño) ──────────────
+// Dos avisos al correo de la cuenta: cuando una wallet ENTRA al monitoreo
+// ("has metido una wallet al sistema de monitoreo") y cuando CAMBIA de estado,
+// con un asunto que alarme de una vez para que lo abra ("🚨 ALERTA…").
+// Nunca nombran al proveedor del análisis (el cliente no ve aliados) y todo
+// lo que escribió el cliente (el alias) va escapado: un alias con HTML no
+// puede armar un correo a su gusto.
+const escHtml = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] as string))
+const NIVEL_CORREO: Record<string, string> = { bajo: 'Riesgo bajo', medio: 'Riesgo medio', alto: 'Riesgo alto', sin_dato: 'Sin resultado' }
+const COLOR_CORREO: Record<string, string> = { bajo: '#22A35C', medio: '#B45309', alto: '#B91C1C', sin_dato: '#5C625E' }
+const RED_CORREO: Record<string, string> = { TRX: 'TRON (TRC20)', ETH: 'Ethereum (ERC20)', BNB: 'BNB Chain (BEP20)' }
+const cortaDir = (a: string) => a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a
+
+async function enviarCorreoKyt(userId: string, asunto: string, armar: (nombre: string) => string): Promise<boolean> {
   if (!RESEND_KEY) return false
   const { data: u } = await db.from('users').select('email, full_name, company_name').eq('id', userId).maybeSingle()
   const to = (u as any)?.email
   if (!to) return false
-  const nombre = String((u as any)?.company_name ?? (u as any)?.full_name ?? '').split(' ')[0] ?? ''
-  const corta = datos.address.length > 14 ? `${datos.address.slice(0, 6)}…${datos.address.slice(-4)}` : datos.address
-  const etiqueta = datos.alias || corta
-
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
-<body style="margin:0;padding:0;background:#F0EFEB">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0EFEB"><tr><td align="center" style="padding:28px 14px">
-<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#FFFFFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px">
-<tr><td style="padding:28px">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
-    <td style="font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;color:#15181A">Lincoin<span style="color:#22A35C">.</span></td>
-    <td align="right" style="font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">Verificacion de direcciones</td>
-  </tr></table>
-  <p style="font-family:'Archivo',Arial,sans-serif;font-size:19px;font-weight:800;color:#15181A;margin:26px 0 10px">Cambio de riesgo en una direccion que monitoreas</p>
-  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 18px">Hola${nombre ? `, ${nombre}` : ''}. La direccion <b style="color:#15181A">${etiqueta}</b> que tenes guardada en KYT cambio de clasificacion de riesgo.</p>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;font-size:12.5px">
-    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Direccion</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700;font-family:monospace">${corta}</td></tr>
-    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Red</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${datos.coin}</td></tr>
-    <tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Puntaje</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${datos.antes ?? '-'} a ${datos.despues ?? '-'} / 100</td></tr>
-    ${datos.motivo ? `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">Motivo</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${datos.motivo}</td></tr>` : ''}
-  </table>
-  <p style="font-family:Arial,sans-serif;font-size:12.5px;color:#5C625E;line-height:1.6;margin:20px 0 0">Esto no bloquea ninguna operacion: es informacion para que decidas. Podes ver el detalle en Servicios, KYT.</p>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:26px;border-top:1px solid rgba(21,24,26,0.06)"><tr><td style="padding-top:18px">
-    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">Recibiste este correo porque guardaste esta direccion para monitoreo en tu cuenta Lincoin. Lincoin no es un banco. El resultado refleja la informacion disponible hoy y puede cambiar.</p>
-  </td></tr></table>
-</td></tr></table>
-</td></tr></table>
-</body></html>`
-
+  const nombre = String((u as any)?.full_name ?? (u as any)?.company_name ?? '').trim().split(' ')[0] ?? ''
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: `Lincoin <${FROM_EMAIL}>`, to: [to],
-        subject: `Cambio de riesgo en ${etiqueta}`,
-        html,
-      }),
+      body: JSON.stringify({ from: `Lincoin <${FROM_EMAIL}>`, to: [to], subject: asunto, html: armar(nombre) }),
     })
     if (!r.ok) {
       const t = await r.text().catch(() => '')
-      console.error(`[kyt] Resend rechazo el aviso - HTTP ${r.status} - ${t.slice(0, 200)}`)
+      console.error(`[kyt] Resend rechazo el correo - HTTP ${r.status} - ${t.slice(0, 200)}`)
       return false
     }
     return true
   } catch (e) {
-    console.error('[kyt] fallo el aviso por correo:', (e as Error)?.message)
+    console.error('[kyt] fallo el correo:', (e as Error)?.message)
     return false
+  }
+}
+
+// El mismo marco para los dos: fondo claro, wordmark con el punto verde de
+// fondo claro, una tarjeta con los datos y el pie de siempre.
+function plantillaKyt(o: { nombre: string; banda?: { texto: string; color: string }; titulo: string; intro: string; filas: [string, string][]; cierre: string; pie: string }): string {
+  const fila = ([k, v]: [string, string]) => `<tr><td style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#5C625E">${k}</td><td align="right" style="padding:9px 0;border-top:1px solid rgba(21,24,26,0.06);color:#15181A;font-weight:700">${v}</td></tr>`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:0;background:#F0EFEB">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F0EFEB"><tr><td align="center" style="padding:28px 14px">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#FFFFFF;border:1px solid rgba(21,24,26,0.08);border-radius:14px">
+${o.banda ? `<tr><td style="background:${o.banda.color};color:#FFFFFF;font-family:Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:1px;padding:10px 28px;border-radius:14px 14px 0 0">${o.banda.texto}</td></tr>` : ''}
+<tr><td style="padding:28px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="font-family:'Archivo',Arial,sans-serif;font-size:22px;font-weight:800;letter-spacing:-0.6px;color:#15181A">Lincoin<span style="color:#22A35C">.</span></td>
+    <td align="right" style="font-family:Arial,sans-serif;font-size:11px;color:#9B9F9B">Lincoin Risk · KYT</td>
+  </tr></table>
+  <p style="font-family:'Archivo',Arial,sans-serif;font-size:19px;font-weight:800;color:#15181A;margin:26px 0 10px">${o.titulo}</p>
+  <p style="font-family:Arial,sans-serif;font-size:13.5px;color:#5C625E;line-height:1.6;margin:0 0 18px">Hola${o.nombre ? `, ${escHtml(o.nombre)}` : ''}. ${o.intro}</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;font-size:12.5px">${o.filas.map(fila).join('')}</table>
+  <p style="font-family:Arial,sans-serif;font-size:12.5px;color:#5C625E;line-height:1.6;margin:20px 0 0">${o.cierre}</p>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:26px;border-top:1px solid rgba(21,24,26,0.06)"><tr><td style="padding-top:18px">
+    <p style="font-family:Arial,sans-serif;font-size:10.5px;color:#9B9F9B;line-height:1.6;margin:0">${o.pie} Lincoin no es un banco. El resultado refleja la información disponible y puede cambiar.</p>
+  </td></tr></table>
+</td></tr></table>
+</td></tr></table>
+</body></html>`
+}
+
+// "Has metido una wallet al sistema de monitoreo".
+async function avisarAltaMonitoreo(userId: string, d: { alias: string | null; address: string; coin: string; categoria: string; puntaje: number | null; horas: number }): Promise<boolean> {
+  const etiqueta = d.alias ? `${d.alias} (${cortaDir(d.address)})` : cortaDir(d.address)
+  return enviarCorreoKyt(userId, `🛡️ Agregaste una wallet al monitoreo: ${d.alias ? `${d.alias} · ` : ''}${cortaDir(d.address)}`, nombre => plantillaKyt({
+    nombre,
+    titulo: 'Tu wallet quedó en monitoreo',
+    intro: `La wallet <b style="color:#15181A">${escHtml(etiqueta)}</b> entró al monitoreo de Lincoin Risk. La revisamos cada ${d.horas} ${d.horas === 1 ? 'hora' : 'horas'} sin gastar tus consultas, y si cambia de estado te escribimos de inmediato.`,
+    filas: [
+      ['Wallet', `<span style="font-family:monospace">${escHtml(d.address)}</span>`],
+      ['Red', escHtml(RED_CORREO[d.coin] ?? d.coin)],
+      ['Estado al entrar', `<span style="color:${COLOR_CORREO[d.categoria] ?? '#15181A'}">${escHtml(NIVEL_CORREO[d.categoria] ?? d.categoria)}</span>${d.puntaje != null ? ` · ${escHtml(d.puntaje)} / 100` : ''}`],
+    ],
+    cierre: 'Mientras esté en monitoreo, volver a verificarla (por ejemplo, en la Mesa OTC) no usa consultas. La ves y la puedes quitar en Lincoin Risk → KYT → Direcciones monitoreadas.',
+    pie: 'Recibiste este correo porque esta wallet se verificó desde tu cuenta Lincoin.',
+  }))
+}
+
+// El aviso de cambio de estado. Empeoró: asunto de alarma (🚨). Mejoró: aviso (🔔).
+async function avisarCambioMonitoreo(userId: string, d: {
+  alias: string | null; address: string; coin: string;
+  bandaAntes: string; bandaDespues: string; antes: number | null; despues: number | null; motivo: string | null; empeoro: boolean;
+}): Promise<boolean> {
+  const corta = cortaDir(d.address)
+  const etiqueta = d.alias ? `${d.alias} (${corta})` : corta
+  const ahora = NIVEL_CORREO[d.bandaDespues] ?? d.bandaDespues
+  const asunto = d.empeoro
+    ? `🚨 ALERTA: tu wallet ${d.alias ? `${d.alias} · ` : ''}${corta} cambió de estado — ahora ${ahora.toLowerCase()}`
+    : `🔔 Tu wallet ${d.alias ? `${d.alias} · ` : ''}${corta} cambió de estado — ahora ${ahora.toLowerCase()}`
+  return enviarCorreoKyt(userId, asunto, nombre => plantillaKyt({
+    nombre,
+    banda: d.empeoro ? { texto: '🚨 ALERTA · WALLET CAMBIÓ DE ESTADO', color: '#B91C1C' } : { texto: '🔔 WALLET CAMBIÓ DE ESTADO', color: '#15181A' },
+    titulo: d.empeoro ? 'Una wallet que monitoreas subió de riesgo' : 'Una wallet que monitoreas cambió de estado',
+    intro: `La wallet <b style="color:#15181A">${escHtml(etiqueta)}</b> pasó de <b>${escHtml(NIVEL_CORREO[d.bandaAntes] ?? d.bandaAntes)}</b> a <b style="color:${COLOR_CORREO[d.bandaDespues] ?? '#15181A'}">${escHtml(ahora)}</b> en la última revisión automática.`,
+    filas: [
+      ['Wallet', `<span style="font-family:monospace">${escHtml(d.address)}</span>`],
+      ['Red', escHtml(RED_CORREO[d.coin] ?? d.coin)],
+      ['Estado', `${escHtml(NIVEL_CORREO[d.bandaAntes] ?? d.bandaAntes)} → <span style="color:${COLOR_CORREO[d.bandaDespues] ?? '#15181A'}">${escHtml(ahora)}</span>`],
+      ['Puntaje', `${escHtml(d.antes ?? '—')} → ${escHtml(d.despues ?? '—')} / 100`],
+      ...(d.motivo ? [['Motivo', escHtml(d.motivo)] as [string, string]] : []),
+    ],
+    cierre: d.empeoro
+      ? '<b style="color:#B91C1C">Revisa antes de volver a recibir fondos de esta wallet.</b> En la Mesa OTC solo se aceptan wallets de riesgo bajo: con este estado no se puede usar para un cierre. El detalle está en Lincoin Risk → KYT.'
+      : 'El detalle está en Lincoin Risk → KYT → Direcciones monitoreadas.',
+    pie: 'Recibiste este correo porque esta wallet está en el monitoreo de tu cuenta Lincoin.',
+  }))
+}
+
+// ── Alta en el monitoreo ──────────────────────────────────────────
+// Una wallet que se verifica o se consulta entra sola al monitoreo (23 nov):
+// así no se vuelve a consultar —se revisa en la ronda— y el cliente no gasta
+// consultas cada vez. Solo si no está ya activa (no se reinicia la
+// referencia de una que ya se vigila) y si hay cupo (topeMonitoreadas).
+async function estaMonitoreada(uid: string, coin: string, dir: string): Promise<boolean> {
+  const { data } = await db.from('kyt_watchlist').select('id')
+    .eq('user_id', uid).eq('coin', coin).eq('address_lower', dir.toLowerCase()).eq('activo', true).maybeSingle()
+  return !!data
+}
+async function altaMonitoreoAuto(c: Config, uid: string, coin: string, dir: string, alias: string): Promise<{ nueva: boolean; tope?: boolean }> {
+  try {
+    if (await estaMonitoreada(uid, coin, dir)) return { nueva: false }
+    const { count } = await db.from('kyt_watchlist').select('*', { count: 'exact', head: true }).eq('user_id', uid).eq('activo', true)
+    if ((count ?? 0) >= c.topeMonitoreadas) return { nueva: false, tope: true }
+    const f = await padronBuscar(coin, dir)
+    if (!f || f.estado !== 'finalizado') return { nueva: false }
+    const banda = categoriaDe(c, f)
+    const ahora = new Date().toISOString()
+    const { error } = await db.from('kyt_watchlist').upsert({
+      user_id: uid, coin, address_lower: dir.toLowerCase(), address: f.address ?? dir,
+      alias: alias || null,
+      score_inicial: f.risk_score ?? null, nivel_inicial: f.risk_level ?? null, banda_inicial: banda,
+      score_actual: f.risk_score ?? null, nivel_actual: f.risk_level ?? null, banda_actual: banda,
+      revisado_at: f.consultado_at ?? ahora,
+      subio: false, subio_at: null, motivo_cambio: null, aviso_enviado: false,
+      activo: true,
+    }, { onConflict: 'user_id,coin,address_lower' })
+    if (error) { console.error('[kyt] alta en monitoreo', error.message); return { nueva: false } }
+    await logAuditKyt(uid, 'kyt.monitoreo_alta', { coin, address: dir, alias: alias || null, banda, origen: 'automatico' })
+    await avisarAltaMonitoreo(uid, { alias: alias || null, address: f.address ?? dir, coin, categoria: banda, puntaje: f.risk_score ?? null, horas: c.horasMonitoreo })
+    return { nueva: true }
+  } catch (e) {
+    console.error('[kyt] alta en monitoreo', (e as Error)?.message)
+    return { nueva: false }
   }
 }
 
@@ -1671,7 +1760,12 @@ async function conConsultaRisk(yo: Yo, accion: string, body: any, seguir: () => 
   try {
     const dias = Math.max(1, Number(c.diasVigencia) || 0)
     let reservada = false
-    if (!(await consultaKytVigente(uid, ref, dias))) {
+    // Una wallet en monitoreo ya está pagada y se revisa sola en cada ronda
+    // (23 nov, el dueño: "que no las consulte nuevamente y más bien las
+    // monitoree, y él no gaste en consultas"). Solo `force` (pedir un análisis
+    // nuevo a propósito) vuelve a la regla normal.
+    const monitoreada = await estaMonitoreada(uid, coin, dir)
+    if (!(monitoreada && body.force !== true) && !(await consultaKytVigente(uid, ref, dias))) {
       const m = await moverConsultas(uid, 'consumo', -1, `Consulta KYT ${coin} ${dir}`, await nombreUsuario(uid), ref)
       if (m?.error) {
         return json({ ok: false, error: 'sin_consultas', sinSaldo: true, saldoConsultas: Number(m.saldo ?? 0), mensaje: 'No te quedan consultas. Compra un paquete en Lincoin Risk para seguir consultando.' })
@@ -1691,7 +1785,15 @@ async function conConsultaRisk(yo: Yo, accion: string, body: any, seguir: () => 
       }
     }
     if (!datos || typeof datos !== 'object') return r
-    return json({ ...datos, saldoConsultas: await saldoConsultas(uid), consultaCobrada: reservada && datos.ok === true }, r.status)
+    // Con resultado, la wallet entra al monitoreo (si no estaba y hay cupo).
+    let alta: { nueva: boolean; tope?: boolean } = { nueva: false }
+    if (datos.ok === true && (accion === 'consultar' || accion === 'otc_wallet')) {
+      alta = await altaMonitoreoAuto(c, uid, coin, dir, accion === 'otc_wallet' ? 'Mesa OTC' : '')
+    }
+    return json({
+      ...datos, saldoConsultas: await saldoConsultas(uid), consultaCobrada: reservada && datos.ok === true,
+      monitoreada: monitoreada || alta.nueva, monitoreoNuevo: alta.nueva, monitoreoTope: alta.tope === true,
+    }, r.status)
   } finally {
     await soltarCandado(db, llave)
   }
@@ -2040,8 +2142,13 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
       const nombre = (u as any)?.full_name ?? null
 
       let ficha = await padronBuscar(coin, dir)
+      // Una wallet en monitoreo se mantiene al día con la ronda (cada
+      // horasMonitoreo): mientras la última revisión sea de las dos últimas
+      // rondas, se usa esa en vez de pedir un análisis nuevo.
+      const enMonitoreo = await estaMonitoreada(yo.userId, coin, dir)
+      const horasValida = enMonitoreo ? Math.max(c.otcHorasVigencia, c.horasMonitoreo * 2) : c.otcHorasVigencia
       const vigente = !!ficha && ficha.estado === 'finalizado' && !!ficha.consultado_at
-        && Date.now() - new Date(ficha.consultado_at).getTime() < c.otcHorasVigencia * 3600_000
+        && Date.now() - new Date(ficha.consultado_at).getTime() < horasValida * 3600_000
         && proveedorDe(ficha) === proveedorActual(c, coin)
       const delPadron = vigente
       if (vigente) {
@@ -2195,6 +2302,39 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
       })
     }
 
+    // ── Las wallets que el cliente ya verificó en la mesa (23 nov) ─────
+    // Para elegir una sin escribirla otra vez. Salen de su propio registro de
+    // verificaciones (audit_log kyt.otc_wallet), la última de cada wallet,
+    // con si está en monitoreo y su estado de hoy (el de la ronda si lo hay).
+    if (accion === 'mis_wallets') {
+      if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
+      const { data } = await db.from('audit_log').select('metadata, created_at')
+        .eq('user_id', yo.userId).eq('action', 'kyt.otc_wallet')
+        .order('created_at', { ascending: false }).limit(300)
+      const vistas = new Map<string, any>()
+      for (const r of (data ?? []) as any[]) {
+        const m = r.metadata ?? {}
+        const k = `${m.coin}:${String(m.addressLower ?? '')}`
+        if (!m.coin || !m.addressLower || vistas.has(k)) continue
+        if (m.categoria === 'sin_dato') continue
+        vistas.set(k, { coin: m.coin, address: m.address ?? m.addressLower, addressLower: m.addressLower, categoria: m.categoria ?? null, permitido: m.permitido === true, walletNueva: m.excepcion === 'wallet_nueva', verificadaAt: r.created_at })
+        if (vistas.size >= 12) break
+      }
+      const lista = Array.from(vistas.values())
+      if (lista.length) {
+        const { data: wl } = await db.from('kyt_watchlist').select('coin, address_lower, banda_actual, revisado_at')
+          .eq('user_id', yo.userId).eq('activo', true).in('address_lower', lista.map(x => x.addressLower))
+        const mon = new Map(((wl ?? []) as any[]).map(w => [`${w.coin}:${w.address_lower}`, w]))
+        for (const x of lista) {
+          const w = mon.get(`${x.coin}:${x.addressLower}`)
+          x.monitoreada = !!w
+          if (w) { x.categoriaHoy = w.banda_actual ?? x.categoria; x.revisadaAt = w.revisado_at ?? null }
+          delete x.addressLower
+        }
+      }
+      return json({ ok: true, wallets: lista })
+    }
+
     // ── GUARDAR Y MONITOREAR ──────────────────────────────────────
     if (accion === 'guardar') {
       if (!yo.userId) return json({ error: 'no_autorizado' }, 401)
@@ -2209,7 +2349,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         .select('*', { count: 'exact', head: true })
         .eq('user_id', yo.userId).eq('activo', true)
       const yaEsta = await db.from('kyt_watchlist')
-        .select('id').eq('user_id', yo.userId).eq('coin', coin)
+        .select('id, activo').eq('user_id', yo.userId).eq('coin', coin)
         .eq('address_lower', dir.toLowerCase()).maybeSingle()
       if (!yaEsta.data && (count ?? 0) >= c.topeMonitoreadas) {
         return json({ ok: false, error: 'tope', mensaje: `Llegaste al tope de ${c.topeMonitoreadas} direcciones monitoreadas. Dejá de monitorear alguna para agregar otra.` })
@@ -2238,6 +2378,11 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         activo: true,
       }, { onConflict: 'user_id,coin,address_lower' })
       if (errUp) return json({ ok: false, error: 'no_guardado', mensaje: errUp.message }, 500)
+      // El correo de "agregaste una wallet al monitoreo", solo si no estaba ya
+      // activa (volver a guardarla no es una wallet nueva en el monitoreo).
+      if (!(yaEsta.data as any)?.activo) {
+        await avisarAltaMonitoreo(yo.userId, { alias: alias || null, address: ficha2?.address ?? dir, coin, categoria: banda, puntaje: ficha2?.risk_score ?? null, horas: c.horasMonitoreo })
+      }
       return json({ ok: true, guardada: true })
     }
 
@@ -2339,6 +2484,10 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         const ahoraBanda = bandaProv === 'medio' && soloWalletNueva(ev.sarblock ?? null, ev.score) ? 'bajo' : bandaProv
         const ORDEN: Record<string, number> = { bajo: 1, sin_dato: 1, medio: 2, alto: 3 }
         const empeoro = (ORDEN[ahoraBanda] ?? 1) > (ORDEN[antes] ?? 1)
+        // Cualquier cambio de estado se avisa (23 nov, el dueño: "si cambia el
+        // estado, que le llegue el correo"). Empeorar sigue marcando `subio`
+        // en la lista; mejorar avisa sin alarma.
+        const cambio = ahoraBanda !== antes && antes !== 'sin_dato' && ahoraBanda !== 'sin_dato'
 
         const motivo = empeoro
           ? (Array.isArray(ev.hallazgos) && ev.hallazgos.length
@@ -2352,24 +2501,25 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
           ...(empeoro ? { subio: true, subio_at: ahora2, motivo_cambio: motivo, aviso_enviado: false } : {}),
         }).eq('id', w.id)
 
-        if (empeoro) {
+        if (cambio) {
           // El correo se manda ANTES de anotar aviso_enviado, y solo se anota
           // si de verdad salio. Marcar el aviso como enviado cuando no salio
           // le diria al cliente en pantalla que ya le avisamos -- y dejaria de
           // revisar.
-          const enviado = await avisarPorCorreo(w.user_id, {
+          const enviado = await avisarCambioMonitoreo(w.user_id, {
             alias: w.alias, address: w.address, coin: w.coin,
-            antes: w.score_actual, despues: ev.score, motivo,
+            bandaAntes: antes, bandaDespues: ahoraBanda,
+            antes: w.score_actual, despues: ev.score, motivo: motivo ?? (empeoro ? null : 'bajó la clasificación de riesgo'), empeoro,
           })
           await db.from('kyt_alerts').insert({
             user_id: w.user_id, watchlist_id: w.id,
             coin: w.coin, address: w.address, alias: w.alias,
             score_antes: w.score_actual, score_despues: ev.score,
             banda_antes: antes, banda_despues: ahoraBanda,
-            motivo, empeoro: true, aviso_enviado: enviado,
+            motivo: motivo ?? 'bajó la clasificación de riesgo', empeoro, aviso_enviado: enviado,
           })
-          if (enviado) await db.from('kyt_watchlist').update({ aviso_enviado: true }).eq('id', w.id)
-          out.push({ id: w.id, r: 'subio', de: w.score_actual, a: ev.score, aviso: enviado })
+          if (enviado && empeoro) await db.from('kyt_watchlist').update({ aviso_enviado: true }).eq('id', w.id)
+          out.push({ id: w.id, r: empeoro ? 'subio' : 'bajo', aviso: enviado })
         } else {
           out.push({ id: w.id, r: 'sin_cambio' })
         }
