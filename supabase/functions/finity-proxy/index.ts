@@ -1154,7 +1154,7 @@ Deno.serve(async (req) => {
       // búsqueda, el cuerpo y la escritura del contacto son los mismos que
       // usa inscribir_pendientes (tarea programada y panel de Tesorería).
       let lista: Pendiente[]
-      try { lista = (await inscripcionesPendientes()).lista.filter(p => ![400, 422].includes(Number(p.contacto?.regHttp))) }
+      try { lista = (await inscripcionesPendientes()).lista.filter(p => ![400, 422].includes(Number(p.contacto?.regHttp)) || rechazoPorBancoResuelto(p.contacto)) }
       catch (e) { return json(200, { ok: false, error: String((e as Error)?.message ?? e) }) }
       lista.sort((a, b) => String(b.contacto?.createdAt ?? '').localeCompare(String(a.contacto?.createdAt ?? '')))
       if (soloContar || freno) return json(200, { ok: true, pendientes: lista.length, pausaHasta: freno?.hasta ?? null, pausaHttp: freno?.http ?? null, inscritas: 0, intentadas: 0 })
@@ -1242,7 +1242,7 @@ Deno.serve(async (req) => {
             ultimoIntento: p.contacto?.regIntentoAt ?? null, http: p.contacto?.regHttp ?? null,
             ultimoError: p.contacto?.lastError ? String(p.contacto.lastError).slice(0, 260) : null,
             datosIncompletos: 'motivo' in cu ? cu.motivo : null,
-            listaParaReintento: puedeReintentarRegistro(p.contacto),
+            listaParaReintento: puedeReintentarRegistro(p.contacto) || rechazoPorBancoResuelto(p.contacto),
           }
         })
       } catch (e) { errorPendientes = String((e as Error)?.message ?? e) }
@@ -1273,7 +1273,7 @@ Deno.serve(async (req) => {
       catch (e) { return json(500, { ok: false, error: String((e as Error)?.message ?? e) }) }
       const candidatas = lista
         .filter(p => (!soloUsuario || p.userId === soloUsuario) && (!soloContacto || String(p.contacto?.id) === soloContacto))
-        .filter(p => forzar || puedeReintentarRegistro(p.contacto))
+        .filter(p => forzar || puedeReintentarRegistro(p.contacto) || rechazoPorBancoResuelto(p.contacto))
         // Las más viejas primero: llevan más tiempo esperando.
         .sort((a, b) => String(a.contacto?.createdAt ?? '').localeCompare(String(b.contacto?.createdAt ?? '')))
       const resultados: any[] = []
@@ -2120,6 +2120,16 @@ function puedeReintentarRegistro(c: any): boolean {
   if (!c?.regIntentoAt) return true
   const t = new Date(c.regIntentoAt).getTime()
   return !Number.isFinite(t) || Date.now() - t >= esperaRegistroMs(Number(c.regHttp) || 0)
+}
+
+// Rechazada por un banco sin código (nuestro "no tiene código ACH" o el 400
+// de Finity "financial_institution_code should not be empty") y que AHORA sí
+// arma el cuerpo completo: el cruce de bancos se corrigió (23 nov, "BANCO
+// DAVIVIENDA"), así que reintentar ya no da lo mismo. No espera las 6 h.
+function rechazoPorBancoResuelto(c: any): boolean {
+  const e = String(c?.lastError ?? '')
+  if (!/no tiene código ACH|financial_institution_code/i.test(e)) return false
+  return !('motivo' in cuerpoCuentaFinity(c))
 }
 
 type Pendiente = { userId: string; cliente: string; contacto: any }

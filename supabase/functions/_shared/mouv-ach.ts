@@ -60,8 +60,17 @@ const CODIGO_ACH: Record<string, string> = {
   daviplata: '1551', movii: '1801', nu: '1809',
 }
 /** Código ACH (el que pide Finity) del nombre de banco que guarda el
- *  beneficiario ("Davivienda", "Banco de Bogotá"…). null si no se conoce. */
-export const codigoAchBanco = (banco: unknown): string | null => CODIGO_ACH[nombreBanco(String(banco ?? ''))] ?? null
+ *  beneficiario ("Davivienda", "BANCO DAVIVIENDA", "Banco de Bogotá",
+ *  "BCSC"…). null si no se conoce. Acepta también los alias de abajo: un
+ *  beneficiario cargado por API o importado trae el nombre como lo escribió
+ *  quien lo cargó (23 nov: "BANCO DAVIVIENDA" se rechazaba "sin código ACH"). */
+export const codigoAchBanco = (banco: unknown): string | null => {
+  const n = nombreBanco(String(banco ?? ''))
+  if (!n) return null
+  if (CODIGO_ACH[n]) return CODIGO_ACH[n]
+  const k = Object.keys(ALIAS_BANCO).find(x => ALIAS_BANCO[x].includes(n))
+  return k ? CODIGO_ACH[k] ?? null : null
+}
 
 // Otras formas en que esos bancos aparecen en los catálogos de los aliados.
 const ALIAS_BANCO: Record<string, string[]> = {

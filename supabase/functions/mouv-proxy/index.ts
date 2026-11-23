@@ -23,7 +23,7 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
-import { BANK_CODES_CO } from '../_shared/cuenta-finity.ts'
+import { codigoBancoCo } from '../_shared/cuenta-finity.ts'
 import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
@@ -1629,9 +1629,11 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     // otra caja ('NEQUI', 'nequi') o ya como código ('1507'). El mapa era
     // sensible a mayúsculas y exacto: cualquier variante se enviaba tal cual
     // como "código", y Finity la rechazaba.
+    // El mismo cruce que la inscripción del servidor (_shared/cuenta-finity):
+    // "BANCO DAVIVIENDA" también es Davivienda. Antes, si el nombre no era
+    // exacto, se mandaba el NOMBRE como código y Finity lo rechazaba.
     const bankRaw = String(recipient.bankCode ?? '').trim()
-    const bankKey = Object.keys(BANK_CODES_CO).find(k => k.toLowerCase() === bankRaw.toLowerCase())
-    const bankCode = /^\d{3,5}$/.test(bankRaw) ? bankRaw : (bankKey ? BANK_CODES_CO[bankKey] : bankRaw)
+    const bankCode = codigoBancoCo(bankRaw) ?? bankRaw
 
     // Tipo de documento en el formato que acepta Finity (doc oficial, revisada
     // el 23 nov): CC | CE | NIT | PASSPORT | PPT. Antes el pasaporte iba como

@@ -14,6 +14,8 @@
 //      account_holder_id_number } }  → 201 { id: "ea_…", … }
 // ══════════════════════════════════════════════════════════════════
 
+import { codigoAchBanco } from './mouv-ach.ts'
+
 // Códigos ACH de Colombia por nombre del banco (el que guarda el contacto).
 // Misma tabla que BANK_CODES_CO en components/ContactsSection.tsx.
 export const BANK_CODES_CO: Record<string, string> = {
@@ -26,12 +28,16 @@ export const BANK_CODES_CO: Record<string, string> = {
 }
 
 // El código del banco: si ya viene el código (3-5 dígitos) se usa; si viene
-// el nombre, se busca sin importar mayúsculas. Sin cruce: null (no se adivina).
+// el nombre, primero tal cual está en la tabla y si no, normalizado (sin
+// "banco", "S.A.", "Colombia", tildes ni mayúsculas, y con los alias
+// conocidos: codigoAchBanco). 23 nov: un beneficiario con "BANCO DAVIVIENDA"
+// salía "sin código ACH" porque solo se comparaba el nombre exacto. Sin
+// cruce: null (no se adivina).
 export function codigoBancoCo(banco: unknown): string | null {
   const b = String(banco ?? '').trim()
   if (/^\d{3,5}$/.test(b)) return b
   const k = Object.keys(BANK_CODES_CO).find(x => x.toLowerCase() === b.toLowerCase())
-  return k ? BANK_CODES_CO[k] : null
+  return k ? BANK_CODES_CO[k] : codigoAchBanco(b)
 }
 
 // Tipo de documento como lo acepta Finity. "PAS"/"PASAPORTE" es PASSPORT:

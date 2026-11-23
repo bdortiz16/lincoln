@@ -217,7 +217,7 @@ const buildMouvAccountBody = (c: { name: string; docType: string; docNumber: str
         // Solo dígitos: Finity rechaza (400) "bank_account_number debe
         // contener solo dígitos (6-20 caracteres)" si va con guiones o espacios.
         account_number: String(c.accountNumber ?? '').replace(/\D/g, ''),
-        financial_institution_code: BANK_CODES_CO[c.bank] ?? '',
+        financial_institution_code: codigoBancoCo(c.bank),
         account_holder_fullname: c.name,
         // Enum de Finity (doc oficial, revisada el 23 nov): CC | CE | NIT |
         // PASSPORT | PPT. Antes el pasaporte se mandaba como CE y su número
@@ -340,6 +340,28 @@ const BANK_CODES_CO: Record<string, string> = {
     'Movii': '1801',
     'Nu Colombia': '1809',
 };
+
+// El código ACH del banco que guarda el beneficiario. 23 nov: un beneficiario
+// con "BANCO DAVIVIENDA" (cargado por API o importado) salía con el código
+// vacío y Finity respondía 400. Se compara sin "banco", "S.A.", "Colombia",
+// tildes ni mayúsculas, y con los alias conocidos: el mismo criterio que el
+// servidor (_shared/mouv-ach.ts → codigoAchBanco).
+const normBanco = (s: string) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/\b(banco|bank|s\.?a\.?s?|colombia)\b/g, '').replace(/[^a-z0-9]/g, '');
+const ALIAS_BANCO_CO: Record<string, string> = {
+    bcsc: 'Banco Caja Social', cajasocialbcsc: 'Banco Caja Social', colpatria: 'Scotiabank Colpatria', scotiabank: 'Scotiabank Colpatria',
+    itaucorpbanca: 'Itaú', corpbanca: 'Itaú', coomeva: 'Bancoomeva', nubank: 'Nu Colombia', nufinanciera: 'Nu Colombia',
+    nucompaniadefinanciamiento: 'Nu Colombia', bogota: 'Banco de Bogotá', occidente: 'Banco de Occidente',
+};
+function codigoBancoCo(banco: string | null | undefined): string {
+    const b = String(banco ?? '').trim();
+    if (/^\d{3,5}$/.test(b)) return b;
+    if (BANK_CODES_CO[b]) return BANK_CODES_CO[b];
+    const n = normBanco(b);
+    if (!n) return '';
+    const k = Object.keys(BANK_CODES_CO).find(x => normBanco(x) === n) ?? ALIAS_BANCO_CO[n];
+    return k ? BANK_CODES_CO[k] ?? '' : '';
+}
 
 const DOC_TYPES = [
     { v: 'CC', l: 'Cédula de ciudadanía' },
