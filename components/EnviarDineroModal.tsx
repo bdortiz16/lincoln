@@ -553,7 +553,10 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
           return vig(a) ? a : vig(b) ? b : null;
       })();
       if (k) {
-          if (k.estado !== 'finalizado') return 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.';
+          // Una ficha de la época de TusDatos que no está terminada (en error,
+          // de antes del 30 oct) no se queda esperando aquí: decide el
+          // servidor, que la reverifica en Sarblock al intentar el envío.
+          if (k.estado !== 'finalizado' && k.proveedor === 'sarblock') return 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.';
           if (k.aprobadoManual !== true && (k.operable === false || k.categoria === 'alto' || k.nombreCoincide === false || k.documentoVigente === false)) {
               return 'Este beneficiario no pasó la verificación de antecedentes. Revisa el detalle en Beneficiarios.';
           }

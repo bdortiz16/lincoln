@@ -5305,6 +5305,47 @@ serve(async (req: Request) => {
               ? ((Date.parse(String(fB.at ?? '')) || 0) > (Date.parse(String(fA.at ?? '')) || 0) ? fB : fA)
               : vigF(fA) ? fA : vigF(fB) ? fB : (fA ?? fB)
             if (f?.nombreReal) nombresTitular.push(String(f.nombreReal))
+
+            // ── LAS FICHAS DE TUSDATOS YA NO HABILITAN ENVÍOS (23 nov) ─────
+            // TusDatos no se consulta desde el 30 oct. Sus fichas siguen
+            // guardadas (926 al 23 nov), pero solo el resultado de Sarblock
+            // deja salir plata. Sus BLOQUEOS sí se mantienen (riesgo alto,
+            // no operable, nombre que no corresponde, documento no vigente):
+            // esa ficha no se toca y decide la compuerta de abajo, igual que
+            // antes; Cumplimiento la reconsulta a propósito si hace falta.
+            // Las demás se reverifican en Sarblock CUANDO SE USAN: el primer
+            // envío a ese beneficiario la lanza y espera el resultado (cerca
+            // de un minuto). Así solo se gastan créditos en quien de verdad
+            // recibe plata, no en los 926 de golpe.
+            if (f && f.proveedor !== 'sarblock' && f.estado !== 'archivado') {
+              const soloEstosT: string[] = Array.isArray(tdCfg?.soloEstosUsuarios) ? tdCfg.soloEstosUsuarios : []
+              const cubiertaT = soloEstosT.length === 0 || soloEstosT.includes(userId)
+              const bloqueaTd = f.estado === 'finalizado' && (String(f.categoria ?? '') === 'alto' || f.operable === false || f.nombreCoincide === false || f.documentoVigente === false)
+              if (cubiertaT && !bloqueaTd) {
+                const contacto = (Array.isArray(rawU?.mouvContacts) ? rawU.mouvContacts : []).find((x: any) => normDoc(x?.docNumber) && normDoc(x?.docNumber) === normDoc(docDest))
+                const lanzado: any = await fetch(`${SUPABASE_URL}/functions/v1/sarblock`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+                  body: JSON.stringify({
+                    action: 'verificar_beneficiario', userId, documento: String(contacto?.docNumber ?? docDest),
+                    tipoDocumento: String(contacto?.docType ?? f.tipoDocumento ?? 'CC').toUpperCase(),
+                    nombre: String(contacto?.name ?? f.nombreInscrito ?? '').trim() || undefined,
+                  }),
+                  signal: AbortSignal.timeout(20_000),
+                }).then(r => r.json()).catch((e) => ({ ok: false, error: String((e as Error)?.message ?? e) }))
+                await logAudit(userId, 'sarblock.reverificar_tusdatos', {
+                  documento: docDest, categoriaTusdatos: f.categoria ?? null, estadoTusdatos: f.estado ?? null,
+                  ok: !!lanzado?.ok, checkId: lanzado?.checkId ?? null, motivo: lanzado?.motivo ?? lanzado?.error ?? null,
+                })
+                return json(409, {
+                  error: 'aml_pendiente',
+                  message: lanzado?.documentoInvalido
+                    ? String(lanzado.motivo ?? 'El documento de este beneficiario no es válido. Borra el beneficiario e inscríbelo con el número correcto.')
+                    : 'Estamos actualizando la verificación de antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.',
+                })
+              }
+            }
+
             const cat = String(f?.categoria ?? '')
             const cerrado = f?.estado === 'finalizado'
 

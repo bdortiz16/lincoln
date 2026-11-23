@@ -374,18 +374,25 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   // llama. La ficha queda en 'documento_invalido', que el envío sigue
   // frenando ("sin resultado no sale plata") pero que ya no se reintenta, y
   // la pantalla dice qué corregir en vez de "se está reintentando".
+  const deTusdatos = !!previa && previa.proveedor !== 'sarblock' && previa.estado !== 'archivado'
   const invalido = documentoInvalido(d.tipoDocumento, doc)
-  if (invalido && previa?.estado !== 'finalizado') {
+  if (invalido && (previa?.estado !== 'finalizado' || deTusdatos)) {
     if (previa?.estado !== 'documento_invalido') {
       await guardarFicha(uid, doc, conDecision({ proveedor: 'sarblock', documento: doc, tipoDocumento: d.tipoDocumento, estado: 'documento_invalido', nombreInscrito: d.nombre, detalle: invalido, at: new Date().toISOString() }, previa))
       await auditar('sarblock.documento_invalido', { userId: uid, documento: doc, motivo: invalido })
     }
     return { ok: false, documentoInvalido: true, motivo: invalido }
   }
-  // Ya consultado (por Sarblock o por TusDatos) y no archivado: no se paga
-  // otra vez. 'documento_invalido' se vuelve a mirar: si el rechazo fue por
-  // otra regla de Sarblock, se intenta otra vez cuando alguien lo pide.
-  if (!forzada && previa && previa.estado !== 'error' && previa.estado !== 'archivado' && previa.estado !== 'documento_invalido') {
+  // Ya consultado por Sarblock y no archivado: no se paga otra vez.
+  // 'documento_invalido' se vuelve a mirar: si el rechazo fue por otra regla
+  // de Sarblock, se intenta otra vez cuando alguien lo pide.
+  // Una ficha de la época de TusDatos YA NO cuenta como consultada (23 nov):
+  // solo Sarblock habilita envíos, así que quien la pide (el primer envío a
+  // ese beneficiario, "Volver a consultar", Cumplimiento) la reverifica. Las
+  // que bloquean no llegan aquí desde el envío: mouv-proxy las deja como
+  // están para que el bloqueo no se pierda.
+  if (deTusdatos && !forzada) await auditar('sarblock.reverifica_tusdatos', { userId: uid, documento: doc, categoriaAnterior: previa?.categoria ?? null, estadoAnterior: previa?.estado ?? null })
+  if (!forzada && !deTusdatos && previa && previa.estado !== 'error' && previa.estado !== 'archivado' && previa.estado !== 'documento_invalido') {
     // Se volvió a inscribir con OTRO nombre (p. ej. para corregirlo): el
     // nombre se compara otra vez contra el oficial desde la consulta ya
     // pagada, sin llamar a Sarblock. Antes la ficha quedaba con el nombre
