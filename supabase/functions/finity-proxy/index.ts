@@ -584,9 +584,11 @@ const PERMISO_FINITY: Record<string, string | string[]> = {
   // Inscripciones a Finity (23 nov): ver por qué no llegan, reintentar las
   // pendientes y reanudar la pausa. Leen nombres y cuentas (enmascaradas) de
   // los beneficiarios de los clientes.
-  inscripciones_diag: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.fallos'],
-  inscribir_pendientes: ['plata.mover', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.fallos'],
+  inscripciones_diag: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.fallos', 'fn.cumplimiento'],
+  inscribir_pendientes: ['plata.mover', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.fallos', 'fn.cumplimiento'],
   inscripciones_reanudar: ['plata.mover', 'tesoreria', 'fn.fallos'],
+  // El botón de Cumplimiento (AdminReinscribirFinity): quien atiende fallos o cumplimiento.
+  reinscribir_pendientes: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.cumplimiento'],
 }
 
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean; servicio?: boolean }> {
@@ -1133,6 +1135,60 @@ Deno.serve(async (req) => {
         }
       } catch { /* la auditoría nunca puede tumbar la consulta */ }
       return json(200, { ok: res.ok, status: res.status, path, data })
+    }
+
+    // ── Reintentar inscripciones pendientes (botón del admin) ──────────────
+    // La inscripción en Finity de una cuenta ACH la reintentaba SOLO la
+    // página de Beneficiarios del cliente, con su sesión. Cuando Finity
+    // rechaza un rato (23 nov: 403 desde las 10:20 am), las cuentas quedan
+    // sin id hasta que cada cliente vuelva a entrar. Esto las inscribe desde
+    // el servidor, de a una, por el mismo camino (create_external_account:
+    // freno, dedupe y auditoría incluidos) y se detiene en el primer
+    // rechazo de Finity para no hacer que bloquee la cuenta.
+    if (action === 'reinscribir_pendientes') {
+      if (!caller.internal || caller.servicio) return json(403, { error: 'forbidden', message: 'Solo el equipo puede reintentar inscripciones.' })
+      const soloContar = payload.soloContar === true
+      const freno = await leerFrenoInscripciones()
+      // Pendiente: cuenta bancaria de Colombia, sin id de Finity, que no
+      // quedó rechazada por datos (400/422: repetirla da lo mismo). La
+      // búsqueda, el cuerpo y la escritura del contacto son los mismos que
+      // usa inscribir_pendientes (tarea programada y panel de Tesorería).
+      let lista: Pendiente[]
+      try { lista = (await inscripcionesPendientes()).lista.filter(p => ![400, 422].includes(Number(p.contacto?.regHttp))) }
+      catch (e) { return json(200, { ok: false, error: String((e as Error)?.message ?? e) }) }
+      lista.sort((a, b) => String(b.contacto?.createdAt ?? '').localeCompare(String(a.contacto?.createdAt ?? '')))
+      if (soloContar || freno) return json(200, { ok: true, pendientes: lista.length, pausaHasta: freno?.hasta ?? null, pausaHttp: freno?.http ?? null, inscritas: 0, intentadas: 0 })
+
+      const inicio = Date.now()
+      const maximo = Math.min(Math.max(1, Number(payload.max) || 15), 30)
+      let inscritas = 0, intentadas = 0, sinBanco = 0
+      let detenido: { http: number; mensaje: string } | null = null
+      for (const p of lista) {
+        if (intentadas >= maximo || Date.now() - inicio > 100_000) break
+        const cu = cuerpoCuentaFinity(p.contacto)
+        if ('motivo' in cu) { sinBanco++; continue }
+        intentadas++
+        const intentoAt = new Date().toISOString()
+        // Directo, sin volver a llamar a esta misma función por HTTP: mismo
+        // camino (freno, dedupe y auditoría) que create_external_account.
+        const rr: any = await inscribirCuentaFinity(p.userId, cu.body)
+        const dd = rr?.data ?? {}
+        const fid = rr?.id ?? dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? dd?.data?.id ?? null
+        const http = Number(rr?.status) || 0
+        const cambio = rr?.ok && fid
+          ? { mouvId: String(fid), finityId: String(fid), status: 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: http || 201, inscritaPor: 'equipo' }
+          : { lastError: `[${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota' })}] HTTP ${http || '—'} (reintento del equipo): ${JSON.stringify(dd).slice(0, 220)}`, regIntentoAt: intentoAt, regHttp: http }
+        // Lectura fresca justo antes de escribir: el cliente puede estar
+        // editando su lista; solo se toca la fila de este beneficiario.
+        await actualizarContacto(p.userId, String(p.contacto?.id), cambio)
+        if (rr?.ok && fid) { inscritas++; continue }
+        // Finity frenó (o ya hay pausa): parar acá. Insistir es lo que hace
+        // que bloquee la credencial.
+        if (rr?.frenado || rr?.sinToken || http === 403 || http === 429 || http === 401) { detenido = { http, mensaje: String(dd?.message ?? '').slice(0, 200) }; break }
+      }
+      await logAudit(caller.userId!, 'finity.reinscribir_pendientes', { pendientes: lista.length, intentadas, inscritas, sinBanco, detenido })
+      const frenoAhora = await leerFrenoInscripciones()
+      return json(200, { ok: true, pendientes: lista.length, intentadas, inscritas, sinBanco, detenido, pausaHasta: frenoAhora?.hasta ?? null, pausaHttp: frenoAhora?.http ?? null })
     }
 
     if (action === 'create_external_account') {
