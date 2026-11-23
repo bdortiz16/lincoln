@@ -1196,7 +1196,10 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const id = f?.emisoraId
       ?? ((f?.factura?.estado === 'emitida' || f?.factura?.estado === 'anulada') && f?.factura?.numero ? 'principal'
         : (emisorasFact.find(e => !e.principal && e.cuentas.includes(String(f?.moneda ?? '').toUpperCase()))?.id ?? 'principal'));
-    return emisorasFact.find(e => e.id === id)?.nombre ?? 'Empresa quitada';
+    // Con su número, como en Configuración («Empresa 1 · JPVL…»): el nombre
+    // solo, y cortado, no decía cuál de las dos era (23 nov, el dueño).
+    const i = emisorasFact.findIndex(e => e.id === id);
+    return i >= 0 ? `Empresa ${i + 1} · ${emisorasFact[i].nombre}` : 'Empresa quitada';
   };
   // El interruptor: activar exige la configuración completa; el servidor
   // dice qué falta, y eso se muestra tal cual. Con varias empresas cada una
@@ -2077,7 +2080,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                 const f = folios[String(a.tx.id)];
                 return (
                   <tr key={`${a.tx.id}-${a.dir}-${i}`} className="lincoin-fila-mov" style={{ cursor: onVerMovimiento ? 'pointer' : 'default' }} onClick={() => onVerMovimiento?.(a.tx)}>
-                    <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{fecha(a.ts)}</td>
+                    {/* Fecha y hora en dos líneas: en una sola la tabla no cabía y la
+                        columna Factura y «Ver» quedaban fuera de la vista. */}
+                    <td style={{ padding: '11px 20px', fontSize: 12.5, color: C.medio, borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                      {new Date(a.ts).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      <span style={{ display: 'block', fontSize: 11.5, color: C.tenue, marginTop: 1 }}>{new Date(a.ts).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}</span>
+                    </td>
                     <td style={{ padding: '11px 20px', borderBottom: `1px solid ${C.borde}`, minWidth: 220 }}>
                       <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0 }}>{a.tipo}</p>
                       <p style={{ fontSize: 11.5, color: C.sub, margin: '1px 0 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 360 }}>{a.contraparte}</p>
@@ -2086,6 +2094,17 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                       {cuentaDeMovimiento(a.tx) && (
                         <p style={{ fontSize: 11, color: C.tenue, margin: '2px 0 0', whiteSpace: 'nowrap' }}>
                           {a.dir === 'out' ? 'Salió por ' : 'Entró a '}<span style={{ color: C.medio, fontWeight: 600 }}>{cuentaDeMovimiento(a.tx)}</span>
+                        </p>
+                      )}
+                      {/* Qué empresa la factura (o la facturó), con su número como en
+                          Configuración. Va aquí y no en la columna Factura: esa queda
+                          en el borde derecho de la tabla y el nombre se cortaba
+                          («Factura de JPVL INTERMED…», 23 nov). La emitida dice la
+                          empresa sellada; la que falta, la dueña de la cuenta, como
+                          decide el servidor. */}
+                      {variasEmpresas && a.dir === 'out' && !rech && !noAplicaPor(a.tx) && (
+                        <p style={{ fontSize: 11, color: C.tenue, margin: '2px 0 0', whiteSpace: 'normal', maxWidth: 320, lineHeight: 1.35 }} title="Empresa que emite la factura de este movimiento">
+                          Factura: <span style={{ color: C.medio, fontWeight: 600 }}>{empresaDeFolio({ ...(f ?? {}), moneda: f?.moneda ?? (a.tx as any)?.currency })}</span>
                         </p>
                       )}
                     </td>
@@ -2118,14 +2137,6 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               <span style={{ color: C.tenue }} title={noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no es una operación con un tercero.' : undefined}>{facturacionActiva && noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : f && facturacionActiva ? 'pendiente' : '—'}</span>
                               {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                             </span>
-                            {/* Con varias empresas, cuál la emite (o la emitirá): la
-                                dueña de la cuenta del movimiento, como en el servidor.
-                                23 nov, el dueño: "falta qué empresa hizo la factura". */}
-                            {variasEmpresas && a.dir === 'out' && !rech && !noAplicaPor(a.tx) && (
-                              <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'nowrap' }} title="Empresa que emite la factura de este movimiento">
-                                Factura de {empresaDeFolio({ ...(f ?? {}), moneda: f?.moneda ?? (a.tx as any)?.currency })}
-                              </span>
-                            )}
                           </span>
                         );
                         if (fa.estado === 'omitida' || fa.estado === 'pendiente' || fa.estado === 'anulada') return (
@@ -2167,7 +2178,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {fa.numero ?? 'factura'}
                             </button>
                             <span style={{ color: '#F87171', fontWeight: 700, fontSize: 11 }}>rechazada DIAN</span>
-                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'nowrap' }}>{empresaDeFolio(f)}</span>}
+                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'normal', maxWidth: 210 }}>{empresaDeFolio(f)}</span>}
                             {/* Un movimiento rechazado no se vuelve a facturar. */}
                             {!soloLectura && txId && !rech && <button onClick={() => reenviarRechazada(txId, fa.numero)} disabled={reenviando === txId}
                               title="Corrige la fecha y vuelve a enviar a la DIAN la misma factura de Siigo"
@@ -2183,7 +2194,6 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {rotulo}{fa.numero ?? 'emitida'}
                             </button>
                             {fa.url && <a href={fa.url} target="_blank" rel="noopener noreferrer" title="Abrir en Siigo" style={{ color: C.sub, fontSize: 11 }}>↗</a>}
-                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.sub, whiteSpace: 'nowrap' }} title="Empresa que la emitió">de {empresaDeFolio(f)}</span>}
                             {/* Vigente de un movimiento rechazado: la plata volvió,
                                 la factura sobra. Se anula en Siigo; Lincoin la ve
                                 tachada al leer la nota crédito. */}
