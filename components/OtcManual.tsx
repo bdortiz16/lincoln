@@ -233,6 +233,39 @@ const Fila: React.FC<{ k: React.ReactNode; v: React.ReactNode; color?: string; s
     </div>
 );
 
+// ── El monto con puntos de miles (23 nov) ──
+// El dueño escribió 10.000 y la caja mostraba "10000", sin puntos. Peor: la
+// caja leía el punto como decimal, así que quien escribiera "10.000" (como se
+// escribe en Colombia) cotizaba 10 USDT. Ahora el monto se guarda limpio
+// ("10000.5") y se muestra como en Colombia ("10.000,5"): punto de miles y
+// coma decimal. Un punto escrito a mano se toma como de miles, salvo un único
+// punto con 1 o 2 cifras al final ("10.5", pegado de otro lado), que es decimal.
+const aCanonico = (txt: string, maxDec: number): string => {
+    const t = String(txt ?? '').replace(/[^\d.,]/g, '');
+    let ent = t;
+    let dec: string | null = null;
+    const coma = t.lastIndexOf(',');
+    // Dos o más comas: viene pegado en formato gringo ("34,198,150.5"): las
+    // comas son de miles y el punto, decimal.
+    if ((t.match(/,/g) ?? []).length > 1) {
+        const p = t.lastIndexOf('.');
+        ent = p >= 0 ? t.slice(0, p) : t; dec = p >= 0 ? t.slice(p + 1) : null;
+    } else if (coma >= 0) { ent = t.slice(0, coma); dec = t.slice(coma + 1); }
+    else {
+        const m = t.match(/^([^.]*)\.(\d{1,2})$/);
+        if (m) { ent = m[1]; dec = m[2]; }
+    }
+    ent = ent.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+    if (maxDec <= 0 || dec == null) return ent;
+    return `${ent || '0'}.${dec.replace(/\D/g, '').slice(0, maxDec)}`;
+};
+const aPantalla = (c: string): string => {
+    if (!c) return '';
+    const [e, d] = c.split('.');
+    const ent = Number(e || '0').toLocaleString('es-CO', { maximumFractionDigits: 0 });
+    return d !== undefined ? `${ent},${d}` : ent;
+};
+
 const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; saldos?: Record<string, number>; onCreado: (id: string) => void; lateral?: React.ReactNode }> = ({ userId, showToast, onCreado, lateral }) => {
     const [side, setSide]     = useState<'vende_usdt' | 'compra_usdt'>('vende_usdt');
     const [monto, setMonto]   = useState('');
@@ -289,7 +322,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
         return () => clearInterval(t);
     }, [pedirTasa]);
 
-    const n = Number(String(monto).replace(/[^\d.]/g, ''));
+    const n = Number(monto);
     const montoOk = Number.isFinite(n) && n > 0;
     const recibe = (montoOk && tasa != null) ? (side === 'vende_usdt' ? n * tasa : n / tasa) : null;
     const envMoneda = side === 'vende_usdt' ? 'USDT' : 'COP';
@@ -369,7 +402,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                     {/* Lado */}
                     <div style={{ display: 'flex', gap: 7, marginBottom: 16 }}>
                         {([['vende_usdt', 'Vendo USDT'], ['compra_usdt', 'Compro USDT']] as const).map(([v, l]) => (
-                            <button key={v} onClick={() => setSide(v)}
+                            <button key={v} onClick={() => { setSide(v); if (v === 'compra_usdt') setMonto(m => m.split('.')[0]); }}
                                 style={{ flex: 1, padding: '10px 0', borderRadius: 10, fontSize: 13, fontWeight: 700,
                                     color: side === v ? '#0C0E0D' : '#878E88', background: side === v ? '#F4F4F2' : 'rgba(255,255,255,0.045)',
                                     border: side === v ? 'none' : '1px solid rgba(255,255,255,0.10)' }}>
@@ -413,12 +446,18 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                             moneda al lado no cabía y salía cortado. */}
                         <div className="otc-fila">
                             <input className="otc-num"
-                                inputMode="decimal" placeholder="0" value={monto}
-                                onChange={e => setMonto(e.target.value.replace(/[^\d.]/g, ''))}
+                                inputMode="decimal" placeholder="0" value={aPantalla(monto)}
+                                onChange={e => setMonto(aCanonico(e.target.value, envMoneda === 'USDT' ? 2 : 0))}
                                 style={{ flex: 1, minWidth: 0, background: 'transparent', outline: 'none', border: 'none', fontSize: 'clamp(26px, 7vw, 34px)', fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', fontFamily: "'Archivo', system-ui, sans-serif" }}
                             />
                             <Moneda m={envMoneda} />
                         </div>
+                        {/* La tasa justo debajo del monto (pedido del dueño, 23 nov). */}
+                        {tasa != null && (
+                            <p style={{ margin: '6px 0 0', fontSize: 12.5, color: '#878E88' }}>
+                                Tasa <b style={{ color: '#F4F4F2' }}>1 USDT = {nf(tasa)} COP</b> · indicativa
+                            </p>
+                        )}
                     </div>
                     {/* Flecha entre cajas */}
                     <div style={{ display: 'flex', justifyContent: 'center', margin: '-13px 0', position: 'relative', zIndex: 2 }}>
@@ -808,6 +847,17 @@ const DetalleCierre: React.FC<{ id: string; userId: string; showToast?: (m: stri
                                     ? <>por <b style={{ color: '#F4F4F2', fontWeight: 700 }}>{nf(cierre.to_amount, 0)} {cierre.to_currency}</b></>
                                     : 'a cotizar'}
                             </p>
+                            {/* La tasa, debajo del monto y sin abrir "Ver detalles"
+                                (pedido del dueño, 23 nov): es lo primero que se
+                                quiere confirmar antes de pagar. */}
+                            {tasaVigente != null && (
+                                <p style={{ fontSize: 13, color: '#878E88', marginTop: 2 }}>
+                                    Tasa <b style={{ color: '#F4F4F2', fontWeight: 700 }}>1 USDT = {nf(tasaVigente)} COP</b>
+                                    <span style={{ marginLeft: 7, fontSize: 10.5, fontWeight: 700, letterSpacing: '0.4px', color: cierre.rate_final ? '#4ADE80' : '#FBBF24', border: `1px solid ${cierre.rate_final ? 'rgba(74,222,128,0.35)' : 'rgba(251,191,36,0.35)'}`, borderRadius: 999, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+                                        {cierre.rate_final ? 'CONFIRMADA' : 'INDICATIVA'}
+                                    </span>
+                                </p>
+                            )}
                             {enPago && cierre.vence_at && <PagaEn hasta={cierre.vence_at} />}
                         </div>
                         <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', padding: '4px 10px', borderRadius: 999, flexShrink: 0, whiteSpace: 'nowrap' }}>
