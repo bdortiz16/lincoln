@@ -1748,8 +1748,60 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   return (
     <EmpresaFacturacion.Provider value={empresaId}>
     <div style={{ fontFamily: FONT, maxWidth: 1180, display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* 1. Periodo · moneda · CSV */}
-      <div className="flex items-center justify-between flex-wrap" style={{ gap: 12 }}>
+      {/* 1. Arriba, de quién son los libros (la empresa) y las acciones; debajo,
+          los filtros. 23 nov, el dueño: "JPVL queda abajo y no me gusta así".
+          Antes los filtros iban a la izquierda y la empresa con las acciones a
+          la derecha en una sola fila; cuando no cabía, todo el grupo de la
+          derecha bajaba y la empresa quedaba debajo de los filtros. */}
+      <div className="flex flex-col" style={{ gap: 10 }}>
+        <div className="flex items-center justify-between flex-wrap" style={{ gap: 10 }}>
+          <div className="flex items-center" style={{ minWidth: 0 }}>
+            {esEmpresaPropia && ficha && (
+              <button onClick={() => setFichaAbierta(true)} title="Tu empresa: autoriza a tu contador, descarga tus documentos contables y revisa tus datos"
+                aria-label={`${ficha.nombre}: contador, documentos y datos${solContador.length ? ` · ${solContador.length} solicitud de contador en espera` : ''}`}
+                style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '4px 14px 4px 4px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8, position: 'relative' }}
+                className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+                <Bolita nombre={ficha.nombre} activo tam={29} />
+                <span style={{ maxWidth: 'min(380px, 62vw)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ficha.nombre}</span>
+                {solContador.length > 0 && (
+                  <span aria-hidden="true" style={{ position: 'absolute', top: -7, right: -7, minWidth: 19, height: 19, padding: '0 5px', borderRadius: 999, background: C.entra, color: '#0A0A0A', fontSize: 11, fontWeight: 800, display: 'grid', placeItems: 'center', boxShadow: '0 0 0 3px #070808' }}>{solContador.length}</span>
+                )}
+              </button>
+            )}
+          </div>
+          {/* flex-wrap: en el celular los botones no caben en una fila y
+              empujaban la página hacia los lados. */}
+          <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
+            {facturacionActiva != null && (
+              <button onClick={alternarAutomatica} disabled={cambiandoAuto}
+                title={facturacionActiva ? 'La facturación automática está activa: cada operación completada emite su documento en Siigo. Tocá para pausar.' : 'La facturación automática está pausada: nada se emite solo. Tocá para activar (la configuración debe estar completa).'}
+                style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 14px', borderRadius: 9, cursor: 'pointer', color: facturacionActiva ? C.entra : C.sub, background: facturacionActiva ? 'rgba(74,222,128,0.10)' : 'rgba(255,255,255,0.05)', border: `1px solid ${facturacionActiva ? 'rgba(74,222,128,0.35)' : C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8, opacity: cambiandoAuto ? 0.6 : 1 }}>
+                <span style={{ width: 28, height: 16, borderRadius: 999, background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', position: 'relative', flexShrink: 0 }}>
+                  <span style={{ position: 'absolute', top: 2, left: facturacionActiva ? 14 : 2, width: 12, height: 12, borderRadius: '50%', background: '#0C0E0D', transition: 'left .15s' }} />
+                </span>
+                {cambiandoAuto ? '…' : variasEmpresas ? `Automática · ${nActivas} de ${emisorasFact.length} empresas` : facturacionActiva ? 'Automática' : 'Automática apagada'}
+              </button>
+            )}
+            {/* Quién es contador de la empresa lo decide la empresa, no su contador. */}
+            {!soloLectura && !empresaId && (
+              <button onClick={() => setContadorAbierto(true)} title="Dale acceso a tu contador o revisor fiscal (contabilidad y facturación): entra por Empresas → Contabilidad o Revisor fiscal con su propio correo."
+                style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+                Contador
+                {solContador.length > 0 && <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.entra, flexShrink: 0 }} />}
+              </button>
+            )}
+            {!soloLectura && (
+              <button onClick={() => setConfigAbierta(true)}
+                style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+                className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', flexShrink: 0 }} />
+                Configuración
+              </button>
+            )}
+            <button onClick={excel} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar Excel</button>
+          </div>
+        </div>
         <div className="flex items-center flex-wrap" style={{ gap: 10 }}>
           <div className="flex" style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${C.borde}`, borderRadius: 9, padding: 3 }}>
             {([['mes', 'Mes'], ['anio', 'Este año'], ['historico', 'Histórico']] as [Periodo, string][]).map(([k, rot]) => (
@@ -1781,50 +1833,6 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
               {(['COP', 'USD'] as Moneda[]).map(m => <button key={m} onClick={() => setMonedaSel(m)} style={seg(moneda === m)}>{m}</button>)}
             </div>
           )}
-        </div>
-        {/* flex-wrap: en el celular los cuatro botones no caben en una fila y
-            empujaban la página hacia los lados. */}
-        <div className="flex items-center flex-wrap" style={{ gap: 8 }}>
-          {esEmpresaPropia && ficha && (
-            <button onClick={() => setFichaAbierta(true)} title="Tu empresa: autoriza a tu contador, descarga tus documentos contables y revisa tus datos"
-              aria-label={`${ficha.nombre}: contador, documentos y datos${solContador.length ? ` · ${solContador.length} solicitud de contador en espera` : ''}`}
-              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '4px 14px 4px 4px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8, position: 'relative' }}
-              className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
-              <Bolita nombre={ficha.nombre} activo tam={29} />
-              <span style={{ maxWidth: 'min(220px, 42vw)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ficha.nombre}</span>
-              {solContador.length > 0 && (
-                <span aria-hidden="true" style={{ position: 'absolute', top: -7, right: -7, minWidth: 19, height: 19, padding: '0 5px', borderRadius: 999, background: C.entra, color: '#0A0A0A', fontSize: 11, fontWeight: 800, display: 'grid', placeItems: 'center', boxShadow: '0 0 0 3px #070808' }}>{solContador.length}</span>
-              )}
-            </button>
-          )}
-          {facturacionActiva != null && (
-            <button onClick={alternarAutomatica} disabled={cambiandoAuto}
-              title={facturacionActiva ? 'La facturación automática está activa: cada operación completada emite su documento en Siigo. Tocá para pausar.' : 'La facturación automática está pausada: nada se emite solo. Tocá para activar (la configuración debe estar completa).'}
-              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 14px', borderRadius: 9, cursor: 'pointer', color: facturacionActiva ? C.entra : C.sub, background: facturacionActiva ? 'rgba(74,222,128,0.10)' : 'rgba(255,255,255,0.05)', border: `1px solid ${facturacionActiva ? 'rgba(74,222,128,0.35)' : C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8, opacity: cambiandoAuto ? 0.6 : 1 }}>
-              <span style={{ width: 28, height: 16, borderRadius: 999, background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', position: 'relative', flexShrink: 0 }}>
-                <span style={{ position: 'absolute', top: 2, left: facturacionActiva ? 14 : 2, width: 12, height: 12, borderRadius: '50%', background: '#0C0E0D', transition: 'left .15s' }} />
-              </span>
-              {cambiandoAuto ? '…' : variasEmpresas ? `Automática · ${nActivas} de ${emisorasFact.length} empresas` : facturacionActiva ? 'Automática' : 'Automática apagada'}
-            </button>
-          )}
-          {/* Quién es contador de la empresa lo decide la empresa, no su contador. */}
-          {!soloLectura && !empresaId && (
-            <button onClick={() => setContadorAbierto(true)} title="Dale acceso a tu contador o revisor fiscal (contabilidad y facturación): entra por Empresas → Contabilidad o Revisor fiscal con su propio correo."
-              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
-              className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
-              Contador
-              {solContador.length > 0 && <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.entra, flexShrink: 0 }} />}
-            </button>
-          )}
-          {!soloLectura && (
-            <button onClick={() => setConfigAbierta(true)}
-              style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 16px', borderRadius: 9, cursor: 'pointer', color: C.text, background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.borde}`, display: 'inline-flex', alignItems: 'center', gap: 8 }}
-              className="hover:border-[rgba(255,255,255,0.22)] transition-colors">
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: facturacionActiva ? C.entra : 'rgba(255,255,255,0.18)', flexShrink: 0 }} />
-              Configuración
-            </button>
-          )}
-          <button onClick={excel} className="lincoin-btn-white" style={{ fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: '10px 18px', borderRadius: 9, border: 'none', cursor: 'pointer' }}>Descargar Excel</button>
         </div>
       </div>
       {esEmpresaPropia && solContador.length > 0 && (
