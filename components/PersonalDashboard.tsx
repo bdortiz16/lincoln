@@ -60,8 +60,7 @@ import {
   SlidersHorizontal,
   ArrowLeftRight,
   XCircle,
-  Archive,
-  MessageSquare
+  Archive
 } from 'lucide-react';
 
 const SUPABASE_URL_PD = (import.meta.env.VITE_SUPABASE_URL as string) || '';
@@ -78,7 +77,7 @@ import { SidebarEmpresas } from './SidebarEmpresas';
 import { llamarFuncion } from '../lib/edge';
 import { motivoLegibleCliente, tipoDocumentoMostrado } from '../lib/textoCliente';
 import { MOTIVOS_ENVIO } from '../lib/motivosEnvio';
-import { MouvSection, fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
+import { fetchMouvBalance, fetchMouvRateValue, fetchMouvUsdCopConfig, callMouv } from './OtcMigration';
 import { MouvDispersion } from './MouvDispersion';
 import { achEta, achEtaShort, isBusinessDayCO } from './achEta';
 import { ContactsSection, contactStatus } from './ContactsSection';
@@ -333,20 +332,22 @@ const RUTAS_VIEJAS: Record<string, string> = {
 // escribir la direccion a mano volvia a abrir la misma pantalla. Esconder una
 // puerta no es cerrarla -- es el mismo razonamiento que el horario de la mesa.
 const RUTAS_MOUV: Record<string, { mouvMode: 'full' | 'converter'; otcRail: 'ach' | 'breb' | 'manual' | null }> = {
-  '/empresas_mesa-otc':        { mouvMode: 'converter', otcRail: null },
+  // Solo queda la mesa manual (23 nov): /ach y /breb guardados abren la mesa.
+  '/empresas_mesa-otc':        { mouvMode: 'converter', otcRail: 'manual' },
   '/empresas_mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
-  '/empresas_mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
-  '/empresas_mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'breb' },
+  '/empresas_mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'manual' },
+  '/empresas_mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'manual' },
   // Direcciones viejas de la mesa.
-  '/mesa-otc':        { mouvMode: 'converter', otcRail: null },
+  '/mesa-otc':        { mouvMode: 'converter', otcRail: 'manual' },
   '/mesa-otc/manual': { mouvMode: 'converter', otcRail: 'manual' },
-  '/mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'ach' },
-  '/mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'breb' },
+  '/mesa-otc/ach':    { mouvMode: 'converter', otcRail: 'manual' },
+  '/mesa-otc/breb':   { mouvMode: 'converter', otcRail: 'manual' },
 };
 // Ya no hay modo 'full' alcanzable desde la app: si por algun camino se llegara,
 // la direccion que se escribe es la de la mesa, no una ruta que ya no existe.
-const rutaMouv = (_mouvMode: 'full' | 'converter', otcRail: 'ach' | 'breb' | 'manual' | null): string =>
-  otcRail ? `/empresas_mesa-otc/${otcRail}` : '/empresas_mesa-otc';
+// Una sola dirección para la mesa: ya no hay riel que elegir.
+const rutaMouv = (_mouvMode: 'full' | 'converter', _otcRail: 'ach' | 'breb' | 'manual' | null): string =>
+  '/empresas_mesa-otc';
 
 const PATH_VIEWS: Record<string, string> = {
   ...RUTAS_VIEJAS,
@@ -4873,49 +4874,16 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                       <p className="text-slate-500 text-sm">El servicio OTC no está habilitado para tu cuenta todavía.</p>
                       <p className="text-slate-400 text-xs mt-1">Escríbenos a soporte para activarlo.</p>
                   </div>
-              ) : mouvMode === 'converter' && otcRail === null ? (
-                  /* Mesa OTC Colombia — elegir el riel donde recibirás el COP */
-                  <div style={{ maxWidth: 560, margin: '24px auto', fontFamily: "'Archivo', system-ui, sans-serif" }}>
-                      <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '26px 26px 24px' }}>
-                          <h3 style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 20, letterSpacing: '-0.5px' }}>Mesa OTC · Colombia</h3>
-                          <p style={{ color: '#878E88', fontSize: 13, marginTop: 4, lineHeight: 1.5 }}>Convierte tus USDT a pesos. Elige en qué riel quieres recibir el COP:</p>
-                          <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 10, marginTop: 18 }}>
-                              <button onClick={() => setOtcRail('ach')} className="text-left transition-colors"
-                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)' }}>
-                                  <div className="flex items-center gap-2">
-                                      <Landmark size={17} style={{ color: '#4ADE80' }} />
-                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>ACH</span>
-                                      <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
-                                  </div>
-                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Conversión automática. El COP llega a tu saldo ACH en minutos.</p>
-                              </button>
-                              <button onClick={() => setOtcRail('breb')} className="text-left transition-colors hover:bg-white/[0.03]"
-                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
-                                  <div className="flex items-center gap-2">
-                                      <Zap size={17} style={{ color: '#878E88' }} />
-                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Bre-B</span>
-                                      <span style={{ border: '1px solid rgba(255,255,255,0.14)', color: '#878E88', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>PRÓXIMAMENTE</span>
-                                  </div>
-                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Por ahora la conversión con salida Bre-B se gestiona por mesa manual.</p>
-                              </button>
-                              <button onClick={() => setOtcRail('manual')} className="text-left transition-colors hover:bg-white/[0.03] sm:col-span-2"
-                                  style={{ padding: '16px 17px', borderRadius: 13, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.025)' }}>
-                                  <div className="flex items-center gap-2">
-                                      <MessageSquare size={17} style={{ color: '#4ADE80' }} />
-                                      <span style={{ fontSize: 15, fontWeight: 700, color: '#F4F4F2' }}>Manual · con asesor</span>
-                                      <span style={{ border: '1px solid rgba(74,222,128,0.3)', color: '#4ADE80', fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 6px', borderRadius: 999 }}>DISPONIBLE</span>
-                                  </div>
-                                  <p style={{ fontSize: 12, color: '#878E88', marginTop: 6, lineHeight: 1.5 }}>Montos grandes o destinos fuera de ACH. Cotizás, la mesa te confirma la tasa por chat y se cierra ahí mismo.</p>
-                              </button>
-                          </div>
-                      </div>
-                  </div>
-              ) : mouvMode === 'converter' && otcRail === 'manual' ? (
-                  <div style={{ margin: '24px auto', maxWidth: 620 }}>
+              ) : (
+                  /* Mesa OTC: solo la mesa manual con asesor (23 nov, pedido del
+                     dueño: "quitar ACH y Bre-B, solo va a quedar mesa manual
+                     asesor"). Antes había que elegir un riel (ACH automático,
+                     Bre-B próximamente o manual); ahora se entra directo, y la
+                     mesa manual tiene el diseño de la conversión ACH. */
+                  <div style={{ margin: '18px auto 0', maxWidth: 1180 }}>
                       <OtcManual
                           userId={currentUser.id}
                           showToast={(m) => showToast(m)}
-                          onVolver={() => setOtcRail(null)}
                           saldos={{ COP: getBalance('COP'), COP_BREB: getBalance('COP_BREB'), COP_ACH: getBalance('COP_ACH') }}
                           onAcreditado={(billetera, monto) => {
                               // La mesa acredita en el servidor. Sin esto el saldo de la
@@ -4932,65 +4900,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                           }}
                       />
                   </div>
-              ) : mouvMode === 'converter' && otcRail === 'breb' ? (
-                  <div style={{ maxWidth: 560, margin: '24px auto', background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 18, padding: '32px 28px', textAlign: 'center', fontFamily: "'Archivo', system-ui, sans-serif" }}>
-                      <p style={{ color: '#F4F4F2', fontWeight: 700, fontSize: 16 }}>Mesa Bre-B · por mesa manual</p>
-                      <p style={{ color: '#878E88', fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>La conversión con salida Bre-B se gestiona por mesa manual: pedís el cierre y un asesor te confirma la tasa por chat. O usá la salida ACH, que es automática.</p>
-                      <button onClick={() => setOtcRail('manual')} className="lincoin-btn-white transition-colors" style={{ marginTop: 16, fontWeight: 700, fontSize: 13.5, padding: '11px 20px', borderRadius: 10, border: 'none' }}>Ir a la mesa manual</button>
-                      <button onClick={() => setOtcRail('ach')} style={{ display: 'block', margin: '10px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>Usar salida ACH</button>
-                      <button onClick={() => setOtcRail(null)} style={{ display: 'block', margin: '12px auto 0', fontSize: 12.5, color: '#878E88', textDecoration: 'underline' }}>← Elegir otro riel</button>
-                  </div>
-              ) : (
-              <MouvSection
-                  mode={mouvMode}
-                  userId={currentUser.id}
-                  brebBalance={getBalance('COP_BREB')}
-                  usdBalance={displayBalance('USD')}
-                  copBalance={getBalance('COP_ACH')}
-                  onSwept={() => currentUser?.id && refreshGasfreeBal(currentUser.id)}
-                  feePctOverride={(currentUser as any)?.otcConfig?.feePct}
-                  recentConversions={(movements || [])
-                      .filter((t: any) => t.type === 'convert')
-                      .slice(0, 3)
-                      .map((t: any) => ({
-                          label: `${Number(t.fromAmount ?? (t as any).usdtOut ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} USDT → COP`,
-                          meta: `${(t as any).createdAt ? new Date((t as any).createdAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : (t.date ?? '')}${(t as any).mouvRate ? ` · tasa ${Number((t as any).mouvRate).toLocaleString('es-CO', { maximumFractionDigits: 1 })}` : ''}`,
-                          result: `+${Number(t.amount ?? 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })} COP`,
-                      }))}
-                  onConverted={async (usdAmount, copClientAmount, mouvRate) => {
-                      // Movimiento OPTIMISTA: aparece al instante en la lista.
-                      addLocalTx?.({
-                          userId: currentUser.id, type: 'convert', amount: copClientAmount, currency: 'COP_ACH', status: 'Completado',
-                          initials: 'FX', title: `USDT → COP (ACH) · tasa ${Number(mouvRate ?? 0).toLocaleString('es-CO')}`,
-                          userName: (currentUser as any)?.email, fromCurrency: 'USD', fromAmount: usdAmount,
-                          destAmount: copClientAmount, mouvRate, source: 'FINITY', gasfree: true,
-                      });
-                      // Todo el asentamiento (débito USDT on-chain, crédito COP y
-                      // el movimiento) ya lo hizo el edge (my_convert_settle),
-                      // autoritativo. Aquí SOLO se refresca la vista: el COP se
-                      // relee de la DB y el saldo USDT del on-chain real.
-                      showToast(`Convertiste ${usdAmount.toLocaleString('en-US')} USDT → ${copClientAmount.toLocaleString('es-CO')} COP en tu saldo ACH ⚡`);
-                      // Actualización OPTIMISTA e inmediata del saldo ACH (el
-                      // crédito ya lo hizo el edge) — así no hay que recargar.
-                      bumpLocalBalance?.('COP_ACH', copClientAmount);
-                      // Refrescos ESCALONADOS: la fila de la conversión pasa de
-                      // 'Pendiente' (insert del settle) a 'Completado' (credit)
-                      // y en sesiones half-auth la DB puede tardar en reflejarlo
-                      // para la lectura — se reintenta unas veces.
-                      refreshData?.();
-                      setTimeout(() => refreshData?.(), 2500);
-                      setTimeout(() => refreshData?.(), 6000);
-                      if (currentUser?.id) refreshGasfreeBal(currentUser.id);
-                  }}
-                  onDispersed={async () => {
-                      // El envío ya lo descontó y lo registró el servidor
-                      // (mouv-proxy). Antes acá se volvía a escribir el saldo
-                      // desde el navegador (la base lo rechaza) y se insertaba
-                      // un segundo 'send' que quedaba como movimiento fantasma
-                      // por aprobar. Solo se refresca la vista.
-                      refreshData?.();
-                  }}
-              />
               )}
           </div>
       )}

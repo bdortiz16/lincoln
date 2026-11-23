@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ArrowLeftRight, Send, RefreshCw, ChevronLeft, MessageSquare,
-    CheckCircle2, Clock, XCircle, AlertTriangle, Landmark, Wallet, Paperclip, Plus, ChevronDown, ChevronUp, X,
+    ArrowDown, Send, RefreshCw, ChevronLeft, MessageSquare,
+    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, Paperclip, Plus, ChevronDown, ChevronUp, X,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 import { llamarFuncion } from '../lib/edge';
@@ -78,7 +78,7 @@ const PANEL: React.CSSProperties = {
     background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 16,
 };
 const INPUT: React.CSSProperties = {
-    width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)',
+    width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)',
     borderRadius: 10, padding: '11px 13px', color: '#F4F4F2', fontSize: 14, outline: 'none',
     fontFamily: "'Archivo', system-ui, sans-serif",
 };
@@ -149,70 +149,91 @@ export const OtcManual: React.FC<Props> = ({ userId, showToast, onVolver, saldos
     }
 
     return (
-        <div style={{ maxWidth: 620, margin: '0 auto', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+        <div style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
             {onVolver && (
                 <button onClick={onVolver} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5, color: '#878E88', marginBottom: 14 }}>
-                    <ChevronLeft size={15} /> Elegir otro riel
+                    <ChevronLeft size={15} /> Volver
                 </button>
             )}
-
             <NuevoCierre
                 userId={userId}
                 showToast={showToast}
                 saldos={saldos}
                 onCreado={async (id) => { await cargarMios(); setAbierta(id); setVista('detalle'); }}
+                lateral={<MisCierres cierres={cierres} cargando={cargando} onAbrir={(id) => { setAbierta(id); setVista('detalle'); }} />}
             />
+        </div>
+    );
+};
 
-            <div style={{ marginTop: 22 }}>
-                <p style={{ ...LABEL, marginBottom: 10 }}>Mis cierres</p>
-                {cargando && <p style={{ color: '#878E88', fontSize: 13 }}>Cargando…</p>}
-                {!cargando && cierres.length === 0 && (
-                    <div style={{ ...PANEL, padding: '22px 20px', textAlign: 'center' }}>
-                        <p style={{ color: '#878E88', fontSize: 13 }}>Todavía no pediste ningún cierre.</p>
-                    </div>
-                )}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {cierres.map(c => {
-                        const cara = caraDe(c.status);
-                        const sinLeer = c.last_msg_por === 'mesa' && (!c.visto_cliente || new Date(c.last_msg_at) > new Date(c.visto_cliente));
-                        return (
-                            <button
-                                key={c.id}
-                                onClick={() => { setAbierta(c.id); setVista('detalle'); }}
-                                className="text-left hover:bg-white/[0.03] transition-colors"
-                                style={{ ...PANEL, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}
-                            >
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: '#878E88' }}>{c.ref}</span>
-                                        <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 7px', borderRadius: 999 }}>
-                                            {cara.label}
-                                        </span>
-                                        {sinLeer && (
-                                            <span style={{ background: '#4ADE80', color: '#0C0E0D', fontSize: 8.5, fontWeight: 800, padding: '2px 7px', borderRadius: 999 }}>
-                                                NUEVO MENSAJE
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p style={{ color: '#F4F4F2', fontSize: 14.5, fontWeight: 700, marginTop: 5 }}>
-                                        {nf(c.from_amount)} {c.from_currency}
-                                        <span style={{ color: '#878E88', fontWeight: 500 }}> → </span>
-                                        {c.to_amount != null ? `${nf(c.to_amount, 0)} ${c.to_currency}` : <span style={{ color: '#878E88', fontWeight: 500, fontSize: 13 }}>a cotizar</span>}
-                                    </p>
-                                    <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11.5, marginTop: 3 }}>{fecha(c.created_at)}</p>
-                                </div>
-                                <ChevronLeft size={16} style={{ color: '#878E88', transform: 'rotate(180deg)', flexShrink: 0 }} />
-                            </button>
-                        );
-                    })}
-                </div>
+// ─── Tus cierres (columna derecha, como "Tus últimas conversiones" de ACH) ─
+const MisCierres: React.FC<{ cierres: any[]; cargando: boolean; onAbrir: (id: string) => void }> = ({ cierres, cargando, onAbrir }) => {
+    const [todos, setTodos] = useState(false);
+    const lista = todos ? cierres : cierres.slice(0, 5);
+    return (
+        <div style={{ ...PANEL, borderRadius: 14, padding: 20 }}>
+            <p style={LBL_ACH}>TUS CIERRES</p>
+            {cargando && <p style={{ color: '#878E88', fontSize: 12.5, marginTop: 10 }}>Cargando…</p>}
+            {!cargando && cierres.length === 0 && (
+                <p style={{ fontSize: 12.5, color: '#878E88', marginTop: 10, lineHeight: 1.5 }}>Tus cierres con la mesa aparecerán aquí, con su chat.</p>
+            )}
+            <div style={{ marginTop: 4 }}>
+                {lista.map((c, i) => {
+                    const cara = caraDe(c.status);
+                    const sinLeer = c.last_msg_por === 'mesa' && (!c.visto_cliente || new Date(c.last_msg_at) > new Date(c.visto_cliente));
+                    return (
+                        <button key={c.id} onClick={() => onAbrir(c.id)} className="text-left w-full hover:bg-white/[0.03] transition-colors"
+                            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 6px', margin: '0 -6px', borderRadius: 8, background: 'transparent', border: 'none', borderTop: i > 0 ? '1px solid rgba(255,255,255,0.07)' : 'none', fontFamily: 'inherit', cursor: 'pointer' }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <p style={{ fontSize: 13, fontWeight: 600, color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {nf(c.from_amount)} {c.from_currency} → {c.to_currency}
+                                </p>
+                                <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                    <span style={{ fontFamily: 'ui-monospace, monospace' }}>{c.ref}</span> · {fecha(c.created_at)}
+                                </p>
+                                <span style={{ display: 'inline-flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+                                    <span style={{ border: `1px solid ${cara.borde}`, background: cara.fondo, color: cara.color, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.6px', padding: '2px 7px', borderRadius: 999 }}>{cara.label}</span>
+                                    {sinLeer && <span style={{ background: '#4ADE80', color: '#0C0E0D', fontSize: 8.5, fontWeight: 800, padding: '2px 7px', borderRadius: 999 }}>NUEVO MENSAJE</span>}
+                                </span>
+                            </div>
+                            <span style={{ flexShrink: 0, fontSize: 13, fontWeight: 700, color: c.to_amount != null && c.status === 'completada' ? '#4ADE80' : '#F4F4F2', textAlign: 'right' }}>
+                                {c.to_amount != null ? `${c.status === 'completada' ? '+' : ''}${nf(c.to_amount, c.to_currency === 'COP' ? 0 : 2)} ${c.to_currency}` : <span style={{ color: '#878E88', fontWeight: 500, fontSize: 12 }}>a cotizar</span>}
+                            </span>
+                        </button>
+                    );
+                })}
             </div>
+            {cierres.length > 5 && (
+                <button onClick={() => setTodos(t => !t)} style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: '#4ADE80' }}>
+                    {todos ? 'Ver menos' : `Ver todos (${cierres.length})`}
+                </button>
+            )}
         </div>
     );
 };
 
 // ─── Formulario de cotización ───────────────────────────
-const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; saldos?: Record<string, number>; onCreado: (id: string) => void }> = ({ userId, showToast, saldos, onCreado }) => {
+// 23 nov: con el diseño de la conversión ACH (pedido del dueño: "mejor el
+// diseño como era en ACH, hasta las banderas, y el cliente en COP sabía
+// cuánto recibía"). La mesa manual quedó como el único riel de la Mesa OTC.
+const LBL_ACH: React.CSSProperties = { fontSize: 10.5, fontWeight: 700, letterSpacing: '1.4px', color: '#878E88', margin: 0 };
+const BANDERA_CO = 'linear-gradient(180deg,#FCD116 0 50%,#003893 50% 75%,#CE1126 75%)';
+const Moneda: React.FC<{ m: string }> = ({ m }) => (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 999, padding: '7px 13px' }}>
+        {m === 'COP'
+            ? <span style={{ width: 20, height: 20, borderRadius: 999, background: BANDERA_CO, display: 'block' }} />
+            : <span style={{ width: 20, height: 20, borderRadius: 999, background: '#26A17B', color: '#fff', fontSize: 12, fontWeight: 800, display: 'grid', placeItems: 'center' }}>₮</span>}
+        <span style={{ fontSize: 13.5, fontWeight: 700, color: '#F4F4F2' }}>{m}</span>
+    </span>
+);
+const Fila: React.FC<{ k: React.ReactNode; v: React.ReactNode; color?: string; suave?: boolean }> = ({ k, v, color, suave }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <span style={{ fontSize: 13, color: '#878E88' }}>{k}</span>
+        <span style={{ fontSize: 13, fontWeight: suave ? 600 : 700, color: color ?? (suave ? '#878E88' : '#F4F4F2'), textAlign: 'right' }}>{v}</span>
+    </div>
+);
+
+const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; saldos?: Record<string, number>; onCreado: (id: string) => void; lateral?: React.ReactNode }> = ({ userId, showToast, onCreado, lateral }) => {
     const [side, setSide]     = useState<'vende_usdt' | 'compra_usdt'>('vende_usdt');
     const [monto, setMonto]   = useState('');
     const [tasa, setTasa]     = useState<number | null>(null);
@@ -287,7 +308,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     };
     const enviarUnaVez = async () => {
         setError(null);
-        if (!montoOk) { setError('Escribí cuánto querés enviar.'); return; }
+        if (!montoOk) { setError('Escribe cuánto quieres enviar.'); return; }
         if (!walletOk) { setError('Verifica la wallet desde donde envías los USDT: solo se aceptan wallets de riesgo bajo.'); return; }
         setEnviando(true);
         const r = await callOtcMesa('crear', {
@@ -305,194 +326,202 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
         onCreado(r.id);
     };
 
+    // El número grande, como en ACH: la parte entera y los decimales en chico.
+    const grande = (v: number | null, dec: number) => {
+        if (v == null) return <span style={{ color: '#878E88' }}>0</span>;
+        const ent = Math.floor(v);
+        const d = Math.round((v - ent) * Math.pow(10, dec));
+        return <>{ent.toLocaleString('es-CO')}<span style={{ fontSize: '0.65em', color: '#878E88', fontWeight: 700 }}>,{String(d).padStart(dec, '0')}</span></>;
+    };
+    const cerrada = !!mesa && !mesa.abierta;
+    const deshabilitado = enviando || cerrada || !walletOk || !montoOk;
+
     return (
-        <div style={{ ...PANEL, padding: '22px 22px 20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <ArrowLeftRight size={17} style={{ color: '#4ADE80' }} />
-                <h3 style={{ color: '#F4F4F2', fontWeight: 800, fontSize: 18, letterSpacing: '-0.4px' }}>Mesa OTC · Manual</h3>
-            </div>
-            <p style={{ color: '#878E88', fontSize: 12.5, marginTop: 5, lineHeight: 1.55 }}>
-                Operación negociada con un asesor. Decinos cuánto querés mover y la mesa te confirma la tasa por el chat.
-            </p>
+        <div>
+            <style>{`.otc-grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}@media(max-width:1100px){.otc-grid{grid-template-columns:minmax(0,1fr)}}.otc-fila{display:flex;align-items:center;gap:12px;margin-top:10px}@media(max-width:520px){.otc-fila{flex-wrap:wrap}.otc-fila .otc-num{flex:1 1 100% !important}}`}</style>
 
-            {/* El precio de referencia, a la vista y con su historial. Cerrar
-                una operacion negociada sin ver como se viene moviendo la tasa
-                es decidir a ciegas. */}
-            <div style={{ marginTop: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', background: 'rgba(255,255,255,0.02)' }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, padding: '11px 14px 8px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 10.5, fontWeight: 700, color: '#878E88', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
-                        Referencia USD / COP
-                    </span>
-                    <span style={{ fontSize: 17, fontWeight: 800, color: '#F4F4F2', letterSpacing: '-0.3px' }}>
-                        {referencia != null ? nf(referencia) : '—'}
-                    </span>
-                </div>
-                <FinityRateChart from="USD" to="COP" ajusteCop={ajusteCop} />
-            </div>
-
-            {/* Lado */}
-            <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
-                {([['vende_usdt', 'Vendo USDT'], ['compra_usdt', 'Compro USDT']] as const).map(([v, l]) => (
-                    <button
-                        key={v}
-                        onClick={() => setSide(v)}
-                        style={{
-                            flex: 1, padding: '9px 0', borderRadius: 9, fontSize: 12.5, fontWeight: 700,
-                            color: side === v ? '#0C0E0D' : '#878E88',
-                            background: side === v ? '#F4F4F2' : 'rgba(255,255,255,0.045)',
-                            border: side === v ? 'none' : '1px solid rgba(255,255,255,0.10)',
-                        }}
-                    >
-                        {l}
-                    </button>
-                ))}
-            </div>
-
-            {/* Vende USDT: PRIMERO la wallet desde donde los manda (pedido del
-                dueño, 19 nov): es lo que decide si se puede pedir el cierre,
-                así que va antes del monto y no al fondo del formulario. */}
-            {side === 'vende_usdt' && pideWallet && (
-                <div style={{ marginTop: 16, padding: '14px 14px 16px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, background: 'rgba(255,255,255,0.02)' }}>
-                    <WalletOrigen
-                        wallet={wallet} red={red} verif={verif}
-                        onWallet={(v) => {
-                            setWallet(v); setVerif(null);
-                            // TRON se reconoce sola; una 0x pasa a Ethereum
-                            // solo si estaba en TRON (BNB Chain la elige él).
-                            const r = redDe(v);
-                            if (r === 'TRX') setRed('TRX');
-                            else if (r && red === 'TRX') setRed(r);
-                        }}
-                        onRed={(r) => { setRed(r); setVerif(null); }}
-                        onVerificado={setVerif}
-                    />
-                </div>
-            )}
-
-            {/* Envías / Recibís */}
-            <div style={{ marginTop: 16 }}>
-                <label style={LABEL}>Envías</label>
-                <div style={{ position: 'relative' }}>
-                    <input
-                        value={monto}
-                        onChange={e => setMonto(e.target.value)}
-                        inputMode="decimal"
-                        placeholder="0"
-                        style={{ ...INPUT, paddingRight: 68, fontSize: 19, fontWeight: 700 }}
-                    />
-                    <span style={{ position: 'absolute', right: 13, top: '50%', transform: 'translateY(-50%)', color: '#878E88', fontSize: 13, fontWeight: 700 }}>
-                        {envMoneda}
-                    </span>
-                </div>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-                <label style={LABEL}>Recibís (estimado)</label>
-                <div style={{ ...INPUT, display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)' }}>
-                    <span style={{ fontSize: 19, fontWeight: 700, color: recibe != null ? '#4ADE80' : '#878E88' }}>
-                        {recibe != null ? nf(recibe, recMoneda === 'COP' ? 0 : 2) : '—'}
-                    </span>
-                    <span style={{ color: '#878E88', fontSize: 13, fontWeight: 700 }}>{recMoneda}</span>
-                </div>
-            </div>
-
-            {/* Como se arma la tasa, a la vista. Un numero solo no deja
-                comprobar nada; con referencia y margen el cliente puede
-                verificar la cuenta el mismo. */}
-            <div style={{ marginTop: 11 }}>
-                {cargandoTasa ? (
-                    <p style={{ color: '#878E88', fontSize: 12 }}>Consultando la tasa…</p>
-                ) : tasa != null ? (
-                    <>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '10px 12px', background: 'rgba(255,255,255,0.02)' }}>
-                            <Renglon k="Tasa de referencia" v={`${nf(referencia ?? 0)} COP/USD`} />
-                            <Renglon k={`Margen Lincoin (${margenPct}%)`} v={`− ${nf((referencia ?? 0) * margenPct / 100)}`} />
-                            <div style={{ height: 1, background: 'rgba(255,255,255,0.07)', margin: '2px 0' }} />
-                            <Renglon k="Tu tasa" v={`${nf(tasa)} COP/USD`} fuerte />
-                        </div>
-                        <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11.5, marginTop: 7, lineHeight: 1.5 }}>
-                            Indicativa: la mesa confirma la tasa final antes de que envíes nada.
-                            <button onClick={pedirTasa} style={{ marginLeft: 6, color: '#4ADE80', textDecoration: 'underline', fontSize: 11.5 }}>actualizar</button>
-                        </p>
-                    </>
-                ) : (
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
-                        <AlertTriangle size={13} style={{ color: '#FBBF24', marginTop: 1, flexShrink: 0 }} />
-                        <p style={{ color: '#878E88', fontSize: 12, lineHeight: 1.5 }}>
-                            No hay cotización automática en este momento{motivoSinTasa ? ` (${motivoSinTasa})` : ''}. Podés pedir el cierre igual: la mesa lo cotiza a mano.
-                        </p>
-                    </div>
-                )}
-            </div>
-
-            {/* Compra USDT: a dónde va lo que compra. (La wallet de origen de
-                una venta va arriba, antes del monto.) */}
-            <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-                {side === 'vende_usdt' ? (
-                    <p style={{ fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
-                        La mesa te confirma por el chat a qué cuenta se acredita el COP.
+            {/* Encabezado: título y la tasa en vivo, como la conversión ACH */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
+                <div>
+                    <h1 style={{ fontSize: 25, fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2' }}>
+                        {side === 'vende_usdt' ? 'Convertir USDT a pesos colombianos' : 'Comprar USDT con pesos colombianos'}
+                    </h1>
+                    <p style={{ fontSize: 14, color: '#878E88', marginTop: 3, lineHeight: 1.5 }}>
+                        Mesa OTC con asesor: {side === 'vende_usdt' ? 'envías tus USDT y recibes pesos' : 'pagas en pesos y recibes USDT'}. La mesa te confirma la tasa por el chat y cierra ahí mismo.
                     </p>
-                ) : (
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                        <Wallet size={14} style={{ color: '#878E88', marginTop: 2, flexShrink: 0 }} />
-                        <div>
-                            <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600, display: 'block' }}>El USDT va a tu saldo</span>
-                            <p style={{ fontSize: 11.5, color: '#878E88', marginTop: 3, lineHeight: 1.5 }}>
-                                Se acredita en tu billetera USDT de Lincoin. Para mandarlo a una dirección externa, usá Enviar dinero.
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#878E88', border: `1px solid ${cerrada ? 'rgba(251,191,36,0.35)' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(255,255,255,0.04)', padding: '7px 13px', borderRadius: 999 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: 999, background: cerrada ? '#FBBF24' : '#4ADE80', display: 'inline-block' }} />
+                        {cerrada ? 'Mesa cerrada' : 'Mesa abierta · tasa indicativa'}
+                    </span>
+                    <button onClick={pedirTasa} title="Actualizar la tasa" style={{ padding: 8, borderRadius: 9, border: '1px solid rgba(255,255,255,0.11)', background: 'rgba(255,255,255,0.04)' }}>
+                        <RefreshCw size={14} strokeWidth={1.7} className={cargandoTasa ? 'animate-spin' : ''} style={{ color: '#878E88' }} />
+                    </button>
+                </div>
+            </div>
+
+            <div className="otc-grid">
+                {/* ── Tarjeta del cierre ── */}
+                <div style={{ ...PANEL, borderRadius: 14, padding: 24, alignSelf: 'start' }}>
+                    {/* Lado */}
+                    <div style={{ display: 'flex', gap: 7, marginBottom: 16 }}>
+                        {([['vende_usdt', 'Vendo USDT'], ['compra_usdt', 'Compro USDT']] as const).map(([v, l]) => (
+                            <button key={v} onClick={() => setSide(v)}
+                                style={{ flex: 1, padding: '10px 0', borderRadius: 10, fontSize: 13, fontWeight: 700,
+                                    color: side === v ? '#0C0E0D' : '#878E88', background: side === v ? '#F4F4F2' : 'rgba(255,255,255,0.045)',
+                                    border: side === v ? 'none' : '1px solid rgba(255,255,255,0.10)' }}>
+                                {l}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Vende USDT: PRIMERO la wallet desde donde los manda (pedido
+                        del dueño, 19 nov): es lo que decide si se puede pedir el
+                        cierre, así que va antes del monto. */}
+                    {side === 'vende_usdt' && pideWallet && (
+                        <div style={{ marginBottom: 14, padding: '14px 14px 16px', border: '1px solid rgba(255,255,255,0.09)', borderRadius: 13, background: 'rgba(255,255,255,0.02)' }}>
+                            <WalletOrigen
+                                wallet={wallet} red={red} verif={verif}
+                                onWallet={(v) => {
+                                    setWallet(v); setVerif(null);
+                                    // TRON se reconoce sola; una 0x pasa a Ethereum
+                                    // solo si estaba en TRON (BNB Chain la elige él).
+                                    const r = redDe(v);
+                                    if (r === 'TRX') setRed('TRX');
+                                    else if (r && red === 'TRX') setRed(r);
+                                }}
+                                onRed={(r) => { setRed(r); setVerif(null); }}
+                                onVerificado={setVerif}
+                            />
+                        </div>
+                    )}
+
+                    {/* ENVÍAS */}
+                    <div style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.02)', borderRadius: 13, padding: '15px 17px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={LBL_ACH}>ENVÍAS</span>
+                            <span style={{ fontSize: 12, color: '#878E88' }}>
+                                {side === 'vende_usdt'
+                                    ? (walletOk && walletLimpia ? <>Desde tu wallet verificada · <b style={{ color: '#F4F4F2' }}>{red}</b></> : 'Desde tu wallet, después de verificarla')
+                                    : 'Por transferencia, con las instrucciones de la mesa'}
+                            </span>
+                        </div>
+                        {/* En celular el número va en su propia fila: con la
+                            moneda al lado no cabía y salía cortado. */}
+                        <div className="otc-fila">
+                            <input className="otc-num"
+                                inputMode="decimal" placeholder="0" value={monto}
+                                onChange={e => setMonto(e.target.value.replace(/[^\d.]/g, ''))}
+                                style={{ flex: 1, minWidth: 0, background: 'transparent', outline: 'none', border: 'none', fontSize: 'clamp(26px, 7vw, 34px)', fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', fontFamily: "'Archivo', system-ui, sans-serif" }}
+                            />
+                            <Moneda m={envMoneda} />
+                        </div>
+                    </div>
+                    {/* Flecha entre cajas */}
+                    <div style={{ display: 'flex', justifyContent: 'center', margin: '-13px 0', position: 'relative', zIndex: 2 }}>
+                        <span style={{ width: 36, height: 36, borderRadius: 999, background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.12)', display: 'grid', placeItems: 'center' }}>
+                            <ArrowDown size={16} strokeWidth={1.7} style={{ color: '#878E88' }} />
+                        </span>
+                    </div>
+                    {/* RECIBES */}
+                    <div style={{ border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.02)', borderRadius: 13, padding: '15px 17px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={LBL_ACH}>{recMoneda === 'COP' ? 'RECIBES EN PESOS (ESTIMADO)' : 'RECIBES EN USDT (ESTIMADO)'}</span>
+                            <span style={{ fontSize: 12, color: '#878E88' }}>{recMoneda === 'COP' ? 'La mesa te confirma la cuenta' : 'A tu saldo USDT de Lincoin'}</span>
+                        </div>
+                        <div className="otc-fila">
+                            <p className="otc-num" style={{ flex: 1, minWidth: 0, margin: 0, fontSize: 'clamp(26px, 7vw, 34px)', fontWeight: 800, letterSpacing: '-0.8px', color: '#F4F4F2', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {grande(recibe, 2)}
+                            </p>
+                            <Moneda m={recMoneda} />
+                        </div>
+                    </div>
+
+                    {/* Desglose: cómo se arma la tasa, a la vista. Con referencia
+                        y margen el cliente puede verificar la cuenta él mismo. */}
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 18, paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {cargandoTasa && tasa == null ? (
+                            <p style={{ color: '#878E88', fontSize: 12.5 }}>Consultando la tasa…</p>
+                        ) : tasa != null ? (
+                            <>
+                                <Fila k={`Tasa aplicada (incluye margen ${margenPct} %)`} v={`1 USDT = ${nf(tasa)} COP`} />
+                                <Fila k="Tasa de referencia" v={`1 USDT = ${nf(referencia ?? 0)} COP`} suave />
+                                <Fila k="Margen Lincoin" v={`${margenPct} % · ${nf((referencia ?? 0) * margenPct / 100)} COP por USDT`} suave />
+                                <Fila k={recMoneda === 'COP' ? 'Recibes en pesos (estimado)' : 'Recibes en USDT (estimado)'}
+                                    v={recibe != null ? `${nf(recibe, recMoneda === 'COP' ? 0 : 2)} ${recMoneda}` : '—'} />
+                                <Fila k="Llega" v={side === 'vende_usdt' ? 'Cuando la mesa confirme tus USDT' : 'Cuando la mesa confirme tu pago'} color="#4ADE80" />
+                                <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11.5, lineHeight: 1.5 }}>
+                                    Tasa indicativa: la mesa confirma la final antes de que envíes nada.
+                                    <button onClick={pedirTasa} style={{ marginLeft: 6, color: '#4ADE80', textDecoration: 'underline', fontSize: 11.5, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}>actualizar</button>
+                                </p>
+                            </>
+                        ) : (
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                                <AlertTriangle size={13} style={{ color: '#FBBF24', marginTop: 1, flexShrink: 0 }} />
+                                <p style={{ color: '#878E88', fontSize: 12.5, lineHeight: 1.5 }}>
+                                    No hay cotización automática en este momento{motivoSinTasa ? ` (${motivoSinTasa})` : ''}. Puedes pedir el cierre igual: la mesa lo cotiza a mano.
+                                </p>
+                            </div>
+                        )}
+                    </div>
+
+                    <div style={{ marginTop: 16 }}>
+                        <label style={LABEL}>Mensaje para la mesa (opcional)</label>
+                        <textarea value={nota} onChange={e => setNota(e.target.value)} rows={2} placeholder="Ej: necesito cerrar hoy antes de las 4 p. m." style={{ ...INPUT, resize: 'vertical' }} />
+                    </div>
+
+                    {error && (
+                        <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.06)', borderRadius: 10, padding: '10px 12px' }}>
+                            <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
+                            <p style={{ color: '#F87171', fontSize: 12.5 }}>{error}</p>
+                        </div>
+                    )}
+
+                    {/* La mesa cerrada se dice ANTES del botón, y con la hora de
+                        vuelta. El servidor rechaza igual si el botón llega
+                        habilitado desde una pestaña vieja. */}
+                    {cerrada && (
+                        <div style={{ marginTop: 14, padding: '12px 14px', borderRadius: 11, border: '1px solid rgba(251,191,36,0.32)', background: 'rgba(251,191,36,0.07)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                                <Clock size={13} style={{ color: '#FBBF24', flexShrink: 0 }} />
+                                <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>La mesa está cerrada</span>
+                            </div>
+                            <p style={{ fontSize: 12, color: '#878E88', margin: '6px 0 0', lineHeight: 1.55 }}>
+                                {mesa?.proxima
+                                    ? `Vuelve a abrir ${mesa.proxima}. Puedes dejar tu consulta en un cierre abierto y te contestamos apenas abra.`
+                                    : 'Escríbenos y te contestamos apenas abra.'}
                             </p>
                         </div>
+                    )}
+
+                    {/* CTA, como en ACH */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 16, paddingTop: 16 }}>
+                        <p style={{ fontSize: 12, color: '#878E88', maxWidth: 330, lineHeight: 1.5 }}>
+                            No se mueve nada de tu saldo al pedir el cierre. La mesa te escribe por el chat.
+                        </p>
+                        <button onClick={enviar} disabled={deshabilitado} className="lincoin-btn-white"
+                            style={{ padding: '14px 30px', borderRadius: 10, fontSize: 14.5, fontWeight: 700, border: 'none', opacity: deshabilitado ? 0.45 : 1, cursor: deshabilitado ? 'not-allowed' : undefined }}>
+                            {enviando ? 'Enviando a la mesa…' : cerrada ? 'Mesa cerrada' : 'Solicitar cierre'}
+                        </button>
                     </div>
-                )}
-            </div>
-
-            <div style={{ marginTop: 14 }}>
-                <label style={LABEL}>Mensaje para la mesa (opcional)</label>
-                <textarea value={nota} onChange={e => setNota(e.target.value)} rows={2} placeholder="Ej: necesito cerrar hoy antes de las 4pm" style={{ ...INPUT, resize: 'vertical' }} />
-            </div>
-
-            {error && (
-                <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.06)', borderRadius: 10, padding: '10px 12px' }}>
-                    <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
-                    <p style={{ color: '#F87171', fontSize: 12.5 }}>{error}</p>
+                    {!walletOk && (
+                        <p style={{ color: '#878E88', fontSize: 11.5, textAlign: 'right', marginTop: 8, lineHeight: 1.5 }}>
+                            {!walletLimpia ? 'Escribe y verifica la wallet desde donde envías para habilitar el cierre.'
+                                : !verif ? 'Verifica la wallet para habilitar el cierre.'
+                                : 'Esta wallet no se puede usar en la mesa: usa una de riesgo bajo.'}
+                        </p>
+                    )}
                 </div>
-            )}
 
-            {/* La mesa cerrada se dice ANTES del botón, y con la hora de vuelta.
-                "Cerrado" a secas obliga a escribir para preguntar algo que la
-                pantalla ya sabe. El servidor rechaza igual si el botón llega
-                habilitado desde una pestaña vieja. */}
-            {mesa && !mesa.abierta && (
-                <div style={{ marginTop: 16, padding: '12px 14px', borderRadius: 11, border: '1px solid rgba(251,191,36,0.32)', background: 'rgba(251,191,36,0.07)' }}>
-                    <div className="flex items-center" style={{ gap: 7 }}>
-                        <Clock size={13} style={{ color: '#FBBF24', flexShrink: 0 }} />
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>La mesa está cerrada</span>
+                {/* ── Columna derecha: la tasa con su historial y tus cierres ── */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 18, alignSelf: 'start' }}>
+                    <div style={{ ...PANEL, borderRadius: 14, padding: 8 }}>
+                        <FinityRateChart from="USD" to="COP" ajusteCop={ajusteCop} />
                     </div>
-                    <p style={{ fontSize: 12, color: '#878E88', margin: '6px 0 0', lineHeight: 1.55 }}>
-                        {mesa.proxima
-                            ? `Vuelve a abrir ${mesa.proxima}. Podés dejar tu consulta en un cierre abierto y te contestamos apenas abra.`
-                            : 'Escribinos y te contestamos apenas abra.'}
-                    </p>
+                    {lateral}
                 </div>
-            )}
-
-            <button
-                onClick={enviar}
-                disabled={enviando || (!!mesa && !mesa.abierta) || !walletOk}
-                className="lincoin-btn-white transition-colors"
-                style={{ width: '100%', marginTop: 16, padding: '13px 0', borderRadius: 11, border: 'none', fontWeight: 700, fontSize: 14, opacity: enviando || (!!mesa && !mesa.abierta) || !walletOk ? 0.45 : 1, cursor: !walletOk ? 'not-allowed' : undefined }}
-            >
-                {enviando ? 'Enviando a la mesa…' : (mesa && !mesa.abierta) ? 'Mesa cerrada' : 'Solicitar cierre'}
-            </button>
-            {!walletOk && (
-                <p style={{ color: '#878E88', fontSize: 11.5, textAlign: 'center', marginTop: 8, lineHeight: 1.5 }}>
-                    {!walletLimpia ? 'Escribe y verifica la wallet desde donde envías para habilitar el cierre.'
-                        : !verif ? 'Verifica la wallet para habilitar el cierre.'
-                        : 'Esta wallet no se puede usar en la mesa: usa una de riesgo bajo.'}
-                </p>
-            )}
-            <p style={{ color: 'rgba(244,244,242,0.45)', fontSize: 11, textAlign: 'center', marginTop: 9, lineHeight: 1.5 }}>
-                No se mueve nada de tu saldo al pedir el cierre. La mesa te escribe por el chat.
-            </p>
+            </div>
         </div>
     );
 };
@@ -988,13 +1017,6 @@ const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }
         </div>
     );
 };
-
-const Renglon: React.FC<{ k: string; v: string; fuerte?: boolean }> = ({ k, v, fuerte }) => (
-    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-        <span style={{ fontSize: 11.5, color: fuerte ? '#F4F4F2' : '#878E88', fontWeight: fuerte ? 700 : 500 }}>{k}</span>
-        <span style={{ fontSize: fuerte ? 13.5 : 12, color: fuerte ? '#4ADE80' : '#878E88', fontWeight: fuerte ? 800 : 600 }}>{v}</span>
-    </div>
-);
 
 // Como se describe cada destino del COP en el detalle del cierre.
 export const NOMBRE_BILLETERA: Record<string, string> = {
