@@ -722,8 +722,12 @@ export const ContactsSection: React.FC<{
             // habilita envíos. Se reverifica con el proveedor actual la
             // primera vez que se le envía; los bloqueos de TusDatos (riesgo
             // alto, nombre, documento) se muestran arriba como siempre.
-            estado = 'POR ACTUALIZAR';
-            ayuda = 'La verificación de antecedentes se actualiza la primera vez que le envíes (cerca de un minuto). Después ya le puedes enviar normal.';
+            // Con la verificación corriendo para esta cuenta, la pantalla la
+            // reverifica sola al abrirse (amlPendientes): ya está en curso.
+            tono = AMBAR; estado = amlCorre ? 'ACTUALIZANDO' : 'POR ACTUALIZAR';
+            ayuda = amlCorre
+                ? 'Estamos actualizando la verificación de antecedentes. Suele tardar cerca de un minuto.'
+                : 'La verificación de antecedentes se actualiza la primera vez que le envíes (cerca de un minuto). Después ya le puedes enviar normal.';
         } else if (Number(k.fuentesEnCurso ?? 0) > 0 || k.incompleta === true || k.sarblock?.aggregateOutcome === 'PARTIAL') {
             // Cerró sin una fuente de antecedentes (casi siempre la judicial):
             // el envío espera. Decía "RIESGO BAJO" y no dejaba transferir.
@@ -1532,6 +1536,10 @@ export const ContactsSection: React.FC<{
         const k = fichaAml(doc);
         const estK = String(k?.estado ?? '');
         if (!k || estK === 'procesando' || estK === 'archivado') return doc;
+        // Ficha vieja de TusDatos que no bloquea: el servidor la reverifica
+        // con Sarblock (verificar_pendientes). Misma regla que allá.
+        if (estK === 'finalizado' && k.proveedor !== 'sarblock' && k.operable !== false && k.categoria !== 'alto'
+            && k.nombreCoincide !== false && k.documentoVigente !== false) return `${doc}:td`;
         // Las que no terminaron se reintentan solas en el servidor: el reloj
         // tiene que seguir corriendo mientras existan (hasta que se agoten).
         if ((estK === 'error' || estK === 'expirado' || estK === 'en_espera') && Number(k.intentos ?? 0) < 8) return `${doc}:${estK}`;
