@@ -742,7 +742,10 @@ export const ContactsSection: React.FC<{
             tono = VERDE; estado = 'RIESGO BAJO';
             ayuda = 'Hallazgos menores. Se puede operar con esta persona.';
         } else if (cat === 'ninguno' || cat === 'informativo') {
-            tono = VERDE; estado = 'SIN HALLAZGOS';
+            // Dice "Riesgo bajo" igual que la categoría bajo (pedido del dueño,
+            // 23 nov: "Sin hallazgos" confundía). El detalle de que no se
+            // encontró nada queda en la ayuda, en Cumplimiento y en el reporte.
+            tono = VERDE; estado = 'RIESGO BAJO';
             ayuda = 'No se encontraron antecedentes. Se puede operar con esta persona.';
         } else {
             estado = 'SIN RESULTADO';
