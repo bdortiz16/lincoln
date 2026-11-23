@@ -112,6 +112,7 @@ import { descargarXlsx } from '../lib/xlsx';
 import { useMovimientosCliente } from './useMovimientosCliente';
 import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
+import { AdminRiskUtilidades } from './AdminRiskUtilidades';
 import { CollectionWalletCard } from './CollectionWalletCard';
 import { FlagImg, flagUrl } from './FlagImg';
 import { useExchangeRates } from '../context/ExchangeRateContext'; 
@@ -1450,6 +1451,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   };
   // Caja de Lincoin (caja_estado): apertura, Lincoin esperado, sospechosas.
   const [caja, setCaja] = useState<any>(null);
+  // El reporte detallado de las utilidades de AML y KYT (se abre al tocar su tarjeta).
+  const [verUtilRisk, setVerUtilRisk] = useState(false);
   const [cajaVer, setCajaVer] = useState(0);
   const [cajaAbierta, setCajaAbierta] = useState(false);       // detalle del cierre desplegado
   const [cajaOcultar, setCajaOcultar] = useState<any>(null);    // cargue a revisar/ocultar
@@ -2654,10 +2657,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   cuenta solo los cargues. */}
               {(() => {
                 const r: any = caja?.riskUtilidades;
+                // Toda la tarjeta abre el reporte (pedido del dueño, 23 nov:
+                // "le diera clic y supiera cuánto hay en cada bolsillo").
                 return (
-                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
+                  <button type="button" onClick={() => setVerUtilRisk(true)} title="Ver el reporte de utilidades de AML y KYT"
+                    className="transition-colors hover:border-white/25"
+                    style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 0, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit', display: 'block', width: '100%' }}>
                     <span className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 800, color: '#F4F4F2' }}>
                       <ShieldCheck size={13} style={{ color: '#4ADE80' }} /> Utilidades <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· AML y KYT</span>
+                      <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: '#4ADE80', whiteSpace: 'nowrap' }}>Ver reporte →</span>
                     </span>
                     {!caja ? <p style={{ margin: '4px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
                       : !r || r.error ? <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.4 }}>No se pudo leer{r?.error ? `: ${r.error}` : '.'}</p>
@@ -2676,9 +2684,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                             {r.iva > 0 ? <span style={{ whiteSpace: 'nowrap' }}> · IVA incluido {Math.round(r.iva).toLocaleString('es-CO')}</span> : null}
                           </p>
                         </>}
-                  </div>
+                  </button>
                 );
               })()}
+              {verUtilRisk && <AdminRiskUtilidades onCerrar={() => setVerUtilRisk(false)} />}
             </div>}
           </div>
           {billeteraPais === 'US' ? (

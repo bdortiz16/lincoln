@@ -365,7 +365,9 @@ const inicioCaja = (abiertaAt: unknown) => {
 // cuentan por tipo: las de KYT llevan la referencia kyt:… (función kyt) y
 // una devolución resta su consumo.
 async function utilidadesRisk() {
-  const etiqueta = (b: unknown) => provDeRiel(b) ?? (String(b ?? '').toUpperCase() === 'COP' ? 'Saldo Lincoin' : String(b ?? '—'))
+  // Los mismos nombres que la Billetera y el reporte (Coinsenda Jero, no
+  // "Coinsenda"): la tarjeta y el reporte tienen que decir lo mismo.
+  const etiqueta = (b: unknown) => BOLSILLO_RISK[String(b ?? '').toUpperCase()] ?? String(b ?? '—')
   const por: Record<string, { total: number; compras: number }> = {}
   let total = 0, subtotal = 0, iva = 0, consultas = 0, compras = 0
   await leerPorPaginas(() => db.from('risk_compras').select('id, bolsillo, cantidad, subtotal, iva, total'), {
@@ -389,13 +391,131 @@ async function utilidadesRisk() {
       }
     },
   })
-  const orden = ['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin']
+  const orden = ORDEN_BOLSILLO_RISK.map(c => BOLSILLO_RISK[c])
   const porBolsillo = Object.entries(por)
     .sort(([a], [b]) => (orden.indexOf(a) < 0 ? 99 : orden.indexOf(a)) - (orden.indexOf(b) < 0 ? 99 : orden.indexOf(b)))
     .map(([bolsillo, v]) => ({ bolsillo, total: Math.round(v.total), compras: v.compras }))
   return {
     total: Math.round(total), subtotal: Math.round(subtotal), iva: Math.round(iva),
     compras, consultasVendidas: consultas, usadas: { aml: usadasAml, kyt: usadasKyt }, porBolsillo,
+  }
+}
+
+// ── El reporte detallado de esas utilidades (23 nov) ─────────────────
+// El dueño pidió que al tocar la tarjeta se viera todo ordenado: cuánto hay
+// en cada bolsillo (Mouv, Finity, Coinsenda Jero, Kaupaloki y Saldo Lincoin),
+// cuánto por cliente, y cuánto de AML y cuánto de KYT.
+//
+// La plata entra por COMPRAS de paquetes (risk_compras) y las consultas que
+// compra sirven igual para AML y KYT: el dinero no se puede partir por tipo
+// sin inventar. Por eso el reporte separa las dos cosas y lo dice: la plata
+// por bolsillo, cliente y mes; las consultas USADAS por AML y por KYT (las de
+// KYT llevan ref kyt:…), con sus devoluciones restadas. Las consultas
+// cargadas a mano (tipo 'ajuste') se muestran aparte: no son ingreso.
+//
+// Período en días de Bogotá (UTC−5): desde las 00:00 del primero hasta el
+// final del último. Sin período, todo.
+const BOLSILLO_RISK: Record<string, string> = {
+  COP_BREB: 'Mouv', COP_ACH: 'Finity', COP_C3: 'Coinsenda Jero', COP_C4: 'Coinsenda Kaupaloki', COP: 'Saldo Lincoin',
+}
+const ORDEN_BOLSILLO_RISK = ['COP_BREB', 'COP_ACH', 'COP_C3', 'COP_C4', 'COP']
+async function utilidadesRiskDetalle(desde: string | null, hasta: string | null) {
+  const dia = (d: string | null) => (d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null)
+  const d1 = dia(desde), d2 = dia(hasta)
+  const iniIso = d1 ? new Date(Date.parse(`${d1}T00:00:00Z`) + 5 * 3600_000).toISOString() : null
+  const finIso = d2 ? new Date(Date.parse(`${d2}T00:00:00Z`) + 29 * 3600_000).toISOString() : null
+  const enRango = (q: any) => { let x = q; if (iniIso) x = x.gte('at', iniIso); if (finIso) x = x.lt('at', finIso); return x }
+  const mesDe = (iso: string) => fechaBogota(iso).slice(0, 7)
+
+  type Cli = {
+    compras: number; consultas: number; subtotal: number; iva: number; total: number
+    porBolsillo: Record<string, number>; aml: number; kyt: number; devueltas: number; ajustes: number; ultima: string | null
+  }
+  const clis = new Map<string, Cli>()
+  const cli = (id: string): Cli => {
+    let c = clis.get(id)
+    if (!c) { c = { compras: 0, consultas: 0, subtotal: 0, iva: 0, total: 0, porBolsillo: {}, aml: 0, kyt: 0, devueltas: 0, ajustes: 0, ultima: null }; clis.set(id, c) }
+    return c
+  }
+  const bols: Record<string, { total: number; subtotal: number; iva: number; compras: number; consultas: number; clientes: Set<string> }> = {}
+  const meses: Record<string, { total: number; compras: number; consultas: number; aml: number; kyt: number }> = {}
+  const mes = (m: string) => (meses[m] ??= { total: 0, compras: 0, consultas: 0, aml: 0, kyt: 0 })
+  const tot = { total: 0, subtotal: 0, iva: 0, compras: 0, consultas: 0, aml: 0, kyt: 0, devueltas: 0, ajustes: 0 }
+  const compras: any[] = []
+
+  await leerPorPaginas(() => enRango(db.from('risk_compras').select('id, at, user_id, cantidad, precio_unit, subtotal, iva, total, bolsillo, por')), {
+    alLote: (lote) => {
+      for (const c of lote as any[]) {
+        const t = Number(c.total) || 0, sub = Number(c.subtotal) || 0, iv = Number(c.iva) || 0, q = Number(c.cantidad) || 0
+        const b = String(c.bolsillo ?? '').toUpperCase() || '—'
+        const uid = String(c.user_id)
+        tot.total += t; tot.subtotal += sub; tot.iva += iv; tot.compras++; tot.consultas += q
+        const x = (bols[b] ??= { total: 0, subtotal: 0, iva: 0, compras: 0, consultas: 0, clientes: new Set() })
+        x.total += t; x.subtotal += sub; x.iva += iv; x.compras++; x.consultas += q; x.clientes.add(uid)
+        const k = cli(uid)
+        k.compras++; k.consultas += q; k.subtotal += sub; k.iva += iv; k.total += t
+        k.porBolsillo[b] = (k.porBolsillo[b] ?? 0) + t
+        if (!k.ultima || String(c.at) > k.ultima) k.ultima = String(c.at)
+        const m = mes(mesDe(String(c.at))); m.total += t; m.compras++; m.consultas += q
+        compras.push({ id: c.id, at: c.at, userId: uid, bolsillo: b, cantidad: q, precioUnit: Number(c.precio_unit) || 0, subtotal: sub, iva: iv, total: t, por: c.por ?? null })
+      }
+    },
+  })
+  await leerPorPaginas(() => enRango(db.from('risk_movimientos').select('id, at, user_id, tipo, cantidad, ref').in('tipo', ['consumo', 'devolucion', 'ajuste'])), {
+    alLote: (lote) => {
+      for (const mv of lote as any[]) {
+        const k = cli(String(mv.user_id))
+        const n = Number(mv.cantidad) || 0
+        if (mv.tipo === 'ajuste') { k.ajustes += n; tot.ajustes += n; continue }
+        // consumo resta (−1) y devolución suma (+1): usadas = −cantidad.
+        const usadas = -n
+        if (mv.tipo === 'devolucion') { k.devueltas += n; tot.devueltas += n }
+        const esKyt = String(mv.ref ?? '').startsWith('kyt:')
+        const m = mes(mesDe(String(mv.at)))
+        if (esKyt) { k.kyt += usadas; tot.kyt += usadas; m.kyt += usadas } else { k.aml += usadas; tot.aml += usadas; m.aml += usadas }
+      }
+    },
+  })
+
+  // Nombres y saldo de consultas de hoy, para los clientes que aparecen.
+  const ids = Array.from(clis.keys())
+  const nombres = new Map<string, { nombre: string; email: string | null }>()
+  const saldos = new Map<string, number>()
+  for (let i = 0; i < ids.length; i += 200) {
+    const parte = ids.slice(i, i + 200)
+    const [{ data: us }, { data: ss }] = await Promise.all([
+      db.from('users').select('id, full_name, company_name, email').in('id', parte),
+      db.from('risk_saldos').select('user_id, saldo').in('user_id', parte),
+    ])
+    for (const u of (us ?? []) as any[]) nombres.set(String(u.id), { nombre: String(u.company_name || u.full_name || u.email || 'Cliente sin nombre'), email: u.email ?? null })
+    for (const x of (ss ?? []) as any[]) saldos.set(String(x.user_id), Number(x.saldo) || 0)
+  }
+  const nombreDe = (id: string) => nombres.get(id)?.nombre ?? 'Cliente sin nombre'
+  const r0 = (n: number) => Math.round(n)
+
+  const porBolsillo = Object.entries(bols)
+    .sort(([a], [b]) => (ORDEN_BOLSILLO_RISK.indexOf(a) < 0 ? 99 : ORDEN_BOLSILLO_RISK.indexOf(a)) - (ORDEN_BOLSILLO_RISK.indexOf(b) < 0 ? 99 : ORDEN_BOLSILLO_RISK.indexOf(b)))
+    .map(([b, v]) => ({ codigo: b, bolsillo: BOLSILLO_RISK[b] ?? b, total: r0(v.total), subtotal: r0(v.subtotal), iva: r0(v.iva), compras: v.compras, consultas: v.consultas, clientes: v.clientes.size }))
+  const porCliente = ids.map(id => {
+    const k = clis.get(id)!
+    return {
+      userId: id, cliente: nombreDe(id), email: nombres.get(id)?.email ?? null,
+      compras: k.compras, consultas: k.consultas, subtotal: r0(k.subtotal), iva: r0(k.iva), total: r0(k.total),
+      porBolsillo: Object.fromEntries(Object.entries(k.porBolsillo).map(([b, v]) => [b, r0(v)])),
+      usadasAml: k.aml, usadasKyt: k.kyt, devueltas: k.devueltas, ajustes: k.ajustes,
+      saldoHoy: saldos.get(id) ?? 0, ultimaCompra: k.ultima,
+    }
+  }).sort((a, b) => b.total - a.total || (b.usadasAml + b.usadasKyt) - (a.usadasAml + a.usadasKyt) || a.cliente.localeCompare(b.cliente, 'es'))
+  const porMes = Object.entries(meses).sort(([a], [b]) => b.localeCompare(a))
+    .map(([m, v]) => ({ mes: m, total: r0(v.total), compras: v.compras, consultas: v.consultas, usadasAml: v.aml, usadasKyt: v.kyt }))
+  compras.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+
+  return {
+    periodo: { desde: d1, hasta: d2 },
+    totales: { total: r0(tot.total), subtotal: r0(tot.subtotal), iva: r0(tot.iva), compras: tot.compras, consultasVendidas: tot.consultas, usadasAml: tot.aml, usadasKyt: tot.kyt, devueltas: tot.devueltas, ajustes: tot.ajustes, clientes: porCliente.filter(c => c.compras > 0).length },
+    porBolsillo, porCliente, porMes,
+    compras: compras.slice(0, 2000).map(c => ({ ...c, cliente: nombreDe(c.userId), bolsilloNombre: BOLSILLO_RISK[c.bolsillo] ?? c.bolsillo })),
+    comprasTruncadas: compras.length > 2000,
   }
 }
 
@@ -1916,6 +2036,8 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // La caja de Lincoin: verla. Abrirla, corregir la apertura y ocultar un
   // movimiento son del dueño (no figuran acá).
   caja_estado: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  // El detalle de las utilidades de AML y KYT (al tocar su tarjeta en Billetera).
+  risk_utilidades_detalle: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
   lincoin_resumen: ['plata.ver', 'tesoreria', 'fn.lincoin'],
@@ -6548,6 +6670,15 @@ Deno.serve(async (req: Request) => {
         })
         await auditAdmin(req, 'admin.ajuste_cripto', { userId: body.userId, currency: cur, delta, nuevoSaldo: newBal, opId: opId || null })
         return json({ success: true, newBalance: newBal })
+      }
+
+      if (body.action === 'risk_utilidades_detalle') {
+        try {
+          const d = await utilidadesRiskDetalle(body.desde ? String(body.desde) : null, body.hasta ? String(body.hasta) : null)
+          return json({ ok: true, ...d })
+        } catch (e: any) {
+          return json({ ok: false, error: String(e?.message ?? e) }, 500)
+        }
       }
 
       // ── Caja de Lincoin ──────────────────────────────────────────────
