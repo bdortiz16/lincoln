@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ShieldAlert, RefreshCw, FileText, ChevronDown, Search, Download } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
+import { AdminReinscribirFinity } from './AdminReinscribirFinity';
 import { sinFormula } from '../lib/csv';
 
 // ─────────────────────────────────────────────────────────────
@@ -319,6 +320,10 @@ export const AdminCompliance: React.FC = () => {
 
       {/* ══ COLA DE CASOS ══ */}
       <div style={{ flex: '1 1 560px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* Beneficiarios que Finity no inscribió: aquí porque es donde el
+            equipo busca a los beneficiarios trabados (23 nov). Solo aparece
+            si hay alguno pendiente o si la consulta falla. */}
+        <AdminReinscribirFinity />
         {/* Topbar */}
         <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: '16px 18px' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>

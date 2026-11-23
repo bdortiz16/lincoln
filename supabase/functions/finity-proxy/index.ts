@@ -37,6 +37,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { requireMfaSession } from '../_shared/admin-auth.ts'
+import { codigoAchBanco } from '../_shared/mouv-ach.ts'
+import { mergeRaw } from '../_shared/raw-data.ts'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -561,6 +563,8 @@ async function esMiReferencia(caller: { userId?: string; internal?: boolean }, i
 const PERMISO_FINITY: Record<string, string | string[]> = {
   // 'fn.*': las casillas del colaborador que leen la bolsa (_shared/equipo.ts).
   treasury_balances: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  // Reintentar inscripciones de beneficiarios: quien atiende fallos o cumplimiento.
+  reinscribir_pendientes: ['plata.mover', 'tesoreria', 'fn.fallos', 'fn.cumplimiento'],
 }
 
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean; servicio?: boolean }> {
@@ -976,6 +980,79 @@ Deno.serve(async (req) => {
         }
       } catch { /* la auditoría nunca puede tumbar la consulta */ }
       return json(200, { ok: res.ok, status: res.status, path, data })
+    }
+
+    // ── Reintentar inscripciones pendientes (botón del admin) ──────────────
+    // La inscripción en Finity de una cuenta ACH la reintentaba SOLO la
+    // página de Beneficiarios del cliente, con su sesión. Cuando Finity
+    // rechaza un rato (23 nov: 403 desde las 10:20 am), las cuentas quedan
+    // sin id hasta que cada cliente vuelva a entrar. Esto las inscribe desde
+    // el servidor, de a una, por el mismo camino (create_external_account:
+    // freno, dedupe y auditoría incluidos) y se detiene en el primer
+    // rechazo de Finity para no hacer que bloquee la cuenta.
+    if (action === 'reinscribir_pendientes') {
+      if (!caller.internal || caller.servicio) return json(403, { error: 'forbidden', message: 'Solo el equipo puede reintentar inscripciones.' })
+      const soloContar = payload.soloContar === true
+      const freno = await leerFrenoInscripciones()
+      // Pendiente: cuenta bancaria de Colombia, sin id de Finity, que no
+      // quedó rechazada por datos (400/422: repetirla da lo mismo).
+      const pendiente = (c: any) => c && typeof c === 'object' && c.id
+        && (c.country ?? 'Colombia') === 'Colombia' && c.destKind !== 'breb' && c.accountKind !== 'wallet'
+        && !(c.finityId || c.mouvId) && ![400, 422].includes(Number(c.regHttp))
+      const lista: { userId: string; c: any }[] = []
+      for (let desde = 0; desde < 20000; desde += 500) {
+        const { data, error } = await db.from('users').select('id, contactos:raw_data->mouvContacts')
+          .not('raw_data->mouvContacts', 'is', null).order('id').range(desde, desde + 499)
+        if (error) return json(200, { ok: false, error: error.message })
+        for (const u of (data ?? []) as any[]) for (const c of (Array.isArray(u.contactos) ? u.contactos : [])) if (pendiente(c)) lista.push({ userId: String(u.id), c })
+        if (!data || data.length < 500) break
+      }
+      lista.sort((a, b) => String(b.c.createdAt ?? '').localeCompare(String(a.c.createdAt ?? '')))
+      if (soloContar || freno) return json(200, { ok: true, pendientes: lista.length, pausaHasta: freno?.hasta ?? null, pausaHttp: freno?.http ?? null, inscritas: 0, intentadas: 0 })
+
+      const inicio = Date.now()
+      const maximo = Math.min(Math.max(1, Number(payload.max) || 15), 30)
+      let inscritas = 0, intentadas = 0, sinBanco = 0
+      let detenido: { http: number; mensaje: string } | null = null
+      for (const { userId, c } of lista) {
+        if (intentadas >= maximo || Date.now() - inicio > 100_000) break
+        const banco = codigoAchBanco(c.bank)
+        const numero = String(c.accountNumber ?? '').replace(/\D/g, '')
+        const doc = String(c.docNumber ?? '').replace(/\D/g, '')
+        if (!banco || !numero || !doc || !String(c.name ?? '').trim()) { sinBanco++; continue }
+        intentadas++
+        const intentoAt = new Date().toISOString()
+        const tipoDoc = String(c.docType ?? 'CC').toUpperCase()
+        const rr: any = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_KEY}` },
+          body: JSON.stringify({ action: 'create_external_account', user_id: userId, data: { account: {
+            geo: 'CO', account_type: c.accountType === 'checking' ? 'checking' : 'savings', account_number: numero,
+            financial_institution_code: banco, account_holder_fullname: String(c.name).trim(),
+            account_holder_id_type: tipoDoc === 'PAS' ? 'CE' : (['CC', 'CE', 'NIT'].includes(tipoDoc) ? tipoDoc : 'CC'),
+            account_holder_id_number: doc,
+          } } }),
+          signal: AbortSignal.timeout(40_000),
+        }).then(r => r.json()).catch((e) => ({ ok: false, status: 0, data: { message: String((e as Error)?.message ?? e) } }))
+        const dd = rr?.data ?? {}
+        const fid = rr?.id ?? dd.id ?? dd.external_account_id ?? dd.account_id ?? dd?.account?.id ?? dd?.data?.id ?? null
+        const http = Number(rr?.status) || 0
+        const cambio = rr?.ok && fid
+          ? { mouvId: String(fid), finityId: String(fid), status: 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: http || 201 }
+          : { lastError: `[${new Date().toLocaleTimeString('es-CO', { timeZone: 'America/Bogota' })}] HTTP ${http || '—'} (reintento del equipo): ${JSON.stringify(dd).slice(0, 220)}`, regIntentoAt: intentoAt, regHttp: http }
+        // Lectura fresca justo antes de escribir: el cliente puede estar
+        // editando su lista; solo se toca la fila de este beneficiario.
+        const { data: fila } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+        const actual: any[] = Array.isArray((fila as any)?.raw_data?.mouvContacts) ? (fila as any).raw_data.mouvContacts : []
+        if (actual.some(x => x?.id === c.id)) await mergeRaw(db, userId, { mouvContacts: actual.map(x => x?.id === c.id ? { ...x, ...cambio } : x) })
+        if (rr?.ok && fid) { inscritas++; continue }
+        // Finity frenó (o ya hay pausa): parar acá. Insistir es lo que hace
+        // que bloquee la credencial.
+        if (rr?.frenado || http === 403 || http === 429 || http === 401) { detenido = { http, mensaje: String(dd?.message ?? '').slice(0, 200) }; break }
+      }
+      await logAudit(caller.userId!, 'finity.reinscribir_pendientes', { pendientes: lista.length, intentadas, inscritas, sinBanco, detenido })
+      const frenoAhora = await leerFrenoInscripciones()
+      return json(200, { ok: true, pendientes: lista.length, intentadas, inscritas, sinBanco, detenido, pausaHasta: frenoAhora?.hasta ?? null, pausaHttp: frenoAhora?.http ?? null })
     }
 
     if (action === 'create_external_account') {

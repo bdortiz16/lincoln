@@ -59,6 +59,10 @@ const CODIGO_ACH: Record<string, string> = {
   bancoomeva: '1061', falabella: '1062', coopcentral: '1066', lulo: '1070', nequi: '1507',
   daviplata: '1551', movii: '1801', nu: '1809',
 }
+/** Código ACH (el que pide Finity) del nombre de banco que guarda el
+ *  beneficiario ("Davivienda", "Banco de Bogotá"…). null si no se conoce. */
+export const codigoAchBanco = (banco: unknown): string | null => CODIGO_ACH[nombreBanco(String(banco ?? ''))] ?? null
+
 // Otras formas en que esos bancos aparecen en los catálogos de los aliados.
 const ALIAS_BANCO: Record<string, string[]> = {
   cajasocial: ['bcsc', 'cajasocialbcsc'],
