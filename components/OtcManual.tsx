@@ -1,13 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ArrowDown, Send, RefreshCw, ChevronLeft, MessageSquare,
-    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, ShieldCheck, Paperclip, Plus, ChevronDown, ChevronUp, X,
+    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, ShieldCheck, Paperclip, Plus, ChevronDown, ChevronUp, X, ScanLine,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 import { llamarFuncion } from '../lib/edge';
 import { hallazgosEnEspanol } from '../lib/kytTextos';
 import { nombreCuenta } from '../lib/nombreCuenta';
 import { Panel, Recarga, ESTILOS as ESTILOS_RISK } from './risk/RiskCliente';
+import { EscanerQr } from './EscanerQr';
+import { direccionDeQr } from '../lib/direccionQr';
 
 // ─────────────────────────────────────────────
 // OtcManual — Mesa OTC manual del cliente.
@@ -423,7 +425,7 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
 
     return (
         <div>
-            <style>{`.otc-grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}@media(max-width:1100px){.otc-grid{grid-template-columns:minmax(0,1fr)}}.otc-fila{display:flex;align-items:center;gap:12px;margin-top:10px}@media(max-width:520px){.otc-fila{flex-wrap:wrap}.otc-fila .otc-num{flex:1 1 100% !important}}`}</style>
+            <style>{`.otc-grid{display:grid;grid-template-columns:minmax(0,1fr) 372px;gap:18px}@media(max-width:1100px){.otc-grid{grid-template-columns:minmax(0,1fr)}}.otc-fila{display:flex;align-items:center;gap:12px;margin-top:10px}@media(max-width:520px){.otc-fila{flex-wrap:wrap}.otc-fila .otc-num{flex:1 1 100% !important}.otc-esc-txt{display:none}}`}</style>
 
             {/* Encabezado: título y la tasa en vivo, como la conversión ACH */}
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
@@ -690,6 +692,10 @@ const WalletOrigen: React.FC<{
 }> = ({ wallet, red, verif, onWallet, onRed, onVerificado, consultas = null, onSaldo, onComprar }) => {
     const [cargando, setCargando] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // Escanear el QR de la wallet (23 nov): copiar a mano una dirección de 34
+    // caracteres es donde más se equivoca la gente, y un carácter mal puesto
+    // verifica otra wallet.
+    const [escaneando, setEscaneando] = useState(false);
     const w = wallet.trim();
     const esEvm = /^0x/i.test(w);
     const sinConsultas = consultas != null && consultas <= 0;
@@ -753,6 +759,13 @@ const WalletOrigen: React.FC<{
                     spellCheck={false}
                     style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontSize: 13 }}
                 />
+                <button onClick={() => setEscaneando(true)} title="Escanear el QR de la wallet" aria-label="Escanear el QR de la wallet"
+                    className="transition-colors hover:bg-white/[0.09]"
+                    style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 7, padding: '0 13px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+                        color: '#F4F4F2', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                    <ScanLine size={15} style={{ color: '#4ADE80' }} />
+                    <span className="otc-esc-txt">Escanear</span>
+                </button>
                 <button onClick={verificar} disabled={!w || cargando || sinConsultas}
                     style={{ flexShrink: 0, padding: '0 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: !w || sinConsultas ? 'not-allowed' : 'pointer',
                         color: w && !sinConsultas ? '#0C0E0D' : '#878E88', background: w && !sinConsultas ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', opacity: cargando ? 0.6 : 1 }}>
@@ -841,6 +854,24 @@ const WalletOrigen: React.FC<{
                         Revisado el {fecha(verif.consultadoAt)}. El resultado refleja la información disponible hoy.
                     </p>
                 </div>
+            )}
+
+            {escaneando && (
+                <EscanerQr
+                    titulo="Escanear la wallet"
+                    ayuda="Apunta la cámara al QR de recibir de tu wallet (TRON, Ethereum o BNB Chain). La dirección se pega sola; después tocas Verificar."
+                    onCerrar={() => setEscaneando(false)}
+                    onLeido={(texto) => {
+                        const d = direccionDeQr(texto);
+                        if (!d) return 'Ese QR no tiene una dirección de TRON, Ethereum o BNB Chain. Escanea el QR de recibir de tu wallet.';
+                        onWallet(d.direccion);
+                        // TRON la reconoce onWallet; en EVM solo se cambia la red si
+                        // el QR la dice (cadena 56 = BNB Chain).
+                        if (d.red && d.red !== 'TRX') onRed(d.red);
+                        setError(null);
+                        return null;
+                    }}
+                />
             )}
         </div>
     );

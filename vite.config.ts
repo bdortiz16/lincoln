@@ -68,6 +68,8 @@ export default defineConfig(({ mode, command }) => {
               if (id.includes('@supabase')) return 'vendor-supabase';
               if (/node_modules\/(d3-|topojson)/.test(id)) return 'vendor-mapa';
               if (id.includes('lucide-react')) return 'vendor-iconos';
+              // El lector de QR de respaldo: se baja solo al abrir el escáner.
+              if (id.includes('node_modules/jsqr/')) return 'vendor-qr';
               // El PDF de la ficha KYC: se baja solo al tocar "Descargar PDF".
               // Si cayera en 'vendor' lo descargaría todo el que abre la app.
               if (/node_modules\/(jspdf|html-to-image|html2canvas|dompurify|canvg|fflate|fast-png|iobuffer|pako|stackblur-canvas|rgbcolor|raf|svg-pathdata|performance-now|core-js|@babel\/runtime)\//.test(id)) return 'vendor-pdf';
