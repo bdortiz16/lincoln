@@ -581,9 +581,10 @@ function paraCliente(c: any) {
   // payout.canalPor es el nombre del operador que eligió el canal: igual que
   // tomada_por_nom, al cliente le corresponde "la mesa". payout.venta es la
   // tasa a la que la mesa vendió (o compró) los USDT y lo que ganó Lincoin:
-  // eso nunca lo ve el cliente.
+  // eso nunca lo ve el cliente. payout.correccionesTasa lleva el nombre y el
+  // id del operador que corrigió: el cliente ya ve la corrección en el chat.
   const payout = c.payout && typeof c.payout === 'object'
-    ? (({ canalPor: _cp, venta: _v, ...p }) => p)(c.payout) : c.payout
+    ? (({ canalPor: _cp, venta: _v, correccionesTasa: _ct, ...p }) => p)(c.payout) : c.payout
   return { ...resto, payout, atendida: !!c.tomada_at }
 }
 
@@ -601,6 +602,25 @@ async function cargarCierre(id: string, caller: Caller): Promise<{ ok: boolean; 
 
 const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : NaN }
 const ahora = () => new Date().toISOString()
+
+// La tasa no puede alejarse más de un 15 % de la referencia. Sin tope, quien
+// tiene la sección OTC fijaba cualquier número (1e6) y completaba: una
+// acreditación por el monto que quisiera. La referencia es la del proveedor
+// para este lado de la operación; si no responde, la que vio el cliente al
+// pedir (rate_cotizada). Si no hay ninguna de las dos —el proveedor caído y un
+// cierre pedido sin tasa—, la mesa cotiza a mano y no hay contra qué comparar:
+// no se inventa una referencia. Lo usan fijar_tasa y corregir_tasa: el mismo
+// tope para las dos puertas. Devuelve el motivo si está fuera, o null.
+async function tasaFueraDeRango(cierre: any, rate: number): Promise<string | null> {
+  const c = await tasaUsdCop(cierre.user_id, String(cierre.side ?? 'vende_usdt'))
+  const ref = Number(c.referencia) > 0 ? Number(c.referencia)
+    : Number(cierre.rate_cotizada) > 0 ? Number(cierre.rate_cotizada) : null
+  const TOPE_DESVIO = 0.15
+  if (ref && Math.abs(rate - ref) / ref > TOPE_DESVIO) {
+    return `La tasa ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} se aleja más de ${TOPE_DESVIO * 100} % de la referencia (${ref.toLocaleString('es-CO', { maximumFractionDigits: 2 })}). Revisa el número.`
+  }
+  return null
+}
 
 // ─── A QUE BILLETERA SE ACREDITA ────────────────────────
 // La billetera NO puede salir del cuerpo del pedido sin comprobarse.
@@ -742,7 +762,7 @@ Deno.serve(async (req) => {
     }
 
     // Acciones que solo puede hacer la mesa.
-    const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'completar', 'registrar_venta', 'cancelar_mesa', 'notas', 'resumen', 'config_get', 'config_set'])
+    const SOLO_MESA = new Set(['lista', 'tomar', 'fijar_tasa', 'corregir_tasa', 'completar', 'registrar_venta', 'cancelar_mesa', 'notas', 'resumen', 'config_get', 'config_set'])
     if (SOLO_MESA.has(action) && !caller.admin) {
       return json(403, { ok: false, error: 'solo la mesa' })
     }
@@ -1094,7 +1114,7 @@ Deno.serve(async (req) => {
       // después de que venciera el plazo.
       const FIJABLES = ['abierta', 'en_proceso', 'esperando_pago', 'cancelada']
       if (!FIJABLES.includes(String(r.cierre.status))) {
-        return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : r.cierre.status === 'anulada' ? 'Este cierre fue anulado: se monta uno nuevo.' : 'El cliente ya marcó el pago: verifícalo y complétalo, o cancélalo antes de cambiar la tasa.' })
+        return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : r.cierre.status === 'anulada' ? 'Este cierre fue anulado: se monta uno nuevo.' : 'El cliente ya marcó el pago: para cambiar la tasa usa «Corregir la tasa del cliente» (no reinicia el plazo).' })
       }
       // Un cancelado se reabre solo si NUNCA se acreditó. Antes un cierre que
       // se completaba y se cancelaba a la vez quedaba 'cancelada' con la plata
@@ -1105,24 +1125,9 @@ Deno.serve(async (req) => {
         return json(409, { ok: false, error: 'estado_invalido', message: 'Este cierre ya se había acreditado: no se puede reabrir.' })
       }
 
-      // La tasa no puede alejarse más de un 15 % de la referencia. Sin tope,
-      // quien tiene la sección OTC fijaba cualquier número (1e6) y completaba:
-      // una acreditación por el monto que quisiera. La referencia es la del
-      // proveedor para este lado de la operación; si no responde, la que vio el
-      // cliente al pedir (rate_cotizada). Si no hay ninguna de las dos —el
-      // proveedor caído y un cierre pedido sin tasa—, la mesa cotiza a mano y
-      // no hay contra qué comparar: no se inventa una referencia.
       {
-        const c = await tasaUsdCop(r.cierre.user_id, String(r.cierre.side ?? 'vende_usdt'))
-        const ref = Number(c.referencia) > 0 ? Number(c.referencia)
-          : Number(r.cierre.rate_cotizada) > 0 ? Number(r.cierre.rate_cotizada) : null
-        const TOPE_DESVIO = 0.15
-        if (ref && Math.abs(rate - ref) / ref > TOPE_DESVIO) {
-          return json(400, {
-            ok: false, error: 'tasa_fuera_de_rango',
-            message: `La tasa ${rate.toLocaleString('es-CO', { maximumFractionDigits: 2 })} se aleja más de ${TOPE_DESVIO * 100} % de la referencia (${ref.toLocaleString('es-CO', { maximumFractionDigits: 2 })}). Revisa el número.`,
-          })
-        }
+        const fuera = await tasaFueraDeRango(r.cierre, rate)
+        if (fuera) return json(400, { ok: false, error: 'tasa_fuera_de_rango', message: fuera })
       }
       const instrucciones = String(payload.instrucciones ?? '').trim()
 
@@ -1152,6 +1157,63 @@ Deno.serve(async (req) => {
         await escribirMensaje(r.cierre.id, 'mesa', instrucciones.slice(0, 4000), { autorId: caller.userId, autorNom: caller.nombre ?? undefined })
       }
       return json(200, { ok: true, toAmount: to, venceAt: vence, ventanaMin: mins })
+    }
+
+    // ── Corregir la tasa de un cierre que el cliente ya pagó ──
+    // 23 nov: la mesa tenía que corregir la tasa de un cierre "Por verificar"
+    // (el cliente ya mandó los USDT) y no había cómo: fijar_tasa lo devuelve a
+    // 'esperando_pago' y le abre un plazo nuevo para pagar, que no aplica a
+    // quien ya pagó, y por eso no acepta 'pagada'. Esta corrección cambia
+    // SOLO la tasa y lo que recibe: el estado y la fecha en que marcó el pago
+    // quedan igual. Lleva el mismo tope de ±15 % que fijar_tasa, pide un
+    // motivo, se le dice al cliente por el chat (antes y después) y queda en
+    // el historial del cierre y en la auditoría. Completar acredita lo que
+    // diga la fila en ese momento, así que acredita la tasa corregida.
+    if (action === 'corregir_tasa') {
+      const r = await cargarCierre(String(payload.id ?? ''), caller)
+      if (!r.ok) return json(404, { ok: false, error: r.motivo })
+      if (r.cierre.status !== 'pagada' || r.cierre.completada_at) {
+        return json(409, { ok: false, error: 'estado_invalido', message: r.cierre.status === 'completada' ? 'Este cierre ya se completó: no se puede cambiar la tasa.' : 'Esto es para un cierre que el cliente ya marcó como pagado. Antes de eso, usa «Corregir tasa e instrucciones».' })
+      }
+      const rate = num(payload.rateFinal)
+      if (!(rate > 0)) return json(400, { ok: false, error: 'la tasa tiene que ser mayor a cero' })
+      const motivo = String(payload.motivo ?? '').trim()
+      if (motivo.length < 5) return json(400, { ok: false, error: 'falta_motivo', message: 'Escribe el motivo de la corrección: el cliente lo ve en el chat.' })
+      const antes = Number(r.cierre.rate_final)
+      if (antes > 0 && Math.abs(rate - antes) < 1e-9) return json(400, { ok: false, error: 'misma_tasa', message: 'Es la misma tasa que ya tiene el cierre.' })
+      {
+        const fuera = await tasaFueraDeRango(r.cierre, rate)
+        if (fuera) return json(400, { ok: false, error: 'tasa_fuera_de_rango', message: fuera })
+      }
+      const monto = Number(r.cierre.from_amount)
+      const to = redondearRecibe(r.cierre.side === 'vende_usdt' ? monto * rate : monto / rate, String(r.cierre.to_currency))
+      const toAntes = Number(r.cierre.to_amount)
+      const correccion = {
+        de: antes > 0 ? antes : null, a: rate, recibeAntes: Number.isFinite(toAntes) ? toAntes : null, recibe: to,
+        motivo: motivo.slice(0, 500), por: caller.nombre ?? null, porId: caller.userId ?? null, at: ahora(),
+      }
+      const previas = Array.isArray(r.cierre.payout?.correccionesTasa) ? r.cierre.payout.correccionesTasa : []
+      // CAS: solo si sigue 'pagada', sin acreditar y con la tasa que se leyó.
+      // Si otro operador la corrigió o la completó entre medio, no se pisa.
+      let q = db.from('otc_closes').update({
+        rate_final: rate, to_amount: to, updated_at: ahora(),
+        payout: { ...(r.cierre.payout ?? {}), correccionesTasa: [...previas, correccion].slice(-20) },
+      }).eq('id', r.cierre.id).eq('status', 'pagada').is('completada_at', null)
+      q = antes > 0 ? q.eq('rate_final', r.cierre.rate_final) : q.is('rate_final', null)
+      const { data: corregido, error } = await q.select('id')
+      if (error) return json(500, { ok: false, error: error.message })
+      if (!corregido?.length) return json(409, { ok: false, error: 'estado_invalido', message: 'El cierre cambió mientras tanto (otra corrección o ya se completó). Recarga.' })
+
+      const fmt = (v: number, d = 2) => v.toLocaleString('es-CO', { maximumFractionDigits: d })
+      const dec = r.cierre.to_currency === 'COP' ? 0 : 2
+      await escribirMensaje(r.cierre.id, 'sistema',
+        `La mesa corrigió la tasa de este cierre: ${antes > 0 ? `antes ${fmt(antes)}, ` : ''}ahora ${fmt(rate)}. `
+        + `Recibes ${fmt(to, dec)} ${r.cierre.to_currency} por ${fmt(monto)} ${r.cierre.from_currency}`
+        + `${Number.isFinite(toAntes) && toAntes > 0 ? ` (antes ${fmt(toAntes, dec)})` : ''}. Motivo: ${motivo.slice(0, 500)}`)
+      try {
+        await db.from('audit_log').insert({ user_id: caller.userId ?? null, action: 'otc_manual.corregir_tasa', metadata: { cierre: r.cierre.ref, cliente: r.cierre.user_id, ...correccion } })
+      } catch { /* la auditoría no frena */ }
+      return json(200, { ok: true, toAmount: to, rateFinal: rate })
     }
 
     // ── Subir comprobante (paso propio, antes de marcar pagado) ──

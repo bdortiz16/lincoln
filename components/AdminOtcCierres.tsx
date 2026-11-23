@@ -805,6 +805,10 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     // antes del 23 nov no la tienen y no suman a la caja de Lincoin).
     const [ventaEdit, setVentaEdit] = useState<null | string>(null);
     const [tasaAbierta, setTasaAbierta] = useState(false);
+    // Corregir la tasa de un cierre que el cliente YA pagó ("Por verificar"):
+    // no reinicia el plazo y pide un motivo que el cliente ve en el chat.
+    const [corrAbierta, setCorrAbierta] = useState(false);
+    const [corrMotivo, setCorrMotivo] = useState('');
     const [subiendo, setSubiendo] = useState(false);
     const finRef = useRef<HTMLDivElement | null>(null);
     const fileRef = useRef<HTMLInputElement | null>(null);
@@ -960,7 +964,14 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
 
                     <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                            <KV label="Tasa final" valor={cierre.rate_final != null ? nf(cierre.rate_final) : 'sin fijar'} />
+                            {/* Si la mesa la corrigió después de que el cliente pagó,
+                                se dice de cuál a cuál y quién: la última corrección. */}
+                            {(() => {
+                                const cs = Array.isArray(cierre.payout?.correccionesTasa) ? cierre.payout.correccionesTasa : [];
+                                const u = cs[cs.length - 1];
+                                return <KV label="Tasa final" valor={cierre.rate_final != null ? nf(cierre.rate_final) : 'sin fijar'}
+                                    pie={u ? `corregida${u.de != null ? ` de ${nf(u.de)}` : ''}${u.por ? ` por ${u.por}` : ''}${cs.length > 1 ? ` · ${cs.length} correcciones` : ''}` : undefined} />;
+                            })()}
                             <KV label="Tasa que vio el cliente" valor={cierre.rate_cotizada != null ? nf(cierre.rate_cotizada) : 'no se pudo cotizar'} pie={cierre.rate_fuente ?? undefined} />
                             <KV label="Solicitado" valor={fecha(cierre.created_at)} pie={espera(cierre.created_at)} />
                             {/* Lo que dejó el cierre, con la tasa que la mesa
@@ -1244,6 +1255,68 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                     )}
                                 </div>
                             )}
+
+                            {/* El cliente ya marcó el pago: la tasa se corrige sin
+                                devolverlo a "esperando pago" ni abrirle otro plazo
+                                (23 nov). Completar acredita con la tasa corregida. */}
+                            {cierre.status === 'pagada' && !cierre.completada_at && (() => {
+                                const n = leerTasa(tasaInput);
+                                const monto = Number(cierre.from_amount);
+                                const dec = cierre.to_currency === 'COP' ? 0 : 2;
+                                // Redondeado hacia abajo, como lo hace el servidor (redondearRecibe).
+                                const f = dec === 0 ? 1 : 100;
+                                const nuevo = n > 0 && monto > 0 ? Math.floor((cierre.side === 'vende_usdt' ? monto * n : monto / n) * f + 1e-6) / f : null;
+                                const igual = n > 0 && Number(cierre.rate_final) > 0 && Math.abs(n - Number(cierre.rate_final)) < 1e-9;
+                                return (
+                                    <div style={{ padding: '10px 16px 0' }}>
+                                        <button onClick={() => setCorrAbierta(v => !v)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color: VERDE, background: 'transparent', border: 'none', padding: 0 }}>
+                                            Corregir la tasa del cliente
+                                            {corrAbierta ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                        </button>
+                                        {corrAbierta && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                                                <input
+                                                    value={tasaInput}
+                                                    onChange={e => setTasaInput(e.target.value)}
+                                                    inputMode="decimal"
+                                                    placeholder="Tasa corregida"
+                                                    style={{ ...INPUT, fontFamily: 'ui-monospace, monospace' }}
+                                                />
+                                                {nuevo != null && !igual && (
+                                                    <p style={{ fontSize: 12, color: TXT2, lineHeight: 1.5 }}>
+                                                        Recibirá <b style={{ color: TXT }}>{nuevo.toLocaleString('es-CO', { maximumFractionDigits: dec })} {cierre.to_currency}</b>
+                                                        {Number(cierre.to_amount) > 0 && <> en vez de {Number(cierre.to_amount).toLocaleString('es-CO', { maximumFractionDigits: dec })}</>}.
+                                                    </p>
+                                                )}
+                                                <textarea
+                                                    value={corrMotivo}
+                                                    onChange={e => setCorrMotivo(e.target.value)}
+                                                    rows={2}
+                                                    placeholder="Motivo de la corrección (el cliente lo ve en el chat)"
+                                                    style={{ ...INPUT, fontSize: 12.5, resize: 'vertical' }}
+                                                />
+                                                <button
+                                                    onClick={async () => {
+                                                        if (!(n > 0)) { setAviso('Escribe la tasa corregida.'); return; }
+                                                        if (igual) { setAviso('Es la misma tasa que ya tiene el cierre.'); return; }
+                                                        if (corrMotivo.trim().length < 5) { setAviso('Escribe el motivo de la corrección: el cliente lo ve en el chat.'); return; }
+                                                        if (await hacer('corregir_tasa', { rateFinal: n, motivo: corrMotivo.trim() })) { setCorrMotivo(''); setCorrAbierta(false); }
+                                                    }}
+                                                    disabled={ocupado}
+                                                    className="transition-colors hover:bg-white/[0.1]"
+                                                    style={{ alignSelf: 'flex-start', padding: '9px 15px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: TXT, background: 'rgba(255,255,255,0.07)', border: `1px solid ${BORDE2}`, opacity: ocupado ? 0.5 : 1 }}
+                                                >
+                                                    Corregir tasa
+                                                </button>
+                                                <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5 }}>
+                                                    No le abre otro plazo: el cierre sigue por verificar. Al completar se le acredita con esta tasa.
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })()}
 
                             <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                                 {cierre.status === 'pagada' && (
