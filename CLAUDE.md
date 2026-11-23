@@ -88,7 +88,7 @@ Desde el 1 nov 2026 Lincoin es una **pasarela de pagos para empresas en Colombia
 - La página pública **no muestra tarifas**: cada operación muestra su tarifa antes de confirmarla, dentro de la app.
 - **No somos banco** y **no tenemos licencia ni registro regulatorio.** Nunca afirmar que estamos regulados, licenciados, vigilados o auditados por un regulador. Sí se puede decir que Lincoin implementa su SARLAFT (prevención de LA/FT) y verifica a cada empresa (KYB).
 - La confianza se comunica vía los rieles (Bre-B, ACH) y "aliados de infraestructura de pagos", **sin nombrarlos**: el cliente nunca ve Mouv, Finity, Coinsenda, Gowd, Kamin, TusDatos, Siigo ni otro aliado. En el admin sí.
-  - **Excepción (23 nov 2026, decisión del dueño):** el **Reporte AML** (`components/KytReporte.tsx`) nombra a **MistTrack (SlowMist)** como proveedor del análisis on-chain, porque ese reporte se presenta ante bancos y autoridades y su respaldo es el reporte original de MistTrack archivado con su huella. Solo texto, sin su logo. La excepción es solo para MistTrack y solo en ese reporte.
+  - **Excepción (23 nov 2026, decisión del dueño):** el **Reporte AML** (`components/KytReporte.tsx`) nombra a **MistTrack (SlowMist)** como proveedor del análisis on-chain, porque ese reporte se presenta ante bancos y autoridades y su respaldo es el reporte original de MistTrack archivado con su huella. Lleva su logo (`public/aliados/misttrack.png`, el archivo que entregó el dueño, solo con el fondo quitado: no se redibuja ni se altera). La excepción es solo para MistTrack y solo en ese reporte.
 - La marca se llama **Lincoin** — nunca Cuy Pay, Alza ni otra.
 
 ## Desarrollo

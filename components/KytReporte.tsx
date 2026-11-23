@@ -261,18 +261,24 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 cliente (CLAUDE.md): este reporte se presenta ante bancos,
                 autoridades e investigaciones, y su respaldo es justamente que
                 el análisis es de MistTrack y que el reporte original de
-                MistTrack está archivado con su huella. Solo texto: sin su
-                logo, que no tenemos autorizado. La descripción es la que
+                MistTrack está archivado con su huella. El logo es el archivo
+                que entregó el dueño (23 nov), con el fondo quitado para que
+                no se vea un recuadro gris sobre la hoja; vive en
+                public/aliados y no se redibuja ni se altera. La descripción es la que
                 MistTrack da de sí mismo en su documentación ("anti-money
                 laundering tracking system … built by SlowMist"). */}
-            <div style={{ display: 'inline-block', textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
-              <p style={{ fontSize: 7.5, fontWeight: 700, color: T.suave, margin: 0, letterSpacing: '0.6px' }}>ANÁLISIS ON-CHAIN PROVISTO POR</p>
-              <p style={{ fontSize: 13, fontWeight: 800, margin: '2px 0 0', lineHeight: 1.2 }}>
-                MistTrack <span style={{ fontSize: 9, fontWeight: 600, color: T.suave }}>· de SlowMist</span>
-              </p>
-              <p style={{ fontSize: 8.5, color: T.suave, margin: '2px 0 0' }}>
-                Sistema de rastreo antilavado (AML) de criptoactivos · misttrack.io
-              </p>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
+              <img src="/aliados/misttrack.png" alt="MistTrack" width={32} height={32}
+                style={{ width: 32, height: 32, flexShrink: 0, display: 'block' }} />
+              <div>
+                <p style={{ fontSize: 7.5, fontWeight: 700, color: T.suave, margin: 0, letterSpacing: '0.6px' }}>ANÁLISIS ON-CHAIN PROVISTO POR</p>
+                <p style={{ fontSize: 13, fontWeight: 800, margin: '2px 0 0', lineHeight: 1.2 }}>
+                  MistTrack <span style={{ fontSize: 9, fontWeight: 600, color: T.suave }}>· de SlowMist</span>
+                </p>
+                <p style={{ fontSize: 8.5, color: T.suave, margin: '2px 0 0' }}>
+                  Sistema de rastreo antilavado (AML) de criptoactivos · misttrack.io
+                </p>
+              </div>
             </div>
             <p style={{ fontSize: 9.5, color: T.suave, margin: 0 }}>Generado el {fecha(d.generadoAt)} (hora de Colombia)</p>
             <p style={{ fontSize: 9, color: T.tenue, margin: '2px 0 0' }}>{d.generadoAt ? `${new Date(d.generadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC` : ''}</p>
