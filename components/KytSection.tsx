@@ -451,7 +451,9 @@ const ResultadoSarblock: React.FC<{
 type Res = any;
 type Fila = any;
 
-export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
+// `volverA`: a dónde lleva la flecha. Se entra desde Servicios y, desde el
+// 23 nov, desde Lincoin Risk (la ventana que pregunta AML o KYT).
+export const KytSection: React.FC<{ onBack?: () => void; volverA?: string }> = ({ onBack, volverA = 'Servicios' }) => {
   const [coin, setCoin] = useState('TRX');
   // Las redes las manda el proveedor (/v1/status). Si no contesta, el servidor
   // devuelve la lista conocida: un selector vacío deja la pantalla inservible.
@@ -595,7 +597,7 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
           <button onClick={onBack} className="transition-colors hover:text-[#F4F4F2]"
             style={{ fontSize: 13.5, fontWeight: 600, color: C.sub, background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
             onFocus={e => { e.currentTarget.style.boxShadow = ANILLO; }} onBlur={e => { e.currentTarget.style.boxShadow = 'none'; }}>
-            <ArrowLeft size={16} strokeWidth={1.6} /> Servicios
+            <ArrowLeft size={16} strokeWidth={1.6} /> {volverA}
           </button>
         )}
         <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px', margin: 0 }}>Verificación de direcciones (KYT)</h1>

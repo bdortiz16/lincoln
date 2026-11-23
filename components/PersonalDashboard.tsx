@@ -87,7 +87,7 @@ import { ClientesSection } from './ClientesSection';
 import { EnviarDineroModal, EnviarHandle, EnviarPrefill, prefillDeContacto } from './EnviarDineroModal';
 import { WalletsGasfreeSection } from './WalletsGasfreeSection';
 import { KytSection } from './KytSection';
-import { LincoinRisk } from './LincoinRisk';
+import { RiskEntrada } from './risk/RiskEntrada';
 import { OtcManual } from './OtcManual';
 import { CodeInput } from './CodeInput';
 import { ServiciosSection } from './ServiciosSection';
@@ -4816,7 +4816,8 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
           {activeView === 'settings' && renderSettings()}
       {activeView === 'servicios' && renderServicios()}
       {activeView === 'kyt' && <KytSection onBack={() => setActiveView('servicios')} />}
-      {activeView === 'risk' && <LincoinRisk />}
+      {/* Lincoin Risk pregunta primero AML o KYT (ventana de RiskEntrada). */}
+      {activeView === 'risk' && <RiskEntrada onSalir={() => setActiveView('dashboard')} />}
       {activeView === 'walletsGasfree' && currentUser?.id && (
           <WalletsGasfreeSection
               userId={currentUser.id}
