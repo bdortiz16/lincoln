@@ -276,15 +276,23 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 laundering tracking system … built by SlowMist"). */}
             {esSb ? (
               // SARBLOCK (decisión del dueño, 23 nov: nombrarlo, como a
-              // MistTrack). Sin logo hasta que el dueño entregue el archivo.
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
-                <div>
-                  <p style={{ fontSize: 7.5, fontWeight: 700, color: T.suave, margin: 0, letterSpacing: '0.6px' }}>ANÁLISIS ON-CHAIN PROVISTO POR</p>
-                  <p style={{ fontSize: 13, fontWeight: 800, margin: '2px 0 0', lineHeight: 1.2, letterSpacing: '0.4px' }}>SARBLOCK</p>
-                  <p style={{ fontSize: 8.5, color: T.suave, margin: '2px 0 0' }}>
-                    Análisis de riesgo de wallets · sarblock.com
-                  </p>
+              // MistTrack). El logo es el archivo que entregó el dueño (23
+              // nov), tal cual: ya venía sin fondo. Sus letras son BLANCAS
+              // (está hecho para fondo oscuro) y sobre la hoja blanca no se
+              // verían; recolorearlas sería alterar el logo, así que va sobre
+              // un recuadro oscuro que es su contenedor, no parte del logo.
+              // index.css imprime los fondos (print-color-adjust: exact), y el
+              // color claro del recuadro deja leer el texto alternativo si la
+              // imagen no carga.
+              <div style={{ display: 'inline-block', textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
+                <p style={{ fontSize: 7.5, fontWeight: 700, color: T.suave, margin: 0, letterSpacing: '0.6px' }}>ANÁLISIS ON-CHAIN PROVISTO POR</p>
+                <div style={{ display: 'inline-block', background: '#141615', color: '#F4F4F2', padding: '6px 9px', margin: '4px 0 0', lineHeight: 0 }}>
+                  <img src="/aliados/sarblock.png" alt="SARBLOCK" width={140} height={18}
+                    style={{ width: 140, height: 'auto', display: 'block', fontSize: 11, fontWeight: 800, lineHeight: 1.2 }} />
                 </div>
+                <p style={{ fontSize: 8.5, color: T.suave, margin: '4px 0 0' }}>
+                  Análisis de riesgo de wallets · sarblock.com
+                </p>
               </div>
             ) : (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
