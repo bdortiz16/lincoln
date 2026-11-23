@@ -162,6 +162,15 @@ const ProveedorWallets: React.FC<{ estado: any; onGuardado: (c: any) => void }> 
   const actual: 'sarblock' | 'misttrack' = estado?.config?.proveedorWallets === 'misttrack' ? 'misttrack' : 'sarblock';
   const [ocupado, setOcupado] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
+  const [prueba, setPrueba] = useState<any>(null);
+  const [probando, setProbando] = useState(false);
+  const probar = async () => {
+    setProbando(true);
+    const r = await llamarFuncion('kyt', { action: 'sarblock_probar' }, 30000).catch(() => null);
+    setProbando(false);
+    setPrueba(r ?? { ok: false, mensaje: 'Sin respuesta del servidor.' });
+  };
+  const fallo = prueba?.ultimoFallo ?? estado?.ultimoFalloSarblock ?? null;
   const cambiar = async (v: 'sarblock' | 'misttrack') => {
     if (v === actual) return;
     if (v === 'misttrack' && !window.confirm('Con MistTrack cada consulta cuesta varias llamadas pagadas. ¿Pasar EVM y TRON a MistTrack?')) return;
@@ -198,6 +207,36 @@ const ProveedorWallets: React.FC<{ estado: any; onGuardado: (c: any) => void }> 
       <p style={{ fontSize: 11, color: C.tenue, marginTop: 8, lineHeight: 1.5 }}>
         La llave de Sarblock necesita los permisos wallets:analyze y wallets:read (se dan en Sarblock).
       </p>
+      {/* Por qué falló la última consulta: sin esto el cliente ve "no
+          habilitado" y acá no había forma de saber si era la llave, los
+          créditos o el límite por minuto. */}
+      {fallo && (
+        <p style={{ fontSize: 12, color: C.rojo, marginTop: 8, lineHeight: 1.5 }}>
+          Última falla de Sarblock ({fechaHora(fallo.at)}): {fallo.mensaje ?? fallo.codigo ?? 'sin detalle'}
+        </p>
+      )}
+      <div className="flex items-center flex-wrap" style={{ gap: 10, marginTop: 10 }}>
+        <button onClick={probar} disabled={probando || !estado?.sarblockListo} style={{ ...BTN2, opacity: probando || !estado?.sarblockListo ? 0.5 : 1 }}>
+          {probando ? 'Probando…' : 'Probar Sarblock'}
+        </button>
+        <span style={{ fontSize: 11, color: C.tenue }}>Revisa la llave y los créditos sin pagar un análisis.</span>
+      </div>
+      {prueba && (
+        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.6 }}>
+          {!prueba.ok ? <p style={{ color: C.rojo }}>{prueba.mensaje ?? 'No se pudo probar.'}</p> : (
+            <>
+              <p style={{ color: prueba.lectura?.ok ? C.verde : C.rojo }}>{prueba.lectura?.ok ? '✓ ' : '✗ '}{prueba.lectura?.mensaje}</p>
+              <p style={{ color: prueba.analizar === true ? C.verde : prueba.analizar === false ? C.rojo : C.sub }}>
+                {prueba.analizar === true ? '✓ La llave tiene wallets:analyze.'
+                  : prueba.analizar === false ? '✗ La llave NO tiene wallets:analyze: dáselo en Sarblock (o crea una llave con screening y wallets) y actualiza SARBLOCK_ORG_API_KEY.'
+                  : 'Sarblock no informa los permisos de la llave: wallets:analyze solo se confirma con una consulta.'}
+              </p>
+              {Array.isArray(prueba.permisos) && <p style={{ color: C.sub, fontFamily: 'ui-monospace, monospace', fontSize: 11, wordBreak: 'break-word' }}>Permisos: {prueba.permisos.join(', ') || 'ninguno'}</p>}
+              {prueba.creditos != null && <p style={{ color: C.sub }}>Créditos disponibles: {prueba.creditos}</p>}
+            </>
+          )}
+        </div>
+      )}
       {msg && <p style={{ fontSize: 12, color: msg.ok ? C.verde : C.rojo, marginTop: 8 }}>{msg.t}</p>}
     </div>
   );

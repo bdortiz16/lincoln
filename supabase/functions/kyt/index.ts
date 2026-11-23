@@ -1034,6 +1034,18 @@ async function anotarPagadas(userId: string | null, n: number, metadata: Record<
 }
 const msgTopeKyt = (c: any) => `Llegaste al tope de ${c.topeDiarioPorCliente} consultas por día.`
 
+// La última vez que Sarblock no respondió un análisis (últimos 7 días), con
+// el motivo: el panel la muestra para no tener que buscarla en audit_log.
+async function ultimoFalloSarblock(): Promise<{ at: string; codigo: string | null; mensaje: string | null } | null> {
+  try {
+    const { data } = await db.from('audit_log').select('created_at, metadata')
+      .eq('action', 'kyt.sarblock_fallo').gte('created_at', new Date(Date.now() - 7 * 86400_000).toISOString())
+      .order('created_at', { ascending: false }).limit(1)
+    const x = (data ?? [])[0] as any
+    return x ? { at: x.created_at, codigo: x.metadata?.codigo ?? null, mensaje: x.metadata?.mensaje ?? null } : null
+  } catch { return null }
+}
+
 // ── Qué proveedor consulta cada red ───────────────────────────────
 // Sarblock para lo que analiza (EVM y TRON), si hay llave y el panel no lo
 // volvió a MistTrack; todo lo demás, MistTrack. La ficha guarda quién la
@@ -1566,7 +1578,7 @@ Deno.serve(async (req) => {
     if (accion === 'config_get') {
       { const no = soloAdmin(yo); if (no) return no }
       // Se dice SI hay credencial y si la puso el panel, nunca cuál.
-      return json({ ok: true, config: c, credencial: !!MT_KEY, desdePanel: llaveDesdePanel, respaldo: !!MT_KEY_ENV, llaveIlegible, sarblockListo: !!SB_KEY })
+      return json({ ok: true, config: c, credencial: !!MT_KEY, desdePanel: llaveDesdePanel, respaldo: !!MT_KEY_ENV, llaveIlegible, sarblockListo: !!SB_KEY, ultimoFalloSarblock: await ultimoFalloSarblock() })
     }
 
     // ── La llave de MistTrack, desde el panel ─────────────────────
@@ -1606,6 +1618,14 @@ Deno.serve(async (req) => {
       { const no = soloAdmin(yo); if (no) return no }
       const prueba = await llamarMT(c, c.rutaEstado, {})
       return json({ ok: prueba.ok, status: prueba.status, credencial: !!MT_KEY, mensaje: prueba.ok ? 'MistTrack respondió bien.' : (prueba.error === 'sin_credencial' ? 'No hay llave configurada.' : `MistTrack respondió HTTP ${prueba.status}${motivoProveedor(prueba.data) ? `: ${motivoProveedor(prueba.data)}` : ''}.`) })
+    }
+    // Sarblock: qué permisos tiene la llave y cuántos créditos quedan, sin
+    // pagar un análisis (ver SB.probarLlave).
+    if (accion === 'sarblock_probar') {
+      { const no = soloAdmin(yo); if (no) return no }
+      if (!SB_KEY) return json({ ok: false, listo: false, mensaje: 'Falta SARBLOCK_ORG_API_KEY en los secrets de Supabase.' })
+      const p = await SB.probarLlave(fetch, SB_KEY)
+      return json({ ok: true, listo: true, ...p, ultimoFallo: await ultimoFalloSarblock() })
     }
     if (accion === 'config_set') {
       { const no = soloAdmin(yo); if (no) return no }

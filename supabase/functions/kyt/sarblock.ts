@@ -209,3 +209,44 @@ export function claveAnalisis(coin: string, address: string, force = false, ahor
   const base = `kyt-${String(coin).toUpperCase()}-${String(address).trim().toLowerCase()}-${ahora.toISOString().slice(0, 10)}`
   return force ? `${base}-f${ahora.getTime()}` : base
 }
+
+// ── Probar la llave sin gastar créditos ───────────────────────────
+// 23 nov: la primera consulta real dio "no habilitado" (401/403): la llave
+// sirve para el screening de beneficiarios pero no tenía permiso de wallets.
+// Esto lo dice desde el panel sin pagar un análisis:
+//   · GET /wallets?limit=1 → si hay permiso de lectura (wallets:read). Gratis.
+//   · GET /me              → los permisos de la llave, si los informa.
+//   · GET /usage           → los créditos que quedan, si los informa.
+// wallets:analyze no se puede probar sin cobrar un análisis: se lee de /me.
+export async function probarLlave(f: Fetch, key: string): Promise<{
+  lectura: { ok: boolean; status: number; tipo: string | null; mensaje: string }
+  permisos: string[] | null
+  analizar: boolean | null
+  creditos: number | null
+}> {
+  let lectura: { ok: boolean; status: number; tipo: string | null; mensaje: string }
+  try {
+    await llamar(f, key, 'GET', '/wallets?limit=1')
+    lectura = { ok: true, status: 200, tipo: null, mensaje: 'La llave puede leer wallets (wallets:read).' }
+  } catch (e) {
+    const x = e as ErrorSarblock
+    lectura = { ok: false, status: x?.status ?? 0, tipo: x?.tipo ?? null, mensaje: motivoSarblock(e).mensaje }
+  }
+  let permisos: string[] | null = null
+  try {
+    const { datos } = await llamar(f, key, 'GET', '/me')
+    // La forma de /me no está en la página de wallets: se buscan los nombres
+    // que suelen traer los permisos, sin suponer uno.
+    const cand = [datos?.permissions, datos?.scopes, datos?.key?.permissions, datos?.key?.scopes, datos?.apiKey?.permissions, datos?.apiKey?.scopes]
+    const lista = cand.find(v => Array.isArray(v))
+    if (lista) permisos = (lista as any[]).map(v => String(typeof v === 'string' ? v : (v?.name ?? v?.scope ?? JSON.stringify(v))))
+  } catch { /* sin /me: se dice "no se sabe" */ }
+  let creditos: number | null = null
+  try {
+    const { datos } = await llamar(f, key, 'GET', '/usage')
+    const n = Number(datos?.wallets?.totalRemaining ?? datos?.screening?.totalRemaining ?? datos?.credits?.totalRemaining)
+    creditos = Number.isFinite(n) ? n : null
+  } catch { /* sin /usage */ }
+  const analizar = permisos ? permisos.some(p => /wallets:analy[sz]e|wallets:\*|^\*$/i.test(p)) : null
+  return { lectura, permisos, analizar, creditos }
+}
