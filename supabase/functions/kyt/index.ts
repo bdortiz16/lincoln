@@ -1053,7 +1053,12 @@ async function ultimoFalloSarblock(): Promise<{ at: string; codigo: string | nul
 // como de MistTrack aunque hoy esa red la consulte Sarblock.
 function usaSarblock(c: Config, coin: string): boolean {
   return !!SB_KEY && c.proveedorWallets !== 'misttrack' && !!SB.redSarblock(coin)
+    && Date.now() >= sarblockPausadoHasta
 }
+// Si Sarblock rechaza la llave o no tiene créditos, cada consulta volvería a
+// chocar con lo mismo (y a dejar una fila en audit_log). Se lo deja de
+// llamar 5 minutos en esta instancia; mientras, responde MistTrack.
+let sarblockPausadoHasta = 0
 const proveedorDe = (ficha: any): 'sarblock' | 'misttrack' =>
   ficha?.respuesta_cruda?.proveedor === 'sarblock' ? 'sarblock' : 'misttrack'
 const sarblockDe = (ficha: any): SB.ResultadoSarblock | null =>
@@ -1091,6 +1096,7 @@ async function evaluarConSarblock(
     // se toca. Marcarla "sin resultado" borraría un análisis anterior que sí
     // vale, y el cliente leería un problema de la wallet donde no lo hay.
     await logAuditKyt(quien.userId, 'kyt.sarblock_fallo', { coin, addressLower: dir.toLowerCase(), codigo: m.codigo, mensaje: m.mensaje })
+    if (m.codigo === 'llave' || m.codigo === 'sin_creditos') sarblockPausadoHasta = Date.now() + 5 * 60_000
     return { ...vacio, error: m.codigo === 'llave' ? 'sin_credencial' : m.codigo, motivo: m.mensaje, crudo: m.mensaje }
   }
   // Solo un análisis nuevo se cobró: uno reutilizado (24 h, en curso o la
@@ -1174,7 +1180,20 @@ async function evaluarYGuardar(
   // EVM y TRON van a Sarblock (salvo que el panel lo haya vuelto a MistTrack
   // o quien llama pida MistTrack a propósito).
   if (opts.proveedor !== 'misttrack' && usaSarblock(c, coin)) {
-    return await evaluarConSarblock(c, coin, dir, quien, ficha, opts)
+    const sbr = await evaluarConSarblock(c, coin, dir, quien, ficha, opts)
+    // 22 nov, 10:29 p. m.: la primera consulta real con Sarblock le dijo al
+    // cliente "el servicio no está habilitado" porque la llave no tenía
+    // permiso de wallets. El cliente aprieta "Consultar" y tiene que recibir
+    // un resultado: si Sarblock falla por un problema del SERVICIO (llave,
+    // créditos, límite, red, análisis fallido) se consulta en el acto con
+    // MistTrack. Solo "en curso" se espera: ese análisis ya está pedido y
+    // pedirlo otra vez no cuesta. El motivo queda en audit_log
+    // (kyt.sarblock_fallo) y en el panel, junto a «Probar Sarblock».
+    if (!sbr.hay && sbr.error !== 'en_curso' && MT_KEY) {
+      const mt = await evaluarYGuardar(c, coin, dir, quien, ficha, { ...opts, proveedor: 'misttrack' })
+      return { ...mt, respaldoDeSarblock: sbr.motivo ?? sbr.error ?? null }
+    }
+    return sbr
   }
   const r = await llamarMT(c, c.rutaRiesgo, { coin, address: dir })
   const v = leerVeredicto(r.data)
@@ -1625,6 +1644,9 @@ Deno.serve(async (req) => {
       { const no = soloAdmin(yo); if (no) return no }
       if (!SB_KEY) return json({ ok: false, listo: false, mensaje: 'Falta SARBLOCK_ORG_API_KEY en los secrets de Supabase.' })
       const p = await SB.probarLlave(fetch, SB_KEY)
+      // Si la llave ya lee wallets, se vuelve a intentar Sarblock de una vez
+      // en vez de esperar los 5 minutos de pausa.
+      if (p.lectura.ok) sarblockPausadoHasta = 0
       return json({ ok: true, listo: true, ...p, ultimoFallo: await ultimoFalloSarblock() })
     }
     if (accion === 'config_set') {
@@ -1804,7 +1826,7 @@ Deno.serve(async (req) => {
         // pagó: queda registrado, pero no cuenta en el tope del cliente.
         await db.from('audit_log').insert({
           user_id: yo.userId, action: ev.proveedor === 'sarblock' && !ev.cobrado ? 'kyt.consulta_reutilizada' : 'kyt.consulta_pagada',
-          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa, proveedor: ev.proveedor ?? 'misttrack', analisisId: ev.sarblock?.analisisId ?? null },
+          metadata: { coin, address: dir, score: ev.score, level: ev.level, empresa: quien.empresa, proveedor: ev.proveedor ?? 'misttrack', analisisId: ev.sarblock?.analisisId ?? null, respaldoDeSarblock: ev.respaldoDeSarblock ?? null },
         })
       } catch { /* que no se pierda la consulta por no poder auditar */ }
 
