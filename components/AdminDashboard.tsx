@@ -104,7 +104,6 @@ import { AdminApiExterna } from './AdminApiExterna';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { AdminBancosAchMouv } from './AdminBancosAchMouv';
 import { AdminFinityInscripciones } from './AdminFinityInscripciones';
-import { AvisoVersionNueva } from './AvisoVersionNueva';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
@@ -6041,9 +6040,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         {/* La ventana del código 2FA que el servidor exige en las operaciones
             sensibles (lib/codigo2fa.ts). Una sola, para todo el panel. */}
         <PromptCodigo2fa />
-        {/* Una pestaña abierta desde antes de un despliegue muestra el panel
-            viejo sin decirlo (23 nov): se ofrece recargar. */}
-        <AvisoVersionNueva />
         {/* Correos que no están llegando. Va suelto y fijo arriba a la derecha
             porque el aviso tiene que verse desde CUALQUIER pestaña: quien no
             recibe el código no puede escribirnos para contarlo. */}
