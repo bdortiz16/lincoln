@@ -3,7 +3,7 @@
 // gastar créditos.
 //   ~/.deno/bin/deno test supabase/functions/kyt/sarblock.test.ts
 import { assert, assertEquals } from 'jsr:@std/assert@1';
-import { analizarYEsperar, leerResultado, motivoSarblock, claveAnalisis, redSarblock } from './sarblock.ts';
+import { analizarYEsperar, leerResultado, motivoSarblock, claveAnalisis, redSarblock, probarLlave } from './sarblock.ts';
 
 // Los casos fijos de docs.sarblock.com/reference/wallets (modo de pruebas).
 const CASOS: Record<string, any> = {
@@ -87,4 +87,47 @@ Deno.test('redes y clave de idempotencia', () => {
   const d = new Date('2026-11-23T10:00:00Z');
   assertEquals(claveAnalisis('TRX', 'TAbc', false, d), 'kyt-TRX-tabc-2026-11-23');
   assert(claveAnalisis('TRX', 'TAbc', true, d).startsWith('kyt-TRX-tabc-2026-11-23-f'));
+});
+
+// La llave del 22 nov: válida para screening, sin permiso de wallets. Formas
+// de la especificación de la Org API (ErrorResponse.details.requiredPermissions
+// en un 403; MeResponse.apiKey.scopes como objeto por familia).
+function llaveSinWallets() {
+  return async (url: string, _init?: RequestInit) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith('/me')) return new Response(JSON.stringify({
+      mode: 'live', organization: { id: 'o1', name: 'Lincoin', slug: 'lincoin' },
+      apiKey: { id: 'k1', prefix: 'sb_org_', start: 'sb_org_ab12', scopes: { screening: ['create', 'read'], customers: ['read', 'write'] } },
+    }), { status: 200 });
+    if (u.pathname.endsWith('/usage')) return new Response(JSON.stringify({ credits: { totalRemaining: 180 }, screening: { totalRemaining: 999 } }), { status: 200 });
+    return new Response(JSON.stringify({ statusCode: 403, type: 'ORG_API_FORBIDDEN', message: 'Missing permission', details: { requiredPermissions: ['wallets:analyze'] } }), { status: 403 });
+  };
+}
+
+Deno.test('403 sin permiso de wallets: la referencia dice qué permiso falta', async () => {
+  let ref = '', cod = '';
+  try { await analizarYEsperar(llaveSinWallets(), 'k', { address: dir(1), network: 'ETH', idempotencia: 'x' }, 25000, sinEspera); }
+  catch (e) { const m = motivoSarblock(e); ref = m.referencia ?? ''; cod = m.codigo; }
+  assertEquals(cod, 'llave');
+  assertEquals(ref, '403 · ORG_API_FORBIDDEN · falta wallets:analyze');
+});
+
+Deno.test('probar llave: lee scopes como objeto, créditos de credits, sin wallets', async () => {
+  const p = await probarLlave(llaveSinWallets(), 'k');
+  assertEquals(p.lectura.ok, false);
+  assertEquals(p.analizar, false);
+  assertEquals(p.permisos, ['screening:create', 'screening:read', 'customers:read', 'customers:write']);
+  assertEquals(p.creditos, 180);
+  assertEquals([p.modo, p.organizacion], ['live', 'Lincoin']);
+});
+
+Deno.test('probar llave: con wallets analyze y read', async () => {
+  const f = async (url: string) => {
+    const u = new URL(url);
+    if (u.pathname.endsWith('/me')) return new Response(JSON.stringify({ mode: 'live', organization: { name: 'Lincoin' }, apiKey: { prefix: 'sb_org_', start: 'sb_org_ab12', scopes: { wallets: ['analyze', 'read', 'link'] } } }), { status: 200 });
+    if (u.pathname.endsWith('/usage')) return new Response(JSON.stringify({ credits: { totalRemaining: 50 } }), { status: 200 });
+    return new Response(JSON.stringify({ data: [], meta: { total: 0, page: 1, limit: 1, totalPages: 0 } }), { status: 200 });
+  };
+  const p = await probarLlave(f, 'k');
+  assertEquals([p.lectura.ok, p.analizar, p.creditos], [true, true, 50]);
 });

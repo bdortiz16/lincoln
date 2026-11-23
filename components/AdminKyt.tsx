@@ -228,10 +228,16 @@ const ProveedorWallets: React.FC<{ estado: any; onGuardado: (c: any) => void }> 
               <p style={{ color: prueba.lectura?.ok ? C.verde : C.rojo }}>{prueba.lectura?.ok ? '✓ ' : '✗ '}{prueba.lectura?.mensaje}</p>
               <p style={{ color: prueba.analizar === true ? C.verde : prueba.analizar === false ? C.rojo : C.sub }}>
                 {prueba.analizar === true ? '✓ La llave tiene wallets:analyze.'
-                  : prueba.analizar === false ? '✗ La llave NO tiene wallets:analyze: dáselo en Sarblock (o crea una llave con screening y wallets) y actualiza SARBLOCK_ORG_API_KEY.'
+                  : prueba.analizar === false ? '✗ La llave NO tiene permiso para analizar wallets (wallets: analyze). Dáselo en Sarblock, o crea una llave con los permisos de screening y de wallets y reemplaza SARBLOCK_ORG_API_KEY en Supabase.'
                   : 'Sarblock no informa los permisos de la llave: wallets:analyze solo se confirma con una consulta.'}
               </p>
-              {Array.isArray(prueba.permisos) && <p style={{ color: C.sub, fontFamily: 'ui-monospace, monospace', fontSize: 11, wordBreak: 'break-word' }}>Permisos: {prueba.permisos.join(', ') || 'ninguno'}</p>}
+              {Array.isArray(prueba.permisos) && <p style={{ color: C.sub, fontFamily: 'ui-monospace, monospace', fontSize: 11, wordBreak: 'break-word' }}>Permisos de la llave: {prueba.permisos.join(', ') || 'ninguno'}</p>}
+              {(prueba.organizacion || prueba.llave || prueba.modo) && (
+                <p style={{ color: C.sub, fontSize: 11 }}>
+                  {prueba.organizacion ? `Organización ${prueba.organizacion}` : ''}{prueba.llave ? ` · llave ${prueba.llave}…` : ''}{prueba.modo ? ` · modo ${prueba.modo}` : ''}
+                  {prueba.modo === 'test' ? ' (de pruebas: no analiza wallets reales)' : ''}
+                </p>
+              )}
               {prueba.creditos != null && <p style={{ color: C.sub }}>Créditos disponibles: {prueba.creditos}</p>}
             </>
           )}

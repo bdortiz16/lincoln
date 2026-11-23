@@ -32,7 +32,15 @@ export class ErrorSarblock extends Error {
     public tipo: string,
     mensaje: string,
     public retryAfter: number | null = null,
+    // `details` del error: en un 403 trae requiredPermissions, el permiso
+    // que le falta a la llave (especificación de la Org API, 23 nov).
+    public detalle: any = null,
   ) { super(mensaje) }
+}
+// Los permisos que pide la ruta y la llave no tiene, de `details` de un 403.
+export const permisosFaltantes = (e: unknown): string[] => {
+  const d = (e as ErrorSarblock)?.detalle?.requiredPermissions
+  return Array.isArray(d) ? d.map((x: any) => String(x)) : (typeof d === 'string' ? [d] : [])
 }
 
 // ── Redes ─────────────────────────────────────────────────────────
@@ -78,6 +86,7 @@ async function llamar(
       String(datos?.type ?? `HTTP_${r.status}`),
       String(datos?.message ?? (texto.slice(0, 200) || `Sarblock respondió ${r.status}`)),
       Number.isFinite(ra) && ra > 0 ? ra : null,
+      datos?.details ?? null,
     )
   }
   return { datos, texto }
@@ -194,14 +203,22 @@ export function leerResultado(a: any): ResultadoSarblock | null {
 export function motivoSarblock(e: unknown): { codigo: string; mensaje: string; referencia: string | null } {
   const m = motivoBase(e)
   // La referencia es el estado y el tipo tal cual los devolvió (ej.
-  // "403 · FORBIDDEN"): sirve para saber por qué sin nombrar al proveedor.
-  const referencia = e instanceof ErrorSarblock ? `${e.status || 'sin estado'} · ${e.tipo}` : 'sin respuesta'
+  // "403 · FORBIDDEN"), y en un 403 el permiso que falta: sirve para saber
+  // por qué sin nombrar al proveedor.
+  const faltan = permisosFaltantes(e)
+  const referencia = e instanceof ErrorSarblock
+    ? `${e.status || 'sin estado'} · ${e.tipo}${faltan.length ? ` · falta ${faltan.join(', ')}` : ''}`
+    : 'sin respuesta'
   return { ...m, referencia }
 }
 function motivoBase(e: unknown): { codigo: string; mensaje: string } {
   if (e instanceof ErrorSarblock) {
     if (e.status === 402) return { codigo: 'sin_creditos', mensaje: 'Sarblock no tiene créditos de análisis disponibles (402).' }
-    if (e.status === 401 || e.status === 403) return { codigo: 'llave', mensaje: `La llave de Sarblock no está autorizada para analizar wallets (${e.status}): revisa que tenga los permisos wallets:analyze y wallets:read.` }
+    if (e.status === 401) return { codigo: 'llave', mensaje: 'Sarblock no reconoce la llave (401): revisa que SARBLOCK_ORG_API_KEY sea la llave vigente de producción.' }
+    if (e.status === 403) {
+      const faltan = permisosFaltantes(e)
+      return { codigo: 'llave', mensaje: `La llave de Sarblock es válida pero no tiene permiso para esta ruta (403)${faltan.length ? `: le falta ${faltan.join(', ')}` : ': revisa que tenga los permisos de wallets (analyze y read)'}.` }
+    }
     if (e.status === 429) return { codigo: 'limite', mensaje: 'Sarblock pidió esperar: se alcanzó el límite de consultas por minuto (429).' }
     if (e.status === 400) return { codigo: 'rechazada', mensaje: `Sarblock rechazó la dirección: ${e.message}` }
     return { codigo: 'error', mensaje: `Sarblock respondió ${e.status || 'sin estado'}: ${e.message}` }
@@ -220,40 +237,55 @@ export function claveAnalisis(coin: string, address: string, force = false, ahor
 // ── Probar la llave sin gastar créditos ───────────────────────────
 // 23 nov: la primera consulta real dio "no habilitado" (401/403): la llave
 // sirve para el screening de beneficiarios pero no tenía permiso de wallets.
-// Esto lo dice desde el panel sin pagar un análisis:
-//   · GET /wallets?limit=1 → si hay permiso de lectura (wallets:read). Gratis.
-//   · GET /me              → los permisos de la llave, si los informa.
-//   · GET /usage           → los créditos que quedan, si los informa.
-// wallets:analyze no se puede probar sin cobrar un análisis: se lee de /me.
+// Esto lo dice desde el panel sin pagar un análisis. Según la especificación
+// de la Org API:
+//   · GET /me    → { mode: live|test, organization, apiKey: { prefix, start,
+//                    scopes } }, con scopes como OBJETO por familia, p. ej.
+//                    { "customers": ["read"], "wallets": ["analyze","read"] }.
+//   · GET /wallets?limit=1 → prueba la lectura de wallets. Gratis.
+//   · GET /usage → credits.totalRemaining (el bloque screening es obsoleto).
 export async function probarLlave(f: Fetch, key: string): Promise<{
   lectura: { ok: boolean; status: number; tipo: string | null; mensaje: string }
   permisos: string[] | null
   analizar: boolean | null
   creditos: number | null
+  modo: string | null
+  organizacion: string | null
+  llave: string | null
 }> {
   let lectura: { ok: boolean; status: number; tipo: string | null; mensaje: string }
   try {
     await llamar(f, key, 'GET', '/wallets?limit=1')
-    lectura = { ok: true, status: 200, tipo: null, mensaje: 'La llave puede leer wallets (wallets:read).' }
+    lectura = { ok: true, status: 200, tipo: null, mensaje: 'La llave puede leer wallets (wallets: read).' }
   } catch (e) {
     const x = e as ErrorSarblock
     lectura = { ok: false, status: x?.status ?? 0, tipo: x?.tipo ?? null, mensaje: motivoSarblock(e).mensaje }
   }
   let permisos: string[] | null = null
+  let analizar: boolean | null = null
+  let modo: string | null = null, organizacion: string | null = null, llave: string | null = null
   try {
     const { datos } = await llamar(f, key, 'GET', '/me')
-    // La forma de /me no está en la página de wallets: se buscan los nombres
-    // que suelen traer los permisos, sin suponer uno.
-    const cand = [datos?.permissions, datos?.scopes, datos?.key?.permissions, datos?.key?.scopes, datos?.apiKey?.permissions, datos?.apiKey?.scopes]
-    const lista = cand.find(v => Array.isArray(v))
-    if (lista) permisos = (lista as any[]).map(v => String(typeof v === 'string' ? v : (v?.name ?? v?.scope ?? JSON.stringify(v))))
+    modo = typeof datos?.mode === 'string' ? datos.mode : null
+    organizacion = datos?.organization?.name ?? datos?.organization?.slug ?? null
+    llave = [datos?.apiKey?.prefix, datos?.apiKey?.start].filter(Boolean).join(' ') || null
+    const sc = datos?.apiKey?.scopes
+    if (sc && typeof sc === 'object' && !Array.isArray(sc)) {
+      permisos = Object.entries(sc).flatMap(([fam, acc]) =>
+        (Array.isArray(acc) ? acc : [acc]).map(a => `${fam}:${String(a)}`))
+      const w = (sc as any).wallets ?? (sc as any)['*']
+      const accs = (Array.isArray(w) ? w : (w ? [w] : [])).map((x: any) => String(x).toLowerCase())
+      analizar = accs.includes('analyze') || accs.includes('*')
+    } else if (Array.isArray(sc)) {
+      permisos = sc.map((x: any) => String(x))
+      analizar = permisos.some(p => /wallets:(analy[sz]e|\*)/i.test(p))
+    }
   } catch { /* sin /me: se dice "no se sabe" */ }
   let creditos: number | null = null
   try {
     const { datos } = await llamar(f, key, 'GET', '/usage')
-    const n = Number(datos?.wallets?.totalRemaining ?? datos?.screening?.totalRemaining ?? datos?.credits?.totalRemaining)
+    const n = Number(datos?.credits?.totalRemaining ?? datos?.screening?.totalRemaining)
     creditos = Number.isFinite(n) ? n : null
   } catch { /* sin /usage */ }
-  const analizar = permisos ? permisos.some(p => /wallets:analy[sz]e|wallets:\*|^\*$/i.test(p)) : null
-  return { lectura, permisos, analizar, creditos }
+  return { lectura, permisos, analizar, creditos, modo, organizacion, llave }
 }
