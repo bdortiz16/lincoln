@@ -537,8 +537,21 @@ export const EnviarDineroModal = forwardRef<EnviarHandle, Props>(function Enviar
       }
       const benefs: Record<string, any> = amlSrv ?? ((currentUser as any)?.raw_data?.tusdatos?.beneficiarios) ?? {};
       const doc = String(c?.docNumber ?? '').replace(/\D/g, '');
-      // Un NIT: la ficha está por los 9 dígitos base (ver ContactsSection).
-      const k = doc ? (benefs[doc] ?? (esNitEmpresa(doc) ? benefs[nitSinDv(doc)] : null)) : null;
+      // Un NIT puede tener dos fichas: con DV (la de la época de TusDatos,
+      // hoy casi siempre archivada) y la base (la de Sarblock). Manda la
+      // vigente y, si las dos lo están, la más reciente: la misma regla que
+      // Beneficiarios y el servidor. Esta ventana mandaba la del número
+      // exacto, y la ficha archivada con DV tapaba la nueva: Agroinsumos
+      // salía "Riesgo bajo" en Beneficiarios y aquí "Estamos verificando los
+      // antecedentes" (23 nov).
+      const k = (() => {
+          if (!doc) return null;
+          const a = benefs[doc];
+          const b = esNitEmpresa(doc) ? benefs[nitSinDv(doc)] : undefined;
+          const vig = (f: any) => !!f && String(f.estado ?? '') !== 'archivado';
+          if (vig(a) && vig(b)) return (Date.parse(String(b.at ?? '')) || 0) > (Date.parse(String(a.at ?? '')) || 0) ? b : a;
+          return vig(a) ? a : vig(b) ? b : null;
+      })();
       if (k) {
           if (k.estado !== 'finalizado') return 'Estamos verificando los antecedentes de este beneficiario. Suele tardar cerca de un minuto; inténtalo de nuevo en un momento.';
           if (k.aprobadoManual !== true && (k.operable === false || k.categoria === 'alto' || k.nombreCoincide === false || k.documentoVigente === false)) {
