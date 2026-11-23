@@ -1407,7 +1407,7 @@ type PrepCuenta3 = {
 // 'pending' y no mueve plata. Corre ANTES de debitar: si la llave no resuelve,
 // el banco no está en su catálogo o la billetera no alcanza, el envío no
 // arranca — sin débito, sin fila Fallido y sin devolución.
-async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 'BREB' | 'ACH', recipient: Record<string, any>, amount: number, nombresEsperados: string[]): Promise<PrepCuenta3> {
+async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 'BREB' | 'ACH', recipient: Record<string, any>, amount: number, nombresEsperados: string[], docEsperado = ''): Promise<PrepCuenta3> {
   const etiquetaRiel = rail === 'BREB' ? `Bre-B · ${nombreCuenta(cuenta)}` : `ACH · ${nombreCuenta(cuenta)}`
   const fallaProveedor = (st: number | null | undefined) => !st || st >= 500 || st === 401 || st === 403 || st === 408 || st === 429
   const noDisponible = `${etiquetaRiel} no está disponible en este momento, así que no salió nada. Envíalo por otra cuenta o inténtalo de nuevo en unos minutos.`
@@ -1443,6 +1443,18 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
       if (rr.nombre && titularEsOtro(rr.nombre, nombresEsperados)) {
         await logAudit(userId, 'coinsenda.prep_titular_otro', { cuenta, titular: rr.nombre, esperados: nombresEsperados.filter(Boolean).slice(0, 4) })
         return { ok: false, mensaje: `Esa llave Bre-B está a nombre de ${rr.nombre}, no del beneficiario que tienes inscrito. Corrige el beneficiario antes de enviar.` }
+      }
+      // Sin nombre del titular (llaves de empresa: el directorio responde "not
+      // provided"), Bre-B no se manda a ciegas: es inmediato y si la llave es
+      // de otro la plata no vuelve. Se valida por DOCUMENTO: si el directorio
+      // trae el del titular y es el del beneficiario, sale; si no, no. Al
+      // cliente solo se le dice que no salió; el detalle queda para el equipo.
+      if (!rr.nombre) {
+        const coincide = !!rr.documento && !!docEsperado && mismoDocTitular(rr.documento, docEsperado)
+        const respuesta = (() => { try { return JSON.stringify(rr.crudo ?? null).slice(0, 1500) } catch { return null } })()
+        await logAudit(userId, coincide ? 'coinsenda.prep_titular_por_documento' : 'coinsenda.prep_titular_sin_confirmar',
+          { cuenta, documentoLlave: rr.documento ?? null, docEsperado: docEsperado || null, respuesta })
+        if (!coincide) return { ok: false, mensaje: `No se pudo completar el envío por ${etiquetaRiel}, así que no salió nada.` }
       }
       const dd = await destinoBreb(cli, prov, alias, String(recipient.holderName ?? ''))
       if ('error' in dd) {
@@ -1794,6 +1806,16 @@ const RUIDO_NOMBRE = new Set(['SAS', 'LTDA', 'CIA', 'BIC', 'DEL', 'LAS', 'LOS', 
 function palabrasNombre(s: unknown): string[] {
   return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()
     .replace(/[^A-Z0-9Ñ ]/g, ' ').split(/\s+/).filter(t => t.length >= 3 && !RUIDO_NOMBRE.has(t))
+}
+// Mismo documento: iguales sin ceros a la izquierda, o un NIT con y sin su
+// dígito de verificación (uno es el otro más un dígito al final).
+function mismoDocTitular(x: unknown, y: unknown): boolean {
+  const dig = (v: unknown) => String(v ?? '').replace(/\D/g, '')
+  const a = dig(x).replace(/^0+/, ''), b = dig(y).replace(/^0+/, '')
+  if (!a || !b) return false
+  if (a === b) return true
+  const [largo, corto] = a.length > b.length ? [a, b] : [b, a]
+  return largo.length === corto.length + 1 && corto.length >= 8 && largo.startsWith(corto)
 }
 function titularEsOtro(titular: string, esperados: string[]): boolean {
   if (!titular || /\*/.test(titular)) return false
@@ -5680,7 +5702,7 @@ serve(async (req: Request) => {
     // Si algo no cuadra, el envío no arranca y no se descuenta nada.
     let prepC3: PrepCuenta3 | null = null
     if (porCoinsenda) {
-      prepC3 = await coinsendaPreparar(userId, cuentaCs!, rail, recipient, amount, [...nombresTitular])
+      prepC3 = await coinsendaPreparar(userId, cuentaCs!, rail, recipient, amount, [...nombresTitular], benefDocCupo)
       if (!prepC3.ok) {
         await logAudit(userId, `coinsenda.${action}.no_creada`, { cuenta: cuentaCs, amount, status: prepC3.status ?? null, mensaje: prepC3.mensaje ?? null })
         await soltarCandados()

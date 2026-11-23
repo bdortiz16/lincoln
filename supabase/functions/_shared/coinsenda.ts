@@ -373,6 +373,8 @@ export function aliasBreb(raw: string): string {
 }
 
 /** El titular de una llave según el directorio Bre-B de Coinsenda. */
+export const SIN_DATO = /^(not[\s_-]?provided|n\/?a|null|undefined|none|sin[\s_-]?(nombre|dato)|no[\s_-]?(aplica|disponible)|-+)$/i
+
 export async function resolverLlave(cli: ClienteCoinsenda, alias: string): Promise<{ encontrada: boolean; nombre?: string; documento?: string; error?: string; status: number; crudo?: any }> {
   const r = await cli.pedir('withdraw', 'POST', '/withdrawAccounts/resolve-breb-alias-public', { data: { alias } })
   const err = r.data?.error && typeof r.data.error === 'object' ? r.data.error : (r.data?.data?.error ?? null)
@@ -381,7 +383,13 @@ export async function resolverLlave(cli: ClienteCoinsenda, alias: string): Promi
     return { encontrada: false, status: r.status, error: describirFallo(r, 'consultar la llave Bre-B') }
   }
   const d = objetoDe(r) ?? {}
-  const nombre = [d.name ?? d.first_name ?? d.names, d.surname ?? d.last_name ?? d.surnames].map((x: unknown) => String(x ?? '').trim()).filter(Boolean).join(' ') || String(d.full_name ?? d.holder_name ?? '').trim()
+  // Con llaves de empresa el directorio llena nombre y apellido con "not
+  // provided" (23 nov: DAMACO S.A.S salió "a nombre de not provided not
+  // provided" y se bloqueó como si la llave fuera de otro). Eso es "sin
+  // nombre", no un nombre: se descarta y se prueban los campos de razón social.
+  const valido = (x: unknown) => { const t = String(x ?? '').trim(); return t && !SIN_DATO.test(t) ? t : '' }
+  const nombre = [d.name ?? d.first_name ?? d.names, d.surname ?? d.last_name ?? d.surnames].map(valido).filter(Boolean).join(' ')
+    || [d.full_name, d.holder_name, d.business_name, d.company_name, d.legal_name, d.razon_social].map(valido).find(Boolean) || ''
   const documento = String(d.id_number ?? d.document_number ?? d.document ?? d.nit ?? '').replace(/\D/g, '')
   return { encontrada: true, status: r.status, ...(nombre ? { nombre } : {}), ...(documento ? { documento } : {}), crudo: d }
 }
