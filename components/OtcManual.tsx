@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 import { llamarFuncion } from '../lib/edge';
+import { supabase } from '../lib/supabaseClient';
 import { hallazgosEnEspanol } from '../lib/kytTextos';
 import { nombreCuenta } from '../lib/nombreCuenta';
 import { Panel, Recarga, ESTILOS as ESTILOS_RISK } from './risk/RiskCliente';
@@ -30,34 +31,24 @@ import { direccionDeQr } from '../lib/direccionQr';
 //   empezar.
 // ─────────────────────────────────────────────
 
-const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
-
-function authHeader(): string {
-    try {
-        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
-        if (k) {
-            const d = JSON.parse(localStorage.getItem(k) || '{}');
-            if (d.access_token) return `Bearer ${d.access_token}`;
-        }
-    } catch { /* sin sesión supabase */ }
-    return `Bearer ${SKEY}`;
-}
-
+// La mesa llama al servidor con la llamada estándar de la app (lib/edge),
+// que manda el token de sesión de ESTE proyecto. Antes armaba su propio
+// fetch con el PRIMER token "sb-…" guardado en el navegador: en un celular
+// con otra sesión vieja guardada mandaba ese, el servidor respondía "no
+// autorizado" y la pantalla decía "No hay cotización automática" aunque el
+// proveedor sí tenía tasa (23 nov, el celular del dueño). Si el servidor no
+// reconoce la sesión, se renueva y se reintenta una vez.
 export async function callOtcMesa(action: string, body: Record<string, unknown> = {}): Promise<any> {
-    try {
-        const r = await fetch(`${SURL}/functions/v1/otc-mesa`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: authHeader() },
-            body: JSON.stringify({ action, ...body }),
-            signal: AbortSignal.timeout(25000),
-        });
-        const t = await r.text();
-        if (!t) return { ok: false, error: 'El servicio no respondió. Intenta de nuevo.' };
-        try { return JSON.parse(t); } catch { return { ok: false, error: `Respuesta no válida (HTTP ${r.status})` }; }
-    } catch (e: any) {
-        return { ok: false, error: e?.name === 'TimeoutError' ? 'La mesa tardó demasiado en responder.' : `Error de red: ${String(e?.message ?? e)}` };
+    const pedir = () => llamarFuncion('otc-mesa', { action, ...body }, 25000);
+    let r = await pedir();
+    if (r?.error === 'unauthorized' || r?.error === 'sesion_requerida') {
+        await supabase.auth.refreshSession().catch(() => null);
+        r = await pedir();
     }
+    if (r && typeof r === 'object' && r.ok === false && typeof r.error === 'string' && /timed? ?out|timeout/i.test(r.error)) {
+        return { ...r, error: 'La mesa tardó demasiado en responder.' };
+    }
+    return r ?? { ok: false, error: 'El servicio no respondió. Intenta de nuevo.' };
 }
 
 // ─── Estados, con su cara ───────────────────────────────
@@ -336,11 +327,15 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     // de "Vendo" a "Compro" con una cotización en vuelo dejaba la tasa de
     // VENTA en la pantalla de compra cuando llegaba tarde.
     const pedidoTasa = useRef(0);
+    // La cotización no llegó (red, sesión): no es lo mismo que "la mesa no
+    // tiene tasa". Se dice distinto y se reintenta a los pocos segundos.
+    const [tasaFallo, setTasaFallo] = useState(false);
     const pedirTasa = useCallback(async () => {
         const mio = ++pedidoTasa.current;
         setCargandoTasa(true);
         const r = await callOtcMesa('cotizar', { user_id: userId, side });
         if (mio !== pedidoTasa.current) return;
+        setTasaFallo(!(r?.ok === true));
         if (r?.mesa) setMesa({ abierta: !!r.mesa.abierta, proxima: r.mesa.proxima ?? null });
         if (Number(r?.ventanaMin) > 0) setVentanaMin(Number(r.ventanaMin));
         if (r?.margenPct != null) setMargenPct(Number(r.margenPct));
@@ -368,6 +363,12 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
         const t = setInterval(pedirTasa, 60_000);
         return () => clearInterval(t);
     }, [pedirTasa]);
+    // Sin tasa: se vuelve a intentar a los 8 s, sin esperar el minuto.
+    useEffect(() => {
+        if (tasa != null || cargandoTasa) return;
+        const t = setTimeout(pedirTasa, 8_000);
+        return () => clearTimeout(t);
+    }, [tasa, cargandoTasa, pedirTasa]);
 
     const n = Number(monto);
     const montoOk = Number.isFinite(n) && n > 0;
@@ -582,7 +583,11 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 7 }}>
                                 <AlertTriangle size={13} style={{ color: '#FBBF24', marginTop: 1, flexShrink: 0 }} />
                                 <p style={{ color: '#878E88', fontSize: 12.5, lineHeight: 1.5 }}>
-                                    No hay cotización automática en este momento{motivoSinTasa ? ` (${motivoSinTasa})` : ''}. Puedes pedir el cierre igual: la mesa lo cotiza a mano.
+                                    {tasaFallo
+                                        ? <>No pudimos traer la tasa en este momento. Lo intentamos de nuevo en unos segundos{' '}
+                                            <button onClick={pedirTasa} style={{ color: '#4ADE80', fontWeight: 700, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', fontSize: 'inherit' }}>o tócalo aquí</button>.
+                                            {' '}Si sigue, puedes pedir el cierre igual: la mesa lo cotiza a mano.</>
+                                        : <>No hay cotización automática en este momento{motivoSinTasa ? ` (${motivoSinTasa})` : ''}. Puedes pedir el cierre igual: la mesa lo cotiza a mano.</>}
                                 </p>
                             </div>
                         )}

@@ -343,10 +343,25 @@ async function anotarPuntoTasa(bruta: number) {
   } catch { /* el gráfico no vale una cotización */ }
 }
 
-async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise<Cotizacion> {
-  const margenPct = await margenDe(userId)
-  const vacia = (motivo: string, crudo?: string): Cotizacion =>
-    ({ referencia: null, rate: null, margenPct, ajusteCop: 0, fuente: 'finity', motivo, crudo })
+// ── La base del proveedor, con memoria corta (23 nov) ─────────────
+// En el celular del dueño salía "No hay cotización automática" mientras en el
+// computador sí había tasa. Una sola respuesta fallida del proveedor (un
+// tropiezo de red, un límite de llamadas) dejaba al cliente sin tasa hasta la
+// siguiente vuelta de un minuto, y cada pantalla abierta le pedía la tasa por
+// su lado. Ahora:
+//   · Una tasa de hace menos de 15 s se reutiliza sin volver a llamar, y los
+//     pedidos simultáneos comparten la misma llamada.
+//   · Si el proveedor falla, se usa la última buena de hace menos de 2
+//     minutos. Más vieja que eso no: es un precio contra el que se cierra.
+// Es memoria de la instancia: alcanza para los tropiezos, no reemplaza al
+// proveedor.
+type BaseTasa = { referencia: number; bruta: number; ajusteCop: number; at: number }
+let ultimaBase: BaseTasa | null = null
+let pidiendoBase: Promise<BaseTasa | { motivo: string; crudo?: string }> | null = null
+const BASE_FRESCA_MS = 15_000
+const BASE_RESPALDO_MS = 120_000
+
+async function pedirBase(): Promise<BaseTasa | { motivo: string; crudo?: string }> {
   try {
     const r = await fetch(`${SUPABASE_URL}/functions/v1/finity-proxy`, {
       method: 'POST',
@@ -362,9 +377,7 @@ async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise
 
     // Una tasa de SANDBOX es de mentira. Mostrarla como cotizacion seria peor
     // que no mostrar ninguna: el cliente cerraria contra un numero inventado.
-    if (d?.sandbox === true) {
-      return vacia('el proveedor esta respondiendo en modo de prueba')
-    }
+    if (d?.sandbox === true) return { motivo: 'el proveedor esta respondiendo en modo de prueba' }
 
     // La REFERENCIA es la tasa que el panel de admin promete que ve el
     // cliente: la del proveedor menos los puntos configurados ahi. Es la que
@@ -376,33 +389,51 @@ async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise
     // tiene que saber que el otro sigue estando.
     const referencia = extractRate(d?.data) ?? (Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : null)
     if (!(Number(referencia) > 0)) {
-      return vacia(
-        d?.data?.message ?? d?.message ?? d?.error ?? 'el proveedor no devolvio tasa',
-        JSON.stringify(d ?? null).slice(0, 400),
-      )
+      return {
+        motivo: d?.data?.message ?? d?.message ?? d?.error ?? `el proveedor no devolvio tasa${r.status !== 200 ? ` (HTTP ${r.status})` : ''}`,
+        crudo: JSON.stringify(d ?? null).slice(0, 400),
+      }
     }
     const ajusteCop = Number(d?.ajusteCop) > 0 ? Number(d.ajusteCop) : 0
+    const bruta = Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : Number(referencia) + ajusteCop
     // Un punto para el gráfico de la mesa (fx_rate_snapshots, FINITY). Los
     // puntos solo se guardaban al abrir el convertidor viejo; la mesa manual
     // cotiza aquí y no dejaba nada, así que 5 min, 1 h y 24 h salían vacíos
     // (19 nov). Se guarda la tasa BRUTA, que es lo que el gráfico espera (le
     // resta el ajuste al leer).
-    await anotarPuntoTasa(Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : Number(referencia) + ajusteCop)
-    // El margen va SIEMPRE a favor de Lincoin. Cuando el cliente VENDE USDT
-    // recibe COP = monto × tasa: la tasa baja. Cuando COMPRA USDT recibe
-    // USDT = COP ÷ tasa: la tasa tiene que SUBIR. Antes se bajaba en los dos
-    // casos y en la compra el cliente se llevaba el margen (y los puntos).
-    if (side === 'compra_usdt') {
-      const bruta = Number(d?.rateBruta) > 0 ? Number(d.rateBruta) : Number(referencia) + ajusteCop
-      const ref = bruta + ajusteCop
-      return { referencia: ref, rate: ref * (1 + margenPct / 100), margenPct, ajusteCop, fuente: 'finity' }
-    }
-    const ref = Number(referencia)
-    const rate = ref * (1 - margenPct / 100)
-    return { referencia: ref, rate, margenPct, ajusteCop, fuente: 'finity' }
+    await anotarPuntoTasa(bruta)
+    return { referencia: Number(referencia), bruta, ajusteCop, at: Date.now() }
   } catch (e: any) {
-    return vacia(`no se pudo consultar la tasa: ${e?.message ?? 'error de red'}`)
+    return { motivo: `no se pudo consultar la tasa: ${e?.message ?? 'error de red'}` }
   }
+}
+
+async function baseTasa(): Promise<{ base: BaseTasa | null; motivo?: string; crudo?: string; deRespaldo?: boolean }> {
+  if (ultimaBase && Date.now() - ultimaBase.at < BASE_FRESCA_MS) return { base: ultimaBase }
+  if (!pidiendoBase) pidiendoBase = pedirBase().finally(() => { pidiendoBase = null })
+  const r = await pidiendoBase
+  if ('referencia' in r) { ultimaBase = r; return { base: r } }
+  if (ultimaBase && Date.now() - ultimaBase.at < BASE_RESPALDO_MS) {
+    console.warn('[otc-mesa] el proveedor no dio tasa; se usa la de hace', Math.round((Date.now() - ultimaBase.at) / 1000), 's:', r.motivo)
+    return { base: ultimaBase, deRespaldo: true, motivo: r.motivo }
+  }
+  return { base: null, motivo: r.motivo, crudo: r.crudo }
+}
+
+async function tasaUsdCop(userId?: string, side: string = 'vende_usdt'): Promise<Cotizacion> {
+  const margenPct = await margenDe(userId)
+  const { base, motivo, crudo } = await baseTasa()
+  if (!base) return { referencia: null, rate: null, margenPct, ajusteCop: 0, fuente: 'finity', motivo, crudo }
+  // El margen va SIEMPRE a favor de Lincoin. Cuando el cliente VENDE USDT
+  // recibe COP = monto × tasa: la tasa baja. Cuando COMPRA USDT recibe
+  // USDT = COP ÷ tasa: la tasa tiene que SUBIR. Antes se bajaba en los dos
+  // casos y en la compra el cliente se llevaba el margen (y los puntos).
+  if (side === 'compra_usdt') {
+    const ref = base.bruta + base.ajusteCop
+    return { referencia: ref, rate: ref * (1 + margenPct / 100), margenPct, ajusteCop: base.ajusteCop, fuente: 'finity' }
+  }
+  const ref = base.referencia
+  return { referencia: ref, rate: ref * (1 - margenPct / 100), margenPct, ajusteCop: base.ajusteCop, fuente: 'finity' }
 }
 
 // Como quedo armada la tasa, en una linea legible. Sin columnas nuevas: el
