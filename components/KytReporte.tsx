@@ -20,7 +20,7 @@
 // ══════════════════════════════════════════════════════════════════
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, ESCALA_RIESGO, FUENTES_RIESGO, ABREVIATURAS } from '../lib/kytTextos';
+import { bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, ESCALA_RIESGO, FUENTES_RIESGO, ABREVIATURAS, caminoDe, flujoRuta } from '../lib/kytTextos';
 
 const FONT = 'Archivo, system-ui, sans-serif';
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -158,7 +158,18 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
 
   const directos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos === 1);
   const indirectos: any[] = (tr?.rutas ?? []).filter((r: any) => r.saltos > 1);
-  const ranking: any[] = tr?.ranking ?? [];
+  // El rastreo de "Rastrear intermediarios" (pantalla) trae `resumen` por
+  // contaminador y no `ranking`; con él el reporte decía "no se corrió el
+  // rastreo" teniendo las rutas al lado. Se arma el ranking del resumen.
+  const ranking: any[] = tr?.ranking ?? (tr?.resumen ?? []).map((g: any) => {
+    const fl: string[] = g.flujos ?? [];
+    return {
+      contaminante: g.contaminante, etiqueta: g.etiqueta,
+      evidencias: g.caminos, monto: g.montoTotal ?? null, saltoMinimo: g.saltoMinimo ?? null,
+      flujoDominante: fl.includes('saliente') ? 'salida' : fl.includes('entrante') ? 'entrada'
+        : fl.includes('cruzado') ? 'cruzado' : null,
+    };
+  });
 
   // Las fuentes que el reporte pide, paga y guarda — y hasta ahora no dibujaba.
   const inv = d.investigacion;   // transactions_investigation, USD 1,00
@@ -191,8 +202,11 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
     wallet: 'Billetera', ens: 'ENS', twitter: 'Twitter',
   };
 
-  const entrantes = directos.filter(r => r.flujo === 'entrada');
-  const salientes = directos.filter(r => r.flujo === 'salida');
+  // El rastreo del reporte decía 'entrada'/'salida' y el de la pantalla
+  // 'entrante'/'saliente'; acá solo se leía lo primero, y un ingreso directo
+  // desde una señalada salía impreso como "Analizada → Señalada" (23 nov).
+  const entrantes = directos.filter(r => ['entrante', 'ambos'].includes(flujoRuta(r) ?? ''));
+  const salientes = directos.filter(r => ['saliente', 'ambos'].includes(flujoRuta(r) ?? ''));
   const sum = (a: any[]) => a.reduce((t, x) => t + Number(x.monto ?? 0), 0);
 
   const porTipo = (t: string) => ex?.items?.filter((i: any) => i.exposicion === t)
@@ -702,13 +716,17 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
               {directos.map((r: any, i: number) => (
                 <tr key={i}>
                   <td style={{ ...td, fontWeight: 700, color: T.azul }}>
-                    {r.flujo === 'entrada' ? 'Señalada → Analizada' : 'Analizada → Señalada'}
+                    {flujoRuta(r) === 'entrante' ? 'Señalada → Analizada'
+                      : flujoRuta(r) === 'saliente' ? 'Analizada → Señalada'
+                      : flujoRuta(r) === 'ambos' ? 'Señalada ⇄ Analizada'
+                      : 'Sentido no confirmado'}
                   </td>
                   <td style={{ ...td, fontFamily: MONO, fontSize: 8.5, color: T.rojo }}>{corta(r.contaminante)}</td>
                   <td style={td}>
-                    {r.flujo === 'entrada'
-                      ? 'Posible fuente de exposición entrante'
-                      : 'Transferencia saliente a destino reportado'}
+                    {flujoRuta(r) === 'entrante' ? 'Posible fuente de exposición entrante'
+                      : flujoRuta(r) === 'saliente' ? 'Transferencia saliente a destino reportado'
+                      : flujoRuta(r) === 'ambos' ? 'Fondos en los dos sentidos con una contraparte señalada'
+                      : 'Contraparte señalada; sentido no informado'}
                   </td>
                   <td style={td}>{n(r.monto) ?? '—'}</td>
                   <td style={td}>{r.txs ?? '—'}</td>
@@ -820,20 +838,36 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                 // Antes esta celda mostraba UN intermediario aunque el camino
                 // tuviera tres, y la columna de flujo decía siempre lo mismo —
                 // una frase fija en un reporte que se le entrega a un banco.
-                const medios: string[] = r.intermediarios?.length
-                  ? r.intermediarios : (r.intermediario ? [r.intermediario] : []);
+                //
+                // 23 nov: el flujo era el del primer tramo solo. Un intermediario
+                // que le mandó 0,01 a la analizada y le MANDÓ a 25 señaladas
+                // salía como "Recibido en la analizada" en las 25 filas. Ahora
+                // se usa el sentido de cada tramo (nodos/tramos de la función
+                // kyt), y los intermediarios van en el orden de las capas: de
+                // la señalada hacia la analizada, como en el detalle del riesgo.
+                const { nodos, tramos } = caminoDe(r, d.address);
+                const medios: string[] = nodos.slice(1, -1).reverse();
+                const f = flujoRuta(r);
+                const t0 = tramos[0];
+                const hay = medios.length > 0;
+                const flujoTxt =
+                  f === 'entrante' ? (hay ? 'Señalada → intermediario → analizada: posible ingreso de fondos de la señalada' : 'Señalada → analizada')
+                  : f === 'saliente' ? (hay ? 'Analizada → intermediario → señalada: posible salida de fondos hacia la señalada' : 'Analizada → señalada')
+                  : f === 'ambos' ? 'En los dos sentidos en cada tramo'
+                  : f === 'cruzado' ? (t0 === 'entrante'
+                      ? 'El intermediario le envió a la analizada y a la señalada: sin paso de fondos entre ellas'
+                      : 'La analizada y la señalada le enviaron al intermediario: sin paso de fondos entre ellas')
+                  : t0 ? `Primer tramo: ${t0 === 'entrante' ? 'recibido por la analizada' : t0 === 'saliente' ? 'enviado por la analizada' : 'en los dos sentidos'}; el proveedor no informa el resto`
+                  : 'Sentido no confirmado';
                 return (
                 <tr key={i}>
                   <td style={{ ...td, fontFamily: MONO, fontSize: 8.5, color: T.rojo, fontWeight: 700 }}>{corta(r.contaminante)}</td>
                   <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>
-                    {medios.length ? medios.slice(0, 2).map(corta).join(' → ') : '—'}
+                    {medios.length ? medios.slice(0, 2).map(corta).join(' · ') : '—'}
                     {medios.length > 2 ? ` +${medios.length - 2}` : ''}
                   </td>
-                  <td style={{ ...td, color: r.flujo ? T.azul : T.suave, fontWeight: 700, fontSize: 9 }}>
-                    {r.flujo === 'saliente' ? 'Enviado desde la analizada'
-                      : r.flujo === 'entrante' ? 'Recibido en la analizada'
-                      : r.flujo === 'ambos' ? 'Enviado y recibido'
-                      : 'Sentido no confirmado'}
+                  <td style={{ ...td, color: f && f !== 'cruzado' ? T.azul : T.suave, fontWeight: 700, fontSize: 9 }}>
+                    {flujoTxt}
                   </td>
                   <td style={td}>{r.txs ?? '—'}</td>
                   <td style={td}>{n(r.monto) ?? '—'}</td>
@@ -886,7 +920,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                       </td>
                       <td style={{ ...td, fontFamily: MONO, fontSize: 8.5 }}>
                         {medios.length
-                          ? <>{medios.slice(0, 2).map(corta).join(' → ')}{medios.length > 2 ? ` +${medios.length - 2}` : ''}</>
+                          ? <>{medios.slice(0, 2).map(corta).join(' · ')}{medios.length > 2 ? ` +${medios.length - 2}` : ''}</>
                           : (camino.length ? 'directo' : '—')}
                       </td>
                       <td style={td}>{it.tipoEs ?? '—'}</td>
@@ -949,6 +983,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                   <td style={td}>
                     {r.flujoDominante === 'salida' ? 'Transferencia saliente a destino reportado'
                       : r.flujoDominante === 'entrada' ? 'Fuente entrante reportada'
+                      : r.flujoDominante === 'cruzado' ? 'Comparte intermediario con la analizada'
                       : (r.etiqueta ?? 'Contraparte señalada')}
                   </td>
                   <td style={td}>{r.evidencias}</td>
@@ -956,7 +991,11 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
                   <td style={{ ...td, fontSize: 9 }}>
                     {r.flujoDominante === 'salida'
                       ? 'Revisar si la billetera envió fondos a una entidad reportada.'
-                      : 'Revisar el origen de los fondos recibidos desde esta contraparte.'}
+                      : r.flujoDominante === 'entrada'
+                        ? 'Revisar el origen de los fondos recibidos desde esta contraparte.'
+                        : r.flujoDominante === 'cruzado'
+                          ? 'Sin paso de fondos entre ella y la analizada por las rutas revisadas; vínculo indirecto a través de un tercero.'
+                          : 'Sentido no confirmado: revisar las transacciones del camino.'}
                   </td>
                 </tr>
               ))}
@@ -1003,8 +1042,10 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             {tr.expandidos} de ellas para buscar rutas de segundo nivel.
             {tr.delProveedor > 0 && ` ${tr.delProveedor} ${tr.delProveedor === 1 ? 'ruta proviene' : 'rutas provienen'} del camino completo que reporta el proveedor (hop_dic), que no está sujeto a ese alcance.`}
             {tr.completo === false && ' Quedaron contrapartes sin expandir: la ausencia de más rutas en estas tablas no descarta que existan otras.'}
-            {' '}El sentido del flujo solo se afirma cuando la contraparte aparece entre las revisadas;
-            en las demás filas se indica que no está confirmado.
+            {' '}El sentido de cada tramo sale de las transacciones de las direcciones revisadas: una ruta
+            figura como ingreso o salida solo si todos sus tramos van en ese sentido. Cuando los tramos se
+            contradicen, la señalada y la analizada solo comparten un intermediario. No se comparan fechas:
+            un camino compatible no prueba que se trate de los mismos fondos.
           </p>
         )}
 

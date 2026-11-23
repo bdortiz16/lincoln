@@ -353,6 +353,16 @@ function caminoDeHop(dir: string, niveles: { nivel: number; direcciones: string[
     // La UI vieja muestra UN intermediario; se le da el primero y la lista
     // completa aparte, para no romperla ni recortar el dato.
     intermediario: medio.length ? (medio[0].direcciones[0] ?? null) : null,
+    // El camino leído desde la analizada hacia la señalada. `intermediarios`
+    // va en el orden del proveedor (Capa 1 = señalada) y la pantalla lo
+    // dibujaba "esta dirección → capa 2 → capa 3 → señalada": el
+    // intermediario que tocó a la analizada (la última capa) quedaba al lado
+    // de la señalada. Con `nodos` ya no hay que acordarse de darlo vuelta.
+    nodos: [
+      alto.direcciones.some(igual) ? dir : (alto.direcciones[0] ?? dir),
+      ...medio.flatMap(n => n.direcciones).reverse(),
+      bajo.direcciones[0] ?? null,
+    ],
     // Saltos = tramos del camino, no niveles. Un camino de dos niveles
     // (contaminante → nosotros) es UN salto.
     saltos: Math.max(1, niveles.length - 1),
@@ -802,6 +812,136 @@ function leerInvestigacion(bruto: any): Record<string, any> | null {
   const maliciosas = [...entradas, ...salidas].filter(x => x.tipoNum === 2)
     .sort((a, b) => (b.monto ?? 0) - (a.monto ?? 0))
   return { entradas: entradas.slice(0, 40), salidas: salidas.slice(0, 40), maliciosas: maliciosas.slice(0, 25), paginas: Number(d.total_pages) || 1 }
+}
+
+// ── Sentido de las rutas ──────────────────────────────────────────
+// 23 nov: la pantalla decía "Recibiste de 25 direcciones contaminadas" para
+// una dirección a la que un intermediario le había mandado 0,01. El sentido
+// de la ruta se tomaba SOLO del primer tramo (intermediario → analizada) y se
+// le atribuía al camino entero, aunque el intermediario les hubiera MANDADO
+// plata a las señaladas en vez de recibirla. La investigación del
+// intermediario sí dice para qué lado fue el segundo tramo (in/out); ahora se
+// usan los dos tramos, y una ruta solo es "entrante" si la plata pudo ir de la
+// señalada a la analizada.
+//
+// Cada tramo se mide respecto de la analizada: 'entrante' = la plata se movió
+// hacia ella; 'saliente' = se alejó de ella; 'ambos' = hubo de las dos.
+type Tramo = 'entrante' | 'saliente' | 'ambos' | null
+
+function sentidoPorDireccion(lista: any[]): Map<string, Tramo> {
+  const s = new Map<string, Tramo>()
+  for (const x of lista) {
+    const k = String(x?.direccion ?? '').toLowerCase()
+    if (!k) continue
+    const nuevo: Tramo = x.flujo === 'entrada' ? 'entrante' : 'saliente'
+    s.set(k, s.has(k) && s.get(k) !== nuevo ? 'ambos' : nuevo)
+  }
+  return s
+}
+
+// El sentido de la ruta entera:
+//   · todos los tramos hacia la analizada → 'entrante' (la plata de la
+//     señalada pudo llegarle por este camino)
+//   · todos alejándose                    → 'saliente' (la plata de la
+//     analizada pudo llegar a la señalada)
+//   · se contradicen                      → 'cruzado'  (solo comparten el
+//     intermediario: entre la señalada y la analizada no pasa plata por acá)
+//   · falta alguno                        → null       (no se sabe)
+// 'ambos' en un tramo sirve para los dos sentidos. No se comparan fechas: un
+// camino compatible no prueba que sea la misma plata, y eso se dice en pantalla.
+function flujoDeTramos(tramos: Tramo[]): string | null {
+  if (!tramos.length || tramos.some(t => !t)) return null
+  const entra = tramos.every(t => t === 'entrante' || t === 'ambos')
+  const sale = tramos.every(t => t === 'saliente' || t === 'ambos')
+  return entra && sale ? 'ambos' : entra ? 'entrante' : sale ? 'saliente' : 'cruzado'
+}
+
+// Una contraparte que está en las dos listas (le mandó y le mandaron) es UNA
+// contraparte con sentido 'ambos', no dos. Antes se expandía dos veces y se
+// pagaban dos consultas por la misma dirección.
+function contrapartesUnicas(lista: any[]): any[] {
+  const m = new Map<string, any>()
+  for (const x of lista) {
+    const k = String(x?.direccion ?? '').toLowerCase()
+    if (!k) continue
+    const p = m.get(k)
+    if (!p) { m.set(k, { ...x, hashes: [...(x.hashes ?? [])] }); continue }
+    p.monto = (p.monto ?? 0) + (x.monto ?? 0)
+    p.hashes = [...p.hashes, ...(x.hashes ?? [])].slice(0, 10)
+    p.tipoNum = p.tipoNum === 2 ? 2 : x.tipoNum
+    p.etiqueta = p.etiqueta ?? x.etiqueta
+  }
+  return Array.from(m.values())
+}
+
+// Rutas a uno y dos saltos a partir de la investigación de la analizada. Lo
+// usan "Rastrear intermediarios" y el Reporte AML: antes cada uno tenía su
+// copia y las dos atribuían el sentido del primer tramo a toda la ruta.
+// `nodos` va de la analizada hacia la señalada; `tramos[i]` es el sentido
+// entre nodos[i] y nodos[i+1].
+async function rastrearDesde(c: Config, coin: string, dir: string, inv: any, presupuesto: number) {
+  const vecinos = [...(inv?.entradas ?? []), ...(inv?.salidas ?? [])].filter((x: any) => x.direccion)
+  const sentido = sentidoPorDireccion(vecinos)
+  const unicos = contrapartesUnicas(vecinos)
+  const yo = dir.toLowerCase()
+
+  // Las que YA son maliciosas son rutas DIRECTAS: un salto, sin intermediario.
+  const directas = unicos.filter((x: any) => x.tipoNum === 2).map((x: any) => {
+    const tramos: Tramo[] = [sentido.get(x.direccion.toLowerCase()) ?? null]
+    return {
+      contaminante: x.direccion, etiquetaContaminante: x.etiqueta,
+      intermediario: null, saltos: 1,
+      nodos: [dir, x.direccion], tramos, flujo: flujoDeTramos(tramos),
+      monto: x.monto, txs: x.hashes?.length ?? null, hashes: x.hashes ?? [],
+    }
+  })
+
+  // Se expanden las que NO son maliciosas, de mayor monto a menor: si hay
+  // presupuesto para diez, conviene gastarlo donde hay mas plata en juego.
+  const noMaliciosas = unicos.filter((x: any) => x.tipoNum !== 2)
+  const candidatos = [...noMaliciosas]
+    .sort((a: any, b: any) => (b.monto ?? 0) - (a.monto ?? 0))
+    .slice(0, Math.max(0, presupuesto))
+
+  const indirectas: any[] = []
+  let expandidos = 0, fallos = 0, pagadas = 0
+  for (const v of candidatos) {
+    pagadas++
+    const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
+    if (!r2.ok) { fallos++; continue }
+    expandidos++
+    const malas: any[] = leerInvestigacion(r2.data)?.maliciosas ?? []
+    // Sentido de cada señalada respecto del INTERMEDIARIO: si está en su
+    // lista de entrada, le mandó a él (hacia la analizada); si está en la de
+    // salida, él le mandó a ella (alejándose de la analizada).
+    const sentido2 = sentidoPorDireccion(malas)
+    const t0: Tramo = sentido.get(v.direccion.toLowerCase()) ?? null
+    const vistas = new Set<string>()
+    for (const m of malas) {
+      const k = String(m.direccion ?? '').toLowerCase()
+      // La analizada misma en la lista del intermediario no es una ruta.
+      if (!k || k === yo || vistas.has(k)) continue
+      vistas.add(k)
+      const tramos: Tramo[] = [t0, sentido2.get(k) ?? null]
+      indirectas.push({
+        contaminante: m.direccion, etiquetaContaminante: m.etiqueta,
+        intermediario: v.direccion, etiquetaIntermediario: v.etiqueta,
+        saltos: 2,
+        nodos: [dir, v.direccion, m.direccion], tramos, flujo: flujoDeTramos(tramos),
+        // El monto que se muestra es el del tramo que TOCA a la analizada, no
+        // el del tramo entre el intermediario y la señalada: lo segundo no es
+        // plata de este titular y ponerlo exagera su exposicion.
+        monto: v.monto,
+        montoTramoFinal: malas.filter((x: any) => String(x.direccion ?? '').toLowerCase() === k)
+          .reduce((t: number, x: any) => t + Number(x.monto ?? 0), 0) || null,
+        txs: v.hashes?.length ?? null, hashes: v.hashes ?? [],
+      })
+    }
+  }
+  return {
+    vecinos, unicos, sentido, directas, indirectas, expandidos, fallos, pagadas,
+    completo: candidatos.length >= noMaliciosas.length,
+  }
 }
 
 // ── Comportamiento (address_action) ───────────────────────────────
@@ -1854,8 +1994,12 @@ Deno.serve(async (req) => {
       // pero un reporte sin la seccion de rutas indirectas no sirve para lo que
       // se usa. Presupuesto acotado y reutilizando lo ya cacheado.
       let trazado: any = f.rutas ?? null
-      const rutasVigentes = trazado && f.rutas_at
+      // Solo se reutiliza un rastreo con el sentido de todos los tramos
+      // (version 2, 23 nov). Los guardados antes decían "recibido" por el
+      // primer tramo aunque el segundo fuera en contra: se rastrean de nuevo.
+      const rutasVigentes = trazado && trazado.version === 2 && f.rutas_at
         && Date.now() - new Date(f.rutas_at).getTime() < c.diasVigencia * 86400_000
+      if (!rutasVigentes) trazado = null
       // Sin cupo del día, el reporte sale igual pero sin rastrear rutas nuevas
       // (cada contraparte expandida es otra consulta pagada).
       // Cada llamada se cuenta en el tope (antes se anotaba UNA por reporte y
@@ -1867,31 +2011,10 @@ Deno.serve(async (req) => {
         const rInv2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: dir, type: 'all', page: '1' })
         const inv2 = rInv2.ok ? leerInvestigacion(rInv2.data) : null
         if (inv2) {
-          const vecinos = [...(inv2.entradas ?? []), ...(inv2.salidas ?? [])].filter((x: any) => x.direccion)
-          const directas = vecinos.filter((x: any) => x.tipoNum === 2).map((x: any) => ({
-            contaminante: x.direccion, etiquetaContaminante: x.etiqueta, intermediario: null,
-            saltos: 1, flujo: x.flujo, monto: x.monto, txs: x.hashes?.length ?? 1, hashes: x.hashes ?? [],
-          }))
-          const cand = vecinos.filter((x: any) => x.tipoNum !== 2)
-            .sort((a2: any, b2: any) => (b2.monto ?? 0) - (a2.monto ?? 0))
-            .slice(0, Math.max(0, Math.min(25, Number(c.presupuestoRutas) || 10, restantesRutas - 1)))
-          const indirectas: any[] = []
-          let expandidos = 0
-          for (const v of cand) {
-            pagadasRep++
-            const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
-            if (!r2.ok) continue
-            expandidos++
-            for (const m of (leerInvestigacion(r2.data)?.maliciosas ?? [])) {
-              indirectas.push({
-                contaminante: m.direccion, etiquetaContaminante: m.etiqueta,
-                intermediario: v.direccion, etiquetaIntermediario: v.etiqueta,
-                saltos: 2, flujo: v.flujo, monto: v.monto, montoTramoFinal: m.monto,
-                txs: v.hashes?.length ?? 1, hashes: v.hashes ?? [],
-              })
-            }
-          }
-          const todas = [...directas, ...indirectas]
+          const rt = await rastrearDesde(c, coin, dir, inv2,
+            Math.min(25, Number(c.presupuestoRutas) || 10, restantesRutas - 1))
+          pagadasRep += rt.pagadas
+          const todas = [...rt.directas, ...rt.indirectas]
           // Ranking por contaminante: cuantos caminos llevan a la misma entidad
           // y por cuanto monto. Es lo que se mira para priorizar.
           const porC: Record<string, any> = {}
@@ -1907,15 +2030,23 @@ Deno.serve(async (req) => {
             contaminante: g.contaminante, etiqueta: g.etiqueta,
             evidencias: g.evidencias, monto: g.monto || null,
             saltoMinimo: g.saltoMinimo === 99 ? null : g.saltoMinimo,
-            flujoDominante: g.flujos.has('salida') ? 'salida' : (g.flujos.has('entrada') ? 'entrada' : null),
+            // Una ruta 'cruzado' no es ni salida ni entrada de plata entre la
+            // analizada y la señalada: no se cuenta como ninguna de las dos.
+            flujoDominante: g.flujos.has('saliente') || g.flujos.has('ambos') ? 'salida'
+              : g.flujos.has('entrante') ? 'entrada'
+              : g.flujos.has('cruzado') ? 'cruzado' : null,
           })).sort((x: any, y: any) => (y.monto ?? 0) - (x.monto ?? 0))
 
           trazado = {
+            // version 2: con nodos/tramos y el sentido de TODOS los tramos.
+            // Las de antes (sin version) atribuían el primer tramo a la ruta
+            // entera y no se reutilizan (ver rutasVigentes).
+            version: 2,
             rutas: todas, ranking,
-            contrapartesRevisadas: vecinos.length, expandidos,
-            completo: cand.length >= vecinos.filter((x: any) => x.tipoNum !== 2).length,
-            entrantesSenaladas: directas.filter((x: any) => x.flujo === 'entrada').length,
-            salientesSenaladas: directas.filter((x: any) => x.flujo === 'salida').length,
+            contrapartesRevisadas: rt.unicos.length, expandidos: rt.expandidos,
+            completo: rt.completo,
+            entrantesSenaladas: rt.directas.filter((x: any) => x.flujo === 'entrante' || x.flujo === 'ambos').length,
+            salientesSenaladas: rt.directas.filter((x: any) => x.flujo === 'saliente' || x.flujo === 'ambos').length,
           }
           await db.from('kyt_registry').update({ rutas: trazado, rutas_at: new Date().toISOString() })
             .eq('coin', coin).eq('address_lower', dir.toLowerCase())
@@ -2053,6 +2184,9 @@ Deno.serve(async (req) => {
           contaminante: cm.contaminante, etiquetaContaminante: it?.entidad ?? null,
           contaminantes: cm.contaminantes,
           intermediario: cm.intermediario, intermediarios: cm.intermediarios,
+          // El proveedor da el camino, no el sentido de cada tramo: todos en
+          // null hasta que el cruce con la investigación diga el primero.
+          nodos: cm.nodos, tramos: cm.nodos.slice(1).map(() => null),
           // hop_num del hallazgo manda sobre el largo del camino: es el numero
           // que el proveedor afirma, y el camino puede venir recortado.
           saltos: Number.isFinite(Number(it?.saltos)) ? Number(it.saltos) : cm.saltos,
@@ -2072,6 +2206,7 @@ Deno.serve(async (req) => {
           contaminante: cm.contaminante, etiquetaContaminante: null,
           contaminantes: cm.contaminantes,
           intermediario: cm.intermediario, intermediarios: cm.intermediarios,
+          nodos: cm.nodos, tramos: cm.nodos.slice(1).map(() => null),
           saltos: cm.saltos, camino: cm.camino,
           terminaEnLaDireccion: cm.terminaEnLaDireccion,
           tipo: null, tipoEs: null, exposicion: null,
@@ -2113,70 +2248,31 @@ Deno.serve(async (req) => {
         })
       }
 
-      const vecinos = [...(inv.entradas ?? []), ...(inv.salidas ?? [])]
-        .filter((x: any) => x.direccion)
-      // Las que YA son maliciosas son rutas DIRECTAS: un salto, sin intermediario.
-      const directas = vecinos.filter((x: any) => x.tipoNum === 2).map((x: any) => ({
-        contaminante: x.direccion, etiquetaContaminante: x.etiqueta,
-        intermediario: null, saltos: 1,
-        flujo: x.flujo === 'entrada' ? 'entrante' : 'saliente',
-        monto: x.monto, txs: x.hashes?.length ?? null, hashes: x.hashes ?? [],
-      }))
-
-      // Se expanden las que NO son maliciosas, de mayor monto a menor: si hay
-      // presupuesto para diez, conviene gastarlo donde hay mas plata en juego.
-      const candidatos = vecinos
-        .filter((x: any) => x.tipoNum !== 2)
-        .sort((a: any, b: any) => (b.monto ?? 0) - (a.monto ?? 0))
-        .slice(0, presupuesto)
-
-      const indirectas: any[] = []
-      let expandidos = 0
-      let fallos = 0
-      for (const v of candidatos) {
-        pagadas++
-        const r2 = await llamarMT(c, c.rutaInvestigacion, { coin, address: v.direccion, type: 'all', page: '1' })
-        if (!r2.ok) { fallos++; continue }
-        expandidos++
-        const inv2 = leerInvestigacion(r2.data)
-        for (const m of (inv2?.maliciosas ?? [])) {
-          indirectas.push({
-            contaminante: m.direccion, etiquetaContaminante: m.etiqueta,
-            intermediario: v.direccion, etiquetaIntermediario: v.etiqueta,
-            saltos: 2,
-            flujo: v.flujo === 'entrada' ? 'entrante' : 'saliente',
-            // El monto que se muestra es el del tramo que TOCA a la direccion
-            // analizada, no el del tramo entre el intermediario y la lista: lo
-            // segundo no es plata de este titular y ponerlo exagera su
-            // exposicion.
-            monto: v.monto, montoTramoFinal: m.monto,
-            txs: v.hashes?.length ?? null, hashes: v.hashes ?? [],
-          })
-        }
-      }
+      // Directas, intermediarios y el sentido de cada tramo: ver rastrearDesde.
+      const rt = await rastrearDesde(c, coin, dir, inv, presupuesto)
+      pagadas += rt.pagadas
+      const { sentido, directas, indirectas, expandidos, fallos } = rt
 
       // ── El cruce ──
-      // hop_dic dice POR DONDE pasa. La investigacion dice PARA QUE LADO. Se
-      // cruzan por direccion: si el primer tramo del camino del proveedor es
-      // una contraparte que conocemos, sabemos si le mandamos o nos mando.
-      const sentido = new Map<string, string>()
-      for (const v of vecinos) {
-        const k = String(v.direccion ?? '').toLowerCase()
-        if (!k) continue
-        const nuevo = v.flujo === 'entrada' ? 'entrante' : 'saliente'
-        sentido.set(k, sentido.has(k) && sentido.get(k) !== nuevo ? 'ambos' : nuevo)
-      }
+      // hop_dic dice POR DONDE pasa. La investigacion dice PARA QUE LADO va el
+      // tramo que toca a la analizada. Los demas tramos del camino del
+      // proveedor quedan sin sentido (null): no se sabe, y no se supone.
+      // Antes el sentido del primer tramo se le ponia a la ruta entera.
       for (const r of rutasProveedor) {
         // El tramo que nos toca es el que sale de NUESTRA direccion: el
         // intermediario mas cercano, o el contaminante si el camino es directo.
-        const primerTramo = String(
-          (r.intermediarios?.length ? r.intermediarios[r.intermediarios.length - 1] : null) ?? r.contaminante ?? '',
-        ).toLowerCase()
-        r.flujo = sentido.get(primerTramo) ?? null
-        // Se distingue a proposito de "no hay flujo": null significa que esa
-        // contraparte no aparecio entre las que revisamos, no que no exista.
+        const primerTramo = String(r.nodos?.[1] ?? '').toLowerCase()
+        // Si el camino no termina en esta direccion, su primer tramo no es
+        // nuestro y no se le atribuye sentido.
+        const t0: Tramo = r.terminaEnLaDireccion === false ? null : (sentido.get(primerTramo) ?? null)
+        r.tramos = [t0, ...(r.tramos ?? []).slice(1)]
+        r.flujoPrimerTramo = t0
+        r.flujo = flujoDeTramos(r.tramos)
+        // Se distingue a proposito de "no hay flujo": null significa que no
+        // se sabe (la contraparte no aparecio entre las revisadas, o el
+        // proveedor no informa el sentido de los tramos siguientes).
         r.flujoDesconocido = r.flujo === null
-        const vc = vecinos.find((x: any) => String(x.direccion ?? '').toLowerCase() === primerTramo)
+        const vc = rt.unicos.find((x: any) => String(x.direccion ?? '').toLowerCase() === primerTramo)
         if (vc) {
           r.etiquetaIntermediario = r.etiquetaIntermediario ?? vc.etiqueta ?? null
           r.hashes = vc.hashes ?? []
@@ -2250,14 +2346,13 @@ Deno.serve(async (req) => {
         delProveedor: rutasProveedor.length,
         rastreadas: aMano.length,
         riesgoRecien,
-        contrapartesRevisadas: vecinos.length,
+        contrapartesRevisadas: rt.unicos.length,
         expandidos, fallos, presupuesto,
         // Se dice explicitamente hasta donde se miro. Una lista vacia despues
         // de expandir diez de doscientas contrapartes NO significa "no hay
         // rutas": significa "no hay en lo que miramos". El camino del proveedor
         // no tiene ese limite, asi que si hubo rutas suyas el aviso sobra.
-        completo: rutasProveedor.length > 0
-          || candidatos.length >= vecinos.filter((x: any) => x.tipoNum !== 2).length,
+        completo: rutasProveedor.length > 0 || rt.completo,
       })
     }
 

@@ -239,3 +239,36 @@ export const ABREVIATURAS: [string, string][] = [
   ['PEP', 'Persona expuesta políticamente'], ['PSP', 'Proveedor de servicios de pago'],
   ['ROS / STR', 'Reporte de operación sospechosa'], ['FT', 'Financiación del terrorismo'],
 ];
+
+// ── Rutas: camino y sentido de cada tramo ──
+// `nodos` va de la dirección analizada hacia la señalada y `tramos[i]` es el
+// sentido de la plata entre nodos[i] y nodos[i+1], visto desde la analizada:
+// 'entrante' (fue hacia ella), 'saliente' (salió de ella), 'ambos', o null
+// (no se sabe). Los manda la función kyt desde el 23 nov. Una ruta vieja, sin
+// ellos, se arma igual pero sin sentido por tramo: mejor "sin dato" que una
+// flecha supuesta. El rastreo guardado antes decía 'entrada'/'salida'; se
+// normaliza para que nadie tenga que acordarse de las dos formas.
+export const sentidoNorm = (f: any): string | null =>
+  f === 'entrada' ? 'entrante' : f === 'salida' ? 'saliente' : (f ?? null);
+
+export function caminoDe(r: any, address: string): { nodos: string[]; tramos: (string | null)[] } {
+  if (Array.isArray(r?.nodos) && r.nodos.length >= 2) {
+    const tramos = Array.isArray(r.tramos) && r.tramos.length === r.nodos.length - 1
+      ? r.tramos.map(sentidoNorm) : r.nodos.slice(1).map(() => null);
+    return { nodos: r.nodos, tramos };
+  }
+  // El proveedor manda los intermediarios desde la señalada hacia acá.
+  const medios: string[] = r?.intermediarios?.length ? [...r.intermediarios].reverse()
+    : (r?.intermediario ? [r.intermediario] : []);
+  const nodos = [address, ...medios, r?.contaminante];
+  // Una directa vieja sí trae su sentido: es el único tramo.
+  const tramos = nodos.length === 2 ? [sentidoNorm(r?.flujo)] : nodos.slice(1).map(() => null);
+  return { nodos, tramos };
+}
+
+// El sentido de la ruta ENTERA. Una ruta vieja con intermediario solo traía
+// el del primer tramo (el error del 23 nov): ese no se usa como de la ruta.
+export const flujoRuta = (r: any): string | null =>
+  Array.isArray(r?.nodos) ? sentidoNorm(r.flujo)
+    : (r?.intermediarios?.length || r?.intermediario) ? null
+    : sentidoNorm(r?.flujo);

@@ -20,7 +20,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Eye, EyeOff, FileText, Loader2, ShieldQuestion, History, X, ChevronDown, Check } from 'lucide-react';
 import { llamarFuncion } from '../lib/edge';
-import { hallazgosEnEspanol, bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor } from '../lib/kytTextos';
+import { hallazgosEnEspanol, bandaDeRiesgo, indicadoresDe, nivelProveedorEs, sancionadaPorProveedor, fechaProveedor, caminoDe, flujoRuta } from '../lib/kytTextos';
 import { KytReporte } from './KytReporte';
 
 const FONT = 'Archivo, system-ui, sans-serif';
@@ -221,6 +221,54 @@ const enmascarar = (a?: string) => {
   const s = String(a ?? '');
   return s.length > 14 ? `${s.slice(0, 6)}…${s.slice(-4)}` : s;
 };
+
+// ── Rutas: el camino y el sentido de la plata en cada tramo ──
+// 23 nov: la pantalla dibujaba "TDKwiu → TRV6t7 → TRFDKB" y al lado decía
+// "recibiste". Las flechas eran solo el orden del camino, no el sentido de
+// la plata, y se leían como "envié". Ahora cada flecha es el sentido real de
+// ese tramo, visto con esta dirección a la izquierda:
+//   ← la plata fue hacia esta dirección · → salió de ella
+//   ⇄ hubo de las dos                    · — no se sabe
+const FLECHA: Record<string, string> = { entrante: '←', saliente: '→', ambos: '⇄' };
+
+const tramoEnPalabras = (t: string | null | undefined, v: string) =>
+  t === 'entrante' ? `${v} le envió fondos a esta dirección`
+  : t === 'saliente' ? `esta dirección le envió fondos a ${v}`
+  : t === 'ambos' ? `esta dirección y ${v} se enviaron fondos en los dos sentidos`
+  : null;
+
+// La ruta dicha en una frase, tramo por tramo. Es lo que contesta la
+// pregunta "¿recibí o envié?" sin tener que leer flechas.
+function fraseRuta(r: any, nodos: string[], tramos: (string | null)[]): string | null {
+  const inter = nodos.slice(1, -1);
+  const flujo = flujoRuta(r);
+  const [t0, t1] = tramos;
+  if (!inter.length) {
+    return t0 === 'entrante' ? 'Esta dirección recibió fondos directamente de la señalada.'
+      : t0 === 'saliente' ? 'Esta dirección le envió fondos directamente a la señalada.'
+      : t0 === 'ambos' ? 'Esta dirección y la señalada se enviaron fondos directamente, en los dos sentidos.'
+      : null;
+  }
+  const v = enmascarar(inter[0]);
+  const primero = tramoEnPalabras(t0, v);
+  if (!primero) return null;
+  const Primero = primero.charAt(0).toUpperCase() + primero.slice(1);
+  if (inter.length === 1 && t1) {
+    // Si el primer tramo ya nombró al intermediario como sujeto, no se repite.
+    const quien = t0 === 'entrante' ? '' : `${v} `;
+    const segundo = t1 === 'entrante' ? `${quien}recibió fondos de la señalada`
+      : t1 === 'saliente' ? `${quien}le envió fondos a la señalada`
+      : `${t0 === 'entrante' ? 'se envió' : `${v} y la señalada se enviaron`} fondos en los dos sentidos${t0 === 'entrante' ? ' con la señalada' : ''}`;
+    const lectura = flujo === 'entrante' ? 'La plata de la señalada pudo llegar a esta dirección por este camino.'
+      : flujo === 'saliente' ? 'La plata de esta dirección pudo llegar a la señalada por este camino.'
+      : flujo === 'ambos' ? 'La plata pudo ir y venir entre la señalada y esta dirección por este camino.'
+      : flujo === 'cruzado' ? `Entre la señalada y esta dirección no pasa plata por este camino: solo comparten a ${v}.`
+      : '';
+    return `${Primero}, y ${segundo}. ${lectura}`;
+  }
+  // Camino del proveedor: solo se sabe el tramo que toca a esta dirección.
+  return `Primer tramo: ${primero}. El proveedor no informa el sentido de los tramos siguientes.`;
+}
 
 const hora = (t?: string | null) => {
   if (!t) return '—';
@@ -597,7 +645,9 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   setArmando(false);
                   // Si ya se rastrearon rutas, van al reporte: es el dato
                   // mas caro de obtener y seria absurdo dejarlo fuera.
-                  if (r?.ok) setReporte({ ...r, rutas });
+                  // Sin rastreo en pantalla, el del servidor: `{ ...r, rutas }` lo
+                  // pisaba con null y el reporte salía sin rutas.
+                  if (r?.ok) setReporte({ ...r, rutas: rutas ?? r.rutas });
                   else alert(r?.mensaje ?? 'No pudimos armar el reporte. Probá de nuevo.');
                 }}
                 disabled={armando}
@@ -697,17 +747,26 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                       // a tener dirección — que es lo que hace falta para ir a
                       // mirarlos. Cuando no viene, se sigue diciendo cuántos son.
                       const camino: any[] | null = Array.isArray(it.camino) && it.camino.length ? it.camino : null;
-                      const medios = camino ? camino.slice(1, -1).flatMap((n: any) => n.direcciones ?? []) : [];
+                      // De esta dirección hacia la señalada: el camino viene en
+                      // capas desde la señalada, así que los intermediarios se
+                      // dan vuelta. Antes salía "esta dirección → capa 2 → capa
+                      // 3 → señalada", con la capa que tocó a esta dirección al
+                      // lado de la señalada. El conector es "—": el proveedor
+                      // da el camino, no el sentido de la plata en cada tramo.
+                      const medios = camino ? camino.slice(1, -1).flatMap((n: any) => n.direcciones ?? []).reverse() : [];
                       return (
                       <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
                         <p style={{ fontFamily: MONO, fontSize: 11.5, color: C.sub, margin: 0, wordBreak: 'break-all', lineHeight: 1.6 }}>
                           esta dirección
                           {medios.length
-                            ? medios.slice(0, 4).map((m: string, k: number) => (
-                                <React.Fragment key={k}> {'→'} <span style={{ color: C.text }}>{enmascarar(m)}</span></React.Fragment>
-                              ))
-                            : (it.saltos && it.saltos > 1 ? ` → ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : '')}
-                          {' → '}
+                            ? <>
+                                {medios.slice(0, 4).map((m: string, k: number) => (
+                                  <React.Fragment key={k}> {'—'} <span style={{ color: C.text }}>{enmascarar(m)}</span></React.Fragment>
+                                ))}
+                                {medios.length > 4 ? ` — +${medios.length - 4}` : ''}
+                              </>
+                            : (it.saltos && it.saltos > 1 ? ` — ${it.saltos - 1} ${it.saltos - 1 === 1 ? 'intermediario' : 'intermediarios'}` : '')}
+                          {' — '}
                           <span style={{ color: ROJO.c, fontWeight: 700 }}>{it.entidad ?? 'entidad señalada'}</span>
                         </p>
                         {camino && camino[0]?.direcciones?.length ? (
@@ -727,6 +786,9 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                       );
                     })}
                     <p style={{ fontSize: 11.5, color: C.sub, margin: 0, padding: '11px 15px', borderTop: `1px solid ${C.bdSoft}`, lineHeight: 1.55 }}>
+                      El camino va de esta dirección a la entidad señalada, capa por capa. El proveedor
+                      no informa en qué sentido se movió la plata en cada tramo: para saber si esta
+                      dirección recibió o envió, usá «Rastrear intermediarios».
                       Una ruta contaminada no significa que el titular haya hecho algo: puede venir de
                       operaciones ajenas. Pero sí es lo que suele llevar a que un exchange congele fondos.
                     </p>
@@ -766,12 +828,15 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   contrapartes de cada contraparte. Llega hasta donde alcanza el
                   presupuesto, y eso se dice.
 
-              Lo que el proveedor NO manda es el sentido del flujo. Eso sale de
-              cruzar el camino con las contrapartes: si el primer tramo es una
-              dirección a la que le enviamos, es saliente. Cuando no aparece
-              entre las revisadas, se dice "sentido no confirmado" — nunca se
-              supone uno, porque "le enviaste a una dirección contaminada" y
-              "recibiste de una" no son la misma frase para nadie. */}
+              Lo que el proveedor NO manda es el sentido del flujo. En el
+              rastreo sale de la investigación de cada tramo (la analizada y
+              cada intermediario dicen a quién le mandaron y de quién
+              recibieron), y la ruta solo es "recibió" o "envió" si TODOS los
+              tramos van para ese lado (ver rastrearDesde en la función kyt).
+              En el camino del proveedor solo se conoce el tramo que toca a
+              esta dirección. Lo que no se sabe se dice — nunca se supone uno,
+              porque "le envió a una dirección señalada" y "recibió de una" no
+              son la misma frase para nadie. */}
           {rutas && (
             <div style={{ marginBottom: 14, border: `1px solid ${C.bdHard}`, borderRadius: 12, overflow: 'hidden' }}>
               <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.4px', color: C.sub, margin: 0, padding: '11px 15px', borderBottom: `1px solid ${C.bdSoft}` }}>
@@ -781,19 +846,41 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                 {rutas.contrapartesRevisadas > 0 ? ` · ${rutas.expandidos} de ${rutas.contrapartesRevisadas} contrapartes expandidas` : ''}
               </p>
 
-              {/* Lo primero que se lee: a quién le enviaste y de quién recibiste.
-                  Es la pregunta literal, respondida antes que el detalle. */}
+              {/* Lo primero que se lee: si esta dirección recibió de una señalada
+                  o le envió. Se cuenta con el sentido de TODOS los tramos: antes
+                  bastaba que un intermediario le hubiera mandado 0,01 para que
+                  dijera "Recibiste de 25 direcciones contaminadas", aunque ese
+                  intermediario les hubiera MANDADO a ellas. Se habla de "esta
+                  dirección" y no de "vos": la que se consulta casi nunca es la
+                  del cliente (es la de un proveedor, un cliente suyo, un
+                  exchange). */}
               {(() => {
-                const con = (f: string) => rutas.resumen.filter((g: any) => (g.flujos ?? []).includes(f));
-                const sal = con('saliente'); const ent = con('entrante');
-                const sinSentido = rutas.resumen.filter((g: any) => !(g.flujos ?? []).length);
-                if (!rutas.resumen.length) return null;
+                if (!rutas.rutas.length) return null;
+                const R = rutas.rutas.map((r: any) => ({ r, f: flujoRuta(r), ...caminoDe(r, rutas.address) }));
+                const uniq = (xs: any[]) => new Set(xs.filter(Boolean).map((x: any) => String(x).toLowerCase())).size;
+                const con = (fs: string[], directa: boolean) => R.filter((x: any) => fs.includes(x.f) && (x.nodos.length === 2) === directa);
+                const entD = con(['entrante', 'ambos'], true), entI = con(['entrante', 'ambos'], false);
+                const salD = con(['saliente', 'ambos'], true), salI = con(['saliente', 'ambos'], false);
+                const cruz = R.filter((x: any) => x.f === 'cruzado');
+                const sinS = R.filter((x: any) => !x.f);
+                const nS = (xs: any[]) => uniq(xs.map((x: any) => x.r.contaminante));
+                const nI = (xs: any[]) => uniq(xs.map((x: any) => x.nodos[1]));
+                const sen = (n: number) => `${n} ${n === 1 ? 'dirección señalada' : 'direcciones señaladas'}`;
+                const int = (n: number) => `${n} ${n === 1 ? 'intermediario' : 'intermediarios'}`;
+                const Rojo: React.FC<{ children: React.ReactNode }> = ({ children }) => <b style={{ color: ROJO.c, fontWeight: 800 }}>{children}</b>;
                 return (
                   <div style={{ padding: '12px 15px', borderBottom: `1px solid ${C.bdSoft}`, background: 'rgba(255,255,255,0.02)' }}>
                     <p style={{ fontSize: 12.5, color: C.text, margin: 0, lineHeight: 1.65 }}>
-                      {sal.length > 0 && <><b style={{ color: ROJO.c, fontWeight: 800 }}>Le enviaste</b> a {sal.length} {sal.length === 1 ? 'dirección contaminada' : 'direcciones contaminadas'}. </>}
-                      {ent.length > 0 && <><b style={{ color: ROJO.c, fontWeight: 800 }}>Recibiste</b> de {ent.length} {ent.length === 1 ? 'dirección contaminada' : 'direcciones contaminadas'}. </>}
-                      {sinSentido.length > 0 && <>{sal.length || ent.length ? 'Otras ' : ''}{sinSentido.length} {sinSentido.length === 1 ? 'ruta contaminada' : 'rutas contaminadas'} {sinSentido.length === 1 ? 'aparece' : 'aparecen'} sin sentido confirmado: sabemos que el camino existe, no si la plata entró o salió por él.</>}
+                      {entD.length > 0 && <><Rojo>Esta dirección recibió</Rojo> directamente de {sen(nS(entD))}. </>}
+                      {entI.length > 0 && <><Rojo>Esta dirección recibió</Rojo> de {int(nI(entI))} que a su vez {nI(entI) === 1 ? 'recibió' : 'recibieron'} de {sen(nS(entI))}. </>}
+                      {salD.length > 0 && <><Rojo>Esta dirección le envió</Rojo> directamente a {sen(nS(salD))}. </>}
+                      {salI.length > 0 && <><Rojo>Esta dirección le envió</Rojo> a {int(nI(salI))} que a su vez le {nI(salI) === 1 ? 'envió' : 'enviaron'} a {sen(nS(salI))}. </>}
+                      {cruz.length > 0 && <><b style={{ fontWeight: 800 }}>{sen(nS(cruz))}</b> solo {nS(cruz) === 1 ? 'comparte' : 'comparten'} intermediario con esta dirección: la plata no pasa entre {nS(cruz) === 1 ? 'ella' : 'ellas'} y esta dirección por ese camino. </>}
+                      {sinS.length > 0 && <>{sinS.length} {sinS.length === 1 ? 'ruta queda' : 'rutas quedan'} sin sentido confirmado: sabemos que el camino existe, no si la plata entró o salió por él.</>}
+                    </p>
+                    <p style={{ fontSize: 11, color: C.sub, margin: '6px 0 0', lineHeight: 1.55 }}>
+                      Flechas: ← la plata fue hacia esta dirección · → salió de ella · ⇄ en los dos sentidos · — sin dato.
+                      No se comparan fechas: un camino compatible no prueba que sea la misma plata.
                     </p>
                   </div>
                 );
@@ -805,34 +892,43 @@ export const KytSection: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
                   {!rutas.completo && ' Quedaron contrapartes sin revisar: esto no descarta que existan otras rutas.'}
                 </p>
               ) : rutas.rutas.map((r: any, i: number) => {
-                // El camino completo cuando lo manda el proveedor; el
-                // intermediario único cuando lo rastreamos nosotros.
-                const medios: string[] = r.intermediarios?.length
-                  ? r.intermediarios
-                  : (r.intermediario ? [r.intermediario] : []);
-                const flujoTexto = r.flujo === 'saliente' ? 'le enviaste'
-                  : r.flujo === 'entrante' ? 'recibiste'
-                  : r.flujo === 'ambos' ? 'enviaste y recibiste'
-                  : null;
+                const { nodos, tramos } = caminoDe(r, rutas.address);
+                // Caminos largos del proveedor: los seis primeros nodos y la
+                // señalada; lo del medio no tiene sentido conocido igual.
+                const largo = nodos.length > 7;
+                const vis = largo ? nodos.slice(0, 6) : nodos.slice(0, -1);
+                const frase = fraseRuta(r, nodos, tramos);
+                const conector = (t: string | null | undefined) => (
+                  <span style={{ color: t ? C.text : C.sub, fontWeight: t ? 700 : 400, padding: '0 5px' }}>{FLECHA[t ?? ''] ?? '—'}</span>
+                );
                 return (
                   <div key={i} style={{ padding: '11px 15px', borderTop: i ? `1px solid ${C.bdSoft}` : 'none' }}>
                     <p style={{ fontFamily: MONO, fontSize: 11, color: C.sub, margin: 0, wordBreak: 'break-all', lineHeight: 1.6 }}>
-                      {enmascarar(rutas.address)}
-                      {medios.slice(0, 5).map((m: string, k: number) => (
-                        <React.Fragment key={k}> {'→'} <span style={{ color: C.text }}>{enmascarar(m)}</span></React.Fragment>
+                      {vis.map((nd: string, k: number) => (
+                        <React.Fragment key={k}>
+                          {k > 0 && conector(tramos[k - 1])}
+                          <span style={{ color: k === 0 ? C.sub : C.text }}>{k === 0 ? 'esta dirección' : enmascarar(nd)}</span>
+                        </React.Fragment>
                       ))}
-                      {medios.length > 5 ? <> {'→'} <span style={{ color: C.sub }}>+{medios.length - 5}</span></> : null}
-                      {' → '}
-                      <span style={{ color: ROJO.c, fontWeight: 700 }}>{enmascarar(r.contaminante)}</span>
+                      {largo ? <>{conector(null)}<span style={{ color: C.sub }}>+{nodos.length - 7}</span>{conector(null)}</> : conector(tramos[nodos.length - 2])}
+                      <span style={{ color: ROJO.c, fontWeight: 700 }}>{enmascarar(nodos[nodos.length - 1])}</span>
                     </p>
                     <p style={{ fontSize: 12, color: C.text, margin: '5px 0 0' }}>
                       {r.etiquetaContaminante ?? r.tipoEs ?? 'contraparte señalada'}
                       {r.saltos != null ? ` · ${r.saltos} ${r.saltos === 1 ? 'salto' : 'saltos'}` : ''}
-                      {flujoTexto ? ` · ${flujoTexto}` : ''}
-                      {r.monto != null ? ` · ${Number(r.monto).toLocaleString('es-CO', { maximumFractionDigits: 2 })}` : ''}
+                      {r.monto != null
+                        ? r.fuente === 'proveedor'
+                          ? ` · ${Number(r.monto).toLocaleString('es-CO', { maximumFractionDigits: 2 })} de volumen vinculado`
+                          : ` · ${Number(r.monto).toLocaleString('es-CO', { maximumFractionDigits: 6 })} en el tramo con esta dirección`
+                        : ''}
                     </p>
+                    {frase && (
+                      <p style={{ fontSize: 11.5, color: flujoRuta(r) === 'cruzado' ? C.sub : C.text, margin: '4px 0 0', lineHeight: 1.55 }}>
+                        {frase}
+                      </p>
+                    )}
                     {/* Los dos avisos que no se pueden callar. */}
-                    {r.flujoDesconocido && (
+                    {!tramos[0] && (
                       <p style={{ fontSize: 11, color: C.sub, margin: '4px 0 0', lineHeight: 1.55 }}>
                         Sentido no confirmado: esa contraparte no apareció entre las revisadas, así que
                         no sabemos si la plata salió o entró por acá.
