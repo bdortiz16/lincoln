@@ -711,7 +711,10 @@ const WalletOrigen: React.FC<{
         onVerificado(r);
     };
 
-    const cara = verif ? (CARA_RIESGO[verif.categoria] ?? CARA_RIESGO.sin_dato) : null;
+    // Wallet nueva aceptada por excepción (23 nov): se ve en verde y con su
+    // nombre; el nivel que dio el análisis queda escrito al lado, sin taparlo.
+    const nueva = verif?.excepcion === 'wallet_nueva' && verif?.permitido === true;
+    const cara = verif ? (nueva ? { t: 'WALLET NUEVA · ACEPTADA', c: '#4ADE80' } : (CARA_RIESGO[verif.categoria] ?? CARA_RIESGO.sin_dato)) : null;
     const motivos = verif ? hallazgosEnEspanol(verif.hallazgos ?? [], 6) : [];
     const n2 = (v: any, d = 2) => v == null ? '—' : Number(v).toLocaleString('es-CO', { maximumFractionDigits: d });
 
@@ -734,7 +737,7 @@ const WalletOrigen: React.FC<{
                 )}
             </div>
             <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 10, lineHeight: 1.5 }}>
-                Revisamos su riesgo antes de abrir el cierre. Solo se aceptan wallets de riesgo bajo, y los USDT tienen que salir de esta misma wallet.
+                Revisamos su riesgo antes de abrir el cierre. Se aceptan wallets de riesgo bajo (o nuevas, sin otras señales), y los USDT tienen que salir de esta misma wallet.
             </p>
             <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
                 {REDES_OTC.map(o => {
@@ -817,6 +820,7 @@ const WalletOrigen: React.FC<{
                         </span>
                         <span style={{ fontSize: 12, color: '#878E88' }}>
                             Puntaje <b style={{ color: '#F4F4F2' }}>{verif.puntaje ?? '—'}</b> / 100 · {verif.red}
+                            {nueva && verif.categoria && verif.categoria !== 'bajo' ? ` · nivel del análisis: ${verif.categoria}` : ''}
                         </span>
                     </div>
 
@@ -846,7 +850,9 @@ const WalletOrigen: React.FC<{
                             : <XCircle size={14} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />}
                         <p style={{ fontSize: 12, color: verif.permitido ? '#F4F4F2' : '#F87171', lineHeight: 1.5 }}>
                             {verif.permitido
-                                ? 'Wallet aprobada para la mesa. Ya puedes solicitar el cierre.'
+                                ? (nueva
+                                    ? 'Wallet nueva, sin historial y sin otras señales: se acepta para la mesa. Ya puedes solicitar el cierre.'
+                                    : 'Wallet aprobada para la mesa. Ya puedes solicitar el cierre.')
                                 : `${verif.motivoBloqueo ?? 'Esta wallet no pasó la revisión de riesgo.'} No se puede usar para la mesa.`}
                         </p>
                     </div>

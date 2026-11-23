@@ -291,7 +291,7 @@ const Registro: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onA
     const COL = ['Fecha (Bogotá)', 'Empresa', 'Persona', 'Correo', 'Id cliente', 'Red', 'Wallet', 'Riesgo', 'Puntaje', 'Nivel del proveedor', 'Resultado', 'Motivo', 'Hallazgos', 'Saldo USDT al revisar', 'Revisión del proveedor', 'Cierres OTC', 'Empresas que la cargaron'];
     const fila = (f: any) => [
       fechaPlana(f.fecha), f.empresa ?? '', f.nombre ?? '', f.email ?? '', f.userId ?? '', RED[f.coin] ?? f.coin ?? '', f.address ?? '',
-      RIESGO[f.categoria]?.t ?? f.categoria ?? '', f.puntaje ?? '', f.nivel ?? '', f.permitido ? 'Permitida' : 'Bloqueada', f.motivo ?? '',
+      RIESGO[f.categoria]?.t ?? f.categoria ?? '', f.puntaje ?? '', f.nivel ?? '', f.permitido ? (f.excepcion === 'wallet_nueva' ? 'Permitida (excepción: wallet nueva)' : 'Permitida') : 'Bloqueada', f.motivo ?? '',
       hallazgosEnEspanol(f.hallazgos ?? [], 10).join(' · '), f.saldoUsdt ?? '', fechaPlana(f.consultadoAt),
       (f.cierres ?? []).map((c: any) => `${c.ref} (${c.status})`).join(' · '), f.empresasDistintas ?? 1,
     ];
@@ -381,6 +381,9 @@ const Registro: React.FC<{ onAbrirCliente?: (userId: string) => void }> = ({ onA
                     </td>
                     <td style={{ padding: '10px' }}>
                       {f.permitido ? <Chip c={C.verde}><Check size={11} /> Permitida</Chip> : <Chip c={C.rojo}><X size={11} /> Bloqueada</Chip>}
+                      {/* Aceptada por la excepción de wallet nueva (23 nov): Cumplimiento
+                          tiene que ver que no pasó por la regla normal. */}
+                      {f.permitido && f.excepcion === 'wallet_nueva' && <p style={{ color: C.sub, marginTop: 4, maxWidth: 200, lineHeight: 1.4 }}>Por excepción: wallet nueva, sin otras señales</p>}
                       {!f.permitido && f.motivo && <p style={{ color: C.sub, marginTop: 4, maxWidth: 200, lineHeight: 1.4 }}>{f.motivo === 'sin_resultado' ? 'Sin resultado del proveedor' : f.motivo}</p>}
                     </td>
                     <td style={{ padding: '10px', color: C.texto }}>

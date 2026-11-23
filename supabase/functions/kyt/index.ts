@@ -2051,7 +2051,24 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
       // más estricta, como con MistTrack.
       const sbOtc = sarblockDe(f)
       const recomendacion = sbOtc?.recomendacion ?? null
-      const permitido = categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')
+      // WALLET NUEVA (23 nov, decisión del dueño): una wallet recién creada
+      // sale con nivel MEDIUM y la señal NEW_WALLET solo porque no tiene
+      // historial, aunque no haya tocado nada riesgoso (el caso real: puntaje
+      // 15/100). La mesa la rechazaba como "riesgo medio". Se deja operar
+      // cuando NEW_WALLET es la ÚNICA señal y nada más la marca: sin sanción,
+      // sin recomendación de bloquear, sin nivel alto, sin otros indicadores
+      // y con el puntaje dentro de la franja baja de la escala del propio
+      // proveedor (1–49). Cualquier otra señal junto a ella vuelve a la regla
+      // normal. El nivel y el puntaje se guardan tal cual vinieron: lo que
+      // cambia es la decisión de la mesa, y queda anotada como excepción.
+      const codigosSb = (sbOtc?.senales ?? []).map(sx => String(sx.code ?? '').toUpperCase())
+      const puntajeSb = Number(f.risk_score)
+      const soloWalletNueva = !!sbOtc && codigosSb.length > 0 && codigosSb.every(k => k === 'NEW_WALLET')
+        && !sbOtc.sancionada && recomendacion !== 'BLOCK' && categoria !== 'alto'
+        && (Array.isArray(f.detail_list) ? f.detail_list.length : 0) === 0 && !f.hacking_event
+        && f.risk_score != null && Number.isFinite(puntajeSb) && puntajeSb < 50
+      const permitido = (categoria === 'bajo' && motivos.length === 0 && (!sbOtc || recomendacion === 'CLEAR')) || soloWalletNueva
+      const excepcion = soloWalletNueva && !(categoria === 'bajo' && motivos.length === 0 && recomendacion === 'CLEAR') ? 'wallet_nueva' : null
       const REC_ES: Record<string, string> = { MONITOR: 'operar con vigilancia', REVIEW: 'revisión de cumplimiento antes de operar', BLOCK: 'no operar' }
       const motivoBloqueo = permitido ? null
         : categoria === 'sin_dato' ? 'No hay un resultado de riesgo para esta wallet.'
@@ -2067,12 +2084,12 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
         coin, address: f.address ?? dir, addressLower: dir.toLowerCase(), red: REDES_OTC[coin],
         categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
         proveedor: proveedorDe(f), recomendacion, analisisId: sbOtc?.analisisId ?? null,
-        permitido, motivo: motivoBloqueo, hallazgos: motivos.slice(0, 10),
+        permitido, excepcion, motivo: motivoBloqueo, hallazgos: motivos.slice(0, 10),
         saldoUsdt, consultadoAt: f.consultado_at ?? null, delPadron,
         empresa: quien.empresa, email: quien.email, nombre,
       })
       return json({
-        ok: true, permitido, motivoBloqueo,
+        ok: true, permitido, motivoBloqueo, excepcion,
         coin, red: REDES_OTC[coin], address: f.address ?? dir,
         categoria, puntaje: f.risk_score ?? null, nivel: f.risk_level ?? null,
         recomendacion,
@@ -2134,7 +2151,7 @@ async function atender(req: Request, body: any, accion: string, yo: Yo): Promise
           empresa: m.empresa ?? null, nombre: m.nombre ?? null, email: m.email ?? null,
           coin: m.coin ?? null, red: m.red ?? m.coin ?? null, address: m.address ?? null,
           categoria: m.categoria ?? null, puntaje: m.puntaje ?? null, nivel: m.nivel ?? null,
-          permitido: m.permitido === true, motivo: m.motivo ?? null, hallazgos: m.hallazgos ?? [],
+          permitido: m.permitido === true, excepcion: m.excepcion ?? null, motivo: m.motivo ?? null, hallazgos: m.hallazgos ?? [],
           saldoUsdt: m.saldoUsdt ?? null, consultadoAt: m.consultadoAt ?? null,
           cierres: (porWallet.get(k) ?? []).filter(x => String(x.userId) === String(r.user_id)),
           empresasDistintas: empresasPorWallet.get(k)?.size ?? 1,

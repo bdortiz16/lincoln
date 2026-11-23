@@ -80,6 +80,11 @@ function cosaEnEspanol(s: string): string | null {
   return null;
 }
 
+const CODIGO_SENAL_ES: Record<string, string> = {
+  NEW_WALLET: 'Wallet nueva: todavía tiene poco o ningún historial en la red',
+  RAPID_PASS_THROUGH: 'Paso rápido de fondos: el dinero entra y sale enseguida',
+};
+
 /**
  * Traduce un hallazgo de MistTrack. Si no lo reconoce lo devuelve TAL CUAL —
  * nunca aproximado.
@@ -87,6 +92,9 @@ function cosaEnEspanol(s: string): string | null {
 export function hallazgoEnEspanol(raw: any): string {
   const s = String(typeof raw === 'string' ? raw : (raw?.label ?? raw?.name ?? raw?.type ?? '')).trim();
   if (!s) return '';
+  // Códigos de señal de SARBLOCK que ya llegaron a la pantalla en crudo
+  // ("NEW_WALLET"). Solo los que conocemos; uno nuevo sigue saliendo tal cual.
+  if (CODIGO_SENAL_ES[s.toUpperCase()]) return CODIGO_SENAL_ES[s.toUpperCase()];
 
   for (const [re, es] of FRASES) if (re.test(s)) return es;
 
@@ -360,6 +368,8 @@ export function descripcionSenalSb(code: any, category?: any): string {
   const cat = String(category ?? '').toUpperCase();
   if (c === 'SANCTIONED_OFAC') return 'La dirección figura en la lista de sanciones de OFAC (Departamento del Tesoro de EE. UU.).';
   if (/^SANCTION/.test(c)) return 'La dirección figura en una lista oficial de sanciones.';
+  if (c === 'NEW_WALLET') return 'La wallet es nueva: todavía tiene poco o ningún historial en la red. No dice nada malo de ella; solo que no hay de dónde juzgarla.';
+  if (c === 'RAPID_PASS_THROUGH') return 'Los fondos entran y salen de la wallet en poco tiempo, un patrón que se revisa porque puede servir para mover dinero de paso.';
   if (c === 'MIXER_INTERACTION') return 'La wallet movió fondos con un mezclador, un servicio que junta fondos de muchas personas para ocultar su origen.';
   if (/_INTERACTION$/.test(c)) return `La wallet movió fondos con ${CATEGORIA_SB[c.replace(/_INTERACTION$/, '')] ?? CATEGORIA_SB[cat] ?? 'una contraparte de riesgo'}.`;
   if (cat && CATEGORIA_SB_NOMBRE[cat]) return `Hallazgo de la categoría «${CATEGORIA_SB_NOMBRE[cat]}».`;
