@@ -103,6 +103,7 @@ import { AdminOtcCierres } from './AdminOtcCierres';
 import { AdminApiExterna } from './AdminApiExterna';
 import { AdminCoinsenda } from './AdminCoinsenda';
 import { AdminBancosAchMouv } from './AdminBancosAchMouv';
+import { AdminFinityInscripciones } from './AdminFinityInscripciones';
 import { sonarCampana, campanaActiva } from './campanaOtc';
 import { Zap, Send, ArrowLeftRight, ArrowLeft, Info, Link2, MessageSquare, Clock, Paperclip } from 'lucide-react';
 import { pedirAdmin, pedirAutorizaciones } from './adminApi';
@@ -2625,6 +2626,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         {b.rail === 'COP_BREB' && esDueno && <AdminBancosAchMouv />}
                       </>
                     )}
+                    {/* 23 nov: por qué no llegan las inscripciones a Finity. Va
+                        fuera de la carga del saldo: si Finity no conecta, el
+                        saldo da error y es justo cuando hace falta verlo. */}
+                    {b.rail === 'COP_ACH' && <div><AdminFinityInscripciones /></div>}
                   </div>
                 );
               })}

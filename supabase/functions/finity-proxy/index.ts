@@ -14,8 +14,10 @@
 // Secrets necesarios (Edge Functions → Manage secrets):
 //   FINITY_CLIENT_ID      m2m-client-...
 //   FINITY_CLIENT_SECRET  (el secret del portal — NUNCA en el código)
-//   FINITY_BASE_URL       opcional, default https://sandbox.finity.com.co
-//                         (producción: https://api.finity.com.co)
+//   FINITY_BASE_URL       opcional y casi nunca necesario: el servidor es
+//                         https://api.finity.com.co (el único dominio activo
+//                         desde el 23 nov). Solo se respeta un sandbox puesto
+//                         a propósito; cualquier otro valor se ignora.
 //
 // Acciones (POST { action, ...params }):
 //   ping                 → valida credenciales: obtiene token y responde ok
@@ -37,6 +39,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { equipoPermite } from '../_shared/equipo.ts'
 import { requireMfaSession } from '../_shared/admin-auth.ts'
+import { mergeRaw } from '../_shared/raw-data.ts'
+import { cuerpoCuentaFinity, esCuentaAchFinity, BANK_CODES_CO } from '../_shared/cuenta-finity.ts'
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? ''
 const SERVICE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
@@ -53,24 +57,34 @@ function igualSeguro(a: string, b: string): boolean {
 // o saltos de línea — y Finity rechaza el valor con basura invisible.
 const FINITY_ID      = (Deno.env.get('FINITY_CLIENT_ID') ?? '').trim()
 const FINITY_SECRET  = (Deno.env.get('FINITY_CLIENT_SECRET') ?? '').trim()
-// Default: servidor REAL (el de la doc). El sandbox (sandbox.finity.com.co)
-// devuelve datos de EJEMPLO (id placeholder, tasa inventada) — solo úsalo
-// seteando FINITY_BASE_URL explícitamente para pruebas.
-// ─── Servidores (doc oficial: servers[]) ───
-//   Producción: https://api.finity.com.co       (tasa REAL)
-//   Sandbox:    https://sandbox.finity.com.co   (datos de PRUEBA — portal)
-// Modo AUTO (sin FINITY_BASE_URL): se intenta PRODUCCIÓN primero y, si
-// rechaza las credenciales, se cae al sandbox. El día que Finity habilite
-// las credenciales de producción, la app pasa a la tasa real SOLA.
-// Si FINITY_BASE_URL está seteado, se usa ese servidor y nada más.
+// Servidor REAL (el de la doc). Un sandbox devuelve datos de EJEMPLO (id
+// placeholder, tasa inventada): solo con FINITY_BASE_URL puesto a propósito.
 // (trim + sin barras finales: "https://.../" producía //v0/... → 404)
-// Confirmados por la doc oficial (api-finity-docs.readme.io, OpenAPI servers):
-//   Producción: https://api.finity.com.co
-//   Sandbox:    https://sandbox.dev.finity.com.co  (¡lleva .dev!)
 const PROD_BASE      = 'https://api.finity.com.co'
-const SANDBOX_BASE   = 'https://sandbox.dev.finity.com.co'
-const FINITY_BASE_ENV = (Deno.env.get('FINITY_BASE_URL') ?? '').trim().replace(/\/+$/, '')
-// Servidor activo (se resuelve al obtener el primer token)
+// 23 nov: Finity avisó que el ÚNICO dominio de su API que queda activo es
+// https://api.finity.com.co, y las inscripciones de cuentas dejaron de
+// llegarle. Dos caminos podían mandarlas a otro lado sin que nadie lo viera:
+//   1. El secret FINITY_BASE_URL, si quedó con un dominio viejo, reemplazaba
+//      al de producción para TODO (token, inscripciones, envíos).
+//   2. El modo AUTO: si producción no daba el token en 6 s (un momento lento),
+//      se pedía al sandbox, y con ese token toda la instancia hablaba con el
+//      servidor de PRUEBAS mientras durara: la cuenta "se inscribía" (con un
+//      id del sandbox) y al Finity real no llegaba nada.
+// Ahora: producción siempre. FINITY_BASE_URL solo cuenta si es el mismo
+// dominio de producción o un sandbox puesto A PROPÓSITO (contiene
+// "sandbox"); cualquier otro valor se ignora y el diagnóstico lo dice.
+const FINITY_BASE_RAW = (Deno.env.get('FINITY_BASE_URL') ?? '').trim().replace(/\/+$/, '')
+const baseValida = (u: string): boolean => {
+  try {
+    const h = new URL(u).hostname.toLowerCase()
+    return h === 'api.finity.com.co' || h.includes('sandbox')
+  } catch { return false }
+}
+const FINITY_BASE_ENV = FINITY_BASE_RAW && baseValida(FINITY_BASE_RAW) ? FINITY_BASE_RAW : ''
+// Lo que se ignoró, para decirlo en el diagnóstico del panel.
+const FINITY_BASE_IGNORADA = FINITY_BASE_RAW && !FINITY_BASE_ENV ? FINITY_BASE_RAW : null
+if (FINITY_BASE_IGNORADA) console.warn(`[finity] FINITY_BASE_URL=${FINITY_BASE_IGNORADA} no es el dominio activo de Finity: se usa ${PROD_BASE}`)
+// Servidor activo: producción, salvo un sandbox explícito.
 let FINITY_BASE = FINITY_BASE_ENV || PROD_BASE
 
 const db = createClient(SUPABASE_URL, SERVICE_KEY)
@@ -170,6 +184,9 @@ async function finityTry(resource: string, init: RequestInit = {}, qs = ''): Pro
 // ─── Token OAuth con caché en memoria (se renueva solo) ───
 let tokenCache: { token: string; exp: number; base: string } | null = null
 
+// El último rechazo del token, para el diagnóstico (sin credenciales).
+let ultimoRechazoToken: { base: string; status: number; cuerpo: string; at: string } | null = null
+
 // Pide token a UN servidor. Devuelve null si ese servidor rechaza.
 async function tokenFrom(base: string): Promise<{ token: string; ttl: number } | null> {
   const res = await fetch(`${base}${FINITY_TOKEN_PATH}`, {
@@ -180,15 +197,18 @@ async function tokenFrom(base: string): Promise<{ token: string; ttl: number } |
       client_id: FINITY_ID,
       client_secret: FINITY_SECRET,
     }),
-    // Un servidor que no responde no puede colgar el proxy entero. 6s por
-    // servidor → PROD + SANDBOX peor caso ~12s, bajo el timeout del frontend
-    // (22s) para que un Finity lento no dispare "tardando" en falso.
-    signal: AbortSignal.timeout(6000),
-  }).catch(() => null)
+    // Un servidor que no responde no puede colgar el proxy entero. Ya no hay
+    // segundo servidor al que caer (ver PROD_BASE): 10 s para el único.
+    signal: AbortSignal.timeout(10_000),
+  }).catch((e) => {
+    ultimoRechazoToken = { base, status: 0, cuerpo: `sin respuesta: ${String((e as Error)?.message ?? e).slice(0, 120)}`, at: new Date().toISOString() }
+    return null
+  })
   if (!res) return null
   const body = await res.json().catch(() => ({}))
   if (!res.ok || !body.access_token) {
     console.warn(`[finity] token rechazado por ${base}:`, res.status, JSON.stringify(body).slice(0, 200))
+    ultimoRechazoToken = { base, status: res.status, cuerpo: JSON.stringify(body).slice(0, 200), at: new Date().toISOString() }
     return null
   }
   return { token: body.access_token, ttl: (Number(body.expires_in) || 300) * 1000 }
@@ -199,9 +219,9 @@ async function getFinityToken(): Promise<string> {
     FINITY_BASE = tokenCache.base
     return tokenCache.token
   }
-  // Con FINITY_BASE_URL fijado: solo ese servidor. Sin él (modo AUTO):
-  // producción primero, sandbox de respaldo.
-  const candidates = FINITY_BASE_ENV ? [FINITY_BASE_ENV] : [PROD_BASE, SANDBOX_BASE]
+  // Un solo servidor: producción, o el sandbox puesto a propósito. Sin
+  // respaldo al sandbox: ver el comentario de PROD_BASE.
+  const candidates = [FINITY_BASE_ENV || PROD_BASE]
   for (const base of candidates) {
     const t = await tokenFrom(base)
     if (t) {
@@ -561,6 +581,12 @@ async function esMiReferencia(caller: { userId?: string; internal?: boolean }, i
 const PERMISO_FINITY: Record<string, string | string[]> = {
   // 'fn.*': las casillas del colaborador que leen la bolsa (_shared/equipo.ts).
   treasury_balances: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  // Inscripciones a Finity (23 nov): ver por qué no llegan, reintentar las
+  // pendientes y reanudar la pausa. Leen nombres y cuentas (enmascaradas) de
+  // los beneficiarios de los clientes.
+  inscripciones_diag: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.fallos'],
+  inscribir_pendientes: ['plata.mover', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.fallos'],
+  inscripciones_reanudar: ['plata.mover', 'tesoreria', 'fn.fallos'],
 }
 
 async function validCaller(req: Request, payload: Record<string, unknown>): Promise<{ ok: boolean; userId?: string; internal?: boolean; viaJwt?: boolean; servicio?: boolean }> {
@@ -698,6 +724,134 @@ function extractRate(d: any): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+// ─── Inscribir una cuenta destino en Finity ───
+// La usan la acción create_external_account (pantalla del cliente, panel,
+// mouv-proxy al enviar) y el reintento del servidor (inscribir_pendientes).
+// Devuelve lo mismo que la acción: { ok, status, path, data, id, … }.
+async function inscribirCuentaFinity(userId: string, dataIn: any): Promise<Record<string, any>> {
+  const cuenta = (dataIn as any)?.account ?? {}
+  // Limpieza en el SERVIDOR, venga de donde venga (app vieja en caché,
+  // panel admin): Finity exige solo dígitos, de 6 a 20. Guiones, puntos
+  // y espacios se quitan aquí, y lo que no alcanza ni se envía.
+  if ((dataIn as any)?.account) {
+    cuenta.account_number = String(cuenta.account_number ?? '').replace(/\D/g, '')
+    // Finity acepta CC | CE | NIT | PASSPORT | PPT (doc oficial, 23 nov).
+    // Un "PAS"/"PASAPORTE" de una pantalla vieja se traduce aquí.
+    if (['PAS', 'PASAPORTE'].includes(String(cuenta.account_holder_id_type ?? '').toUpperCase())) {
+      cuenta.account_holder_id_type = 'PASSPORT'
+    }
+    if (['CC', 'NIT'].includes(String(cuenta.account_holder_id_type ?? '').toUpperCase())) {
+      cuenta.account_holder_id_number = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
+    }
+    if (cuenta.account_number.length < 6 || cuenta.account_number.length > 20) {
+      return { ok: false, status: 400, path: null, data: { message: `El número de cuenta debe tener entre 6 y 20 dígitos (tiene ${cuenta.account_number.length}). Revísalo con el banco.` } }
+    }
+  }
+  const accDigits = String(cuenta.account_number ?? '').replace(/\D/g, '')
+
+  // 1) FRENO GENERAL. Si Finity ya contestó 403/429 hace poco, no se le
+  //    vuelve a pegar hasta que pase la espera: insistir es justo lo que
+  //    hace que un proveedor bloquee (pasó el 6 y el 7 de octubre).
+  const freno = await leerFrenoInscripciones()
+  // Los mensajes de esta acción los ve el cliente (estado del contacto):
+  // sin el nombre del aliado.
+  if (freno) {
+    return { ok: false, status: 429, frenado: true, path: null, data: { message: `Inscripciones en pausa hasta ${new Date(freno.hasta).toISOString()} (el banco respondió ${freno.http}). Se reintenta sola.` } }
+  }
+
+  // 2) ¿YA ESTÁ INSCRITA? Se busca en la lista (de caché) por número de
+  //    cuenta y documento. Si está, se devuelve esa: ni se duplica ni se
+  //    gasta una llamada de creación.
+  if (accDigits) {
+    // La lista puede ser grande y lenta. Si no contesta en 12 s se sigue
+    // sin ella: antes su espera más la de la creación pasaban del límite
+    // del navegador y la inscripción se perdía sin dejar rastro.
+    const lista = await Promise.race([
+      listaCuentasFinity().catch(() => null),
+      new Promise<null>(r => setTimeout(() => r(null), 12_000)),
+    ]) ?? { ok: false, status: 0, path: '', data: null, cache: false }
+    const filas = filasDe(lista.data)
+    const docDigits = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
+    const ya = filas.find((x: any) => {
+      const n = String(x?.account_number ?? x?.account?.account_number ?? '').replace(/\D/g, '')
+      if (!n || n !== accDigits) return false
+      const d = String(x?.account_holder_id_number ?? x?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
+      return !docDigits || !d || d === docDigits
+    })
+    if (ya) return { ok: true, status: 200, path: lista.path, data: ya, id: idDeCuenta(ya), reutilizada: true }
+  }
+
+  // 3) La MISMA cuenta rechazada hace menos de 10 min no se vuelve a
+  //    mandar: la respuesta va a ser la misma.
+  if (accDigits) {
+    const { data: previo } = await db.from('admin_actions')
+      .select('created_at, metadata')
+      .eq('action', 'finity.external_account.create')
+      .filter('metadata->enviado->account->>account_number', 'eq', String(cuenta.account_number ?? ''))
+      .gte('created_at', new Date(Date.now() - 10 * 60_000).toISOString())
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()
+    const st = Number((previo as any)?.metadata?.status ?? 0)
+    // Solo si se manda EXACTAMENTE lo mismo: si el cliente corrigió el
+    // documento o el nombre, eso sí tiene que llegar a Finity.
+    // jsonb reordena las claves: se compara con las claves ordenadas.
+    const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
+      : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v
+    const igual = (a: any, b: any) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null))
+    if (previo && st >= 400 && st !== 403 && st !== 429 && igual((previo as any).metadata?.enviado, dataIn)) {
+      let dataPrev: any = null
+      try { dataPrev = JSON.parse(String((previo as any).metadata?.respuesta ?? 'null')) } catch { /* */ }
+      return { ok: false, status: st, repetida: true, path: (previo as any).metadata?.path ?? null, data: dataPrev ?? { message: 'Rechazada hace menos de 10 minutos; se reintenta más tarde.' } }
+    }
+  }
+
+  // Una sola ruta y 40 s: Finity tarda ~9 s en crear y a veces mucho más
+  // (valida con el banco). Con el corte de 15 s de antes, la creación se
+  // abortaba a medias y no quedaba ni rastro en la auditoría.
+  const path = WORKING['externalAccounts'] ?? '/v0/external-accounts'
+  let res: Response
+  try {
+    res = await finityFetch(path, {
+      method: 'POST',
+      body: JSON.stringify(dataIn ?? {}),
+      signal: AbortSignal.timeout(40_000),
+    })
+  } catch (e) {
+    const err = String((e as Error)?.message ?? e)
+    // Si lo que falló fue el TOKEN, a Finity no llegó nada: no hubo creación
+    // posible. Antes se registraba igual que un "no respondió a tiempo" y la
+    // causa (credenciales o dominio) quedaba escondida (23 nov).
+    const sinToken = /finity_auth_failed/.test(err)
+    // Sin respuesta: Finity PUDO haberla creado. Se invalida la lista para
+    // que el próximo intento la encuentre ahí en vez de duplicarla.
+    listaCache = null
+    await logAudit(userId, 'finity.external_account.create', {
+      status: 0, path, ok: false, enviado: dataIn, idCreado: null,
+      error: err.slice(0, 200), ...(sinToken ? { sinToken: true, base: FINITY_BASE } : {}),
+    })
+    return sinToken
+      ? { ok: false, status: 0, path, sinToken: true, data: { message: 'No se pudo conectar con el banco para inscribir la cuenta. Se reintenta solo en unos minutos.' } }
+      : { ok: false, status: 0, path, sinRespuesta: true, data: { message: 'El banco no respondió a tiempo. Se reintenta solo en unos minutos.' } }
+  }
+  const data = await res.json().catch(() => null)
+  if (res.status === 403 || res.status === 429) await ponerFrenoInscripciones(res.status)
+  if (res.ok) listaCache = null
+  // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
+  // cuenta que se quedaba "en validación" no se podía diagnosticar: había
+  // registro de lo que se mandó y ninguno de lo que contestó el banco.
+  const idCreado = idDeCuenta(data)
+  await logAudit(userId, 'finity.external_account.create', {
+    status: res.status, path, ok: res.ok,
+    enviado: dataIn,
+    idCreado,
+    respuesta: JSON.stringify(data ?? {}).slice(0, 600),
+  })
+  // El id va también arriba, ya resuelto: si Finity lo anida
+  // ({ data: { id } }) y el navegador no lo encuentra, cree que la cuenta
+  // sigue sin inscribir y la vuelve a crear — así quedaron cuentas
+  // creadas 20 y 41 veces y Finity bloqueó la API.
+  return { ok: res.ok, status: res.status, path, data, id: idCreado }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   const json = (status: number, body: unknown) =>
@@ -798,7 +952,10 @@ Deno.serve(async (req) => {
     if (action === 'ping') {
       await getFinityToken()
       const modo = FINITY_BASE === PROD_BASE ? 'PRODUCCIÓN (tasa real)' : 'SANDBOX (datos de prueba)'
-      return json(200, { ok: true, base: FINITY_BASE, message: `Credenciales válidas — conectado a ${modo}. (proxy v5.2)` })
+      return json(200, {
+        ok: true, base: FINITY_BASE, baseIgnorada: FINITY_BASE_IGNORADA,
+        message: `Credenciales válidas — conectado a ${modo} (${FINITY_BASE}).${FINITY_BASE_IGNORADA ? ` Se ignoró FINITY_BASE_URL=${FINITY_BASE_IGNORADA}: no es el dominio activo de Finity; bórrala en Supabase.` : ''} (proxy v5.3)`,
+      })
     }
 
     if (action === 'balance') {
@@ -979,115 +1136,141 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'create_external_account') {
-      const cuenta = (payload.data as any)?.account ?? {}
-      // Limpieza en el SERVIDOR, venga de donde venga (app vieja en caché,
-      // panel admin): Finity exige solo dígitos, de 6 a 20. Guiones, puntos
-      // y espacios se quitan aquí, y lo que no alcanza ni se envía.
-      if ((payload.data as any)?.account) {
-        cuenta.account_number = String(cuenta.account_number ?? '').replace(/\D/g, '')
-        if (['CC', 'NIT'].includes(String(cuenta.account_holder_id_type ?? '').toUpperCase())) {
-          cuenta.account_holder_id_number = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
-        }
-        if (cuenta.account_number.length < 6 || cuenta.account_number.length > 20) {
-          return json(200, { ok: false, status: 400, path: null, data: { message: `El número de cuenta debe tener entre 6 y 20 dígitos (tiene ${cuenta.account_number.length}). Revísalo con el banco.` } })
-        }
-      }
-      const accDigits = String(cuenta.account_number ?? '').replace(/\D/g, '')
+      return json(200, await inscribirCuentaFinity(caller.userId!, payload.data))
+    }
 
-      // 1) FRENO GENERAL. Si Finity ya contestó 403/429 hace poco, no se le
-      //    vuelve a pegar hasta que pase la espera: insistir es justo lo que
-      //    hace que un proveedor bloquee (pasó el 6 y el 7 de octubre).
-      const freno = await leerFrenoInscripciones()
-      // Los mensajes de esta acción los ve el cliente (estado del contacto):
-      // sin el nombre del aliado.
-      if (freno) {
-        return json(200, { ok: false, status: 429, frenado: true, path: null, data: { message: `Inscripciones en pausa hasta ${new Date(freno.hasta).toISOString()} (el banco respondió ${freno.http}). Se reintenta sola.` } })
-      }
-
-      // 2) ¿YA ESTÁ INSCRITA? Se busca en la lista (de caché) por número de
-      //    cuenta y documento. Si está, se devuelve esa: ni se duplica ni se
-      //    gasta una llamada de creación.
-      if (accDigits) {
-        // La lista puede ser grande y lenta. Si no contesta en 12 s se sigue
-        // sin ella: antes su espera más la de la creación pasaban del límite
-        // del navegador y la inscripción se perdía sin dejar rastro.
-        const lista = await Promise.race([
-          listaCuentasFinity().catch(() => null),
-          new Promise<null>(r => setTimeout(() => r(null), 12_000)),
-        ]) ?? { ok: false, status: 0, path: '', data: null, cache: false }
-        const filas = filasDe(lista.data)
-        const docDigits = String(cuenta.account_holder_id_number ?? '').replace(/\D/g, '')
-        const ya = filas.find((x: any) => {
-          const n = String(x?.account_number ?? x?.account?.account_number ?? '').replace(/\D/g, '')
-          if (!n || n !== accDigits) return false
-          const d = String(x?.account_holder_id_number ?? x?.account?.account_holder_id_number ?? '').replace(/\D/g, '')
-          return !docDigits || !d || d === docDigits
-        })
-        if (ya) return json(200, { ok: true, status: 200, path: lista.path, data: ya, id: idDeCuenta(ya), reutilizada: true })
-      }
-
-      // 3) La MISMA cuenta rechazada hace menos de 10 min no se vuelve a
-      //    mandar: la respuesta va a ser la misma.
-      if (accDigits) {
-        const { data: previo } = await db.from('admin_actions')
-          .select('created_at, metadata')
-          .eq('action', 'finity.external_account.create')
-          .filter('metadata->enviado->account->>account_number', 'eq', String(cuenta.account_number ?? ''))
-          .gte('created_at', new Date(Date.now() - 10 * 60_000).toISOString())
-          .order('created_at', { ascending: false }).limit(1).maybeSingle()
-        const st = Number((previo as any)?.metadata?.status ?? 0)
-        // Solo si se manda EXACTAMENTE lo mismo: si el cliente corrigió el
-        // documento o el nombre, eso sí tiene que llegar a Finity.
-        // jsonb reordena las claves: se compara con las claves ordenadas.
-        const canon = (v: any): any => Array.isArray(v) ? v.map(canon)
-          : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canon(v[k])])) : v
-        const igual = (a: any, b: any) => JSON.stringify(canon(a ?? null)) === JSON.stringify(canon(b ?? null))
-        if (previo && st >= 400 && st !== 403 && st !== 429 && igual((previo as any).metadata?.enviado, payload.data)) {
-          let dataPrev: any = null
-          try { dataPrev = JSON.parse(String((previo as any).metadata?.respuesta ?? 'null')) } catch { /* */ }
-          return json(200, { ok: false, status: st, repetida: true, path: (previo as any).metadata?.path ?? null, data: dataPrev ?? { message: 'Rechazada hace menos de 10 minutos; se reintenta más tarde.' } })
-        }
-      }
-
-      // Una sola ruta y 40 s: Finity tarda ~9 s en crear y a veces mucho más
-      // (valida con el banco). Con el corte de 15 s de antes, la creación se
-      // abortaba a medias y no quedaba ni rastro en la auditoría.
-      const path = WORKING['externalAccounts'] ?? '/v0/external-accounts'
-      let res: Response
+    // ── Por qué no llegan las inscripciones (23 nov) ──
+    // Conexión (dominio y token), pausa, los últimos intentos con lo que
+    // contestó Finity, y las cuentas que siguen sin inscribir.
+    if (action === 'inscripciones_diag') {
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      let conexion: Record<string, unknown>
       try {
-        res = await finityFetch(path, {
-          method: 'POST',
-          body: JSON.stringify(payload.data ?? {}),
-          signal: AbortSignal.timeout(40_000),
-        })
+        await getFinityToken()
+        conexion = { ok: true, base: FINITY_BASE }
       } catch (e) {
-        // Sin respuesta: Finity PUDO haberla creado. Se invalida la lista para
-        // que el próximo intento la encuentre ahí en vez de duplicarla.
-        listaCache = null
-        await logAudit(caller.userId!, 'finity.external_account.create', {
-          status: 0, path, ok: false, enviado: payload.data, idCreado: null,
-          error: String((e as Error)?.message ?? e).slice(0, 200),
-        })
-        return json(200, { ok: false, status: 0, path, sinRespuesta: true, data: { message: 'El banco no respondió a tiempo. Se reintenta solo en unos minutos.' } })
+        conexion = { ok: false, base: FINITY_BASE_ENV || PROD_BASE, error: String((e as Error)?.message ?? e).slice(0, 300), rechazo: ultimoRechazoToken }
       }
-      const data = await res.json().catch(() => null)
-      if (res.status === 403 || res.status === 429) await ponerFrenoInscripciones(res.status)
-      if (res.ok) listaCache = null
-      // Se audita también LA RESPUESTA, no solo lo enviado. Sin esto, una
-      // cuenta que se quedaba "en validación" no se podía diagnosticar: había
-      // registro de lo que se mandó y ninguno de lo que contestó el banco.
-      const idCreado = idDeCuenta(data)
-      await logAudit(caller.userId!, 'finity.external_account.create', {
-        status: res.status, path, ok: res.ok,
-        enviado: payload.data,
-        idCreado,
-        respuesta: JSON.stringify(data ?? {}).slice(0, 600),
+      let pausa: Record<string, unknown> | null = null
+      try {
+        const { data } = await db.from('system_config').select('value').eq('key', FRENO_KEY).maybeSingle()
+        const v = data?.value ? JSON.parse(data.value) : null
+        if (v && Number(v.hasta) > Date.now()) pausa = { hasta: new Date(Number(v.hasta)).toISOString(), http: Number(v.http) || null, seguidos: Number(v.seguidos ?? 0) }
+      } catch { /* sin pausa legible */ }
+      const { data: filas } = await db.from('admin_actions')
+        .select('created_at, admin_email, metadata')
+        .eq('action', 'finity.external_account.create')
+        .order('created_at', { ascending: false }).limit(30)
+      const intentos = ((filas ?? []) as any[]).map(f => {
+        const m = f.metadata ?? {}
+        const acc = m.enviado?.account ?? {}
+        return {
+          at: f.created_at, quien: f.admin_email ?? null,
+          status: Number(m.status ?? 0), ok: m.ok === true, id: m.idCreado ?? null,
+          cuenta: enmascarar(acc.account_number), banco: nombreBancoDeCodigo(acc.financial_institution_code),
+          titular: acc.account_holder_fullname ?? null, tipoDoc: acc.account_holder_id_type ?? null,
+          motivo: m.ok === true ? null : motivoDeRespuesta(m),
+        }
       })
-      // El id va también arriba, ya resuelto: si Finity lo anida
-      // ({ data: { id } }) y el navegador no lo encuentra, cree que la cuenta
-      // sigue sin inscribir y la vuelve a crear — así quedaron cuentas
-      // creadas 20 y 41 veces y Finity bloqueó la API.
-      return json(200, { ok: res.ok, status: res.status, path, data, id: idCreado })
+      let pendientes: any[] = [], totalPendientes = 0, truncado = false, errorPendientes: string | null = null
+      try {
+        const r = await inscripcionesPendientes()
+        truncado = r.truncado
+        totalPendientes = r.lista.length
+        pendientes = r.lista.slice(0, 150).map(p => {
+          const cu = cuerpoCuentaFinity(p.contacto)
+          return {
+            userId: p.userId, cliente: p.cliente,
+            contacto: String(p.contacto?.name ?? ''), banco: String(p.contacto?.bank ?? ''),
+            cuenta: enmascarar(p.contacto?.accountNumber), creada: p.contacto?.createdAt ?? null,
+            ultimoIntento: p.contacto?.regIntentoAt ?? null, http: p.contacto?.regHttp ?? null,
+            ultimoError: p.contacto?.lastError ? String(p.contacto.lastError).slice(0, 260) : null,
+            datosIncompletos: 'motivo' in cu ? cu.motivo : null,
+            listaParaReintento: puedeReintentarRegistro(p.contacto),
+          }
+        })
+      } catch (e) { errorPendientes = String((e as Error)?.message ?? e) }
+      return json(200, {
+        ok: true, conexion, baseIgnorada: FINITY_BASE_IGNORADA, pausa,
+        intentos, pendientes, totalPendientes, truncado, errorPendientes,
+      })
+    }
+
+    // ── Inscribir desde el servidor las cuentas que quedaron pendientes ──
+    // La tarea programada (finity-inscripciones.yml) la corre con la llave
+    // de servicio; la mesa, desde el panel. De a pocas: cada inscripción puede
+    // tardar hasta ~50 s y la función tiene un tiempo máximo.
+    if (action === 'inscribir_pendientes') {
+      if (!caller.internal) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      const freno = await leerFrenoInscripciones()
+      if (freno) return json(200, { ok: true, frenado: true, hasta: new Date(freno.hasta).toISOString(), http: freno.http, intentadas: 0, inscritas: 0 })
+      const limite = Math.max(1, Math.min(5, Number(payload.limite ?? 3) || 3))
+      // Desde el panel se puede saltar la espera por cuenta ("Inscribir
+      // ahora"); el reintento programado la respeta. Igual, un rechazo
+      // idéntico de hace menos de 10 min no se vuelve a mandar (ver
+      // inscribirCuentaFinity).
+      const forzar = payload.forzar === true && !caller.servicio
+      const soloUsuario = payload.userId ? String(payload.userId) : null
+      const soloContacto = payload.contactoId ? String(payload.contactoId) : null
+      let lista: Pendiente[]
+      try { lista = (await inscripcionesPendientes()).lista }
+      catch (e) { return json(500, { ok: false, error: String((e as Error)?.message ?? e) }) }
+      const candidatas = lista
+        .filter(p => (!soloUsuario || p.userId === soloUsuario) && (!soloContacto || String(p.contacto?.id) === soloContacto))
+        .filter(p => forzar || puedeReintentarRegistro(p.contacto))
+        // Las más viejas primero: llevan más tiempo esperando.
+        .sort((a, b) => String(a.contacto?.createdAt ?? '').localeCompare(String(b.contacto?.createdAt ?? '')))
+      const resultados: any[] = []
+      const t0 = Date.now()
+      for (const p of candidatas.slice(0, limite)) {
+        if (Date.now() - t0 > 90_000) break   // margen antes del tiempo máximo de la función
+        const intentoAt = new Date().toISOString()
+        const cu = cuerpoCuentaFinity(p.contacto)
+        let cambios: Record<string, unknown>
+        let res: Record<string, any>
+        if ('motivo' in cu) {
+          // Sin datos completos no se llama a Finity: diría 400 igual.
+          res = { ok: false, status: 400, data: { message: cu.motivo } }
+          cambios = { lastError: `[registro bancario] ${cu.motivo}. Edita el beneficiario.`, regIntentoAt: intentoAt, regHttp: 400 }
+        } else {
+          res = await inscribirCuentaFinity(p.userId, cu.body)
+          const fid = res?.id ?? res?.data?.id ?? res?.data?.external_account_id ?? res?.data?.account_id ?? null
+          cambios = res?.ok && fid
+            ? { finityId: String(fid), mouvId: String(fid), status: 'en_proceso', lastError: null, regIntentoAt: intentoAt, regHttp: Number(res.status) || 201, inscritaPor: 'servidor' }
+            : { lastError: `[registro bancario] HTTP ${res?.status ?? '—'}: ${JSON.stringify(res?.data ?? res).slice(0, 260)}`, regIntentoAt: intentoAt, regHttp: Number(res?.status) || 0 }
+        }
+        const errGuardar = await actualizarContacto(p.userId, String(p.contacto?.id), cambios)
+        resultados.push({
+          userId: p.userId, cliente: p.cliente, contacto: String(p.contacto?.name ?? ''), cuenta: enmascarar(p.contacto?.accountNumber),
+          ok: !!cambios.finityId, status: Number(res?.status ?? 0), reutilizada: !!res?.reutilizada,
+          motivo: cambios.finityId ? null : (digMotivoRechazo(res?.data) ?? res?.data?.message ?? null),
+          guardado: errGuardar === null ? true : errGuardar === 'sin_cambio' ? 'ya_estaba' : false,
+        })
+        // Finity frenó: no se insiste con las demás.
+        if (res?.frenado || res?.status === 403 || res?.status === 429 || res?.sinToken) break
+      }
+      if (!caller.servicio && caller.userId) {
+        await logAudit(caller.userId, 'finity.inscribir_pendientes', {
+          pendientes: lista.length, candidatas: candidatas.length, intentadas: resultados.length,
+          inscritas: resultados.filter(r => r.ok).length, forzar,
+        })
+      }
+      return json(200, {
+        ok: true, pendientes: lista.length, candidatas: candidatas.length,
+        intentadas: resultados.length, inscritas: resultados.filter(r => r.ok).length, resultados,
+      })
+    }
+
+    // ── Quitar la pausa de inscripciones a mano ──
+    // La pausa protege de que Finity bloquee por insistir. Si la mesa ya sabe
+    // que se resolvió (habló con Finity, corrigió la credencial), la quita sin
+    // esperar. Si Finity vuelve a responder 403/429, la pausa vuelve sola.
+    if (action === 'inscripciones_reanudar') {
+      if (!caller.internal || caller.servicio) return json(403, { error: 'forbidden', message: 'Operación restringida.' })
+      const { error } = await db.from('system_config').upsert({ key: FRENO_KEY, value: JSON.stringify({ hasta: 0, http: null, quitadaPor: caller.userId, quitadaAt: Date.now() }) }, { onConflict: 'key' })
+      if (error) return json(500, { ok: false, error: error.message })
+      await logAudit(caller.userId!, 'finity.inscripciones_reanudar', {})
+      return json(200, { ok: true })
     }
 
     // Des-inscribir una cuenta destino en Finity al eliminar el contacto.
@@ -1861,6 +2044,85 @@ async function ponerFrenoInscripciones(http: number) {
       }).catch(() => {})
     }
   } catch { /* el freno es una protección; si falla, no tumba la llamada */ }
+}
+
+// ─── Inscripciones pendientes (23 nov) ───
+// Hasta hoy, una cuenta ACH cuya primera inscripción fallaba (sin respuesta,
+// pausa, token) solo se reintentaba cuando el CLIENTE volvía a abrir su
+// pantalla de beneficiarios: el reintento corría en su navegador. Si no
+// volvía, a Finity no le llegaba nunca. Ahora el servidor las busca y las
+// inscribe solo (tarea programada) o cuando la mesa lo pide desde el panel.
+
+// La misma espera que la pantalla del cliente (ESPERA_REGISTRO_MS en
+// ContactsSection): un rechazo por datos se repite igual, no se insiste.
+function esperaRegistroMs(http?: number | null): number {
+  if (http === 400 || http === 409 || http === 422) return 6 * 3600_000
+  if (http === 401 || http === 403 || http === 429) return 30 * 60_000
+  return 5 * 60_000
+}
+function puedeReintentarRegistro(c: any): boolean {
+  if (!c?.regIntentoAt) return true
+  const t = new Date(c.regIntentoAt).getTime()
+  return !Number.isFinite(t) || Date.now() - t >= esperaRegistroMs(Number(c.regHttp) || 0)
+}
+
+type Pendiente = { userId: string; cliente: string; contacto: any }
+// Los beneficiarios ACH de Colombia que todavía no tienen id de Finity, de
+// todos los clientes. Se recorre por páginas: no se baja la base entera.
+async function inscripcionesPendientes(): Promise<{ lista: Pendiente[]; truncado: boolean }> {
+  const lista: Pendiente[] = []
+  const PAGINA = 500, TOPE = 20_000
+  for (let off = 0; off < TOPE; off += PAGINA) {
+    const { data, error } = await db.from('users')
+      .select('id, email, full_name, company_name, contactos:raw_data->mouvContacts')
+      .order('id', { ascending: true }).range(off, off + PAGINA - 1)
+    if (error) throw new Error(`No se pudieron leer los beneficiarios: ${error.message}`)
+    for (const u of (data ?? []) as any[]) {
+      const cs: any[] = Array.isArray(u.contactos) ? u.contactos : []
+      for (const c of cs) {
+        if (!esCuentaAchFinity(c) || c?.finityId || c?.mouvId) continue
+        lista.push({ userId: String(u.id), cliente: String(u.company_name || u.full_name || u.email || u.id), contacto: c })
+      }
+    }
+    if (!data || data.length < PAGINA) return { lista, truncado: false }
+  }
+  return { lista, truncado: true }
+}
+
+// Cambia UN contacto con lectura fresca (el cliente pudo editar su lista
+// mientras tanto). Si ya tiene id de Finity (lo inscribió su pantalla en
+// paralelo), no se toca.
+async function actualizarContacto(userId: string, contactoId: string, cambios: Record<string, unknown>): Promise<string | null> {
+  const { data } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
+  const lst: any[] = Array.isArray((data as any)?.raw_data?.mouvContacts) ? (data as any).raw_data.mouvContacts : []
+  let cambio = false
+  const nuevo = lst.map((c: any) => {
+    if (c?.id !== contactoId || c?.finityId || c?.mouvId) return c
+    cambio = true
+    return { ...c, ...cambios }
+  })
+  if (!cambio) return 'sin_cambio'
+  return await mergeRaw(db, userId, { mouvContacts: nuevo })
+}
+
+// "1007" → "Bancolombia (1007)", para leer los intentos sin tabla a mano.
+const nombreBancoDeCodigo = (cod: unknown): string | null => {
+  const c = String(cod ?? '').trim()
+  if (!c) return null
+  const n = Object.keys(BANK_CODES_CO).find(k => BANK_CODES_CO[k] === c && k !== 'Nu')
+  return n ? `${n} (${c})` : c
+}
+const enmascarar = (n: unknown) => { const d = String(n ?? '').replace(/\D/g, ''); return d ? `••••${d.slice(-4)}` : '—' }
+
+// El motivo legible de una respuesta guardada en la auditoría.
+function motivoDeRespuesta(m: any): string | null {
+  if (m?.sinToken) return 'No se pudo conectar con Finity (token rechazado o sin respuesta).'
+  if (m?.error) return String(m.error).slice(0, 200)
+  let d: any = null
+  try { d = JSON.parse(String(m?.respuesta ?? 'null')) } catch { d = null }
+  if (!d) return null
+  const msg = Array.isArray(d?.message) ? d.message.join(' · ') : (digMotivoRechazo(d) ?? (typeof d?.message === 'string' ? d.message : null))
+  return msg ? String(msg).slice(0, 240) : null
 }
 
 async function logAudit(userId: string, action: string, metadata: Record<string, unknown>) {

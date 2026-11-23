@@ -23,6 +23,7 @@
 import { serve } from 'https://deno.land/std@0.192.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw } from '../_shared/raw-data.ts'
+import { BANK_CODES_CO } from '../_shared/cuenta-finity.ts'
 import { traeSecretoDeLaBase, cabecerasInternas } from '../_shared/webhook-auth.ts'
 import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, decField } from '../_shared/field-crypto.ts'
@@ -1278,14 +1279,8 @@ async function mouvQuoteBreb(amountCop: number, keyValue: string, keyType?: stri
 // 0,10% de Mouv). Se llama a la edge function finity-proxy (restaurada),
 // que maneja OAuth y los paths. El costo REAL viene en la respuesta de la
 // orden (costs.{commission,iva,total}) y SE COBRA AL CLIENTE.
-const BANK_CODES_CO: Record<string, string> = {
-  'Banco de Bogotá': '1001', 'Banco Popular': '1002', 'Itaú': '1006', 'Bancolombia': '1007',
-  'Citibank': '1009', 'GNB Sudameris': '1012', 'BBVA Colombia': '1013', 'Scotiabank Colpatria': '1019',
-  'Banco de Occidente': '1023', 'Banco Caja Social': '1032', 'Banco Agrario': '1040', 'Davivienda': '1051',
-  'Banco AV Villas': '1052', 'Banco Pichincha': '1060', 'Bancoomeva': '1061', 'Banco Falabella': '1062',
-  'Coopcentral': '1066', 'Lulo Bank': '1070', 'Nequi': '1507', 'Daviplata': '1551',
-  'Movii': '1801', 'Nu Colombia': '1809', 'Nu': '1809',
-}
+// La tabla de bancos vive en _shared/cuenta-finity.ts (también la usa
+// finity-proxy para reintentar inscripciones desde el servidor).
 // Sin respuesta legible NO es "falló": es "no sabemos". Quien llama decide
 // qué hacer con desenlaceDesconocido (en un retiro: NO reembolsar).
 async function finityCall(action: string, userId: string, extra: Record<string, unknown> = {}): Promise<any> {
@@ -1638,10 +1633,15 @@ async function finityPayoutAch(userId: string, recipient: Record<string, any>, a
     const bankKey = Object.keys(BANK_CODES_CO).find(k => k.toLowerCase() === bankRaw.toLowerCase())
     const bankCode = /^\d{3,5}$/.test(bankRaw) ? bankRaw : (bankKey ? BANK_CODES_CO[bankKey] : bankRaw)
 
-    // Tipo de documento en el formato que acepta Finity.
+    // Tipo de documento en el formato que acepta Finity (doc oficial, revisada
+    // el 23 nov): CC | CE | NIT | PASSPORT | PPT. Antes el pasaporte iba como
+    // CE y sin sus letras: el banco no lo encontraba y la cuenta se rechazaba.
     const docRaw = String(recipient.documentType ?? 'CC').toUpperCase().trim()
-    const docType = docRaw === 'PAS' || docRaw === 'PASAPORTE' ? 'CE' : (['CC', 'CE', 'NIT'].includes(docRaw) ? docRaw : 'CC')
-    const docNumber = String(recipient.documentNumber ?? '').replace(/\D/g, '')
+    const docType = docRaw === 'PAS' || docRaw === 'PASAPORTE' || docRaw === 'PASSPORT' ? 'PASSPORT'
+      : (['CC', 'CE', 'NIT', 'PPT'].includes(docRaw) ? docRaw : 'CC')
+    const docNumber = docType === 'PASSPORT'
+      ? String(recipient.documentNumber ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase()
+      : String(recipient.documentNumber ?? '').replace(/\D/g, '')
     const holder = String(recipient.holderName ?? '').trim()
 
     // Validar ANTES de llamar: si falta un dato, decirlo con nombre propio en

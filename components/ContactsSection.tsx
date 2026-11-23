@@ -219,12 +219,16 @@ const buildMouvAccountBody = (c: { name: string; docType: string; docNumber: str
         account_number: String(c.accountNumber ?? '').replace(/\D/g, ''),
         financial_institution_code: BANK_CODES_CO[c.bank] ?? '',
         account_holder_fullname: c.name,
-        // Enum de Mouv: CC | CE | NIT (PAS no existe → se envía como CE)
-        account_holder_id_type: c.docType === 'PAS' ? 'CE' : c.docType,
+        // Enum de Finity (doc oficial, revisada el 23 nov): CC | CE | NIT |
+        // PASSPORT | PPT. Antes el pasaporte se mandaba como CE y su número
+        // perdía las letras: el banco no lo encontraba y rechazaba la cuenta.
+        account_holder_id_type: c.docType === 'PAS' ? 'PASSPORT' : c.docType,
         // Solo dígitos: Finity rechaza (400) un NIT con guion o puntos
         // ("901258216-0"). Con el dígito de verificación pegado, igual que
-        // lo arma mouv-proxy al dispersar.
-        account_holder_id_number: String(c.docNumber ?? '').replace(/\D/g, ''),
+        // lo arma mouv-proxy al dispersar. El pasaporte sí lleva letras.
+        account_holder_id_number: c.docType === 'PAS'
+            ? String(c.docNumber ?? '').replace(/[^0-9A-Za-z]/g, '').toUpperCase()
+            : String(c.docNumber ?? '').replace(/\D/g, ''),
     },
 });
 
