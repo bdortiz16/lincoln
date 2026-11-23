@@ -456,6 +456,48 @@ function redondearRecibe(v: number, moneda: string): number {
   return Math.floor(v * f + 1e-6) / f
 }
 
+// El saludo de la mesa al tomar un cierre. Dice lo pactado con los números
+// del cierre (no los de la pantalla) y qué sigue; si todavía no hay tasa, no
+// la inventa: dice que se la confirman.
+function bienvenidaMesa(c: any, nombre: string): string {
+  const n = (v: unknown, dec = 2) => Number(v).toLocaleString('es-CO', { maximumFractionDigits: dec })
+  const vende = String(c.side ?? 'vende_usdt') === 'vende_usdt'
+  const tasa = Number(c.rate_final ?? c.rate_cotizada)
+  const recibe = Number(c.to_amount)
+  const decRecibe = c.to_currency === 'COP' ? 0 : 2
+  const hola = nombre.trim() ? `¡Hola, ${nombre.trim()}! 👋` : '¡Hola! 👋'
+  const pacto = tasa > 0 && recibe > 0
+    ? (vende
+      ? `vendes ${n(c.from_amount)} ${c.from_currency} a ${n(tasa)} COP por USDT y recibes ${n(recibe, decRecibe)} ${c.to_currency}.`
+      : `compras USDT con ${n(c.from_amount, 0)} ${c.from_currency} a ${n(tasa)} COP por USDT y recibes ${n(recibe, decRecibe)} ${c.to_currency}.`)
+    : `${vende ? 'vendes' : 'compras USDT con'} ${n(c.from_amount, vende ? 2 : 0)} ${c.from_currency}. En un momento te confirmamos la tasa.`
+  const sigue = vende
+    ? `Por aquí te compartimos la dirección para enviar los USDT. ${c.payout?.origen ? 'Envíalos desde la wallet que verificaste, ' : 'Cuando los envíes, '}sube el comprobante en este chat y te acreditamos los pesos apenas confirmemos que llegaron.`
+    : 'Por aquí te compartimos los datos para el pago. Cuando lo hagas, sube el comprobante en este chat y te entregamos los USDT apenas confirmemos que llegó.'
+  return `${hola} Bienvenido a la Mesa OTC de Lincoin. Ya estamos atendiendo tu cierre ${c.ref}: ${pacto}\n\n${sigue}\n\nCualquier duda, escríbenos aquí mismo.`
+}
+
+// Lo que ganó Lincoin en un cierre, con la tasa a la que la mesa vendió los
+// USDT que entregó el cliente (o compró los que le entrega). La misma cuenta
+// que la contabilidad (liquidacion-lincoin.ts): valor de la operación menos
+// lo que es del cliente. El % es sobre lo que valen los USDT a la tasa de la
+// mesa: así coincide con el margen pactado (vender a la referencia con un
+// margen de 0,5 % da 0,5 %).
+function ventaDeMesa(c: { side?: string; from_amount: unknown; to_amount: unknown }, tasa: number) {
+  const usdt = Number(String(c.side ?? 'vende_usdt') === 'vende_usdt' ? c.from_amount : c.to_amount)
+  const r2 = (v: number) => Math.round(v * 100) / 100
+  if (String(c.side ?? 'vende_usdt') === 'vende_usdt') {
+    const totalCop = r2(usdt * tasa)                 // lo que recibió Lincoin al vender
+    const tercerosCop = r2(Number(c.to_amount))      // lo que se le acreditó al cliente
+    const utilidadCop = r2(totalCop - tercerosCop)
+    return { tasa, usdt, totalCop, tercerosCop, utilidadCop, pct: totalCop > 0 ? Math.round(utilidadCop / totalCop * 1e6) / 1e4 : null }
+  }
+  const totalCop = r2(Number(c.from_amount))         // lo que pagó el cliente
+  const tercerosCop = r2(usdt * tasa)                // lo que le costaron a Lincoin sus USDT
+  const utilidadCop = r2(totalCop - tercerosCop)
+  return { tasa, usdt, totalCop, tercerosCop, utilidadCop, pct: tercerosCop > 0 ? Math.round(utilidadCop / tercerosCop * 1e6) / 1e4 : null }
+}
+
 // ¿La cuenta puede operar? Las mismas banderas que usan los envíos (gasfree
 // assertNotBlocked): is_blocked y raw_data.isBlocked / blacklisted. Antes la
 // mesa no las miraba: una cuenta bloqueada o en lista negra pedía cierres y
@@ -537,9 +579,11 @@ function paraCliente(c: any) {
   if (!c) return c
   const { notas_internas: _n, tomada_por: _t, tomada_por_nom: _tn, rate_fuente: _rf, ...resto } = c
   // payout.canalPor es el nombre del operador que eligió el canal: igual que
-  // tomada_por_nom, al cliente le corresponde "la mesa".
+  // tomada_por_nom, al cliente le corresponde "la mesa". payout.venta es la
+  // tasa a la que la mesa vendió (o compró) los USDT y lo que ganó Lincoin:
+  // eso nunca lo ve el cliente.
   const payout = c.payout && typeof c.payout === 'object'
-    ? (({ canalPor: _cp, ...p }) => p)(c.payout) : c.payout
+    ? (({ canalPor: _cp, venta: _v, ...p }) => p)(c.payout) : c.payout
   return { ...resto, payout, atendida: !!c.tomada_at }
 }
 
@@ -1024,7 +1068,13 @@ Deno.serve(async (req) => {
       }
       // El hilo lo lee el cliente: le corresponde "la mesa", no el nombre de
       // quien la atiende (ese queda en tomada_por_nom, que paraCliente quita).
-      await escribirMensaje(r.cierre.id, 'sistema', 'La mesa está atendiendo este cierre.')
+      // 23 nov (el dueño): al tomar el cierre, un saludo de la mesa en vez de
+      // una línea de sistema; el cliente sabe de una que alguien lo atiende,
+      // qué pactó y qué sigue. Va una sola vez: el CAS de arriba deja tomar
+      // un cierre una sola vez.
+      const { data: u } = await db.from('users').select('company_name, full_name').eq('id', r.cierre.user_id).maybeSingle()
+      await escribirMensaje(r.cierre.id, 'mesa', bienvenidaMesa(r.cierre, (u as any)?.company_name || (u as any)?.full_name || ''),
+        { autorId: caller.userId, autorNom: caller.nombre ?? undefined })
       return json(200, { ok: true })
     }
 
@@ -1212,6 +1262,28 @@ Deno.serve(async (req) => {
       if (!(monto > 0)) {
         return json(409, { ok: false, error: 'sin_monto', message: 'Este cierre no tiene monto a acreditar. Fija la tasa final primero.' })
       }
+      // La tasa a la que la mesa vendió los USDT (o compró los que entrega):
+      // con ella queda la utilidad REAL del cierre. Antes la contabilidad la
+      // estimaba con la referencia del proveedor y había que confirmarla a
+      // mano antes de facturar. La pantalla la pide; aquí es opcional para no
+      // frenar un completado desde una pantalla vieja, pero si viene se
+      // revisa: un cero de más se volvería una "utilidad" con IVA en la
+      // factura. Se valida ANTES de mover nada.
+      let tasaVenta: number | null = null
+      if (payload.tasaVenta !== undefined && payload.tasaVenta !== null && payload.tasaVenta !== '') {
+        const t = num(payload.tasaVenta)
+        const base = Number(r.cierre.rate_final)
+        if (!(t > 0)) {
+          return json(400, { ok: false, error: 'tasa_venta_invalida', message: 'La tasa de venta tiene que ser mayor a cero. No se acreditó nada.' })
+        }
+        if (base > 0 && Math.abs(t - base) / base > 0.15) {
+          return json(400, {
+            ok: false, error: 'tasa_venta_fuera_de_rango',
+            message: `La tasa de venta ${t.toLocaleString('es-CO', { maximumFractionDigits: 2 })} se aleja más de 15 % de la del cliente (${base.toLocaleString('es-CO', { maximumFractionDigits: 2 })}). Revisa el número: no se acreditó nada.`,
+          })
+        }
+        tasaVenta = t
+      }
 
       // CAS sobre el estado: es el ÚNICO seguro contra completar dos veces —
       // dos clicks, dos pestañas o un reintento de red. Se toma ANTES de mover
@@ -1245,6 +1317,11 @@ Deno.serve(async (req) => {
       }
       const fila = ok[0] as any
       const acreditar = Number(fila.to_amount)
+      // La utilidad con lo que quedó EN LA FILA (lo que de verdad se acredita),
+      // no con lo leído antes del CAS.
+      const venta = tasaVenta
+        ? { ...ventaDeMesa({ side: r.cierre.side, from_amount: r.cierre.from_amount, to_amount: fila.to_amount }, tasaVenta), por: caller.nombre ?? null, at: ahora() }
+        : null
 
       // Completar es lo que ACREDITA. Antes solo cambiaba el estado: el cierre
       // quedaba "completado" y el cliente sin su plata ni el movimiento.
@@ -1271,7 +1348,7 @@ Deno.serve(async (req) => {
       if (errSaldo) {
         const nota = `Acreditación INCIERTA (${new Date().toISOString()}): se pidió acreditar ${acreditar} ${destino} y la respuesta no llegó (${errSaldo.message}). Verificar el saldo del cliente antes de cargar nada a mano.`
         await db.from('otc_closes').update({
-          payout: { ...(payoutAntes ?? {}), wallet: destino, canalPor: caller.nombre ?? null, acreditacion: 'incierta' },
+          payout: { ...(payoutAntes ?? {}), wallet: destino, canalPor: caller.nombre ?? null, acreditacion: 'incierta', ...(venta ? { venta } : {}) },
           notas_internas: [r.cierre.notas_internas, nota].filter(Boolean).join('\n'),
           updated_at: ahora(),
         }).eq('id', r.cierre.id)
@@ -1281,6 +1358,19 @@ Deno.serve(async (req) => {
           ok: false, error: 'acreditacion_incierta',
           message: 'No llegó la confirmación del saldo. El cierre quedó completado para que NO se acredite dos veces: revisa el saldo del cliente; si no se acreditó, cárgalo a mano.',
         })
+      }
+
+      // La utilidad queda en el cierre: la mesa la ve en el detalle, la
+      // contabilidad la toma como registrada (liquidacion-lincoin.ts) y el
+      // cliente no la ve (paraCliente la quita). La plata ya está acreditada:
+      // si esto falla no se deshace nada; se le dice a la mesa para que no
+      // crea que quedó guardada.
+      let ventaGuardada = true
+      if (venta) {
+        const { error: eV } = await db.from('otc_closes').update({
+          payout: { ...(payoutAntes ?? {}), wallet: destino, canalPor: caller.nombre ?? null, venta },
+        }).eq('id', r.cierre.id)
+        if (eV) { ventaGuardada = false; console.error('[otc-mesa] utilidad sin guardar en el cierre', r.cierre.id, eV.message) }
       }
 
       // El movimiento. Si esto fallara, la plata ya esta bien y lo que falta es
@@ -1307,6 +1397,9 @@ Deno.serve(async (req) => {
             // movimiento de dinero no es un detalle de estilo.
             direccion: 'in',
             completadaPor: caller.nombre ?? null,
+            // La utilidad de la mesa NO va aquí: el cliente lee sus propios
+            // movimientos con select('*'). Queda en el cierre (payout.venta),
+            // que solo lee el servidor, y de ahí la toma la contabilidad.
           },
         })
         if (errMov) await sinRegistro(errMov.message)
@@ -1317,7 +1410,7 @@ Deno.serve(async (req) => {
       await escribirMensaje(r.cierre.id, 'sistema',
         `Cierre completado. Se acreditaron `
         + `${acreditar.toLocaleString('es-CO', { maximumFractionDigits: r.cierre.to_currency === 'COP' ? 0 : 2 })} ${r.cierre.to_currency} en ${NOMBRE_BILLETERA[destino] ?? destino}.`)
-      return json(200, { ok: true, acreditado: acreditar, billetera: destino })
+      return json(200, { ok: true, acreditado: acreditar, billetera: destino, venta, ventaGuardada })
     }
 
     // ── Cancelar (los dos lados, con reglas distintas) ──

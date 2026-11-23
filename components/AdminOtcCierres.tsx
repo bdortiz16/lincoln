@@ -38,9 +38,21 @@ import {
 const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
 const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
 
+// La sesión de ESTE proyecto primero (como lib/edge.ts). Con la primera
+// clave 'sb-…' que apareciera, otra sesión guardada en el navegador (un
+// proyecto anterior o de pruebas) mandaba su token: el servidor respondía
+// "no autorizado" y la mesa leía eso como si no hubiera tasa ni cierres
+// (23 nov, mismo caso que la pantalla del cliente).
+function claveSesion(): string | undefined {
+    let propia: string | null = null;
+    try { const ref = new URL(SURL).hostname.split('.')[0]; propia = ref ? `sb-${ref}-auth-token` : null; } catch { /* */ }
+    if (propia && localStorage.getItem(propia) != null) return propia;
+    return Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+}
+
 function adminAuthHeader(): string {
     try {
-        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        const k = claveSesion();
         if (k) {
             const d = JSON.parse(localStorage.getItem(k) || '{}');
             if (d.access_token) return `Bearer ${d.access_token}`;
@@ -53,7 +65,7 @@ function adminAuthHeader(): string {
 // Hace falta para saber si un cierre lo tomé YO o lo tomó otro.
 function miIdAdmin(): string {
     try {
-        const k = Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+        const k = claveSesion();
         if (!k) return '';
         const d = JSON.parse(localStorage.getItem(k) || '{}');
         const t = String(d.access_token ?? '');
@@ -167,6 +179,29 @@ const leerTasa = (txt: string): number => {
     const n = Number(`${ent.replace(/\D/g, '') || '0'}.${dec.replace(/\D/g, '') || '0'}`);
     return Number.isFinite(n) ? n : NaN;
 };
+// Lo que gana Lincoin con la tasa a la que la mesa vendió los USDT (o compró
+// los que entrega). La MISMA cuenta que hace el servidor al completar
+// (ventaDeMesa en otc-mesa) y la contabilidad: si cambia allá, cambia acá.
+// El % es sobre lo que valen los USDT a la tasa de la mesa, para que
+// coincida con el margen pactado.
+const ventaDe = (c: any, tasa: number) => {
+    const vende = String(c?.side ?? 'vende_usdt') === 'vende_usdt';
+    const usdt = Number(vende ? c?.from_amount : c?.to_amount);
+    if (!(tasa > 0) || !(usdt > 0)) return null;
+    const totalCop = vende ? usdt * tasa : Number(c?.from_amount);
+    const tercerosCop = vende ? Number(c?.to_amount) : usdt * tasa;
+    const utilidadCop = totalCop - tercerosCop;
+    const base = vende ? totalCop : tercerosCop;
+    return { totalCop, tercerosCop, utilidadCop, pct: base > 0 ? (utilidadCop / base) * 100 : null };
+};
+// Las mismas cotas que el servidor: la tasa de la mesa no puede alejarse
+// más de un 15 % de la del cliente (un cero de más sería una "utilidad" con
+// IVA en la factura).
+const TOPE_VENTA = 0.15;
+const fueraDeRango = (tasa: number, base: number) => base > 0 && Math.abs(tasa - base) / base > TOPE_VENTA;
+const signoCop = (n: number) => `${n < 0 ? '−' : '+'}${nf(Math.abs(n), 0)} COP`;
+// El % con el mismo signo menos que los pesos ("−0,16 %", no "-0,16 %").
+const pctTxt = (n: number) => `${n < 0 ? '−' : ''}${Math.abs(n).toLocaleString('es-CO', { maximumFractionDigits: 2 })} %`;
 const fecha = (d: any) => {
     const t = new Date(d ?? '');
     if (!d || Number.isNaN(t.getTime())) return '—';
@@ -763,6 +798,9 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     const [motivo, setMotivo] = useState('');
     // El canal donde se acredita una venta de USDT: lo elige la mesa al completar.
     const [canal, setCanal] = useState<string>('');
+    // La tasa a la que la mesa vendió (o compró) los USDT: se pide al completar
+    // y con ella queda la utilidad del cierre.
+    const [tasaVentaTxt, setTasaVentaTxt] = useState('');
     const [tasaAbierta, setTasaAbierta] = useState(false);
     const [subiendo, setSubiendo] = useState(false);
     const finRef = useRef<HTMLDivElement | null>(null);
@@ -796,7 +834,9 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
     }, [cargar, cierre]);
     useEffect(() => { finRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs.length]);
 
-    const hacer = async (action: string, extra: Record<string, unknown> = {}) => {
+    // Devuelve la respuesta del servidor si salió bien (o null): completar
+    // necesita leer de ella si la utilidad quedó guardada.
+    const hacer = async (action: string, extra: Record<string, unknown> = {}): Promise<any | null> => {
         setOcupado(true); setAviso(null);
         const r = await callMesa(action, { id, ...extra });
         setOcupado(false);
@@ -806,10 +846,10 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
             // completó otro, o quedó completado con la acreditación sin
             // confirmar): se relee para no mostrar un estado que ya no es.
             if (r?.error === 'acreditacion_incierta' || r?.error === 'estado_invalido') { await cargar(); onCambio(); }
-            return false;
+            return null;
         }
         await cargar(); onCambio();
-        return true;
+        return r;
     };
 
     // Anular va por admin-data y no por otc-mesa: le QUITA plata al cliente,
@@ -920,6 +960,26 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                             <KV label="Tasa final" valor={cierre.rate_final != null ? nf(cierre.rate_final) : 'sin fijar'} />
                             <KV label="Tasa que vio el cliente" valor={cierre.rate_cotizada != null ? nf(cierre.rate_cotizada) : 'no se pudo cotizar'} pie={cierre.rate_fuente ?? undefined} />
                             <KV label="Solicitado" valor={fecha(cierre.created_at)} pie={espera(cierre.created_at)} />
+                            {/* Lo que dejó el cierre, con la tasa que la mesa
+                                escribió al completar. Solo lo ve la mesa. */}
+                            {cierre.payout?.venta?.tasa > 0 && (
+                                <KV
+                                    label={cierre.side === 'vende_usdt' ? 'Vendiste a' : 'Compraste a'}
+                                    valor={nf(cierre.payout.venta.tasa)}
+                                    pie={cierre.payout.venta.por ? `escribió ${cierre.payout.venta.por}` : undefined}
+                                />
+                            )}
+                            {cierre.payout?.venta?.tasa > 0 && Number.isFinite(Number(cierre.payout.venta.utilidadCop)) && (
+                                <div>
+                                    <p style={ROTULO}>{Number(cierre.payout.venta.utilidadCop) < 0 ? 'Pérdida' : 'Utilidad'}</p>
+                                    <p style={{ fontSize: 14, fontWeight: 800, marginTop: 3, color: Number(cierre.payout.venta.utilidadCop) < 0 ? ROJO : VERDE }}>
+                                        {signoCop(Number(cierre.payout.venta.utilidadCop))}
+                                    </p>
+                                    {cierre.payout.venta.pct != null && (
+                                        <p style={{ fontSize: 10.5, color: TXT3, marginTop: 2 }}>{pctTxt(Number(cierre.payout.venta.pct))} del cierre</p>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
@@ -1212,7 +1272,7 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
             {/* Confirmación de completar / cancelar */}
             {pide && (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }} onClick={e => { e.stopPropagation(); setPide(null); setMotivo(''); }}>
-                    <div style={{ background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 16, padding: 22, width: '100%', maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+                    <div style={{ background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 16, padding: 22, width: '100%', maxWidth: 400, maxHeight: '92vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
                         {pide === 'completar' ? (
                             <>
                                 <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Completar {cierre.ref}</h4>
@@ -1220,8 +1280,55 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                 <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
                                     <Fila icon={Wallet} label="Se acredita" valor={`${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}`} />
                                     {cierre.side !== 'vende_usdt' && <Fila icon={Landmark} label="En" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />}
-                                    <Fila icon={Hash} label="A la tasa" valor={nf(cierre.rate_final)} />
+                                    <Fila icon={Hash} label="Tasa cliente" valor={nf(cierre.rate_final)} />
                                 </div>
+                                {/* La tasa a la que la mesa vendió los USDT (o compró
+                                    los que entrega) y lo que deja el cierre. Con esto
+                                    la utilidad queda registrada y no estimada. */}
+                                {(() => {
+                                    const vende = cierre.side === 'vende_usdt';
+                                    const t = leerTasa(tasaVentaTxt);
+                                    const v = tasaVentaTxt.trim() && t > 0 ? ventaDe(cierre, t) : null;
+                                    const lejos = !!v && fueraDeRango(t, Number(cierre.rate_final));
+                                    const color = !v ? TXT2 : v.utilidadCop < 0 ? ROJO : v.utilidadCop > 0 ? VERDE : TXT2;
+                                    return (
+                                        <div style={{ marginTop: 12 }}>
+                                            <p style={{ ...ROTULO, marginBottom: 7 }}>{vende ? '¿A qué tasa vendiste los USDT?' : '¿A qué tasa compraste los USDT?'}</p>
+                                            <input
+                                                value={tasaVentaTxt}
+                                                onChange={e => setTasaVentaTxt(e.target.value)}
+                                                inputMode="decimal"
+                                                placeholder={`Ej: ${nf(Number(cierre.rate_final) * (vende ? 1.005 : 0.995))}`}
+                                                aria-label={vende ? 'Tasa a la que vendiste los USDT' : 'Tasa a la que compraste los USDT'}
+                                                style={{ ...INPUT, fontSize: 14, fontWeight: 700, fontFamily: 'ui-monospace, monospace', borderColor: lejos ? `${ROJO}88` : BORDE2 }}
+                                            />
+                                            {v && !lejos && (
+                                                <div style={{ marginTop: 8, background: v.utilidadCop < 0 ? `${ROJO}10` : `${VERDE}0D`, border: `1px solid ${v.utilidadCop < 0 ? `${ROJO}44` : `${VERDE}33`}`, borderRadius: 11, padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                                                        <span style={{ color: TXT2 }}>{vende ? 'Vendiste por' : 'Te costaron'}</span>
+                                                        <span style={{ color: TXT, fontWeight: 600 }}>{nf(vende ? v.totalCop : v.tercerosCop, 0)} COP</span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                                                        <span style={{ color: TXT2 }}>{vende ? 'Le pagas al cliente' : 'Te pagó el cliente'}</span>
+                                                        <span style={{ color: TXT, fontWeight: 600 }}>{nf(vende ? v.tercerosCop : v.totalCop, 0)} COP</span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, borderTop: `1px solid ${BORDE}`, paddingTop: 7, marginTop: 1 }}>
+                                                        <span style={{ fontSize: 12, fontWeight: 700, color: TXT }}>{v.utilidadCop < 0 ? 'Pérdida' : 'Utilidad'}</span>
+                                                        <span style={{ fontSize: 15, fontWeight: 800, color, letterSpacing: '-0.3px' }}>
+                                                            {signoCop(v.utilidadCop)}
+                                                            {v.pct != null && <span style={{ fontSize: 12, fontWeight: 700, marginLeft: 6 }}>· {pctTxt(v.pct)}</span>}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {lejos && (
+                                                <p style={{ marginTop: 7, fontSize: 11.5, color: ROJO, lineHeight: 1.5 }}>
+                                                    Se aleja más de {TOPE_VENTA * 100} % de la tasa del cliente ({nf(cierre.rate_final)}). Revisa el número.
+                                                </p>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
                                 {cierre.side === 'vende_usdt' && (
                                     <div style={{ marginTop: 12 }}>
                                         <p style={{ ...ROTULO, marginBottom: 7 }}>¿En qué canal se le acredita?</p>
@@ -1249,15 +1356,27 @@ const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => v
                                         style={{ padding: '11px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none' }}>
                                         Volver
                                     </button>
-                                    <button onClick={async () => {
-                                            if (cierre.side === 'vende_usdt' && !canal) return;
-                                            setPide(null);
-                                            await hacer('completar', cierre.side === 'vende_usdt' ? { wallet: canal } : {});
-                                        }}
-                                        disabled={ocupado || (cierre.side === 'vende_usdt' && !canal)}
-                                        style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado || (cierre.side === 'vende_usdt' && !canal) ? 0.5 : 1 }}>
-                                        {cierre.side === 'vende_usdt' && !canal ? 'Elige el canal' : 'Sí, acreditar y completar'}
-                                    </button>
+                                    {(() => {
+                                        const tv = leerTasa(tasaVentaTxt);
+                                        const faltaCanal = cierre.side === 'vende_usdt' && !canal;
+                                        const faltaTasa = !(tasaVentaTxt.trim() && tv > 0) || fueraDeRango(tv, Number(cierre.rate_final));
+                                        const listo = !faltaCanal && !faltaTasa;
+                                        return (
+                                            <button onClick={async () => {
+                                                    if (!listo) return;
+                                                    setPide(null);
+                                                    const r = await hacer('completar', { ...(cierre.side === 'vende_usdt' ? { wallet: canal } : {}), tasaVenta: tv });
+                                                    if (r) {
+                                                        setTasaVentaTxt('');
+                                                        if (r.venta && r.ventaGuardada === false) setAviso('Cierre completado, pero la utilidad no quedó guardada. Avísale a soporte con la referencia del cierre.');
+                                                    }
+                                                }}
+                                                disabled={ocupado || !listo}
+                                                style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado || !listo ? 0.5 : 1 }}>
+                                                {faltaCanal ? 'Elige el canal' : faltaTasa ? (cierre.side === 'vende_usdt' ? 'Escribe la tasa de venta' : 'Escribe la tasa de compra') : 'Sí, acreditar y completar'}
+                                            </button>
+                                        );
+                                    })()}
                                 </div>
                             </>
                         ) : pide === 'anular' ? (

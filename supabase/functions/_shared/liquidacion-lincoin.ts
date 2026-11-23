@@ -14,10 +14,12 @@
 //    · cargue Bre-B sin USDT (la comisión por recepción, feeCop),
 //    · conversión GasFree (utilityCop),
 //    · conversión de la app (lincoin.utilidadCop, calculada con la tasa).
-//    Un cierre de la mesa OTC no la guarda: se ESTIMA con la referencia del
-//    proveedor que quedó en el cierre, y queda marcada como estimada para
-//    que alguien la confirme antes de facturar. Si no hay de dónde sacarla,
-//    es 'sin_dato' y no se factura sola.
+//    Un cierre de la mesa OTC la guarda desde el 23 nov: la mesa escribe al
+//    completar la tasa a la que vendió (o compró) los USDT (payout.venta del
+//    cierre) y la utilidad queda registrada. Los cierres sin ese dato se
+//    ESTIMAN con la referencia del proveedor que quedó en el cierre, y quedan
+//    marcados como estimados para que alguien los confirme antes de facturar.
+//    Si no hay de dónde sacarla, es 'sin_dato' y no se factura sola.
 // ══════════════════════════════════════════════════════════════════
 
 export type Liquidacion = {
@@ -54,8 +56,11 @@ export type Liquidacion = {
   nota: string
 }
 
-// El cierre de la mesa, con lo necesario para estimar.
-export type CierreOtc = { id: string; side?: string | null; from_amount?: number | string | null; to_amount?: number | string | null; rate_final?: number | string | null; rate_fuente?: string | null }
+// El cierre de la mesa, con lo necesario para calcular (payout.venta) o
+// estimar (rate_fuente).
+export type CierreOtc = { id: string; side?: string | null; from_amount?: number | string | null; to_amount?: number | string | null; rate_final?: number | string | null; rate_fuente?: string | null; payout?: any }
+// Las columnas que hay que leer de otc_closes para eso.
+export const COLUMNAS_CIERRE_OTC = 'id, side, from_amount, to_amount, rate_final, rate_fuente, payout'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 const num = (v: unknown): number | null => {
@@ -184,9 +189,14 @@ export function liquidacionDe(tx: any, cierre?: CierreOtc | null): Liquidacion |
       if (u == null) return conTasas({ ...base, tercerosCop: r2(monto), usd: num(rd.fromAmount), nota: 'La conversión no guardó la utilidad.' })
       return conTasas({ ...base, tercerosCop: r2(monto), utilidadCop: r2(u), totalCop: r2(monto + u), fuente: 'registrada', usd: num(rd.fromAmount), tasaLincoin: num(rd.mouvRate), nota: '' })
     }
-    // Mesa OTC: se estima con la referencia del proveedor del cierre.
+    // Mesa OTC: con la tasa a la que la mesa vendió/compró (registrada) o, si
+    // el cierre no la tiene, estimada con la referencia del proveedor.
     if (String(rd.source ?? '') === 'OTC_MANUAL') {
-      const ref = referenciaDe(cierre?.rate_fuente)
+      const tasaMesa = num(cierre?.payout?.venta?.tasa)
+      const registrada = tasaMesa != null && tasaMesa > 0
+      const ref = registrada ? tasaMesa : referenciaDe(cierre?.rate_fuente)
+      const fuenteRef: Liquidacion['fuente'] = registrada ? 'registrada' : 'estimada'
+      const notaRef = (r: number) => registrada ? '' : `Estimada con la referencia del cierre (${r.toLocaleString('es-CO')} COP/USD). Confirmala antes de facturar.`
       const lado = String(cierre?.side ?? (String(rd.fromCurrency ?? '').toUpperCase().startsWith('USD') ? 'vende_usdt' : 'compra_usdt'))
       const desde = num(cierre?.from_amount) ?? num(rd.fromAmount)
       const hasta = num(cierre?.to_amount) ?? num(rd.destAmount) ?? monto
@@ -195,12 +205,12 @@ export function liquidacionDe(tx: any, cierre?: CierreOtc | null): Liquidacion |
         // Entrega USDT (desde), recibe pesos (hasta).
         if (!ref || desde == null || hasta == null) return conTasas({ ...base, tercerosCop: hasta != null ? r2(hasta) : null, usd: desde, tasaCliente: tasaFinal, nota: 'Cierre de mesa sin referencia del proveedor: falta la utilidad.' })
         const total = r2(desde * ref)
-        return conTasas({ ...base, totalCop: total, tercerosCop: r2(hasta), utilidadCop: r2(total - hasta), fuente: 'estimada', usd: desde, tasaLincoin: ref, tasaCliente: tasaFinal, nota: `Estimada con la referencia del cierre (${ref.toLocaleString('es-CO')} COP/USD). Confirmala antes de facturar.` })
+        return conTasas({ ...base, totalCop: total, tercerosCop: r2(hasta), utilidadCop: r2(total - hasta), fuente: fuenteRef, usd: desde, tasaLincoin: ref, tasaCliente: tasaFinal, nota: notaRef(ref) })
       }
       // Compra USDT: paga pesos (desde), recibe USDT (hasta).
       if (!ref || desde == null || hasta == null) return conTasas({ ...base, totalCop: desde != null ? r2(desde) : null, usd: hasta, tasaCliente: tasaFinal, fijo: 'total', nota: 'Cierre de mesa sin referencia del proveedor: falta la utilidad.' })
       const terceros = r2(hasta * ref)
-      return conTasas({ ...base, totalCop: r2(desde), tercerosCop: terceros, utilidadCop: r2(desde - terceros), fuente: 'estimada', usd: hasta, tasaLincoin: ref, tasaCliente: tasaFinal, fijo: 'total', nota: `Estimada con la referencia del cierre (${ref.toLocaleString('es-CO')} COP/USD). Confirmala antes de facturar.` })
+      return conTasas({ ...base, totalCop: r2(desde), tercerosCop: terceros, utilidadCop: r2(desde - terceros), fuente: fuenteRef, usd: hasta, tasaLincoin: ref, tasaCliente: tasaFinal, fijo: 'total', nota: notaRef(ref) })
     }
     return { ...base, nota: 'La conversión no guardó la utilidad de Lincoin.' }
   }

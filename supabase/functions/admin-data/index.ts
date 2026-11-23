@@ -4,7 +4,7 @@ import { reclamarCandado, soltarCandado } from '../_shared/candado.ts'
 import { FIELD_ENC_KEY, encField, decField, keyFp, KeyMismatchError } from '../_shared/field-crypto.ts'
 import { estadoLlaveCoinsenda, generarParCoinsenda, guardarLlaveCoinsenda, cuentaCoinsendaDe, secretoLlave, CUENTAS_COINSENDA, type CuentaCoinsenda } from '../_shared/coinsenda-llave.ts'
 import { ClienteCoinsenda, configCoinsenda, guardarConfigCoinsenda, exitoso, jwtDe, describirFallo, billeteraCop, type RespuestaCoinsenda } from '../_shared/coinsenda.ts'
-import { liquidacionDe, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
+import { liquidacionDe, COLUMNAS_CIERRE_OTC, type CierreOtc } from '../_shared/liquidacion-lincoin.ts'
 import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '../_shared/modelo-factura.ts'
 import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
@@ -5510,7 +5510,7 @@ Deno.serve(async (req: Request) => {
         const idsCierre = Array.from(new Set(filasOps.map(t => String(t.otcCloseId ?? '')).filter(Boolean)))
         const cierres = new Map<string, CierreOtc>()
         for (let i = 0; i < idsCierre.length; i += 200) {
-          const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').in('id', idsCierre.slice(i, i + 200))
+          const { data } = await db.from('otc_closes').select(COLUMNAS_CIERRE_OTC).in('id', idsCierre.slice(i, i + 200))
           for (const c of (data ?? []) as any[]) cierres.set(String(c.id), c)
         }
         // Las facturas de Lincoin ya emitidas o intentadas, por operación.

@@ -49,7 +49,7 @@ import { encField, decField, KeyMismatchError } from '../_shared/field-crypto.ts
 import { municipioPorCodigo, municipioPorNombre, lugarFueraDeColombia } from '../_shared/municipios.ts'
 import { domicilioEmpresa } from '../_shared/rues.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
-import { liquidacionDe, type Liquidacion } from '../_shared/liquidacion-lincoin.ts'
+import { liquidacionDe, COLUMNAS_CIERRE_OTC, type Liquidacion } from '../_shared/liquidacion-lincoin.ts'
 import { modelosDe, diaBogota, rangoDiaBogota, claveDiaria, leerClaveDiaria } from '../_shared/modelo-factura.ts'
 import { mergeRaw } from '../_shared/raw-data.ts'
 import { igualSeguro } from '../_shared/admin-auth.ts'
@@ -3128,7 +3128,7 @@ async function emitirLincoin(txId: string, opts: { manual?: boolean; utilidad?: 
   const rd = (t.raw_data ?? {}) as Record<string, any>
   let cierre: any = null
   if (rd.otcCloseId) {
-    const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').eq('id', String(rd.otcCloseId)).maybeSingle()
+    const { data } = await db.from('otc_closes').select(COLUMNAS_CIERRE_OTC).eq('id', String(rd.otcCloseId)).maybeSingle()
     cierre = data ?? null
   }
   const liq: Liquidacion | null = liquidacionDe(t, cierre)
@@ -3514,7 +3514,7 @@ async function emitirDiaria(userId: string, dia: string, opts: { manual?: boolea
     const idsCierre = Array.from(new Set(lista.map(t => String(t.raw_data?.otcCloseId ?? '')).filter(Boolean)))
     const cierres = new Map<string, any>()
     if (idsCierre.length) {
-      const { data } = await db.from('otc_closes').select('id, side, from_amount, to_amount, rate_final, rate_fuente').in('id', idsCierre)
+      const { data } = await db.from('otc_closes').select(COLUMNAS_CIERRE_OTC).in('id', idsCierre)
       for (const c of (data ?? []) as any[]) cierres.set(String(c.id), c)
     }
     // Lo que ya salió en otra diaria del día, o con factura propia.
