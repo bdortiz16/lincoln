@@ -602,6 +602,10 @@ export const ContactsSection: React.FC<{
         // frena (es su derecho y no se resuelve esperando), y si la
         // verificación no corre para esta cuenta no hay nada que esperar.
         if (est === 'sin_autorizacion') return false;
+        // Ficha de la época de TusDatos sin terminar (en error, de antes del
+        // 30 oct): no hay nada que esperar de ella. Enviar queda disponible y
+        // el servidor la reverifica en Sarblock al intentarlo (23 nov).
+        if (est !== 'finalizado' && est !== 'archivado' && k.proveedor !== 'sarblock' && est !== 'documento_invalido') return false;
         if (est !== 'finalizado') return amlCorre;
         // Cumplimiento lo revisó y lo aprobó: el servidor lo deja pasar.
         if (k.aprobadoManual === true) return false;
@@ -713,6 +717,13 @@ export const ContactsSection: React.FC<{
         } else if (cat === 'alto') {
             tono = ROJO; estado = k.operable === false ? 'BLOQUEADO' : 'RIESGO ALTO'; motivo = 'Riesgo alto';
             ayuda = 'Hallazgos de riesgo alto. No se puede transferir a esta persona.';
+        } else if (est === 'finalizado' && k.proveedor !== 'sarblock' && k.operable !== false) {
+            // Ficha de la época de TusDatos que no bloquea (23 nov): ya no
+            // habilita envíos. Se reverifica con el proveedor actual la
+            // primera vez que se le envía; los bloqueos de TusDatos (riesgo
+            // alto, nombre, documento) se muestran arriba como siempre.
+            estado = 'POR ACTUALIZAR';
+            ayuda = 'La verificación de antecedentes se actualiza la primera vez que le envíes (cerca de un minuto). Después ya le puedes enviar normal.';
         } else if (Number(k.fuentesEnCurso ?? 0) > 0 || k.incompleta === true || k.sarblock?.aggregateOutcome === 'PARTIAL') {
             // Cerró sin una fuente de antecedentes (casi siempre la judicial):
             // el envío espera. Decía "RIESGO BAJO" y no dejaba transferir.
@@ -742,7 +753,10 @@ export const ContactsSection: React.FC<{
             tono = VERDE; estado = 'RIESGO BAJO';
             ayuda = 'Hallazgos menores. Se puede operar con esta persona.';
         } else if (cat === 'ninguno' || cat === 'informativo') {
-            tono = VERDE; estado = 'SIN HALLAZGOS';
+            // Dice "Riesgo bajo" igual que la categoría bajo (pedido del dueño,
+            // 23 nov: "Sin hallazgos" confundía). El detalle de que no se
+            // encontró nada queda en la ayuda, en Cumplimiento y en el reporte.
+            tono = VERDE; estado = 'RIESGO BAJO';
             ayuda = 'No se encontraron antecedentes. Se puede operar con esta persona.';
         } else {
             estado = 'SIN RESULTADO';
