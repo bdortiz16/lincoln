@@ -1590,9 +1590,11 @@ async function avisarPorCorreo(userId: string, datos: {
 //   · Si no sale un resultado (servicio caído, sin resultado, análisis aún en
 //     curso), se devuelve. El análisis en curso se cobra cuando llega.
 //   · Sin consultas, no se consulta.
-// No cobra al admin (Cumplimiento con 2FA) ni a la ronda de monitoreo, ni la
-// wallet de origen de la mesa OTC: esas no son consultas del cliente.
-const ACCIONES_CON_CONSULTA = new Set(['consultar', 'reporte'])
+// La verificación de la wallet de origen de la mesa OTC también gasta una
+// (el dueño, 23 nov: "el usuario debe tener consultas para poder verificar
+// la wallet"); una wallet ya pagada y vigente no se cobra otra vez.
+// No cobra al admin (Cumplimiento con 2FA) ni a la ronda de monitoreo.
+const ACCIONES_CON_CONSULTA = new Set(['consultar', 'reporte', 'otc_wallet'])
 const pagaConConsultas = (yo: Yo) => !!yo.userId && !yo.esAdmin
 const refKyt = (coin: string, dir: string) => `kyt:${coin}:${dir.toLowerCase()}`
 

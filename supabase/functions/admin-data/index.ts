@@ -353,6 +353,52 @@ const inicioCaja = (abiertaAt: unknown) => {
   return { fecha: `${mes}-01`, iso: new Date(Date.parse(`${mes}-01T00:00:00Z`) + 5 * 3600_000).toISOString() }
 }
 
+// ── Utilidades de AML y KYT (23 nov) ──────────────────────────────────
+// Lo que los clientes pagan por los paquetes de consultas de Lincoin Risk
+// (AML de personas y empresas, y desde hoy KYT de wallets: gastan las
+// mismas consultas). risk_comprar descuenta el total del saldo del cliente
+// en el bolsillo que él elige; esa plata se queda en la bolsa de ese riel y
+// ya es de Lincoin, pero no aparecía en ningún lado de la Billetera: la
+// utilidad de la caja cuenta solo los cargues. El dueño pidió verla aparte,
+// como un bolsillo más: el total y cuánto entró por cada uno de los cuatro
+// (y el Saldo Lincoin, si alguien pagó desde ahí). Las consultas usadas se
+// cuentan por tipo: las de KYT llevan la referencia kyt:… (función kyt) y
+// una devolución resta su consumo.
+async function utilidadesRisk() {
+  const etiqueta = (b: unknown) => provDeRiel(b) ?? (String(b ?? '').toUpperCase() === 'COP' ? 'Saldo Lincoin' : String(b ?? '—'))
+  const por: Record<string, { total: number; compras: number }> = {}
+  let total = 0, subtotal = 0, iva = 0, consultas = 0, compras = 0
+  await leerPorPaginas(() => db.from('risk_compras').select('id, bolsillo, cantidad, subtotal, iva, total'), {
+    alLote: (lote) => {
+      for (const c of lote as any[]) {
+        const t = Number(c.total) || 0
+        total += t; subtotal += Number(c.subtotal) || 0; iva += Number(c.iva) || 0
+        consultas += Number(c.cantidad) || 0; compras++
+        const k = etiqueta(c.bolsillo)
+        const x = (por[k] ??= { total: 0, compras: 0 })
+        x.total += t; x.compras++
+      }
+    },
+  })
+  let usadasAml = 0, usadasKyt = 0
+  await leerPorPaginas(() => db.from('risk_movimientos').select('id, cantidad, ref').in('tipo', ['consumo', 'devolucion']), {
+    alLote: (lote) => {
+      for (const m of lote as any[]) {
+        const n = -(Number(m.cantidad) || 0)
+        if (String(m.ref ?? '').startsWith('kyt:')) usadasKyt += n; else usadasAml += n
+      }
+    },
+  })
+  const orden = ['Mouv', 'Finity', 'Coinsenda', 'Coinsenda 2', 'Saldo Lincoin']
+  const porBolsillo = Object.entries(por)
+    .sort(([a], [b]) => (orden.indexOf(a) < 0 ? 99 : orden.indexOf(a)) - (orden.indexOf(b) < 0 ? 99 : orden.indexOf(b)))
+    .map(([bolsillo, v]) => ({ bolsillo, total: Math.round(v.total), compras: v.compras }))
+  return {
+    total: Math.round(total), subtotal: Math.round(subtotal), iva: Math.round(iva),
+    compras, consultasVendidas: consultas, usadas: { aml: usadasAml, kyt: usadasKyt }, porBolsillo,
+  }
+}
+
 async function estadoCaja() {
   const { data: aps } = await db.from('caja_apertura').select('*')
   const aperturas = new Map(((aps ?? []) as any[]).map(a => [String(a.proveedor), a]))
@@ -6530,7 +6576,11 @@ Deno.serve(async (req: Request) => {
           sospechosas = malas.map(t => ({ id: t.id, at: t.created_at, cliente: nombres[String(t.user_id)] ?? '—', proveedor: provDeRiel(t.currency) ?? 'Saldo Lincoin', monto: Number(t.amount) || 0, acct: t.acct }))
         }
         const { count: ocultos } = await db.from('transactions').select('id', { count: 'exact', head: true }).not('raw_data->oculto', 'is', null)
-        return json({ ok: true, proveedores, sospechosas, ocultos: ocultos ?? 0 })
+        // El bolsillo de AML y KYT. Si falla (tabla sin migrar), la caja sale
+        // igual y el recuadro dice que no se pudo leer.
+        let riskUtilidades: unknown = null
+        try { riskUtilidades = await utilidadesRisk() } catch (e) { riskUtilidades = { error: String((e as Error)?.message ?? e).slice(0, 160) } }
+        return json({ ok: true, proveedores, sospechosas, ocultos: ocultos ?? 0, riskUtilidades })
       }
 
       // ── Tablero de Lincoin ───────────────────────────────────────────

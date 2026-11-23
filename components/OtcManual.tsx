@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ArrowDown, Send, RefreshCw, ChevronLeft, MessageSquare,
-    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, Paperclip, Plus, ChevronDown, ChevronUp, X,
+    CheckCircle2, Clock, XCircle, AlertTriangle, Wallet, ShieldCheck, Paperclip, Plus, ChevronDown, ChevronUp, X,
 } from 'lucide-react';
 import { FinityRateChart } from './FinityRateChart';
 import { llamarFuncion } from '../lib/edge';
 import { hallazgosEnEspanol } from '../lib/kytTextos';
 import { nombreCuenta } from '../lib/nombreCuenta';
+import { Panel, Recarga, ESTILOS as ESTILOS_RISK } from './risk/RiskCliente';
 
 // ─────────────────────────────────────────────
 // OtcManual — Mesa OTC manual del cliente.
@@ -285,6 +286,14 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
     const [verif, setVerif]   = useState<any>(null);
     const [exigeWallet, setExigeWallet] = useState(true);
     const [nota, setNota]     = useState('');
+    // Las consultas de Lincoin Risk: verificar la wallet gasta una (23 nov).
+    const [cuentaRisk, setCuentaRisk] = useState<any>(null);
+    const [comprando, setComprando] = useState(false);
+    const leerCuentaRisk = useCallback(async () => {
+        const r = await llamarFuncion('sarblock', { action: 'risk_cuenta' }, 30000).catch(() => null);
+        if (r?.ok) setCuentaRisk(r);
+    }, []);
+    useEffect(() => { leerCuentaRisk(); }, [leerCuentaRisk]);
     const [enviando, setEnviando] = useState(false);
     const [error, setError]   = useState<string | null>(null);
 
@@ -428,6 +437,9 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                                 }}
                                 onRed={(r) => { setRed(r); setVerif(null); }}
                                 onVerificado={setVerif}
+                                consultas={cuentaRisk ? Number(cuentaRisk.saldo ?? 0) : null}
+                                onSaldo={(n) => setCuentaRisk((c: any) => (c ? { ...c, saldo: n } : c))}
+                                onComprar={cuentaRisk?.tienda ? () => setComprando(true) : undefined}
                             />
                         </div>
                     )}
@@ -577,6 +589,12 @@ const NuevoCierre: React.FC<{ userId: string; showToast?: (m: string) => void; s
                     {lateral}
                 </div>
             </div>
+
+            {/* La compra de consultas, la misma de Lincoin Risk, sin salir de la mesa. */}
+            <style>{ESTILOS_RISK}</style>
+            <Panel titulo="Comprar consultas" abierto={comprando && !!cuentaRisk?.tienda} cerrar={() => { setComprando(false); leerCuentaRisk(); }}>
+                {cuentaRisk?.tienda ? <Recarga cuenta={cuentaRisk} listo={() => { setComprando(false); leerCuentaRisk(); }} /> : null}
+            </Panel>
         </div>
     );
 };
@@ -608,20 +626,28 @@ const fechaCorta = (v: any) => {
     return Number.isNaN(t.getTime()) ? '—' : t.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
+// Verificar la wallet gasta 1 consulta de Lincoin Risk (23 nov, pedido del
+// dueño: "el usuario debe tener consultas para poder verificar la wallet").
+// `consultas` es el saldo (null mientras no se sabe); sin consultas no se
+// verifica y se ofrece la compra ahí mismo (`onComprar`).
 const WalletOrigen: React.FC<{
     wallet: string; red: RedOtc; verif: any;
     onWallet: (v: string) => void; onRed: (r: RedOtc) => void; onVerificado: (v: any) => void;
-}> = ({ wallet, red, verif, onWallet, onRed, onVerificado }) => {
+    consultas?: number | null; onSaldo?: (n: number) => void; onComprar?: () => void;
+}> = ({ wallet, red, verif, onWallet, onRed, onVerificado, consultas = null, onSaldo, onComprar }) => {
     const [cargando, setCargando] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const w = wallet.trim();
     const esEvm = /^0x/i.test(w);
+    const sinConsultas = consultas != null && consultas <= 0;
 
     const verificar = async () => {
-        if (!w || cargando) return;
+        if (!w || cargando || sinConsultas) return;
         setCargando(true); setError(null); onVerificado(null);
         const r = await llamarFuncion('kyt', { action: 'otc_wallet', coin: red, address: w }, 60000).catch(() => null);
         setCargando(false);
+        if (typeof r?.saldoConsultas === 'number') onSaldo?.(r.saldoConsultas);
+        if (r?.error === 'sin_consultas') { onSaldo?.(0); return; }
         if (!r?.ok) { setError(r?.mensaje ?? r?.error ?? 'No se pudo revisar la wallet. Intenta de nuevo.'); return; }
         onVerificado(r);
     };
@@ -632,9 +658,21 @@ const WalletOrigen: React.FC<{
 
     return (
         <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                <Wallet size={14} style={{ color: '#878E88' }} />
-                <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>Wallet desde donde envías los USDT</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <Wallet size={14} style={{ color: '#878E88' }} />
+                    <span style={{ fontSize: 12.5, color: '#F4F4F2', fontWeight: 600 }}>Wallet desde donde envías los USDT</span>
+                </span>
+                {consultas != null && (
+                    <button onClick={onComprar} disabled={!onComprar} title="Consultas de Lincoin Risk"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '4px 5px 4px 11px', borderRadius: 999, fontFamily: 'inherit', cursor: onComprar ? 'pointer' : 'default',
+                            background: sinConsultas ? 'rgba(251,191,36,0.08)' : 'rgba(255,255,255,0.04)', border: `1px solid ${sinConsultas ? 'rgba(251,191,36,0.4)' : 'rgba(255,255,255,0.10)'}` }}>
+                        <ShieldCheck size={12} style={{ color: sinConsultas ? '#FBBF24' : '#4ADE80' }} />
+                        <span style={{ fontSize: 11.5, color: '#878E88' }}>Consultas</span>
+                        <b style={{ fontSize: 12.5, color: sinConsultas ? '#FBBF24' : '#F4F4F2' }}>{consultas.toLocaleString('es-CO')}</b>
+                        {onComprar && <span style={{ fontSize: 11, fontWeight: 700, color: '#0C0E0D', background: '#F4F4F2', borderRadius: 999, padding: '3px 9px' }}>+ Comprar</span>}
+                    </button>
+                )}
             </div>
             <p style={{ fontSize: 11.5, color: '#878E88', marginBottom: 10, lineHeight: 1.5 }}>
                 Revisamos su riesgo antes de abrir el cierre. Solo se aceptan wallets de riesgo bajo, y los USDT tienen que salir de esta misma wallet.
@@ -662,12 +700,41 @@ const WalletOrigen: React.FC<{
                     spellCheck={false}
                     style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontSize: 13 }}
                 />
-                <button onClick={verificar} disabled={!w || cargando}
-                    style={{ flexShrink: 0, padding: '0 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700,
-                        color: w ? '#0C0E0D' : '#878E88', background: w ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', opacity: cargando ? 0.6 : 1 }}>
+                <button onClick={verificar} disabled={!w || cargando || sinConsultas}
+                    style={{ flexShrink: 0, padding: '0 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: !w || sinConsultas ? 'not-allowed' : 'pointer',
+                        color: w && !sinConsultas ? '#0C0E0D' : '#878E88', background: w && !sinConsultas ? '#4ADE80' : 'rgba(255,255,255,0.06)', border: 'none', opacity: cargando ? 0.6 : 1 }}>
                     {cargando ? 'Revisando…' : verif ? 'Revisar de nuevo' : 'Verificar'}
                 </button>
             </div>
+
+            {/* Sin consultas: no se verifica, y la compra queda a un clic. */}
+            {sinConsultas ? (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderRadius: 12, padding: '12px 14px',
+                    border: '1px solid rgba(251,191,36,0.35)', background: 'linear-gradient(135deg, rgba(251,191,36,0.08), rgba(251,191,36,0.02))' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, minWidth: 0, flex: '1 1 260px' }}>
+                        <span style={{ width: 30, height: 30, borderRadius: 9, flexShrink: 0, display: 'grid', placeItems: 'center', background: 'rgba(251,191,36,0.12)' }}>
+                            <ShieldCheck size={15} style={{ color: '#FBBF24' }} />
+                        </span>
+                        <div style={{ minWidth: 0 }}>
+                            <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>No tienes consultas para verificar la wallet</p>
+                            <p style={{ margin: '3px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                                La revisión de riesgo usa 1 consulta de Lincoin Risk, las mismas de AML y KYT. Compra un paquete y verifica en el acto.
+                            </p>
+                        </div>
+                    </div>
+                    {onComprar && (
+                        <button onClick={onComprar} className="lincoin-btn-white"
+                            style={{ flexShrink: 0, height: 36, padding: '0 16px', borderRadius: 10, border: 'none', fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}>
+                            Comprar consultas
+                        </button>
+                    )}
+                </div>
+            ) : consultas != null && !verif ? (
+                <p style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '8px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.5 }}>
+                    <ShieldCheck size={12} style={{ color: '#4ADE80', flexShrink: 0 }} />
+                    Verificar usa 1 consulta de Lincoin Risk. Una wallet que ya verificaste y sigue vigente no se cobra otra vez; si la revisión no da resultado, se devuelve.
+                </p>
+            ) : null}
 
             {error && (
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.06)', borderRadius: 10, padding: '10px 12px' }}>

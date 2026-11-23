@@ -72,7 +72,8 @@ import {
   Wallet,
   ArrowDownCircle,
   ArrowUpCircle,
-  Vault
+  Vault,
+  ShieldCheck
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { BanderaPais } from './BanderaPais';
@@ -2641,6 +2642,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                             {ps.map((p, i) => (
                               <span key={p.proveedor}>{i > 0 && ' · '}<span style={{ whiteSpace: 'nowrap' }}>{p.proveedor} {p.lincoinEsperado == null ? '—' : Math.round(p.lincoinEsperado).toLocaleString('es-CO')}</span></span>
                             ))}
+                          </p>
+                        </>}
+                  </div>
+                );
+              })()}
+              {/* Utilidades de AML y KYT (23 nov, pedido del dueño): lo que
+                  los clientes pagan por las consultas de Lincoin Risk, sumado
+                  de los cuatro bolsillos (y el Saldo Lincoin) de donde se
+                  descontó cada compra. No está dentro de "utilidades", que
+                  cuenta solo los cargues. */}
+              {(() => {
+                const r: any = caja?.riskUtilidades;
+                return (
+                  <div style={{ background: '#0C0E0D', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 12, padding: '9px 14px', minWidth: 0 }}>
+                    <span className="flex items-center" style={{ gap: 6, fontSize: 12.5, fontWeight: 800, color: '#F4F4F2' }}>
+                      <ShieldCheck size={13} style={{ color: '#4ADE80' }} /> Utilidades <span style={{ color: '#878E88', fontWeight: 600, fontSize: 11 }}>· AML y KYT</span>
+                    </span>
+                    {!caja ? <p style={{ margin: '4px 0 0', fontSize: 13, color: '#878E88' }}>Cargando…</p>
+                      : !r || r.error ? <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#878E88', lineHeight: 1.4 }}>No se pudo leer{r?.error ? `: ${r.error}` : '.'}</p>
+                      : <>
+                          <p style={{ margin: '3px 0 0', fontSize: 16, fontWeight: 800, letterSpacing: '-0.4px', color: '#F4F4F2' }}>{Math.round(r.total).toLocaleString('es-CO')}</p>
+                          <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>
+                            {r.porBolsillo?.length
+                              ? r.porBolsillo.map((b: any, i: number) => (
+                                  <span key={b.bolsillo}>{i > 0 && ' · '}<span style={{ whiteSpace: 'nowrap' }}>{b.bolsillo} {Math.round(b.total).toLocaleString('es-CO')}</span></span>
+                                ))
+                              : 'Sin compras de consultas todavía'}
+                          </p>
+                          <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>
+                            <span style={{ whiteSpace: 'nowrap' }}>{Number(r.compras).toLocaleString('es-CO')} {r.compras === 1 ? 'compra' : 'compras'} · {Number(r.consultasVendidas).toLocaleString('es-CO')} consultas</span>{' '}
+                            <span style={{ whiteSpace: 'nowrap' }}>· usadas AML {Number(r.usadas?.aml ?? 0).toLocaleString('es-CO')} · KYT {Number(r.usadas?.kyt ?? 0).toLocaleString('es-CO')}</span>
+                            {r.iva > 0 ? <span style={{ whiteSpace: 'nowrap' }}> · IVA incluido {Math.round(r.iva).toLocaleString('es-CO')}</span> : null}
                           </p>
                         </>}
                   </div>
