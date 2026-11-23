@@ -256,10 +256,43 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            {/* El proveedor del análisis, CON NOMBRE (23 nov, decisión del
+                dueño). Es una excepción a la regla de no mostrarle aliados al
+                cliente (CLAUDE.md): este reporte se presenta ante bancos,
+                autoridades e investigaciones, y su respaldo es justamente que
+                el análisis es de MistTrack y que el reporte original de
+                MistTrack está archivado con su huella. Solo texto: sin su
+                logo, que no tenemos autorizado. La descripción es la que
+                MistTrack da de sí mismo en su documentación ("anti-money
+                laundering tracking system … built by SlowMist"). */}
+            <div style={{ display: 'inline-block', textAlign: 'left', border: `1px solid ${T.linea}`, padding: '6px 10px', marginBottom: 8 }}>
+              <p style={{ fontSize: 7.5, fontWeight: 700, color: T.suave, margin: 0, letterSpacing: '0.6px' }}>ANÁLISIS ON-CHAIN PROVISTO POR</p>
+              <p style={{ fontSize: 13, fontWeight: 800, margin: '2px 0 0', lineHeight: 1.2 }}>
+                MistTrack <span style={{ fontSize: 9, fontWeight: 600, color: T.suave }}>· de SlowMist</span>
+              </p>
+              <p style={{ fontSize: 8.5, color: T.suave, margin: '2px 0 0' }}>
+                Sistema de rastreo antilavado (AML) de criptoactivos · misttrack.io
+              </p>
+            </div>
             <p style={{ fontSize: 9.5, color: T.suave, margin: 0 }}>Generado el {fecha(d.generadoAt)} (hora de Colombia)</p>
             <p style={{ fontSize: 9, color: T.tenue, margin: '2px 0 0' }}>{d.generadoAt ? `${new Date(d.generadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC` : ''}</p>
             {d.empresa && <p style={{ fontSize: 9.5, color: T.suave, margin: '2px 0 0' }}>Solicitado por {d.empresa}</p>}
           </div>
+        </div>
+
+        {/* Qué dice MistTrack y qué no: el reporte no puede atribuirle a
+            MistTrack los saldos del explorador ni nuestro rastreo propio. Y
+            "quedó archivado" solo si de verdad quedó. */}
+        <div style={{ border: `1px solid ${T.linea}`, borderTop: 'none', background: T.fondo, padding: '7px 12px' }}>
+          <p style={{ fontSize: 9, margin: 0, lineHeight: 1.6 }}>
+            <b>Este reporte está soportado por MistTrack (SlowMist).</b> El puntaje, el nivel de riesgo, la
+            exposición, las etiquetas y las contrapartes son los que MistTrack devuelve para esta dirección,
+            sin ajustes de Lincoin. Los saldos y conteos de la cadena salen del explorador público de la red,
+            como se indica en esa sección.{' '}
+            {k?.sha256
+              ? 'El reporte original de MistTrack quedó archivado con su huella SHA-256 (ver Constancia del análisis).'
+              : 'El reporte original de MistTrack de esta consulta no quedó archivado (ver Constancia del análisis).'}
+          </p>
         </div>
 
         {/* Dirección analizada */}
@@ -395,21 +428,21 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
         <div style={{ marginTop: 12, border: `1px solid ${T.linea}`, padding: '9px 12px', background: T.fondo, breakInside: 'avoid' }}>
           <p style={{ fontSize: 8.5, fontWeight: 700, color: T.suave, margin: '0 0 4px', letterSpacing: '0.4px' }}>CONSTANCIA DEL ANÁLISIS</p>
           <p style={{ fontSize: 9.5, margin: 0, lineHeight: 1.6 }}>
-            Consulta al proveedor de analítica on-chain: <b>{fecha(d.consultadoAt)}</b>
+            Consulta a MistTrack: <b>{fecha(d.consultadoAt)}</b>
             {d.consultadoAt ? ` (${new Date(fechaProveedor(d.consultadoAt) ?? d.consultadoAt).toISOString().replace('T', ' ').slice(0, 19)} UTC)` : ''}.
             {k?.str?.at
-              ? <> El proveedor registró la consulta el <b>{k.str.at} UTC</b>{k.str.puntaje != null ? <> con puntaje <b>{k.str.puntaje}</b></> : null}{k.str.nivel ? <> y nivel <b>{nivelProveedorEs(k.str.nivel).toLowerCase()}</b></> : null}.</>
+              ? <> MistTrack registró la consulta el <b>{k.str.at} UTC</b>{k.str.puntaje != null ? <> con puntaje <b>{k.str.puntaje}</b></> : null}{k.str.nivel ? <> y nivel <b>{nivelProveedorEs(k.str.nivel).toLowerCase()}</b></> : null}.</>
               : null}
           </p>
           {k?.sha256 ? (
             <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.suave }}>
-              El reporte original del proveedor quedó archivado por Lincoin ({fecha(k.archivadoAt)}) con huella SHA-256:{' '}
+              El reporte original de MistTrack quedó archivado por Lincoin ({fecha(k.archivadoAt)}) con huella SHA-256:{' '}
               <span style={{ fontFamily: MONO, color: T.tinta, wordBreak: 'break-all' }}>{k.sha256}</span>.
               Se entrega a la autoridad que lo requiera.
             </p>
           ) : (
             <p style={{ fontSize: 9, margin: '4px 0 0', lineHeight: 1.55, color: T.tenue, fontStyle: 'italic' }}>
-              El reporte original del proveedor no quedó archivado para esta consulta (consultas anteriores
+              El reporte original de MistTrack no quedó archivado para esta consulta (consultas anteriores
               al 22 de noviembre de 2026 o enlace vencido). Una consulta nueva lo archiva.
             </p>
           )}
@@ -1084,7 +1117,7 @@ export const KytReporte: React.FC<{ d: any; onClose: () => void }> = ({ d, onClo
             Sin esto, quien lee un "entidad sancionada a 3 saltos" en una
             entidad pública tiene que ir a buscar a otro documento qué significa. */}
         <div style={{ marginTop: 22, breakBefore: 'page' }}>
-          <h2 style={{ ...H, marginTop: 0 }}>Anexo 1. Fuentes de riesgo de lavado que identifica el proveedor</h2>
+          <h2 style={{ ...H, marginTop: 0 }}>Anexo 1. Fuentes de riesgo de lavado que identifica MistTrack</h2>
           {FUENTES_RIESGO.map(g => (
             <div key={g.nivel} style={{ breakInside: 'avoid' }}>
               <p style={{ fontSize: 10, fontWeight: 800, color: g.nivel === 'Severo' || g.nivel === 'Alto' ? T.rojo : g.nivel === 'Medio' ? T.ambar : T.verde, margin: '10px 0 4px' }}>Riesgo {g.nivel.toLowerCase()}</p>
