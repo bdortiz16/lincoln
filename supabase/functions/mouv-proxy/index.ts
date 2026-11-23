@@ -2027,25 +2027,6 @@ async function huellaLlave(raw: string): Promise<string> {
   return Array.from(sig.slice(0, 12)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-// Titular de una llave según Finity (respaldo del directorio de Mouv). Crea
-// un Bre-B de 5.000 SIN confirmarlo — crear no mueve plata y vence solo — y
-// lee el nombre y el banco que devuelve. Prueba las formas de la llave igual
-// que el envío por la Cuenta 2.
-async function titularPorFinity(userId: string, rawKey: string, keyType: string): Promise<{ nombre: string; banco: string | null; llave: string } | null> {
-  const tipo = brebTypeToFinity(keyType, rawKey)
-  for (const valor of llavesParaFinity(tipo, rawKey)) {
-    const c = await finityCall('breb_crear', userId, { data: { amount: 5000, key_type: tipo, key_value: valor } })
-    const d = c?.data?.data ?? c?.data ?? null
-    if (c?.ok && d?.id) {
-      const nombre = [d.first_name, d.last_name].map((x: unknown) => String(x ?? '').trim()).filter(Boolean).join(' ')
-      await logAudit(userId, 'finity.breb.consulta_respaldo', { tipo, llave: enmascarar(valor), encontrada: !!nombre })
-      return nombre ? { nombre, banco: d.bank_name ? String(d.bank_name) : null, llave: valor } : null
-    }
-    if (![400, 404, 422].includes(Number(c?.status ?? 0))) break
-  }
-  return null
-}
-
 async function logAudit(userId: string | null, action: string, metadata: Record<string, unknown>) {
   try {
     await db.from('audit_log').insert({ user_id: userId, action, metadata })
@@ -2937,16 +2918,11 @@ serve(async (req: Request) => {
       await logAudit(duenoBreb, 'mouv.breb_consulta', { tipo: String((payload as any).keyType ?? ''), llave: huella })
     }
     const rr = await mouvResolveBrebKey(rawKey, String((payload as any).keyType ?? ''))
-    // Respaldo: con el directorio de Mouv caído se le pregunta a Finity. Su
-    // "crear" de Bre-B (sin confirmar, no mueve plata) devuelve el nombre del
-    // titular y el banco, NO la cédula: esa la escribe el cliente. Solo cuando
-    // Mouv no responde; el tope de arriba aplica igual.
-    if (!rr.found && rr.caido) {
-      const fr = await titularPorFinity(duenoBreb, rawKey, String((payload as any).keyType ?? '')).catch(() => null)
-      // 'respaldo' en vez del nombre del aliado: la respuesta va al cliente.
-      // (La pantalla de beneficiarios usa este valor para pedir el documento.)
-      if (fr) return json(200, { ok: true, found: true, fuente: 'respaldo', matchedKey: fr.llave, fullName: fr.nombre, idValue: null, keyType: null, bank: fr.banco })
-    }
+    // Ya NO hay respaldo por Finity (23 nov, el dueño: "lo de 5.000 quítalo,
+    // es innecesario"). Para leer el titular, ese respaldo creaba un Bre-B de
+    // 5.000 sin confirmar que quedaba "Por aprobar" en el portal de Finity, y
+    // aprobado por error pagaba esos 5.000. Con el directorio caído se dice
+    // que no responde y se envía por ACH o se intenta en unos minutos.
     if (!rr.found && rr.caido) return json(200, { ok: false, error: 'directorio_caido', message: 'El directorio Bre-B no responde en este momento. Intenta de nuevo en unos minutos o envía por ACH.' })
     if (!rr.found) return json(200, { ok: true, found: false, message: 'La llave Bre-B no existe o no está activa.' })
     return json(200, { ok: true, found: true, matchedKey: rr.matchedKey, fullName: rr.fullName ?? null, idValue: rr.idValue ?? null, keyType: rr.keyType ?? null, bank: rr.bank ?? null })
