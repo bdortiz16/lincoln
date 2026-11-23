@@ -36,6 +36,7 @@ import { FacturacionConfig } from './FacturacionConfig';
 import { AccesoContadorModal, type Vinculo as SolicitudContador } from './AccesoContadorModal';
 import { Bolita, FichaEmpresaModal } from './FichaEmpresa';
 import { EstadoCuentaHoja } from './EstadoCuentaHoja';
+import { cuentaDeMovimiento } from '../lib/nombreCuenta';
 import {
   ENTRA, MESES, MESES_L, SALE, asientosDe, claveTercero, cuenta, datosTercero, efecto, esDeTercero, estadoDeCuenta, fichaDeUsuario, fmtMon, terceros,
   type Asiento, type Dir, type FichaEmpresa, type Moneda, type Tercero,
@@ -1617,8 +1618,8 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const saldoInicial = primera ? (saldoTras.get(primera) ?? 0) - efecto(primera) : 0;
     let totEntradas = 0, totSalidas = 0, totCostos = 0;
     const movimientos: (string | number | Date | null)[][] = [
-      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Costo del envío', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', ...(variasEmpresas ? ['Empresa que factura'] : []), 'Referencia', 'Id'],
-      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, null, saldoInicial, moneda, '', '', '', '', ...(variasEmpresas ? [''] : []), '', ''],
+      ['Fecha', 'Tipo', 'Nombre', 'Tipo de documento', 'Número de documento', 'Banco', 'Tipo de cuenta', 'Cuenta / llave', 'Entrada', 'Salida', 'Costo del envío', 'Saldo', 'Moneda', 'Estado', 'Comprobante', 'Documento Siigo', 'Nº Siigo', 'Cuenta Lincoin', ...(variasEmpresas ? ['Empresa que factura'] : []), 'Referencia', 'Id'],
+      [primera ? new Date(primera.ts) : null, 'Saldo inicial', '', '', '', '', '', '', null, null, null, saldoInicial, moneda, '', '', '', '', '', ...(variasEmpresas ? [''] : []), '', ''],
     ];
     for (const a of filasHoja) {
       const f = folios[String(a.tx.id)];
@@ -1632,12 +1633,13 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
         suma && a.costo > 0 ? a.costo : null,
         saldoTras.get(a) ?? null, a.moneda, a.estado,
         f?.numero ?? '', estadoDoc(f?.factura), f?.factura?.numero ?? '',
+        cuentaDeMovimiento(a.tx) ?? '',
         ...(variasEmpresas ? [f?.factura?.numero ? empresaDeFolio(f) : ''] : []),
         String(a.tx.providerRef ?? a.tx.reference ?? a.tx.txHash ?? ''), String(a.tx.id),
       ]);
     }
     const saldoFinal = filasHoja.length ? (saldoTras.get(filasHoja[filasHoja.length - 1]) ?? saldoInicial) : saldoInicial;
-    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, totCostos, saldoFinal, moneda, '', '', '', '', ...(variasEmpresas ? [''] : []), '', '']);
+    movimientos.push([null, 'Totales', '', '', '', '', '', '', totEntradas, totSalidas, totCostos, saldoFinal, moneda, '', '', '', '', '', ...(variasEmpresas ? [''] : []), '', '']);
 
     // ── 3 y 4. A quién se le envió y de quién se recibió: una fila por
     //    tercero, el gráfico de los 15 primeros y, si el periodo tiene más de
@@ -1725,7 +1727,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
     const rotArchivo = periodo === 'mes' ? `${mesY}-${String(mesM + 1).padStart(2, '0')}` : periodo;
     descargarXlsx(`lincoin-contabilidad-${moneda}-${rotArchivo}-${new Date().toISOString().slice(0, 10)}.xlsx`, [
       hojaEstado,
-      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 14, 18, 8, 12, 14, 22, 12, ...(variasEmpresas ? [28] : []), 30, 38] },
+      { nombre: 'Movimientos', filas: movimientos, anchos: [18, 16, 34, 16, 18, 22, 16, 22, 16, 16, 14, 18, 8, 12, 14, 22, 12, 24, ...(variasEmpresas ? [28] : []), 30, 38] },
       hojaTerceros('Enviado a', 'A quién se le envió', enviadoA, 'out'),
       hojaTerceros('Recibido de', 'De quién se recibió', recibidoDe, 'in'),
     ]);
@@ -2079,6 +2081,13 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                     <td style={{ padding: '11px 20px', borderBottom: `1px solid ${C.borde}`, minWidth: 220 }}>
                       <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0 }}>{a.tipo}</p>
                       <p style={{ fontSize: 11.5, color: C.sub, margin: '1px 0 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 360 }}>{a.contraparte}</p>
+                      {/* Por qué cuenta salió (o a cuál entró). 23 nov, el dueño:
+                          "falta por qué cuenta salió el pago". */}
+                      {cuentaDeMovimiento(a.tx) && (
+                        <p style={{ fontSize: 11, color: C.tenue, margin: '2px 0 0', whiteSpace: 'nowrap' }}>
+                          {a.dir === 'out' ? 'Salió por ' : 'Entró a '}<span style={{ color: C.medio, fontWeight: 600 }}>{cuentaDeMovimiento(a.tx)}</span>
+                        </p>
+                      )}
                     </td>
                     <td style={{ padding: '11px 20px', fontSize: 13.5, fontWeight: 700, textAlign: 'right', fontVariantNumeric: 'tabular-nums', borderBottom: `1px solid ${C.borde}`, whiteSpace: 'nowrap', color: rech ? C.tenue : a.dir === 'in' ? C.entra : C.text, textDecoration: rech ? 'line-through' : 'none' }}>{a.dir === 'in' ? '+' : '−'}{fmtMon(a.monto, a.moneda)}</td>
                     <td style={{ padding: '11px 20px', fontSize: 10, fontWeight: 700, letterSpacing: '0.5px', borderBottom: `1px solid ${C.borde}`, color: estadoColor(a.estado), whiteSpace: 'nowrap' }}>{a.estado.toUpperCase()}</td>
@@ -2104,9 +2113,19 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                         if (emitiendoSiigo) return <span style={{ color: C.sub }} title="Siigo está procesando la factura">emitiendo…</span>;
                         if (fa?.estado === 'en_cola') return <span style={{ color: C.sub }} title={fa.error ?? 'En la cola del lote: Lincoin la emite en segundo plano'}>{/duplicad|esperar/i.test(fa.error ?? '') ? 'en espera…' : 'en cola…'}</span>;
                         if (!f || !fa?.estado || fa.estado === 'emitiendo') return (
-                          <span className="flex items-center" style={{ gap: 6 }}>
-                            <span style={{ color: C.tenue }} title={noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no es una operación con un tercero.' : undefined}>{facturacionActiva && noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : f && facturacionActiva ? 'pendiente' : '—'}</span>
-                            {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
+                          <span className="flex flex-col" style={{ gap: 3 }}>
+                            <span className="flex items-center" style={{ gap: 6 }}>
+                              <span style={{ color: C.tenue }} title={noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no es una operación con un tercero.' : undefined}>{facturacionActiva && noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : f && facturacionActiva ? 'pendiente' : '—'}</span>
+                              {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
+                            </span>
+                            {/* Con varias empresas, cuál la emite (o la emitirá): la
+                                dueña de la cuenta del movimiento, como en el servidor.
+                                23 nov, el dueño: "falta qué empresa hizo la factura". */}
+                            {variasEmpresas && a.dir === 'out' && !rech && !noAplicaPor(a.tx) && (
+                              <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'nowrap' }} title="Empresa que emite la factura de este movimiento">
+                                Factura de {empresaDeFolio({ ...(f ?? {}), moneda: f?.moneda ?? (a.tx as any)?.currency })}
+                              </span>
+                            )}
                           </span>
                         );
                         if (fa.estado === 'omitida' || fa.estado === 'pendiente' || fa.estado === 'anulada') return (
@@ -2164,7 +2183,7 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               {rotulo}{fa.numero ?? 'emitida'}
                             </button>
                             {fa.url && <a href={fa.url} target="_blank" rel="noopener noreferrer" title="Abrir en Siigo" style={{ color: C.sub, fontSize: 11 }}>↗</a>}
-                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.tenue, whiteSpace: 'nowrap' }} title="Empresa que la emitió">{empresaDeFolio(f)}</span>}
+                            {variasEmpresas && <span style={{ fontSize: 10.5, color: C.sub, whiteSpace: 'nowrap' }} title="Empresa que la emitió">de {empresaDeFolio(f)}</span>}
                             {/* Vigente de un movimiento rechazado: la plata volvió,
                                 la factura sobra. Se anula en Siigo; Lincoin la ve
                                 tachada al leer la nota crédito. */}

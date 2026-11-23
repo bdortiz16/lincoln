@@ -39,6 +39,27 @@ export const cuentaAchDe = (tx: any): number => {
   return n >= 1 && n <= 4 ? n : 2;
 };
 
+// La cuenta de Lincoin de un movimiento, como la conoce la empresa (23 nov,
+// el dueño en Contabilidad: "falta por qué cuenta salió el pago"). Un envío
+// lleva el riel y la cuenta que se eligió al enviar ("Bre-B · Cuenta 2",
+// "ACH · Cuenta 4 · Kaupaloki"). Lo demás (cargues, recaudos, ajustes) dice
+// el saldo donde entró o de donde salió, por su moneda ("Cuenta 1 · Bre-B").
+// Los nombres de los saldos son los del servidor (CUENTAS_FACTURABLES en la
+// función facturacion), que también decide con la moneda qué empresa factura.
+export const SALDO_CUENTA: Record<string, string> = {
+  COP_BREB: 'Cuenta 1 · Bre-B', COP_ACH: 'Cuenta 2 · ACH', COP_C3: nombreCuenta(3), COP_C4: nombreCuenta(4), COP: 'Saldo Lincoin',
+};
+export const cuentaDeMovimiento = (tx: any): string | null => {
+  const rd = (tx?.raw_data ?? {}) as Record<string, any>;
+  const rail = String(tx?.rail ?? rd.rail ?? '').toUpperCase();
+  const nB = Number(tx?.cuentaBreb ?? rd.cuentaBreb);
+  const nA = Number(tx?.cuentaAch ?? rd.cuentaAch);
+  const valida = (n: number) => n >= 1 && n <= 4;
+  if (rail === 'BREB' || valida(nB)) return `Bre-B · ${nombreCuenta(valida(nB) ? nB : 1)}`;
+  if (rail === 'ACH' || valida(nA)) return `ACH · ${nombreCuenta(cuentaAchDe(tx))}`;
+  return SALDO_CUENTA[String(tx?.currency ?? '').toUpperCase()] ?? null;
+};
+
 // Panel: el nombre de la bolsa para mostrar.
 export const NOMBRE_BOLSA: Record<string, string> = { Coinsenda: 'Coinsenda Jero', 'Coinsenda 2': 'Coinsenda Kaupaloki' };
 export const nombreBolsa = (p: string): string => NOMBRE_BOLSA[p] ?? p;
