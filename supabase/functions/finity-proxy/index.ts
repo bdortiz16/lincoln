@@ -119,35 +119,24 @@ async function creditBalanceAtomic(userId: string, col: string, delta: number): 
 // real se descubre sola contra el sandbox sin depender de la doc.
 const FINITY_TOKEN_PATH = '/v0/oauth/token' // ✅ confirmado en la doc
 
+// 23 nov: SOLO las rutas de la documentación oficial
+// (api-finity-docs.readme.io). Antes cada recurso probaba entre 3 y 9 rutas
+// adivinadas (/v0/balances, /v0/payouts, /v0/transfers…) y cada una que no
+// existe es un 404 en el registro de Finity: una revisión de un envío ACH
+// hacía hasta 11 pedidos, 10 de ellos 404. Ese mismo día el firewall de
+// Finity empezó a responder "403 Forbidden" (nginx) a todo lo nuestro —API,
+// token y portal—, que es como responde un bloqueo por tráfico que parece un
+// escaneo. Una ruta por recurso; la que no está en la doc no se pide.
 const CANDIDATES: Record<string, string[]> = {
-  balance: [
-    '/v0/account-balance', '/v0/account/balance', '/v0/balances',
-    '/v0/balance', '/v0/accounts/balance',
-  ],
-  movements: [
-    '/v0/movements', '/v0/movement', '/v0/transactions',
-  ],
-  externalAccounts: [
-    '/v0/external-accounts', '/v0/external_accounts', '/v0/externalaccounts',
-  ],
-  withdrawalOrders: [
-    '/v0/withdrawal-orders', '/v0/withdrawal_orders', '/v0/withdrawals',
-    '/v0/withdrawal-order', '/v0/payouts', '/v0/transfers',
-    '/v0/disbursements', '/v0/payments', '/v0/orders',
-  ],
-  rates: [
-    '/v0/rates', '/v0/exchange-rates', '/v0/exchange_rates',
-    '/v0/exchange-rate', '/v0/fx/rates',
-  ],
-  // ✅ CONFIRMADO en la doc (Currency Conversion, proceso de 2 pasos):
-  //   Paso 1: POST /v0/convert/internal
-  //           { fromAsset:'USD', toAsset:'COP', amount, exchange_rate_id, expires_at }
-  //           (exchange_rate_id = el id que devuelve /v0/rates; expira en ~30 s)
-  //           → crea la conversión en estado UNCONFIRMED
-  //   Paso 2: POST de confirmación (página "Confirm internal conversion").
-  convert: [
-    '/v0/convert/internal',
-  ],
+  balance: ['/v0/account/COP'],             // GET /v0/account/{asset}
+  movements: ['/v0/movements'],             // GET /v0/movements y /v0/movements/{id}
+  externalAccounts: ['/v0/external-accounts'],
+  withdrawalOrders: ['/v0/withdrawal-orders'],
+  rates: ['/v0/rates'],                     // ?from=USD&to=COP
+  // Conversión en 2 pasos (doc "Currency Conversion"): POST /v0/convert/internal
+  // { fromAsset, toAsset, amount, exchange_rate_id, expires_at } y luego su
+  // confirmación.
+  convert: ['/v0/convert/internal'],
 }
 
 // Ruta que ya respondió por recurso (cache en memoria del worker)
@@ -396,34 +385,9 @@ async function saldoPorApi(amountOf: (d: any) => number | null, deepFind: (o: an
     saldoApiCache = { hasta: Date.now() + 60_000, r }
     return r
   }
-  try {
-    const { res, path } = await finityTry('balance')
-    const raw = await res.json().catch(() => null)
-    intentos.v0 = { path, status: res.status, raw }
-    const filas = !res.ok ? null : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.balances) ? raw.balances : null
-    for (const f of filas ?? []) {
-      const moneda = String(f?.asset ?? f?.currency ?? f?.coin ?? f?.symbol ?? '').toUpperCase()
-      const n = amountOf(f)
-      if (n == null) continue
-      if (moneda.startsWith('COP')) cop = cop ?? n
-      else if (moneda.startsWith('USD')) usdt = usdt ?? n
-    }
-  } catch (e) { intentos.v0 = { status: 'throw', err: String(e).slice(0, 120) } }
-  for (const [k, path] of [['copBalance', '/convert/copBalance'], ['action', '/homeFinity/action']] as const) {
-    if ((k === 'copBalance' && cop != null) || (k === 'action' && usdt != null)) continue
-    try {
-      const r = await finityFetch(path, { signal: AbortSignal.timeout(10000) })
-      const raw = await r.json().catch(() => null)
-      intentos[k] = { status: r.status, raw }
-      if (!r.ok) continue
-      if (k === 'copBalance') cop = amountOf(raw) ?? deepFind(raw, ['cop', 'balance'])
-      else {
-        const fb = raw?.data?.userFreeBalance ?? raw?.userFreeBalance
-        const n = Number(typeof fb === 'string' ? fb.replace(/,/g, '') : fb)
-        usdt = fb != null && Number.isFinite(n) ? n : deepFind(raw, ['userfreebalance', 'freebalance'])
-      }
-    } catch (e) { intentos[k] = { status: 'throw', err: String(e).slice(0, 120) } }
-  }
+  // Ya no se prueban otras rutas (/v0/balances, /convert/copBalance,
+  // /homeFinity/action): no existen en la API y eran 404 en el registro de
+  // Finity en cada lectura fallida del panel (ver CANDIDATES).
   const r = { cop, usdt, intentos }
   saldoApiCache = { hasta: Date.now() + (cop != null || usdt != null ? 60_000 : 5 * 60_000), r }
   return r
@@ -1529,11 +1493,10 @@ Deno.serve(async (req) => {
       // Antes sólo se consultaba /v0/withdrawal-orders/{id} y no encontraba el
       // estado → la dispersión quedaba atascada en 'Procesando'. Se prueba el
       // DETALLE en movements y órdenes de retiro; gana la 1ª 2xx utilizable.
-      const detailBases = [
-        ...(CANDIDATES.movements ?? []),
-        ...(WORKING['withdrawalOrders'] ? [WORKING['withdrawalOrders']] : []),
-        ...(CANDIDATES.withdrawalOrders ?? []),
-      ]
+      // Solo GET /v0/movements/{id}, la ruta de la doc. Antes se probaban
+      // también las de órdenes de retiro (9 rutas, casi todas 404) en CADA
+      // revisión de un envío pendiente: ver CANDIDATES.
+      const detailBases = [...(CANDIDATES.movements ?? [])]
       let lastStatus = 0, lastData: any = null
       // Se leen TODOS los detalles que respondan (movimiento y orden de
       // retiro): el estado suele venir en el movimiento, pero el MOTIVO del
@@ -1584,7 +1547,7 @@ Deno.serve(async (req) => {
           cuerpos.push({ fuente, path, status: r.status, ...(data && typeof data === 'object' ? { data } : {}) })
         } catch { cuerpos.push({ fuente, path, status: -1 }) }
       }
-      for (const base of [...(CANDIDATES.movements ?? []), ...(CANDIDATES.withdrawalOrders ?? []).slice(0, 2)]) {
+      for (const base of [...(CANDIDATES.movements ?? [])]) {
         await leer('api', `${base}/{id}`, () => finityFetch(`${base}/${enc}`, { signal: AbortSignal.timeout(10000) }))
       }
       try {
@@ -1594,13 +1557,8 @@ Deno.serve(async (req) => {
         const match = arr.find(m => [m?.id, m?.reference, m?.movement_id, m?.movementId, m?.external_id].map(x => String(x ?? '')).includes(id))
         cuerpos.push({ fuente: 'api', path: `${path}[lista]`, status: match ? res.status : 404, ...(match ? { data: match } : {}) })
       } catch { cuerpos.push({ fuente: 'api', path: 'movements[lista]', status: -1 }) }
-      if (await getPortalToken()) {
-        for (const p of ['/movements/', '/movement/', '/transactions/', '/transaction/', '/withdrawals/', '/withdraw/']) {
-          await leer('portal', `${p}{id}`, () => portalFetch(`${p}${enc}`, { signal: AbortSignal.timeout(8000) }))
-        }
-      } else {
-        cuerpos.push({ fuente: 'portal', path: 'login', status: 0 })
-      }
+      // El backend del portal ya no existe (Finity dejó un solo dominio) y
+      // sus rutas en api.finity.com.co son 404: no se piden.
       return json(200, { ok: true, cuerpos })
     }
 
