@@ -3,6 +3,7 @@ import { ShieldAlert, RefreshCw, FileText, ChevronDown, Search, Download } from 
 import { llamarFuncion } from '../lib/edge';
 import { AdminReinscribirFinity } from './AdminReinscribirFinity';
 import { sinFormula } from '../lib/csv';
+import { AdminRosFicha, type PersonaCaso } from './AdminRosFicha';
 
 // ─────────────────────────────────────────────────────────────
 // AdminCompliance — la bandeja de cumplimiento.
@@ -102,6 +103,8 @@ export const AdminCompliance: React.FC = () => {
   const [abierto, setAbierto] = useState<string | null>(null);
   const [verHallazgos, setVerHallazgos] = useState<string | null>(null);
   const [decidiendo, setDecidiendo] = useState<{ caso: any; decision: 'aprobar' | 'mantener' } | null>(null);
+  // Ficha para el ROS desde un caso (24 nov): la empresa que inscribió y la persona del caso.
+  const [ros, setRos] = useState<{ userId: string; nombre: string | null; persona: PersonaCaso } | null>(null);
   const [motivo, setMotivo] = useState('');
   const [guardando, setGuardando] = useState(false);
   // El error de la decisión va DENTRO de la ventana: antes salía arriba de la
@@ -535,6 +538,19 @@ export const AdminCompliance: React.FC = () => {
                           style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
                           Reintentar consulta
                         </button>
+                        {c.userId && <button onClick={() => setRos({
+                            userId: String(c.userId), nombre: c.cliente?.nombre ?? c.titular ?? null,
+                            persona: {
+                              nombre: c.nombreReal || c.nombreInscrito || null, tipoDocumento: c.tipoDocumento ?? null, documento: c.documento ?? null,
+                              motivo: c.nombreCoincide === false ? `el nombre inscrito no corresponde al documento; según la Registraduría pertenece a ${c.nombreReal ?? 'otra persona'}`
+                                : c.documentoVigente === false ? `el documento no está vigente${c.estadoDocumento ? ` (${c.estadoDocumento})` : ''}`
+                                : (a.explica || null),
+                              hallazgos: Array.isArray(c.hallazgos) ? c.hallazgos : [],
+                            },
+                          })} className="cmp-foco hover:bg-white/[0.09] transition-colors"
+                          style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
+                          Preparar ROS
+                        </button>}
                       </div>
                       <p style={{ fontSize: 11, color: C.dim, margin: '8px 0 0' }}>Toda decisión queda en auditoría con tu usuario.</p>
                       {c.decisionManual && (
@@ -667,6 +683,7 @@ export const AdminCompliance: React.FC = () => {
           </div>
         </div>
       )}
+      {ros && <AdminRosFicha userId={ros.userId} nombre={ros.nombre} persona={ros.persona} onCerrar={() => setRos(null)} />}
     </div>
   );
 };

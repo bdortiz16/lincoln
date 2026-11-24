@@ -6,6 +6,7 @@ import {
   filasClientes, filaOperacion, seleccionarOperaciones, contenidoArchivo, nombreArchivo, aCp1252,
   codigoEntidadValido, COLUMNAS_CLIENTES, COLUMNAS_TRANSACCIONES, UMBRAL_MULTIPLE_USD, UMBRAL_INDIVIDUAL_USD, type FilaUiaf,
 } from '../lib/sirelUiaf';
+import { AdminRosFicha } from './AdminRosFicha';
 
 // ─────────────────────────────────────────────
 // Cumplimiento → SIREL (UIAF).
@@ -89,6 +90,86 @@ const RegistrarEnvio: React.FC<{ tipo: string; periodo: string; filas?: number; 
   );
 };
 
+// ── Completar a mano la red, las wallets y el hash ───────────
+// 24 nov: los cargues de USDT no guardaban la wallet del cliente, el hash ni
+// la wallet que recibió, y SIREL rechaza el archivo con esos campos vacíos.
+// El oficial los copia del comprobante del proveedor o del explorador de la
+// red. El servidor valida el formato contra la red (sirel_completar_ops).
+const REDES = ['TRON (TRC-20)', 'Ethereum (ERC-20)', 'BNB Smart Chain (BEP-20)', 'Polygon', 'Base', 'Arbitrum', 'Solana', 'Bitcoin', 'TON'];
+const CompletarOp: React.FC<{ op: any; hermanas: any[]; onCerrar: () => void; onListo: () => void }> = ({ op, hermanas, onCerrar, onListo }) => {
+  const [red, setRed] = useState<string>(op.red && REDES.some(r => op.red.includes(r.split(' ')[0])) ? REDES.find(r => op.red.includes(r.split(' ')[0]))! : (op.red ?? ''));
+  const [walletCliente, setWalletCliente] = useState<string>(op.walletCliente ?? '');
+  const [hash, setHash] = useState<string>(op.hash ?? '');
+  const [walletContraparte, setWalletContraparte] = useState<string>(op.walletContraparte ?? '');
+  const [aplicarHermanas, setAplicarHermanas] = useState(false);
+  const [ocupado, setOcupado] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Las otras operaciones del mismo cliente en el período a las que les falta
+  // alguna de las dos wallets: el cliente suele mandar siempre desde la misma.
+  const otras = hermanas.filter(h => h.id !== op.id && (!h.walletCliente || !h.walletContraparte));
+  const guardar = async () => {
+    setOcupado(true); setError(null);
+    const limpio = (v: string) => v.trim();
+    const items: any[] = [{ id: op.id, red: limpio(red), walletCliente: limpio(walletCliente), hash: limpio(hash), walletContraparte: limpio(walletContraparte) }];
+    if (aplicarHermanas) for (const h of otras) {
+      const it: any = { id: h.id };
+      if (!h.red && red.trim()) it.red = red.trim();
+      if (!h.walletCliente && walletCliente.trim()) it.walletCliente = walletCliente.trim();
+      if (!h.walletContraparte && walletContraparte.trim()) it.walletContraparte = walletContraparte.trim();
+      if (Object.keys(it).length > 1) items.push(it);
+    }
+    const r = await pedirAdmin({ action: 'sirel_completar_ops', items });
+    setOcupado(false);
+    if (!r?.ok) { setError(r?.error ?? 'No se pudo guardar.'); if (r?.hechas) onListo(); return; }
+    onListo();
+  };
+  const campo = (etiqueta: string, valor: string, set: (v: string) => void, ph: string, ayuda?: string) => (
+    <label style={{ display: 'block', marginTop: 12 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: C.sub, letterSpacing: '0.6px' }}>{etiqueta}</span>
+      <input value={valor} onChange={e => set(e.target.value.replace(/\s/g, ''))} placeholder={ph} spellCheck={false} autoComplete="off"
+        style={{ ...INP, width: '100%', boxSizing: 'border-box', marginTop: 6, fontFamily: 'ui-monospace, monospace', fontSize: 12.5 }} />
+      {ayuda && <span style={{ display: 'block', fontSize: 11, color: C.tenue, marginTop: 4 }}>{ayuda}</span>}
+    </label>
+  );
+  return (
+    <div onClick={onCerrar} style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(4,5,4,0.65)', display: 'grid', placeItems: 'center', padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-label="Completar datos de la operación" style={{ ...TARJ, width: 'min(520px, 100%)', maxHeight: '92vh', overflowY: 'auto', padding: 22, background: C.caja }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: C.texto }}>Datos de la cadena</p>
+          <button onClick={onCerrar} aria-label="Cerrar" style={{ background: 'none', border: 'none', color: C.sub, cursor: 'pointer' }}><X size={16} /></button>
+        </div>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: C.sub, lineHeight: 1.5 }}>
+          {op.clienteNombre ?? 'Cliente'} · {TIPO_OP[op.tipo] ?? op.tipo} de {cant(op.cantidad)} {op.activo} · {fechaHora(op.fecha)}
+          <span style={{ display: 'block', marginTop: 4 }}>Cópialos del comprobante del proveedor o del explorador de la red.</span>
+        </p>
+        <label style={{ display: 'block', marginTop: 14 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.sub, letterSpacing: '0.6px' }}>RED</span>
+          <select value={red} onChange={e => setRed(e.target.value)} style={{ ...INP, width: '100%', marginTop: 6, background: C.fondo, color: C.texto }}>
+            <option value="">Sin dato</option>
+            {REDES.map(r => <option key={r} value={r}>{r}</option>)}
+            {red && !REDES.includes(red) && <option value={red}>{red}</option>}
+          </select>
+        </label>
+        {campo('WALLET DEL CLIENTE', walletCliente, setWalletCliente, red.includes('TRON') ? 'T…' : red ? '0x…' : 'Dirección desde donde salió', op.tipo === 'deposito' ? 'La wallet del cliente en Lincoin, donde llegaron los USDT.' : 'Desde donde el cliente mandó los USDT.')}
+        {campo('HASH DE LA TRANSACCIÓN', hash, setHash, red.includes('TRON') ? '64 caracteres' : red ? '0x + 64 caracteres' : 'Id de la transacción en la red')}
+        {campo('WALLET QUE RECIBIÓ', walletContraparte, setWalletContraparte, 'Dirección de destino', op.tipo === 'deposito' ? 'La wallet de donde vinieron los USDT (la del otro lado).' : 'La dirección a la que llegaron los USDT.')}
+        {otras.length > 0 && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 14, fontSize: 12.5, color: C.texto, cursor: 'pointer', lineHeight: 1.45 }}>
+            <input type="checkbox" checked={aplicarHermanas} onChange={e => setAplicarHermanas(e.target.checked)} style={{ accentColor: '#4ADE80', marginTop: 3 }} />
+            <span>Usar la red y las wallets también en las otras {otras.length} operaciones de este cliente en el período que no las tienen. <span style={{ color: C.sub }}>El hash no: es de cada operación.</span></span>
+          </label>
+        )}
+        {error && <p style={{ margin: '12px 0 0', fontSize: 12.5, color: C.rojo }}>{error}</p>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+          <button onClick={onCerrar} style={BTN2}>Cancelar</button>
+          <button onClick={guardar} disabled={ocupado} style={{ ...BTN, opacity: ocupado ? 0.4 : 1 }}><Check size={14} /> {ocupado ? 'Guardando…' : 'Guardar'}</button>
+        </div>
+        {op.manual?.at && <p style={{ margin: '12px 0 0', fontSize: 11, color: C.tenue }}>Escrito a mano por {op.manual.por ?? 'alguien del equipo'} · {fechaHora(op.manual.at)}. Cada cambio queda en la auditoría.</p>}
+      </div>
+    </div>
+  );
+};
+
 // ── Código de la entidad ante la UIAF ────────────────────────
 // SSTTTCCC: lo asigna la UIAF al pedir el código en SIREL. Va en el nombre,
 // el encabezado y la cola de cada archivo.
@@ -139,6 +220,8 @@ export const AdminSirel: React.FC = () => {
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [registrar, setRegistrar] = useState<null | { tipo: string; filas?: number }>(null);
+  const [completar, setCompletar] = useState<any>(null);
+  const [ros, setRos] = useState<null | { userId: string; nombre: string | null }>(null);
 
   const fecha = periodo === 'mes' ? `${mes}-01` : dia;
   const cargar = useCallback(async () => {
@@ -267,6 +350,10 @@ export const AdminSirel: React.FC = () => {
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>ROS (operaciones sospechosas)</span>
                 <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 1 }}>Se envían apenas se detectan, sin importar el monto. Los candidatos están en la Bandeja de casos. {envios.filter(e => e.tipo === 'ros').length ? `${envios.filter(e => e.tipo === 'ros').length} enviado(s) este mes.` : ''}</span>
               </span>
+              <select value="" onChange={e => { const c = clientes.find(x => String(x.userId) === e.target.value); if (c) setRos({ userId: String(c.userId), nombre: c.nombre ?? null }); }} aria-label="Preparar ROS de un cliente" style={{ ...INP, height: 32, maxWidth: 210, background: C.fondo, color: C.texto }}>
+                <option value="">Preparar ROS de…</option>
+                {[...clientes].sort((a, b) => String(a.nombre ?? '').localeCompare(String(b.nombre ?? ''))).map(c => <option key={c.userId} value={c.userId}>{c.nombre ?? c.documento ?? c.userId}</option>)}
+              </select>
               <button onClick={() => setRegistrar({ tipo: 'ros' })} style={{ ...BTN2, height: 32 }}><Send size={13} /> Anotar ROS</button>
               <button onClick={() => setRegistrar({ tipo: 'ausencia_ros' })} style={{ ...BTN2, height: 32 }}>Anotar ausencia</button>
             </div>
@@ -352,6 +439,7 @@ export const AdminSirel: React.FC = () => {
                             <td style={{ padding: '10px 14px' }}>
                               <span style={{ display: 'block', fontWeight: 700 }}>{c.nombre ?? '—'}</span>
                               <span style={{ display: 'block', color: C.sub, fontSize: 11.5 }}>{docLegible(c.tipoDocumento, c.documento, c.dv)} · {c.tipoPersona === 'juridica' ? 'Jurídica' : 'Natural'}{c.estado !== 'activo' ? ` · ${c.estado === 'bloqueado' ? 'bloqueado' : 'sin verificar'}` : ''}</span>
+                              <button onClick={() => setRos({ userId: String(c.userId), nombre: c.nombre ?? null })} style={{ background: 'none', border: 'none', padding: 0, marginTop: 3, color: C.sub, fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline' }}>Preparar ROS</button>
                             </td>
                             <td style={{ padding: '10px 14px', color: c.municipioCodigo ? C.texto : C.sub }}>{c.municipio ?? '—'}{c.municipioCodigo ? <span style={{ color: C.sub }}> · {c.municipioCodigo}</span> : null}</td>
                             <td style={{ padding: '10px 14px', fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>
@@ -399,7 +487,11 @@ export const AdminSirel: React.FC = () => {
                                   ? <>{crit === 'multiple' ? <Chip c={C.verde} title={`El cliente suma ≥ USD ${UMBRAL_MULTIPLE_USD} en el mes`}>Múltiple</Chip> : <Chip c={C.verde} title={`≥ USD ${UMBRAL_INDIVIDUAL_USD}`}>Individual</Chip>}
                                       {falta.length ? falta.map((f: string) => <Chip key={f} c={C.ambar}>{f}</Chip>) : <Chip c={C.verde}>Completo</Chip>}</>
                                   : <span style={{ color: C.tenue, fontSize: 11.5 }}>{o.valorUsd == null ? 'Sin valor en USD' : 'No va (bajo el umbral)'}</span>}
+                                {o.manual && <Chip c={C.sub} title={`Escrito a mano${o.manual.por ? ` por ${o.manual.por}` : ''}: ${o.manual.campos.join(', ')}`}>a mano</Chip>}
                               </div>
+                              <button onClick={() => setCompletar(o)} style={{ background: 'none', border: 'none', padding: 0, marginTop: 6, color: falta.some((f: string) => /wallet|hash|red/.test(f)) ? C.verde : C.sub, fontWeight: 700, fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                {falta.some((f: string) => /wallet|hash|red/.test(f)) ? 'Completar wallet y hash' : 'Editar datos de la cadena'}
+                              </button>
                             </td>
                           </tr>
                         );
@@ -428,6 +520,8 @@ export const AdminSirel: React.FC = () => {
         </>
       )}
 
+      {completar && <CompletarOp op={completar} hermanas={ops.filter(x => x.userId === completar.userId)} onCerrar={() => setCompletar(null)} onListo={() => { setCompletar(null); cargar(); }} />}
+      {ros && <AdminRosFicha userId={ros.userId} nombre={ros.nombre} desde={datos?.desde} hasta={datos?.hasta} onCerrar={() => setRos(null)} onAnotar={() => { setRos(null); setRegistrar({ tipo: 'ros' }); }} />}
       {registrar && <RegistrarEnvio tipo={registrar.tipo} periodo={clave} filas={registrar.filas} onCerrar={() => setRegistrar(null)} onListo={() => { setRegistrar(null); cargar(); }} />}
     </div>
   );

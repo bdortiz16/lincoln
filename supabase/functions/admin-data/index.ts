@@ -10,7 +10,7 @@ import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvi
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { efectoEnBolsillo } from '../_shared/efecto-saldo.ts'
-import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, diaBogota, tcrmDelDia, saldoDelActivo, saldoDespues, type OperacionAv, type MovEmpresa } from './sirel.ts'
+import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, diaBogota, tcrmDelDia, saldoDelActivo, saldoDespues, limpiarDatosCripto, CAMPOS_CRIPTO, type OperacionAv, type MovEmpresa } from './sirel.ts'
 import { tcrmVigencias } from '../_shared/tcrm.ts'
 import { canalDe, sentidoDe, idsDe, contraparteDe, motivoRechazoDe, marcasDe, docRiesgoDe, iniciadorDe, resolvioDe, hitosDe, costosDe, motivoDe, etiquetaClave, TIPO_TXT, TIPOS_ENTRADA, TIPOS_SALIDA, ESTADOS_OK, ESTADOS_MAL, CLAVES_CANAL } from './auditoria.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
@@ -2144,6 +2144,9 @@ function accesoDe(userId: string, email: string): Promise<Acceso> {
 }
 
 // El autor que se guarda con un movimiento manual.
+// Las columnas de un cliente para SIREL (sirel_periodo y la ficha del ROS).
+const COLS_SIREL = 'id, email, phone, role, kyc_status, is_blocked, created_at, country, full_name, name, company_name, company_country, company_city, company_address, tax_id, tax_id_type, rep_legal_name, rep_first_name, rep_last_name, rep_doc_type, rep_doc_number, doc_type, doc_number, city, address, rd_empresa:raw_data->>companyName, rd_nit:raw_data->>nit, rd_tax_id:raw_data->>taxId, rd_doc:raw_data->>documentNumber, rd_tipo_doc:raw_data->>documentType, rd_rep:raw_data->>legalRep'
+
 async function autorDe(auth: { userId?: string; email?: string; acceso?: Acceso }): Promise<Record<string, unknown>> {
   let nombre: string | null = null
   try {
@@ -2224,6 +2227,8 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   cumplimiento_resumen: ['cumplimiento', 'fn.cumplimiento'],
   sirel_registrar_envio: ['cumplimiento', 'fn.cumplimiento'],
   sirel_config_set: ['cumplimiento', 'fn.cumplimiento'],
+  sirel_completar_ops: ['cumplimiento', 'fn.cumplimiento'],
+  sirel_ros_ficha: ['cumplimiento', 'fn.cumplimiento'],
   fact_lincoin_get: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_lista: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_probar: ['plata.mover', 'fn.contabilidad'],
@@ -4527,7 +4532,7 @@ Deno.serve(async (req: Request) => {
         // Lo que se le cobra a TODOS los clientes por cada envío
         'tarifas_envio_set',
         // SIREL: datos de todos los clientes y sus operaciones (datos personales)
-        'sirel_periodo', 'sirel_registrar_envio', 'sirel_config_set',
+        'sirel_periodo', 'sirel_registrar_envio', 'sirel_config_set', 'sirel_completar_ops', 'sirel_ros_ficha',
       ])
       // Reconstruir movimientos escribe en la base; solo consultar, no.
       const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
@@ -7694,10 +7699,11 @@ Deno.serve(async (req: Request) => {
             const { data: us, error: eU } = await db.from('users').select('id, balances').in('id', lote)
             if (eU) throw new Error(eU.message)
             for (const u of (us ?? []) as any[]) saldosHoy.set(String(u.id), u.balances ?? {})
-            // En ISO con Z: un "+00:00" dentro del filtro or() se puede leer como espacio.
-            const desdeLote = new Date(Math.min(...lote.map(id => Date.parse(primeraOp.get(id)!)))).toISOString()
+            // En ISO con Z: un "+00:00" dentro del filtro or() se puede leer como
+            // espacio. Una semana antes: saldoDespues revisa lo que quedó abierto.
+            const desdeLote = new Date(Math.min(...lote.map(id => Date.parse(primeraOp.get(id)!))) - 7 * 86400_000).toISOString()
             const { filas } = await leerPorPaginas(() => db.from('transactions')
-              .select('id, user_id, created_at, updated_at, currency, fromCurrency:raw_data->>fromCurrency, targetCurrency:raw_data->>targetCurrency, destCurrency:raw_data->>destCurrency, settledRail:raw_data->>settledRail, debitadoCol:raw_data->>debitadoCol, fromRail:raw_data->>fromRail, toRail:raw_data->>toRail')
+              .select('id, user_id, created_at, updated_at, status, currency, source:raw_data->>source, refunded:raw_data->>refunded, fromCurrency:raw_data->>fromCurrency, targetCurrency:raw_data->>targetCurrency, destCurrency:raw_data->>destCurrency, settledRail:raw_data->>settledRail, debitadoCol:raw_data->>debitadoCol, fromRail:raw_data->>fromRail, toRail:raw_data->>toRail')
               .in('user_id', lote).or(`created_at.gte.${desdeLote},updated_at.gte.${desdeLote}`), { tope: 100_000 })
             for (const m of filas as any[]) {
               const k = String(m.user_id)
@@ -7721,7 +7727,6 @@ Deno.serve(async (req: Request) => {
 
         // Clientes: todos los vinculados (KYC aprobado) y, además, cualquiera
         // que haya operado en el período aunque no lo esté (eso también se ve).
-        const COLS_SIREL = 'id, email, phone, role, kyc_status, is_blocked, created_at, country, full_name, name, company_name, company_country, company_city, company_address, tax_id, tax_id_type, rep_legal_name, rep_first_name, rep_last_name, rep_doc_type, rep_doc_number, doc_type, doc_number, city, address, rd_empresa:raw_data->>companyName, rd_nit:raw_data->>nit, rd_tax_id:raw_data->>taxId, rd_doc:raw_data->>documentNumber, rd_tipo_doc:raw_data->>documentType, rd_rep:raw_data->>legalRep'
         // Solo los vinculados hasta el corte del período: el certificado de la
         // UIAF del 24 nov mostró los reportes de clientes de enero a octubre sin
         // recibir, y un mes atrasado no puede traer a quien se vinculó después.
@@ -7879,6 +7884,122 @@ Deno.serve(async (req: Request) => {
         if (eC) return errorGenerico('sirel_config_set', eC)
         await auditAdmin(req, 'sirel.codigo_entidad', { antes: (antes as any)?.codigoEntidad ?? null, ahora: codigo })
         return json({ ok: true, codigoEntidad: codigo })
+      }
+
+      // ── Completar a mano la red, las wallets y el hash de operaciones ──
+      // 24 nov: los cargues de USDT de octubre no guardaban la wallet del
+      // cliente, el hash ni la wallet que recibió, y el archivo de la UIAF
+      // salía incompleto. El oficial los escribe aquí. Solo en operaciones con
+      // activos virtuales (operacionAv), en raw_data.sirel, sin tocar el
+      // monto, el estado ni el saldo. Cada cambio queda en la auditoría con lo
+      // que había antes. items: [{ id, red?, walletCliente?, hash?, walletContraparte? }]
+      // (un campo vacío lo borra; uno ausente no se toca).
+      if (body.action === 'sirel_completar_ops') {
+        const items = (Array.isArray(body.items) ? body.items : []).slice(0, 300) as any[]
+        if (!items.length) return json({ ok: false, error: 'No llegó ninguna operación.' }, 400)
+        const ids = Array.from(new Set(items.map(i => String(i?.id ?? '')).filter(x => /^[0-9a-f-]{36}$/i.test(x))))
+        if (ids.length !== items.length) return json({ ok: false, error: 'Hay operaciones repetidas o inválidas.' }, 400)
+        const { data: txs, error: eT } = await db.from('transactions').select('id, user_id, type, currency, amount, status, created_at, raw_data').in('id', ids)
+        if (eT) return errorGenerico('sirel_completar_ops', eT)
+        const porIdTx = new Map(((txs ?? []) as any[]).map(t => [String(t.id), t]))
+        // Se valida todo antes de escribir nada: o pasan todas o ninguna.
+        const planes: { t: any; prev: Record<string, any>; nuevo: Record<string, any> }[] = []
+        for (const it of items) {
+          const t = porIdTx.get(String(it.id))
+          if (!t) return json({ ok: false, error: 'Una de las operaciones no existe.' }, 404)
+          const av = operacionAv(t)
+          if (!av) return json({ ok: false, error: 'Solo se completan operaciones con activos virtuales.' }, 400)
+          const entrada: Record<string, unknown> = {}
+          for (const k of CAMPOS_CRIPTO) if (Object.prototype.hasOwnProperty.call(it, k)) entrada[k] = it[k]
+          const v = limpiarDatosCripto(entrada, av.red)
+          if (!v.ok) return json({ ok: false, error: `${av.fecha.slice(0, 10)} · ${av.cantidad} ${av.activo}: ${v.error}` }, 400)
+          const prev = (t.raw_data?.sirel && typeof t.raw_data.sirel === 'object') ? t.raw_data.sirel : {}
+          const nuevo: Record<string, any> = { ...prev, ...v.datos }
+          for (const k of v.borrar) delete nuevo[k]
+          planes.push({ t, prev, nuevo })
+        }
+        const autor = await autorDe(auth)
+        const ahora = new Date().toISOString()
+        let hechas = 0
+        const fallidas: string[] = []
+        for (const p of planes) {
+          const sirel: Record<string, any> = { ...p.nuevo, por: autor, at: ahora }
+          // raw_data guarda cosas de otros (factura, devoluciones…): se relee
+          // justo antes de escribir para no pisar lo que cambió mientras se
+          // validaba, y la escritura va condicionada a que raw_data.sirel siga
+          // como se leyó (dos oficiales a la vez no se pisan).
+          const { data: fresca } = await db.from('transactions').select('raw_data').eq('id', p.t.id).maybeSingle()
+          const rdFresca = ((fresca as any)?.raw_data ?? {}) as Record<string, any>
+          if (String(rdFresca.sirel?.at ?? '') !== String(p.prev?.at ?? '')) { fallidas.push(String(p.t.id)); continue }
+          let q = db.from('transactions').update({ raw_data: { ...rdFresca, sirel } }).eq('id', p.t.id)
+          q = p.prev?.at ? q.filter('raw_data->sirel->>at', 'eq', String(p.prev.at)) : q.filter('raw_data->>sirel', 'is', null)
+          const { data: ok, error: eU } = await q.select('id')
+          if (eU || !ok?.length) { fallidas.push(String(p.t.id)); continue }
+          hechas++
+          const antes = Object.fromEntries(CAMPOS_CRIPTO.map(k => [k, p.prev?.[k] ?? null]))
+          const despues = Object.fromEntries(CAMPOS_CRIPTO.map(k => [k, sirel[k] ?? null]))
+          await auditAdmin(req, 'sirel.op_completada', { txId: p.t.id, userId: p.t.user_id, antes, despues })
+        }
+        return json({ ok: fallidas.length === 0, hechas, fallidas, ...(fallidas.length ? { error: `${fallidas.length} operación(es) cambiaron mientras tanto y no se guardaron. Recarga e intenta de nuevo.` } : {}) })
+      }
+
+      // ── Ficha para un ROS (24 nov) ───────────────────────────────────
+      // El ROS no es un archivo: se diligencia en SIREL («Reportes de
+      // Operación Sospechosa» → ROS → +Crear), según el Anexo 1. Esto junta
+      // lo que pide ese formulario sobre un cliente —y, si viene de un caso de
+      // la Bandeja, sobre los pagos a la persona inscrita—: valor, activos,
+      // período, personas y operaciones, para que el oficial lo copie. No
+      // califica nada de sospechoso: el porqué lo escribe el oficial.
+      if (body.action === 'sirel_ros_ficha') {
+        const uid = String(body.userId ?? '')
+        if (!/^[0-9a-f-]{36}$/i.test(uid)) return json({ ok: false, error: 'Cliente inválido.' }, 400)
+        const esYmd = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(`${v}T00:00:00Z`))
+        const hoy = hoyBogota()
+        const hasta = esYmd(body.hasta) ? String(body.hasta) : hoy
+        const desde = esYmd(body.desde) ? String(body.desde) : new Date(Date.parse(`${hasta}T00:00:00Z`) - 89 * 86400_000).toISOString().slice(0, 10)
+        if (desde > hasta) return json({ ok: false, error: 'La fecha inicial es posterior a la final.' }, 400)
+        if ((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${desde}T00:00:00Z`)) / 86400_000 > 400) return json({ ok: false, error: 'Elige un período de máximo un año.' }, 400)
+        const TZ = 5 * 3600_000
+        const desdeIso = new Date(Date.parse(`${desde}T00:00:00Z`) + TZ).toISOString()
+        const hastaIso = new Date(Date.parse(`${hasta}T00:00:00Z`) + TZ + 86_400_000).toISOString()
+        const { data: u, error: eU } = await db.from('users').select(COLS_SIREL).eq('id', uid).maybeSingle()
+        if (eU) return errorGenerico('sirel_ros_ficha', eU)
+        if (!u) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+        const muniDe = (t: string | null) => { const m = municipioPorNombre(t); return m ? { codigo: m.codigo, nombre: m.nombre, deptoNombre: m.deptoNombre } : null }
+        const cliente = clienteSirel(u, muniDe)
+        const { filas: movs, truncado } = await leerPorPaginas(() => db.from('transactions')
+          .select('id, created_at, type, currency, amount, status, user_id, raw_data')
+          .eq('user_id', uid).eq('status', 'Completado').gte('created_at', desdeIso).lt('created_at', hastaIso), { tope: 20_000 })
+        // Desde un caso: solo lo que se movió con esa persona (su documento).
+        const soloDoc = (v: unknown) => String(v ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '')
+        const documento = soloDoc(body.documento)
+        const movimientos = (movs.map(movimientoEmpresa).filter(Boolean) as MovEmpresa[])
+          .filter(m => !documento || soloDoc(m.contraparteDoc) === documento)
+          .sort((a, b) => a.fecha.localeCompare(b.fecha))
+        const porTipo: Record<string, { n: number; cop: number }> = {}
+        for (const m of movimientos) { const a = porTipo[m.tipo] ?? { n: 0, cop: 0 }; a.n++; a.cop += m.montoCop ?? 0; porTipo[m.tipo] = a }
+        const activos = Array.from(new Set(movimientos.map(m => m.activo).filter(Boolean)))
+        const usd = movimientos.filter(m => m.activo === 'USDT' || m.activo === 'USDC').reduce((s, m) => s + m.monto, 0)
+        let wallets: any[] = []
+        try {
+          const { data: ws } = await db.from('kyt_watchlist').select('address, coin, alias, nivel_actual, score_actual, banda_actual, created_at').eq('user_id', uid).order('created_at', { ascending: false }).limit(50)
+          wallets = (ws ?? []) as any[]
+        } catch { wallets = [] }
+        const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
+        let rosPrevios: any[] = []
+        try { const v = (envCfg as any)?.value; rosPrevios = (((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[]).filter(e => e.tipo === 'ros').slice(-20).reverse() } catch { rosPrevios = [] }
+        await auditAdmin(req, 'sirel.ros_ficha', { userId: uid, desde, hasta, documento: documento || null, movimientos: movimientos.length })
+        return json({
+          ok: true, desde, hasta, truncado, documento: documento || null, cliente,
+          movimientos: movimientos.slice(0, 3000),
+          totales: {
+            movimientos: movimientos.length,
+            cop: Math.round(movimientos.reduce((s, m) => s + (m.montoCop ?? 0), 0)),
+            usd: Math.round(usd * 100) / 100, activos, porTipo,
+            primera: movimientos[0]?.fecha ?? null, ultima: movimientos[movimientos.length - 1]?.fecha ?? null,
+          },
+          wallets, rosPrevios,
+        })
       }
 
       if (body.action === 'tarifas_envio_get' || body.action === 'tarifas_envio_set') {
@@ -8650,6 +8771,15 @@ Deno.serve(async (req: Request) => {
           // se acredita y el que queda en la contabilidad son el mismo.
           delta = acct.copToClient
         }
+        // Red, wallets y hash del envío de USDT (opcionales). Sin ellos el
+        // reporte de transacciones a la UIAF sale incompleto (24 nov): se
+        // guardan con el cargue, validados igual que en SIREL.
+        let criptoCargue: Record<string, string> | null = null
+        if (acct && body.cripto && typeof body.cripto === 'object') {
+          const v = limpiarDatosCripto(body.cripto)
+          if (!v.ok) return json({ success: false, error: v.error }, 400)
+          if (Object.keys(v.datos).length) criptoCargue = v.datos as Record<string, string>
+        }
         if (!isFinite(delta) || delta === 0) return json({ success: false, error: 'Monto inválido' }, 400)
         // UN cargue se aplica UNA vez. La pantalla manda un id por cargue y lo
         // repite si reintenta: si la respuesta se perdió y el admin vuelve a
@@ -8717,6 +8847,7 @@ Deno.serve(async (req: Request) => {
             // Contabilidad de la operación: queda GUARDADA con el movimiento,
             // así la utilidad es un dato del cargue y no una resta posterior.
             ...(acct ? { acct: { ...acct, creditedCop: credit, feeCopBreb: feeCop, utilityCop } } : {}),
+            ...(criptoCargue ? { sirel: { ...criptoCargue, por: autorCargue, at: new Date().toISOString(), origen: 'cargue' } } : {}),
             note: body.note ?? (recordOnly ? 'Registro histórico (no afecta saldo)' : delta > 0
               ? (feeCop > 0 ? `Cargue Bre-B · comisión ${BREB_CARGUE_FEE_PCT}% por recepción` : 'Cargue manual')
               : 'Ajuste manual'),

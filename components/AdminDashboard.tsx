@@ -780,6 +780,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [acctSellRate, setAcctSellRate] = useState('');
   const [acctClientRate, setAcctClientRate] = useState('');
   const [acctFeeBearer, setAcctFeeBearer] = useState<'lincoin' | 'cliente'>('lincoin');
+  // Red, wallets y hash del envío de USDT (opcionales). 24 nov: sin ellos el
+  // reporte de transacciones a la UIAF salía incompleto (SIREL lo rechaza).
+  const [acctRed, setAcctRed] = useState('');
+  const [acctWalletCli, setAcctWalletCli] = useState('');
+  const [acctHash, setAcctHash] = useState('');
+  const [acctWalletDest, setAcctWalletDest] = useState('');
   const [cargueOtp, setCargueOtp] = useState('');
   // Saldo REAL de la wallet compartida de Mouv (lo que hay disponible para
   // cargar a los clientes). Se lee del endpoint confirmado /wallets/balance.
@@ -1194,6 +1200,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1);
       setCarguesAmount(''); setCarguesNote(''); setCarguesReversaDe(''); setCarguesReversaDeAjuste(''); setCarguesMsg(null);
       setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
+      setAcctRed(''); setAcctWalletCli(''); setAcctHash(''); setAcctWalletDest('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -1331,6 +1338,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
             sellRate: acctCalc.sellRate, clientRate: acctCalc.clientRate,
             feeBearer: acctFeeBearer,
           } } : {}),
+          ...(usandoAcct && (acctRed || acctWalletCli.trim() || acctHash.trim() || acctWalletDest.trim()) ? { cripto: {
+            ...(acctRed ? { red: acctRed } : {}),
+            ...(acctWalletCli.trim() ? { walletCliente: acctWalletCli.trim() } : {}),
+            ...(acctHash.trim() ? { hash: acctHash.trim() } : {}),
+            ...(acctWalletDest.trim() ? { walletContraparte: acctWalletDest.trim() } : {}),
+          } } : {}),
         }),
       });
       // Si la respuesta no es JSON (la plataforma cortó), se dice con
@@ -1360,6 +1373,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         setCarguesRail(null); setCarguesClientId(null); setCarguesPaso(1);
         setCarguesDir('credit'); setAcctOn(true);
         setAcctUsdtGross(''); setAcctUsdtNet(''); setAcctSellRate(''); setAcctClientRate('');
+        setAcctRed(''); setAcctWalletCli(''); setAcctHash(''); setAcctWalletDest('');
         showToast(`Cargue aplicado a ${carguesClient.name}`);
         refreshData();
       } else if (d?.stepUp) {
@@ -3001,6 +3015,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                               className="flex-1 py-1.5 text-[11px] font-bold rounded transition-colors"
                               style={acctFeeBearer === k ? { backgroundColor: '#4ADE80', color: '#0C0E0D' } : { color: '#878E88' }}>{lbl}</button>
                           ))}
+                        </div>
+
+                        {/* Datos de la cadena para el reporte a la UIAF (opcionales). */}
+                        <div className="mt-2.5 rounded-lg p-2.5" style={{ backgroundColor: '#0C0E0D', border: '1px solid rgba(255,255,255,0.08)' }}>
+                          <p className="text-[10px] font-bold uppercase tracking-wide m-0" style={{ color: '#878E88' }}>Para el reporte a la UIAF · opcional</p>
+                          <p className="text-[10.5px] mt-0.5 mb-2" style={{ color: 'rgba(244,244,242,0.45)' }}>Del comprobante del envío: si los pones aquí, no hay que completarlos después en Cumplimiento → SIREL.</p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <select value={acctRed} onChange={e => setAcctRed(e.target.value)} aria-label="Red"
+                              className="w-full px-2.5 py-2 rounded-lg text-xs font-bold outline-none"
+                              style={{ backgroundColor: '#121413', color: acctRed ? '#F4F4F2' : '#878E88', border: '1px solid rgba(255,255,255,0.12)' }}>
+                              <option value="">Red</option>
+                              {['TRON (TRC-20)', 'Ethereum (ERC-20)', 'BNB Smart Chain (BEP-20)', 'Polygon', 'Base', 'Arbitrum', 'Solana', 'Bitcoin', 'TON'].map(r => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                            {([['Wallet del cliente (desde donde envió)', acctWalletCli, setAcctWalletCli], ['Hash de la transacción', acctHash, setAcctHash], ['Wallet que recibió', acctWalletDest, setAcctWalletDest]] as const).map(([ph, v, set]) => (
+                              <input key={ph} value={v} onChange={e => set(e.target.value.replace(/\s/g, ''))} placeholder={ph} aria-label={ph} spellCheck={false} autoComplete="off"
+                                className="w-full px-2.5 py-2 rounded-lg text-xs outline-none"
+                                style={{ backgroundColor: '#121413', color: '#F4F4F2', border: '1px solid rgba(255,255,255,0.12)', fontFamily: 'ui-monospace, monospace' }} />
+                            ))}
+                          </div>
                         </div>
 
                         {acctCalc.listo ? (

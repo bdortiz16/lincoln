@@ -46,7 +46,56 @@ export type OperacionAv = {
   referencia: string | null // ref. de la mesa OTC u otra
   cierreOtcId: string | null // el cierre de la mesa (otc_closes), para traer la wallet de origen
   origen: string            // de dónde sale el registro
+  // Lo que escribió a mano el oficial o el operador del cargue (raw_data.sirel).
+  manual: { campos: string[]; por: string | null; at: string | null } | null
   faltan: string[]
+}
+
+// ── Datos de la cadena escritos a mano (raw_data.sirel) ────────────────
+// 24 nov: las 126 operaciones de octubre eran cargues de USDT y el cargue no
+// guardaba la wallet del cliente, el hash ni la wallet que recibió: el
+// archivo de la UIAF salía incompleto y SIREL lo rechaza. El oficial (o el
+// operador al hacer el cargue) los escribe; aquí se validan para que un
+// campo cruzado (la wallet en el hash, una dirección TRON en una red EVM)
+// no llegue al reporte.
+export const REDES_SIREL = ['TRON (TRC-20)', 'Ethereum (ERC-20)', 'BNB Smart Chain (BEP-20)', 'Polygon', 'Base', 'Arbitrum', 'Solana', 'Bitcoin', 'TON'] as const
+export type DatosCripto = { red?: string; walletCliente?: string; hash?: string; walletContraparte?: string }
+export const CAMPOS_CRIPTO = ['red', 'walletCliente', 'hash', 'walletContraparte'] as const
+
+const esTron = (red: string) => /TRON|TRC/i.test(red)
+const esEvm = (red: string) => /ETH|ERC|BNB|BSC|BEP|POLYGON|MATIC|BASE|ARBITRUM/i.test(red)
+
+// Solo valida los campos que vienen (un campo vacío = borrarlo). `redActual`
+// es la red que ya tiene la operación, para revisar el formato contra ella.
+export function limpiarDatosCripto(input: any, redActual?: string | null): { ok: true; datos: DatosCripto; borrar: string[] } | { ok: false; error: string } {
+  const datos: DatosCripto = {}
+  const borrar: string[] = []
+  if (!input || typeof input !== 'object') return { ok: true, datos, borrar }
+  const tiene = (k: string) => Object.prototype.hasOwnProperty.call(input, k)
+  for (const k of CAMPOS_CRIPTO) {
+    if (!tiene(k)) continue
+    const v = String(input[k] ?? '').trim()
+    if (!v) { borrar.push(k); continue }
+    if (k === 'red') {
+      if (v.length > 40 || !/^[\p{L}\p{N} ()\-.]+$/u.test(v)) return { ok: false, error: 'La red no es válida.' }
+    } else if (k === 'hash') {
+      if (!/^(0x)?[A-Za-z0-9]{32,140}$/.test(v)) return { ok: false, error: 'El hash no tiene un formato válido (solo letras y números, sin espacios).' }
+    } else if (!/^[A-Za-z0-9]{20,128}$/.test(v)) {
+      return { ok: false, error: `${k === 'walletCliente' ? 'La wallet del cliente' : 'La wallet que recibió'} no tiene un formato válido.` }
+    }
+    ;(datos as any)[k] = v
+  }
+  const red = datos.red ?? (borrar.includes('red') ? '' : String(redActual ?? ''))
+  const wallets: [string, string | undefined][] = [['La wallet del cliente', datos.walletCliente], ['La wallet que recibió', datos.walletContraparte]]
+  if (esTron(red)) {
+    for (const [n, w] of wallets) if (w && !/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(w)) return { ok: false, error: `${n} no es una dirección TRON (empieza por T y tiene 34 caracteres).` }
+    if (datos.hash && !/^[0-9a-fA-F]{64}$/.test(datos.hash)) return { ok: false, error: 'El hash de TRON tiene 64 caracteres hexadecimales.' }
+  } else if (esEvm(red)) {
+    for (const [n, w] of wallets) if (w && !/^0x[0-9a-fA-F]{40}$/.test(w)) return { ok: false, error: `${n} no es una dirección de ${red} (0x y 40 caracteres).` }
+    if (datos.hash && !/^0x[0-9a-fA-F]{64}$/.test(datos.hash)) return { ok: false, error: `El hash de ${red} empieza por 0x y tiene 64 caracteres más.` }
+  }
+  if (datos.walletCliente && datos.walletContraparte && datos.walletCliente === datos.walletContraparte) return { ok: false, error: 'La wallet del cliente y la que recibió no pueden ser la misma.' }
+  return { ok: true, datos, borrar }
 }
 
 const num = (v: unknown): number | null => {
@@ -107,7 +156,7 @@ export function operacionAv(t: any): OperacionAv | null {
     hash: hashDe(rd), traza: texto(rd.traceId ?? rd.providerTraceId), referencia: texto(rd.otcRef),
     cierreOtcId: texto(rd.otcCloseId),
   }
-  let op: Omit<OperacionAv, 'valorUsd' | 'faltan'> | null = null
+  let op: Omit<OperacionAv, 'valorUsd' | 'faltan' | 'manual'> | null = null
 
   // Depósito de USDT por GasFree, o depósito cripto acreditado a mano.
   if (tipoMov === 'load' && fuente === 'GASFREE') {
@@ -116,11 +165,13 @@ export function operacionAv(t: any): OperacionAv | null {
   } else if (tipoMov === 'otc_deposit' && activoDe(moneda)) {
     op = { ...base, tipo: 'deposito', activo: activoDe(moneda)!, cantidad: num(t.amount) ?? 0,
       walletContraparte: texto(rd.fromAddress), origen: 'Depósito acreditado a mano' }
-  // Cargue: el cliente entregó USDT y se le acreditaron pesos (venta).
+  // Cargue: el cliente entregó USDT y se le acreditaron pesos (venta). Los
+  // USDT salen de la wallet del cliente (fromAddress) hacia la que recibe.
   } else if (tipoMov === 'load' && (fuente === 'admin_cargue' || fuente === 'admin_backfill') && Number(rd?.acct?.usdtGross) > 0) {
     op = { ...base, tipo: 'venta', activo: 'USDT', cantidad: Number(rd.acct.usdtGross),
       valorCop: num(rd.acct.creditedCop) ?? num(t.amount), tasaCop: num(rd.acct.clientRate) ?? num(rd.acct.sellRate),
-      walletContraparte: texto(rd.fromAddress ?? rd.acct?.fromAddress), origen: fuente === 'admin_backfill' ? 'Cargue (registro histórico)' : 'Cargue de USDT' }
+      walletCliente: texto(rd.fromAddress ?? rd.acct?.fromAddress), walletContraparte: texto(rd.toAddress ?? rd.acct?.toAddress),
+      origen: fuente === 'admin_backfill' ? 'Cargue (registro histórico)' : 'Cargue de USDT' }
   // Envío de cripto a una wallet.
   } else if (tipoMov === 'send' && activoDe(moneda)) {
     const destino = texto(rd.account ?? rd.beneficiary ?? rd.toAddress)
@@ -155,6 +206,11 @@ export function operacionAv(t: any): OperacionAv | null {
     }
   }
   if (!op || !(op.cantidad > 0)) return null
+  // Lo escrito a mano manda sobre lo que se dedujo del movimiento.
+  const s = (rd.sirel && typeof rd.sirel === 'object') ? rd.sirel : {}
+  const camposManual = CAMPOS_CRIPTO.filter(k => texto(s[k]))
+  for (const k of camposManual) (op as any)[k] = texto(s[k])
+  const manual = camposManual.length ? { campos: [...camposManual], por: texto(s.por?.nombre ?? s.por?.email), at: texto(s.at) } : null
   // USDT y USDC valen un dólar; EURC no tiene tasa guardada (no se supone).
   const valorUsd = op.activo === 'USDT' || op.activo === 'USDC' ? Math.round(op.cantidad * 100) / 100 : null
   if (op.tasaCop == null && op.valorCop && op.cantidad) op.tasaCop = Math.round((op.valorCop / op.cantidad) * 100) / 100
@@ -163,7 +219,7 @@ export function operacionAv(t: any): OperacionAv | null {
   if (!op.walletContraparte) faltan.push('wallet contraparte')
   if (!op.red) faltan.push('red')
   if (valorUsd == null) faltan.push('valor en USD')
-  return { ...op, valorUsd, faltan }
+  return { ...op, valorUsd, manual, faltan }
 }
 
 // ── Lo que pide el archivo plano de la UIAF y no está en el movimiento ────
@@ -216,6 +272,9 @@ export function saldoDelActivo(balances: unknown, activo: string): number | null
 // riel liquidado, el bolsillo debitado) sea de ese activo.
 export function tocaActivo(t: any, activo: string): boolean {
   const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {}
+  // Un cierre de la mesa OTC solo acredita los pesos: los USDT salen de la
+  // wallet propia del cliente, no de su saldo en Lincoin (efecto-saldo.ts).
+  if (String(t?.source ?? rd.source ?? '') === 'OTC_MANUAL') return activoDeBolsillo(t?.currency) === activo
   const monedas = [t?.currency, t?.fromCurrency ?? rd.fromCurrency, t?.targetCurrency ?? rd.targetCurrency, t?.destCurrency ?? rd.destCurrency,
     t?.settledRail ?? rd.settledRail, t?.debitadoCol ?? rd.debitadoCol, t?.fromRail ?? rd.fromRail, t?.toRail ?? rd.toRail]
   return monedas.some(m => activoDeBolsillo(m) === activo)
@@ -233,9 +292,19 @@ export function saldoDespues(
 ): { saldo: number | null; motivo: string | null } {
   if (saldoHoy == null) return { saldo: null, motivo: `el saldo de ${op.activo} guardado no es un número` }
   const t0 = Date.parse(op.fecha)
-  const despues = movsCliente.filter(m => m.id !== op.id && tocaActivo(m, op.activo)
-    && (Date.parse(m.created_at) > t0 || Date.parse(String(m.updated_at ?? '')) > t0))
+  const toca = movsCliente.filter(m => m.id !== op.id && tocaActivo(m, op.activo))
+  const despues = toca.filter(m => Date.parse(m.created_at) > t0 || Date.parse(String(m.updated_at ?? '')) > t0)
   if (despues.length) return { saldo: null, motivo: `${despues.length} movimiento(s) en ${op.activo} después de esta operación` }
+  // updated_at de `transactions` no lo mueve un trigger: una devolución que
+  // reescribió una fila anterior después de la operación no se ve ahí. Si en
+  // la semana previa hubo un movimiento del activo devuelto, rechazado o sin
+  // cerrar, pudo cambiar el saldo después: no se afirma.
+  const abiertos = toca.filter(m => {
+    const c = Date.parse(m.created_at)
+    const x = m as any
+    return c <= t0 && c > t0 - 7 * 86400_000 && (String(x.status ?? 'Completado') !== 'Completado' || x.refunded === true || x.refunded === 'true')
+  })
+  if (abiertos.length) return { saldo: null, motivo: `${abiertos.length} movimiento(s) en ${op.activo} de la semana anterior devueltos o sin cerrar` }
   if (saldoHoy < 0) return { saldo: null, motivo: `el saldo de ${op.activo} guardado es negativo` }
   return { saldo: saldoHoy, motivo: null }
 }
