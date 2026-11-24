@@ -2219,6 +2219,8 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   cupo_quitar: 'cumplimiento',
   // SIREL (UIAF): arma los reportes de clientes y operaciones con activos virtuales.
   sirel_periodo: ['cumplimiento', 'fn.cumplimiento'],
+  // Cumplimiento → Resumen (24 nov): cifras de solo lectura para la portada.
+  cumplimiento_resumen: ['cumplimiento', 'fn.cumplimiento'],
   sirel_registrar_envio: ['cumplimiento', 'fn.cumplimiento'],
   fact_lincoin_get: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_lista: ['plata.ver', 'fn.contabilidad'],
@@ -7686,6 +7688,54 @@ Deno.serve(async (req: Request) => {
           enviosRecientes: envios.slice(-30).reverse(),
         })
       }
+      // ── Cumplimiento → Resumen (24 nov) ──────────────────────────────
+      // El dueño: "crear un dashboard, porque siempre que abro me sale es acá"
+      // (Cumplimiento abría directo en Cupos). La portada junta lo que pide
+      // atención de cada pestaña. Aquí van las cifras que no tiene otra
+      // llamada barata: las wallets que vigila el KYT, las verificaciones de
+      // la mesa OTC y lo registrado en SIREL del mes pasado. Cada bloque va
+      // aparte: si uno falla, los demás salen igual y la pantalla lo dice.
+      if (body.action === 'cumplimiento_resumen') {
+        const out: Record<string, unknown> = { ok: true }
+        try {
+          const k = { monitoreadas: 0, alto: 0, medio: 0, bajo: 0, sinDato: 0, subieron: 0 }
+          await leerPorPaginas(() => db.from('kyt_watchlist').select('id, banda_actual, subio').eq('activo', true), {
+            tope: 50_000,
+            alLote: (lote) => {
+              for (const w of lote as any[]) {
+                k.monitoreadas++
+                const b = String(w.banda_actual ?? '')
+                if (b === 'alto') k.alto++; else if (b === 'medio') k.medio++; else if (b === 'bajo') k.bajo++; else k.sinDato++
+                if (w.subio === true) k.subieron++
+              }
+            },
+          })
+          out.kyt = k
+        } catch (e) { out.kyt = { error: String((e as Error)?.message ?? e).slice(0, 160) } }
+        try {
+          const desde30 = new Date(Date.now() - 30 * 86400_000).toISOString()
+          const { count: total } = await db.from('audit_log').select('id', { count: 'exact', head: true }).eq('action', 'kyt.otc_wallet').gte('created_at', desde30)
+          const { count: bloqueadas } = await db.from('audit_log').select('id', { count: 'exact', head: true }).eq('action', 'kyt.otc_wallet').gte('created_at', desde30).eq('metadata->>permitido', 'false')
+          out.otcWallets = { dias: 30, verificaciones: total ?? 0, bloqueadas: bloqueadas ?? 0 }
+        } catch (e) { out.otcWallets = { error: String((e as Error)?.message ?? e).slice(0, 160) } }
+        try {
+          const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
+          let envios: any[] = []
+          try { const v = (envCfg as any)?.value; envios = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { envios = [] }
+          // El mes anterior en Bogotá: lo que se reporta en el mes en curso.
+          const hoyB = new Date(Date.now() - 5 * 3600_000)
+          const mesAnt = new Date(Date.UTC(hoyB.getUTCFullYear(), hoyB.getUTCMonth() - 1, 1)).toISOString().slice(0, 7)
+          const delMes = envios.filter(e => String(e.periodo ?? '').startsWith(mesAnt))
+          const ultimo = envios.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] ?? null
+          out.sirel = {
+            mes: mesAnt,
+            registrados: Array.from(new Set(delMes.map(e => String(e.tipo)))),
+            ultimo: ultimo ? { tipo: ultimo.tipo, periodo: ultimo.periodo, radicado: ultimo.radicado, at: ultimo.at } : null,
+          }
+        } catch (e) { out.sirel = { error: String((e as Error)?.message ?? e).slice(0, 160) } }
+        return json(out)
+      }
+
       // Lo que se subió a SIREL: tipo, período y el radicado que da la UIAF.
       // Queda en system_config (solo el servidor) y en la auditoría.
       if (body.action === 'sirel_registrar_envio') {

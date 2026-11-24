@@ -96,6 +96,7 @@ import { AdminContabilidad } from './AdminContabilidad';
 import { AdminLimitesEnvio } from './AdminLimitesEnvio';
 import { AdminTarifasEnvio } from './AdminTarifasEnvio';
 import { AdminCupos } from './AdminCupos';
+import { AdminCumplimientoResumen } from './AdminCumplimientoResumen';
 import { AdminSirel } from './AdminSirel';
 import { AdminKyt } from './AdminKyt';
 import { AdminOperadores } from './AdminOperadores';
@@ -149,12 +150,12 @@ const FUNCION_DE_TAB: Record<string, string> = {
   overview: 'dashboard', clients: 'clientes', cargues: 'billetera', treasury: 'tesoreria',
   lincoin: 'lincoin', otcCierres: 'otc', coinsenda: 'coinsenda', fallos: 'fallos',
   reports: 'reportes', otcConfig: 'contabilidad',
-  compliance: 'cumplimiento', operadores: 'cumplimiento', cupos: 'cumplimiento',
+  cumpResumen: 'cumplimiento', compliance: 'cumplimiento', operadores: 'cumplimiento', cupos: 'cumplimiento',
   risk: 'cumplimiento', sarblock: 'cumplimiento', tusdatos: 'cumplimiento', sirel: 'cumplimiento', kyt: 'cumplimiento',
   apiExterna: 'api',
 };
 // Orden en que se busca la primera pestaña del colaborador al entrar.
-const ORDEN_TABS_COLABORADOR = ['overview', 'cargues', 'clients', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos', 'reports', 'otcConfig', 'compliance', 'apiExterna'];
+const ORDEN_TABS_COLABORADOR = ['overview', 'cargues', 'clients', 'treasury', 'lincoin', 'otcCierres', 'coinsenda', 'fallos', 'reports', 'otcConfig', 'cumpResumen', 'apiExterna'];
 
 interface SystemAlert {
     id: string;
@@ -285,7 +286,8 @@ const fileToBase64 = (file: File): Promise<string> => {
 // pestañas: primero la pantalla que da el panorama, después el detalle.
 const GRUPO_SEG = ['security', 'comando', 'monitoreo', 'auditoria', 'team', 'apiExterna'];
 // 'kumplo' salió el 2026-10-30: Kumplo se retiró de Lincoin.
-const GRUPO_CUMP = ['compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'sirel', 'kyt'];
+// 'cumpResumen' va primero (24 nov): es la portada de la sección.
+const GRUPO_CUMP = ['cumpResumen', 'compliance', 'operadores', 'cupos', 'risk', 'sarblock', 'tusdatos', 'sirel', 'kyt'];
 
 const TAB_TITLES: Record<string, string> = {
   overview: 'Dashboard', clients: 'Clientes', treasury: 'Tesorería', cargues: 'Billetera', lincoin: 'Lincoin',
@@ -293,7 +295,7 @@ const TAB_TITLES: Record<string, string> = {
   security: 'Seguridad',
   gasfree: 'Custodia USDT', otcConfig: 'Contabilidad', fallos: 'Fallos',
   auditoria: 'Auditoría', monitoreo: 'Monitoreo', kumplo: 'Kumplo', comando: 'Centro de Comando',
-  tusdatos: 'TusDatos', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores', sirel: 'SIREL',
+  tusdatos: 'TusDatos', cumpResumen: 'Cumplimiento', compliance: 'Cumplimiento', risk: 'Lincoin Risk', sarblock: 'Sarblock', cupos: 'Cupos por beneficiario', operadores: 'Operadores', sirel: 'SIREL',
   kyt: 'KYT · Wallets',
   otcCierres: 'Cierres OTC',
 };
@@ -303,6 +305,7 @@ const TAB_TITLES: Record<string, string> = {
 // se nombra por lo que realmente muestra.
 const SUBTAB_TITLES: Record<string, string> = {
   security: 'Cuentas y accesos',
+  cumpResumen: 'Resumen',
   compliance: 'Bandeja de casos',
   apiExterna: 'API Keys',
 };
@@ -650,7 +653,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const primeraTabColaborador = ORDEN_TABS_COLABORADOR.find(t => puedeVerTab(t)) ?? 'overview';
   // Sin rol (equipo sin configurar) se es dueño, igual que en el servidor.
   const esDueno = !rol || rol === 'dueno';
-  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda' | 'apiExterna'>(soloTesoreria ? 'cargues' : esColaborador ? primeraTabColaborador as any : 'overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'clients' | 'treasury' | 'cargues' | 'lincoin' | 'team' | 'reports' | 'config' | 'security' | 'gasfree' | 'otcConfig' | 'fallos' | 'auditoria' | 'monitoreo' | 'kumplo' | 'tusdatos' | 'cumpResumen' | 'compliance' | 'cupos' | 'operadores' | 'comando' | 'otcCierres' | 'coinsenda' | 'apiExterna'>(soloTesoreria ? 'cargues' : esColaborador ? primeraTabColaborador as any : 'overview');
   const [auditRows, setAuditRows] = useState<any[] | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminLogins, setAdminLogins] = useState<{ admins: any[]; activity: any[] } | null>(null);
@@ -6254,7 +6257,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                                 una: adentro llevan sus pestañas. Antes eran
                                 siete renglones sueltos. */}
                             <AdminSidebarItem icon={Shield} label="Seguridad" active={GRUPO_SEG.includes(activeTab)} onClick={() => navTo('security')} />
-                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo(operadoresPend > 0 ? 'operadores' : cuposPend > 0 ? 'cupos' : 'compliance')} />
+                            <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo('cumpResumen')} />
                             <AdminSidebarItem icon={Settings} label="Configuración" active={activeTab === 'config'} onClick={() => navTo('config')} />
                         </> },
                     ];
@@ -6274,7 +6277,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                             {it('otcConfig', <AdminSidebarItem icon={ArrowLeftRight} label="Contabilidad" active={activeTab === 'otcConfig'} onClick={() => navTo('otcConfig')} />)}
                         </>, hay: ['reports', 'otcConfig'].some(puedeVerTab) },
                         { key: 'cumplimiento', title: 'Control', items: <>
-                            {it('compliance', <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo(operadoresPend > 0 ? 'operadores' : cuposPend > 0 ? 'cupos' : 'compliance')} />)}
+                            {it('compliance', <AdminSidebarItem icon={ShieldAlert} label="Cumplimiento" active={GRUPO_CUMP.includes(activeTab)} badge={cuposPend + operadoresPend > 0 ? cuposPend + operadoresPend : undefined} onClick={() => navTo('cumpResumen')} />)}
                             {it('apiExterna', <AdminSidebarItem icon={Shield} label="API Keys" active={activeTab === 'apiExterna'} onClick={() => navTo('apiExterna')} />)}
                         </>, hay: ['compliance', 'apiExterna'].some(puedeVerTab) },
                     ].filter(g => g.hay);
@@ -6465,6 +6468,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   try { const p = new URLSearchParams(window.location.search); p.set('cliente', id); window.history.replaceState({}, '', `${window.location.pathname}?${p.toString()}`); } catch { /* */ }
                   setActiveTab('clients');
                 }} /></div>}
+                {/* Portada de Cumplimiento (24 nov, el dueño: "crear un dashboard,
+                    porque siempre que abro me sale es acá"): antes el menú
+                    abría directo en Operadores o Cupos si había algo pendiente,
+                    y lo demás no se veía. Ahora abre aquí, con lo pendiente
+                    arriba y una tarjeta por área. */}
+                {activeTab === 'cumpResumen' && <div className="animate-in fade-in duration-300"><AdminCumplimientoResumen cuposPend={cuposPend} operadoresPend={operadoresPend} kyb={resumenUsuarios ?? null} irA={(t) => navTo(t)} /></div>}
                 {activeTab === 'compliance' && <div className="animate-in fade-in duration-300 space-y-6"><AdminCompliance /><AdminLimitesEnvio /></div>}
                 {/* Normativa de cupo mensual por beneficiario: pestaña propia
                     dentro de Cumplimiento, para que las solicitudes de aumento
