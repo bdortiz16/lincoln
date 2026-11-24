@@ -6,7 +6,8 @@ import {
   filasClientes, filaOperacion, seleccionarOperaciones, contenidoArchivo, nombreArchivo, aCp1252,
   codigoEntidadValido, COLUMNAS_CLIENTES, COLUMNAS_TRANSACCIONES, UMBRAL_MULTIPLE_USD, UMBRAL_INDIVIDUAL_USD, type FilaUiaf,
 } from '../lib/sirelUiaf';
-import { AdminRosFicha } from './AdminRosFicha';
+import { AdminRosFicha, type PersonaCaso } from './AdminRosFicha';
+import { llamarFuncion } from '../lib/edge';
 
 // ─────────────────────────────────────────────
 // Cumplimiento → SIREL (UIAF).
@@ -56,14 +57,15 @@ const Chip: React.FC<{ c: string; children: React.ReactNode; title?: string }> =
 );
 
 // ── Registrar un envío a SIREL ───────────────────────────────
-const RegistrarEnvio: React.FC<{ tipo: string; periodo: string; filas?: number; onCerrar: () => void; onListo: () => void }> = ({ tipo, periodo, filas, onCerrar, onListo }) => {
+type PersonaRos = { nombre: string | null; documento: string | null; userId?: string | null; wallet?: string | null };
+const RegistrarEnvio: React.FC<{ tipo: string; periodo: string; filas?: number; persona?: PersonaRos | null; onCerrar: () => void; onListo: () => void }> = ({ tipo, periodo, filas, persona, onCerrar, onListo }) => {
   const [radicado, setRadicado] = useState('');
   const [nota, setNota] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const guardar = async () => {
     setOcupado(true); setError(null);
-    const r = await pedirAdmin({ action: 'sirel_registrar_envio', tipo, periodo, radicado, filas, nota });
+    const r = await pedirAdmin({ action: 'sirel_registrar_envio', tipo, periodo, radicado, filas, nota, ...(persona ? { persona } : {}) });
     setOcupado(false);
     if (!r?.ok) { setError(r?.error ?? 'No se pudo guardar.'); return; }
     onListo();
@@ -75,7 +77,7 @@ const RegistrarEnvio: React.FC<{ tipo: string; periodo: string; filas?: number; 
           <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: C.texto }}>{TIPO_ENVIO[tipo]}</p>
           <button onClick={onCerrar} aria-label="Cerrar" style={{ background: 'none', border: 'none', color: C.sub, cursor: 'pointer' }}><X size={16} /></button>
         </div>
-        <p style={{ margin: '4px 0 16px', fontSize: 12.5, color: C.sub }}>Período {periodo}{filas != null ? ` · ${filas.toLocaleString('es-CO')} registros` : ''}. Anótalo cuando ya lo hayas subido en SIREL.</p>
+        <p style={{ margin: '4px 0 16px', fontSize: 12.5, color: C.sub }}>Período {periodo}{filas != null ? ` · ${filas.toLocaleString('es-CO')} registros` : ''}{persona ? ` · ${persona.nombre ?? persona.wallet ?? persona.documento}` : ''}. Anótalo cuando ya lo hayas subido en SIREL.</p>
         <label style={{ fontSize: 11, fontWeight: 700, color: C.sub, letterSpacing: '0.6px' }}>NÚMERO DE RADICADO DE SIREL</label>
         <input autoFocus value={radicado} onChange={e => setRadicado(e.target.value)} placeholder="El que te dio SIREL al cargar" style={{ ...INP, width: '100%', boxSizing: 'border-box', marginTop: 6 }} />
         <label style={{ display: 'block', marginTop: 12, fontSize: 11, fontWeight: 700, color: C.sub, letterSpacing: '0.6px' }}>NOTA (OPCIONAL)</label>
@@ -213,15 +215,26 @@ export const AdminSirel: React.FC = () => {
   const [periodo, setPeriodo] = useState<'mes' | 'dia'>('mes');
   const [mes, setMes] = useState(mesAnterior());
   const [dia, setDia] = useState(hoyBogota());
-  const [vista, setVista] = useState<'clientes' | 'transacciones' | 'envios'>('clientes');
+  const [vista, setVista] = useState<'clientes' | 'transacciones' | 'ros' | 'envios'>('clientes');
   const [soloConOps, setSoloConOps] = useState(false);
   const [q, setQ] = useState('');
   const [datos, setDatos] = useState<any>(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [registrar, setRegistrar] = useState<null | { tipo: string; filas?: number }>(null);
+  const [registrar, setRegistrar] = useState<null | { tipo: string; filas?: number; persona?: PersonaRos | null }>(null);
   const [completar, setCompletar] = useState<any>(null);
-  const [ros, setRos] = useState<null | { userId: string; nombre: string | null }>(null);
+  const [ros, setRos] = useState<null | { userId: string; nombre: string | null; persona?: PersonaCaso | null; anotar?: PersonaRos | null }>(null);
+  // Los casos de la Bandeja (los mismos de Cumplimiento → Bandeja de casos),
+  // para la lista de personas por revisar en la pestaña ROS.
+  const [casos, setCasos] = useState<any[] | null>(null);
+  const [errorCasos, setErrorCasos] = useState<string | null>(null);
+  const cargarCasos = useCallback(async () => {
+    setErrorCasos(null);
+    const d: any = await llamarFuncion('tusdatos', { action: 'compliance' }).catch(() => null);
+    if (!d || d.ok === false || !Array.isArray(d.casos)) { setErrorCasos(d?.error ?? d?.message ?? 'No se pudo leer la Bandeja de casos.'); setCasos([]); return; }
+    setCasos(d.casos);
+  }, []);
+  useEffect(() => { cargarCasos(); }, [cargarCasos]);
 
   const fecha = periodo === 'mes' ? `${mes}-01` : dia;
   const cargar = useCallback(async () => {
@@ -261,6 +274,55 @@ export const AdminSirel: React.FC = () => {
   const opsIncompletas = filasOps.filter(f => f.faltan.length).length;
   const nMultiples = sel.reportadas.filter(r => r.criterio === 'multiple').length;
   const enviado = (tipo: string) => envios.find(e => e.tipo === tipo && String(e.periodo).startsWith(clave));
+  // ROS del período y los anotados antes (los ROS cuentan en el mes en que se
+  // envían, no en el de la operación: Anexo 1, numeral 4.1).
+  const rosDelPeriodo = envios.filter(e => e.tipo === 'ros');
+  const ausenciaRos = envios.find(e => e.tipo === 'ausencia_ros');
+  const rosAnotados = ((datos?.enviosRecientes ?? []) as any[]).filter(e => e.tipo === 'ros' || e.tipo === 'ausencia_ros');
+  // ── Personas por revisar para un ROS ──
+  // 24 nov, el dueño: "allí estar todas las personas de ROS que se tienen que
+  // reportar". Salen de lo que ya marcó Lincoin: los casos de la Bandeja con
+  // alerta fuerte (riesgo alto, nombre que no es del documento, documento no
+  // vigente) o que cumplimiento dejó bloqueados, las wallets en riesgo alto de
+  // la KYT y las que la mesa OTC rechazó en el período (operación intentada).
+  // Lincoin no decide qué es sospechoso: el oficial revisa cada una y reporta
+  // o descarta. Las ya reportadas (ROS anotado con esa persona) se marcan.
+  const ALERTA_ROS: Record<string, string> = { riesgo_alto: 'Riesgo alto en listas y antecedentes', nombre_no_coincide: 'El nombre no es el del documento', documento_no_vigente: 'Documento no vigente' };
+  const rosTodos: any[] = datos?.rosAnotados ?? [];
+  const reportadoA = (doc?: string | null, wallet?: string | null) => {
+    const d = String(doc ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+    const w = String(wallet ?? '').replace(/[^A-Za-z0-9]/g, '');
+    return rosTodos.find(e => (d && e.persona?.documento === d) || (w && e.persona?.wallet === w)) ?? null;
+  };
+  const candidatos = useMemo(() => {
+    const lista: any[] = [];
+    for (const c of casos ?? []) {
+      const mantenido = c.decisionManual?.decision === 'mantener';
+      if (c.alerta === 'aprobado_manual' || (!ALERTA_ROS[c.alerta] && !mantenido)) continue;
+      const nombre = c.nombreReal || c.nombreInscrito || null;
+      lista.push({
+        key: `caso:${c.userId}:${c.documento}`, tipo: 'persona', nombre, tipoDocumento: c.tipoDocumento ?? null, documento: c.documento ?? null,
+        motivo: ALERTA_ROS[c.alerta] ?? 'Cumplimiento lo dejó bloqueado', detalle: c.decisionManual?.motivo ?? null,
+        empresa: c.cliente?.nombre ?? c.titular ?? null, userId: c.userId ? String(c.userId) : null, at: c.decisionManual?.at ?? c.at ?? null,
+        persona: { nombre, tipoDocumento: c.tipoDocumento ?? null, documento: c.documento ?? null, motivo: ALERTA_ROS[c.alerta] ?? c.decisionManual?.motivo ?? null, hallazgos: Array.isArray(c.hallazgos) ? c.hallazgos : [] } as PersonaCaso,
+        reporte: reportadoA(c.documento, null),
+      });
+    }
+    for (const w of (datos?.ros?.wallets ?? []) as any[]) {
+      lista.push({
+        key: `wallet:${w.origen}:${w.address}`, tipo: 'wallet', nombre: w.cliente ?? w.empresa ?? 'Cliente', tipoDocumento: null, documento: w.clienteDoc ?? null,
+        wallet: w.address, coin: w.coin, motivo: w.motivo, detalle: w.score != null ? `Puntaje ${w.score}/100` : null,
+        empresa: w.cliente ?? w.empresa ?? null, userId: w.userId || null, at: w.at ?? null, persona: null,
+        reporte: reportadoA(null, w.address),
+      });
+    }
+    return lista.sort((a, b) => Number(!!a.reporte) - Number(!!b.reporte) || String(b.at ?? '').localeCompare(String(a.at ?? '')));
+  }, [casos, datos, rosTodos]);
+  const candidatosVista = candidatos.filter(x => coincide(x.nombre, x.documento, x.wallet, x.empresa));
+  const pendientesRos = candidatos.filter(x => !x.reporte).length;
+  const clientesRos = useMemo(() => [...clientes]
+    .filter(c => coincide(c.nombre, c.documento, c.correo))
+    .sort((a, b) => (b.usdPeriodo - a.usdPeriodo) || (b.operaciones - a.operaciones) || String(a.nombre ?? '').localeCompare(String(b.nombre ?? ''))), [clientes, texto]);
 
   // ── Descargas ──────────────────────────────
   // El archivo para SIREL: texto ANSI (Windows-1252), tal cual lo pide el anexo.
@@ -390,7 +452,7 @@ export const AdminSirel: React.FC = () => {
           {/* Tablas. */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 18 }}>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-              {([['clientes', `Clientes · ${clientes.length}`], ['transacciones', `Transacciones · ${ops.length}`], ['envios', `Envíos · ${(datos.enviosRecientes ?? []).length}`]] as const).map(([k, t]) => (
+              {([['clientes', `Clientes · ${clientes.length}`], ['transacciones', `Transacciones · ${ops.length}`], ['ros', `ROS · ${pendientesRos}`], ['envios', `Envíos · ${(datos.enviosRecientes ?? []).length}`]] as const).map(([k, t]) => (
                 <button key={k} onClick={() => setVista(k)} style={{ height: 32, padding: '0 13px', whiteSpace: 'nowrap', borderRadius: 9, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5, fontWeight: vista === k ? 700 : 600, color: vista === k ? C.texto : C.sub, background: vista === k ? 'rgba(255,255,255,0.08)' : 'transparent', border: `1px solid ${vista === k ? 'rgba(255,255,255,0.18)' : C.borde}` }}>{t}</button>
               ))}
             </div>
@@ -401,7 +463,7 @@ export const AdminSirel: React.FC = () => {
                   <input type="checkbox" checked={soloConOps} onChange={e => setSoloConOps(e.target.checked)} style={{ accentColor: '#4ADE80' }} /> Solo los que operaron
                 </label>
               )}
-              {vista !== 'envios' && (() => {
+              {(vista === 'clientes' || vista === 'transacciones') && (() => {
                 const cual = vista;
                 const vacio = cual === 'transacciones' && filasOps.length === 0;
                 const motivo = noSePuede ?? (vacio ? 'Ninguna operación llega al umbral: en SIREL va el reporte de ausencia.' : null);
@@ -414,7 +476,7 @@ export const AdminSirel: React.FC = () => {
               })()}
             </div>
           </div>
-          {vista !== 'envios' && (
+          {(vista === 'clientes' || vista === 'transacciones') && (
             <p style={{ margin: '8px 2px 0', fontSize: 11.5, color: C.sub }}>
               {noSePuede
                 ? noSePuede
@@ -501,6 +563,92 @@ export const AdminSirel: React.FC = () => {
                   {opsVista.length > 500 && <p style={{ padding: '10px 14px', margin: 0, fontSize: 12, color: C.sub }}>Se muestran 500 de {opsVista.length.toLocaleString('es-CO')}. La descarga las trae todas.</p>}
                 </div>)}
 
+            {vista === 'ros' && (
+              <div>
+                {/* Qué toca este mes con el ROS. */}
+                <div style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderBottom: `1px solid ${C.borde}` }}>
+                  <span style={{ width: 28, height: 28, borderRadius: 8, display: 'grid', placeItems: 'center', background: rosDelPeriodo.length || ausenciaRos ? 'rgba(74,222,128,0.12)' : 'rgba(251,191,36,0.1)', color: rosDelPeriodo.length || ausenciaRos ? C.verde : C.ambar, flexShrink: 0 }}>{rosDelPeriodo.length || ausenciaRos ? <Check size={15} /> : <AlertTriangle size={14} />}</span>
+                  <span style={{ flex: '1 1 260px', minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>
+                      {rosDelPeriodo.length ? `${rosDelPeriodo.length} ROS anotado(s) en ${clave}` : ausenciaRos ? `Ausencia de ROS anotada para ${clave}` : `Sin ROS anotados en ${clave}`}
+                    </span>
+                    <span style={{ display: 'block', fontSize: 11.5, color: C.sub, marginTop: 2, lineHeight: 1.45 }}>
+                      {rosDelPeriodo.length
+                        ? 'Con un ROS enviado en el mes no va la ausencia de ese mes (SIREL no la deja enviar).'
+                        : ausenciaRos
+                          ? `Radicado ${ausenciaRos.radicado} · ${fechaHora(ausenciaRos.at)}`
+                          : 'El ROS se envía apenas se detecta la operación, sin importar el monto. Si en el mes no hubo ninguno, va la ausencia de ROS dentro de los primeros 20 días del mes siguiente.'}
+                    </span>
+                  </span>
+                  <button onClick={() => setRegistrar({ tipo: 'ros' })} style={{ ...BTN2, height: 32 }}><Send size={13} /> Anotar ROS</button>
+                  {!rosDelPeriodo.length && !ausenciaRos && <button onClick={() => setRegistrar({ tipo: 'ausencia_ros' })} style={{ ...BTN2, height: 32 }}>Anotar ausencia</button>}
+                </div>
+
+                {/* Personas por revisar para un ROS. */}
+                <p style={{ margin: 0, padding: '12px 16px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: C.tenue, textTransform: 'uppercase' }}>Personas por revisar para un ROS · {pendientesRos} pendiente(s){candidatos.length - pendientesRos ? ` · ${candidatos.length - pendientesRos} ya reportada(s)` : ''}</p>
+                <p style={{ margin: 0, padding: '0 16px 8px', fontSize: 11.5, color: C.sub, lineHeight: 1.45 }}>Las que marcó Lincoin: casos de la Bandeja con alerta fuerte o que dejaste bloqueados, wallets en riesgo alto y wallets rechazadas en la mesa OTC. Revisa cada una: si es sospechosa, prepara la ficha y repórtala; si no, déjala anotada en la Bandeja.</p>
+                {errorCasos && <p style={{ margin: 0, padding: '0 16px 8px', fontSize: 12, color: C.ambar }}>{errorCasos} <button onClick={cargarCasos} style={{ background: 'none', border: 'none', padding: 0, color: C.verde, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}>Reintentar</button></p>}
+                {datos.ros?.error && <p style={{ margin: 0, padding: '0 16px 8px', fontSize: 12, color: C.ambar }}>No se pudieron leer las wallets de riesgo ({datos.ros.error}).</p>}
+                {casos === null
+                  ? <p style={{ padding: '6px 16px 12px', margin: 0, color: C.sub, fontSize: 13 }}>Leyendo la Bandeja de casos…</p>
+                  : candidatosVista.length === 0
+                    ? <p style={{ padding: '6px 16px 12px', margin: 0, color: C.sub, fontSize: 13 }}>{q ? 'Nada con esa búsqueda.' : 'No hay personas marcadas para revisar.'}</p>
+                    : candidatosVista.slice(0, 300).map((x, i) => (
+                      <div key={x.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderTop: `1px solid ${C.borde}`, flexWrap: 'wrap', opacity: x.reporte ? 0.65 : 1 }}>
+                        <span style={{ flex: '1 1 280px', minWidth: 0 }}>
+                          <span style={{ display: 'block', fontSize: 13, fontWeight: 700, overflowWrap: 'anywhere' }}>
+                            {x.tipo === 'wallet' ? <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>{corto(x.wallet, 8)}</span> : (x.nombre ?? 'Sin nombre')}
+                            {x.tipo === 'wallet' && x.coin ? <span style={{ color: C.sub, fontWeight: 600 }}> · {x.coin}</span> : null}
+                          </span>
+                          <span style={{ display: 'block', fontSize: 11.5, color: C.sub, overflowWrap: 'anywhere' }}>
+                            {x.tipo === 'wallet' ? `Wallet de ${x.empresa ?? 'cliente'}` : `${x.tipoDocumento ?? ''} ${x.documento ?? ''}${x.empresa ? ` · inscrita por ${x.empresa}` : ''}`}
+                            {x.at ? ` · ${fechaCorta(x.at)}` : ''}
+                          </span>
+                          <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 5 }}>
+                            <Chip c={x.reporte ? C.verde : C.ambar}>{x.reporte ? `Reportado · radicado ${x.reporte.radicado}` : x.motivo}</Chip>
+                            {x.detalle && !x.reporte && <span style={{ fontSize: 11, color: C.tenue, alignSelf: 'center' }}>{x.detalle}</span>}
+                          </span>
+                        </span>
+                        {x.userId && <button onClick={() => setRos({
+                          userId: x.userId, nombre: x.empresa ?? null, persona: x.persona,
+                          anotar: { nombre: x.tipo === 'wallet' ? (x.empresa ?? null) : x.nombre, documento: x.documento ?? null, userId: x.userId, wallet: x.wallet ?? null },
+                        })} style={{ ...BTN2, height: 32 }}><FileText size={13} /> {x.reporte ? 'Ver ficha' : 'Preparar ROS'}</button>}
+                      </div>
+                    ))}
+
+                {/* Preparar la ficha de un cliente. */}
+                <p style={{ margin: 0, padding: '14px 16px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: C.tenue, textTransform: 'uppercase', borderTop: `1px solid ${C.borde}` }}>O la ficha de cualquier cliente · {clientesRos.length}</p>
+                {clientesRos.length === 0
+                  ? <p style={{ padding: '6px 16px 16px', margin: 0, color: C.sub, fontSize: 13 }}>{q ? 'Nada con esa búsqueda.' : 'No hay clientes en el período.'}</p>
+                  : clientesRos.slice(0, 200).map((c, i) => (
+                    <div key={c.userId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderTop: i ? `1px solid ${C.borde}` : 'none', flexWrap: 'wrap' }}>
+                      <span style={{ flex: '1 1 240px', minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 700, overflowWrap: 'anywhere' }}>{c.nombre ?? '—'}</span>
+                        <span style={{ display: 'block', fontSize: 11.5, color: C.sub }}>{docLegible(c.tipoDocumento, c.documento, c.dv)}{c.operaciones ? ` · ${c.operaciones} op. con AV · ${usd(c.usdPeriodo)}` : ' · sin operaciones con AV en el período'}</span>
+                      </span>
+                      <button onClick={() => setRos({ userId: String(c.userId), nombre: c.nombre ?? null })} style={{ ...BTN2, height: 32 }}><FileText size={13} /> Preparar ROS</button>
+                    </div>
+                  ))}
+
+                {/* Lo anotado. */}
+                <p style={{ margin: 0, padding: '14px 16px 4px', fontSize: 10, fontWeight: 700, letterSpacing: '1px', color: C.tenue, textTransform: 'uppercase', borderTop: `1px solid ${C.borde}` }}>ROS y ausencias anotados</p>
+                {rosAnotados.length === 0
+                  ? <p style={{ padding: '6px 16px 16px', margin: 0, color: C.sub, fontSize: 13 }}>Todavía no se ha anotado ningún ROS ni ausencia.</p>
+                  : rosAnotados.map((e, i) => (
+                    <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderTop: i ? `1px solid ${C.borde}` : 'none', flexWrap: 'wrap' }}>
+                      <Check size={14} style={{ color: C.verde, flexShrink: 0 }} />
+                      <span style={{ flex: 1, minWidth: 220 }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 700 }}>{TIPO_ENVIO[e.tipo] ?? e.tipo} · {e.periodo}</span>
+                        <span style={{ display: 'block', fontSize: 11.5, color: C.sub }}>Radicado {e.radicado} · {fechaHora(e.at)}{e.por?.nombre || e.por?.email ? ` · ${e.por.nombre || e.por.email}` : ''}{e.nota ? ` · ${e.nota}` : ''}</span>
+                      </span>
+                    </div>
+                  ))}
+                <p style={{ margin: 0, padding: '12px 16px 14px', fontSize: 11.5, color: C.sub, borderTop: `1px solid ${C.borde}`, lineHeight: 1.5 }}>
+                  En SIREL: <b style={{ color: C.texto }}>Reportes de Operación Sospechosa → ROS → +Crear → Reporte positivo</b>. La ausencia, en <b style={{ color: C.texto }}>Reportes de Ausencia</b>. Nadie de la entidad puede contarle al cliente que se le reportó.
+                </p>
+              </div>
+            )}
+
             {vista === 'envios' && ((datos.enviosRecientes ?? []).length === 0
               ? <p style={{ padding: 20, margin: 0, color: C.sub, fontSize: 13 }}>Todavía no se ha anotado ningún envío a SIREL.</p>
               : (datos.enviosRecientes as any[]).map((e, i) => (
@@ -521,8 +669,8 @@ export const AdminSirel: React.FC = () => {
       )}
 
       {completar && <CompletarOp op={completar} hermanas={ops.filter(x => x.userId === completar.userId)} onCerrar={() => setCompletar(null)} onListo={() => { setCompletar(null); cargar(); }} />}
-      {ros && <AdminRosFicha userId={ros.userId} nombre={ros.nombre} desde={datos?.desde} hasta={datos?.hasta} onCerrar={() => setRos(null)} onAnotar={() => { setRos(null); setRegistrar({ tipo: 'ros' }); }} />}
-      {registrar && <RegistrarEnvio tipo={registrar.tipo} periodo={clave} filas={registrar.filas} onCerrar={() => setRegistrar(null)} onListo={() => { setRegistrar(null); cargar(); }} />}
+      {ros && <AdminRosFicha userId={ros.userId} nombre={ros.nombre} persona={ros.persona ?? null} desde={ros.persona ? undefined : datos?.desde} hasta={ros.persona ? undefined : datos?.hasta} onCerrar={() => setRos(null)} onAnotar={() => { const p = ros.anotar ?? null; setRos(null); setRegistrar({ tipo: 'ros', persona: p }); }} />}
+      {registrar && <RegistrarEnvio tipo={registrar.tipo} periodo={clave} filas={registrar.filas} persona={registrar.persona ?? null} onCerrar={() => setRegistrar(null)} onListo={() => { setRegistrar(null); cargar(); }} />}
     </div>
   );
 };

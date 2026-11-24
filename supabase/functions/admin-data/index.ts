@@ -7777,6 +7777,38 @@ Deno.serve(async (req: Request) => {
         let codigoEntidad: string | null = null
         try { const v = (cfgSirel as any)?.value; codigoEntidad = ((typeof v === 'string' ? JSON.parse(v) : v)?.codigoEntidad ?? null) || null } catch { codigoEntidad = null }
 
+        // 5) Candidatos a ROS que no están en la Bandeja de casos (24 nov, el
+        //    dueño: "allí estar todas las personas de ROS que se tienen que
+        //    reportar"): las wallets que la KYT tiene en riesgo alto y las que
+        //    la mesa OTC rechazó en el período —una operación intentada o
+        //    rechazada también se reporta (Anexo 1)—. No se califica nada de
+        //    sospechoso: el oficial revisa y decide.
+        const rosWallets: any[] = []
+        let rosError: string | null = null
+        try {
+          const { data: altas } = await db.from('kyt_watchlist').select('id, user_id, address, coin, alias, nivel_actual, score_actual, revisado_at, subio, motivo_cambio')
+            .eq('activo', true).eq('banda_actual', 'alto').limit(500)
+          for (const w of (altas ?? []) as any[]) rosWallets.push({ origen: 'kyt_alto', userId: String(w.user_id), address: w.address, coin: w.coin, nivel: w.nivel_actual, score: w.score_actual, at: w.revisado_at, motivo: w.subio ? (w.motivo_cambio ?? 'Subió a riesgo alto en el monitoreo') : 'Wallet en riesgo alto en la KYT' })
+          const { filas: rech } = await leerPorPaginas(() => db.from('audit_log').select('id, user_id, created_at, address:metadata->>address, coin:metadata->>coin, motivo:metadata->>motivo, empresa:metadata->>empresa, nombre:metadata->>nombre')
+            .eq('action', 'kyt.otc_wallet').eq('metadata->>permitido', 'false').gte('created_at', desdeIso).lt('created_at', hastaIso), { tope: 2_000 })
+          for (const w of rech as any[]) {
+            if (w.motivo === 'sin_resultado') continue   // la consulta no respondió: no es un rechazo por riesgo
+            rosWallets.push({ origen: 'otc_rechazada', userId: String(w.user_id ?? ''), address: w.address, coin: w.coin, at: w.created_at, motivo: w.motivo ? `Rechazada en la mesa OTC: ${w.motivo}` : 'Rechazada en la mesa OTC (operación intentada)', empresa: w.empresa ?? null, nombre: w.nombre ?? null })
+          }
+          // El nombre del cliente de cada una (puede no estar en la lista del período).
+          const sinNombre = Array.from(new Set(rosWallets.map(w => w.userId).filter(id => id && !porId.has(id))))
+          const nombres = new Map<string, any>()
+          for (let i = 0; i < sinNombre.length; i += 200) {
+            const { data } = await db.from('users').select('id, company_name, full_name, name, email, tax_id, doc_number').in('id', sinNombre.slice(i, i + 200))
+            for (const u of (data ?? []) as any[]) nombres.set(String(u.id), u)
+          }
+          for (const w of rosWallets) {
+            const u = porId.get(w.userId) ?? nombres.get(w.userId)
+            w.cliente = u ? (u.company_name || u.full_name || u.name || u.email || null) : (w.empresa ?? null)
+            w.clienteDoc = u ? (u.tax_id ?? u.doc_number ?? null) : null
+          }
+        } catch (e) { rosError = String((e as Error)?.message ?? e).slice(0, 160) }
+
         const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
         let envios: any[] = []
         try { const v = (envCfg as any)?.value; envios = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { envios = [] }
@@ -7786,6 +7818,9 @@ Deno.serve(async (req: Request) => {
           ok: true, periodo, desde, hasta, clavePeriodo, truncado,
           clientes, operaciones,
           uiaf: { codigoEntidad, tcrmError, saldoError, walletsError, tcrmFuente: 'datos.gov.co · Superintendencia Financiera (32sa-8pi3)' },
+          ros: { wallets: rosWallets, error: rosError },
+          // Todos los ROS anotados (para saber a quién ya se reportó).
+          rosAnotados: envios.filter(e => e.tipo === 'ros').slice(-300).reverse(),
           resumen: {
             clientes: clientes.length,
             clientesConOperaciones: clientes.filter(c => c.operaciones > 0).length,
@@ -7859,7 +7894,16 @@ Deno.serve(async (req: Request) => {
         if (radicado.length < 3) return json({ ok: false, error: 'Escribe el número de radicado que te dio SIREL.' }, 400)
         const filasEnv = Number.isFinite(Number(body.filas)) ? Math.max(0, Math.round(Number(body.filas))) : null
         const nota = String(body.nota ?? '').trim().slice(0, 500) || null
-        const registro = { id: crypto.randomUUID(), tipo, periodo: periodoEnv, radicado, filas: filasEnv, nota, por: await autorDe(auth), at: new Date().toISOString() }
+        // En un ROS, a quién se reportó: así la lista de personas por revisar
+        // en SIREL → ROS sabe cuáles ya quedaron reportadas.
+        const pIn = (body.persona && typeof body.persona === 'object') ? body.persona : null
+        const persona = tipo === 'ros' && pIn ? {
+          nombre: String(pIn.nombre ?? '').trim().slice(0, 120) || null,
+          documento: String(pIn.documento ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 30) || null,
+          userId: /^[0-9a-f-]{36}$/i.test(String(pIn.userId ?? '')) ? String(pIn.userId) : null,
+          wallet: String(pIn.wallet ?? '').replace(/[^A-Za-z0-9]/g, '').slice(0, 128) || null,
+        } : null
+        const registro = { id: crypto.randomUUID(), tipo, periodo: periodoEnv, radicado, filas: filasEnv, nota, ...(persona ? { persona } : {}), por: await autorDe(auth), at: new Date().toISOString() }
         const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
         let lista: any[] = []
         try { const v = (envCfg as any)?.value; lista = ((typeof v === 'string' ? JSON.parse(v) : v)?.lista ?? []) as any[] } catch { lista = [] }
