@@ -13,7 +13,7 @@
 // recortaba las ventanas (mismo caso que el reporte de AML y KYT).
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Download, RefreshCw, Search } from 'lucide-react';
+import { X, Download, RefreshCw, Search, ChevronRight, ArrowLeft } from 'lucide-react';
 import { pedirAdmin } from './adminApi';
 import { descargarXlsx, type CeldaX } from '../lib/xlsx';
 
@@ -43,13 +43,15 @@ const Ventana: React.FC<{ titulo: React.ReactNode; sub: string; onCerrar: () => 
       <div onClick={e => e.stopPropagation()} style={{ maxWidth: 1080, margin: '24px auto', padding: '0 16px', boxSizing: 'border-box' }}>
         <div style={{ borderRadius: 18, border: `1px solid ${C.borde2}`, padding: '18px 20px', color: C.texto,
           background: 'radial-gradient(circle at 92% 0%, rgba(74,222,128,0.12), transparent 40%), linear-gradient(135deg, #121413 0%, #0C0E0D 60%, #0A0B0A 100%)' }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ minWidth: 0 }}>
+          {/* Con varios botones, en celular bajan a su fila: si no, el título
+              quedaba de una palabra por línea. */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 0, flex: '1 1 260px' }}>
               <p style={{ margin: 0, fontSize: 10.5, fontWeight: 700, letterSpacing: 1, color: C.sub, textTransform: 'uppercase' }}>Billetera · detalle</p>
               <h2 style={{ margin: '4px 0 0', fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>{titulo}</h2>
               <p style={{ margin: '4px 0 0', fontSize: 12.5, color: C.sub, lineHeight: 1.5 }}>{sub}</p>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap' }}>
               {acciones}
               <button type="button" onClick={onCerrar} aria-label="Cerrar"
                 style={{ width: 36, height: 36, borderRadius: 10, border: `1px solid ${C.borde2}`, background: 'transparent', color: C.sub, cursor: 'pointer', display: 'grid', placeItems: 'center' }}>
@@ -106,6 +108,10 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
   const [d, setD] = useState<any>(null);
   const [cargando, setCargando] = useState(true);
   const [q, setQ] = useState('');
+  // El cliente abierto: sus movimientos en este bolsillo (24 nov, el dueño:
+  // "al seleccionar la empresa debe salir los cargues para verificar que sí
+  // estén bien").
+  const [sel, setSel] = useState<{ userId: string; cliente: string; email: string | null; saldo: number } | null>(null);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -135,6 +141,8 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
     ]);
   };
 
+  if (sel) return <MovimientosBolsillo riel={riel} nombre={nombre} cliente={sel} onVolver={() => setSel(null)} onCerrar={onCerrar} />;
+
   return (
     <Ventana titulo={<>{nombre} · saldo comprometido</>} onCerrar={onCerrar}
       sub="De quién es el saldo que esta bolsa tiene que cubrir: la suma de lo que cada cliente tiene en este bolsillo. Lo que sobra es de Lincoin."
@@ -162,7 +170,7 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
               {d.negativos} {d.negativos === 1 ? 'cliente tiene' : 'clientes tienen'} saldo negativo en este bolsillo: restan del comprometido. Revísalos.
             </p>
           )}
-          <Caja titulo="Clientes con saldo en este bolsillo" sub="Ordenados de mayor a menor saldo."
+          <Caja titulo="Clientes con saldo en este bolsillo" sub="Ordenados de mayor a menor saldo. Toca un cliente para ver sus cargues y movimientos en este bolsillo y comprobar su saldo."
             der={<Buscador valor={q} onCambio={setQ} placeholder="Buscar cliente o correo" />}>
             {filtrados.length === 0 ? (
               <p style={{ margin: 0, fontSize: 12.5, color: C.sub }}>{clientes.length ? 'Ningún cliente coincide con la búsqueda.' : 'Ningún cliente tiene saldo en este bolsillo.'}</p>
@@ -175,9 +183,14 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
                   </tr></thead>
                   <tbody>
                     {filtrados.map(c => (
-                      <tr key={c.userId}>
+                      <tr key={c.userId} onClick={() => setSel({ userId: c.userId, cliente: c.cliente, email: c.email ?? null, saldo: Number(c.saldo) || 0 })}
+                        title="Ver los cargues y movimientos de este cliente en este bolsillo"
+                        style={{ cursor: 'pointer' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
                         <td style={TD}>
                           <span style={{ fontWeight: 700 }}>{c.cliente}</span>
+                          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: C.verde, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 2 }}>Ver movimientos <ChevronRight size={12} /></span>
                           {c.bloqueado && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.rojo }}>BLOQUEADO</span>}
                           <span style={{ display: 'block', fontSize: 11, color: C.tenue }}>{c.email ?? ''}</span>
                           <span style={{ display: 'block', marginTop: 5, height: 3, borderRadius: 3, background: 'rgba(255,255,255,0.06)', maxWidth: 220 }}>
@@ -195,6 +208,179 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
                     <td style={{ ...NUM, fontWeight: 800 }}>{cop(total)}</td>
                     <td style={{ ...NUM, color: C.sub }}>100 %</td>
                   </tr></tfoot>
+                </table>
+              </div>
+            )}
+          </Caja>
+        </>
+      )}
+    </Ventana>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════
+// 1b) Un cliente en un bolsillo: sus cargues y movimientos, y si cuadran.
+// ═════════════════════════════════════════════════════════════
+// El dueño (24 nov) sentía que un cierre OTC de 69 millones no se le había
+// sumado a una empresa en Finity, y no había cómo comprobarlo: el detalle del
+// bolsillo solo decía el saldo. Aquí sale cada movimiento que tocó ese
+// bolsillo con lo que sumó o restó (el servidor decide el efecto, igual que
+// cuando se movió la plata) y el saldo acumulado; arriba, la suma de todos
+// contra el saldo guardado. Si no cuadran, la diferencia es plata que se
+// movió sin dejar un movimiento (o al revés), y se ve cuánta es.
+const CLASE: Record<string, { l: string; c: string }> = {
+  cargue: { l: 'Cargue', c: C.verde }, otc: { l: 'Cierre OTC', c: C.verde }, recaudo: { l: 'Recaudo', c: C.verde },
+  ajuste: { l: 'Ajuste', c: C.ambar }, envio: { l: 'Envío', c: C.rojo }, conversion: { l: 'Conversión', c: C.texto },
+  traslado: { l: 'Entre cuentas', c: C.texto }, otro: { l: 'Otro', c: C.sub },
+};
+type Filtro = 'todos' | 'cargues' | 'entradas' | 'salidas';
+
+const MovimientosBolsillo: React.FC<{ riel: string; nombre: string; cliente: { userId: string; cliente: string; email: string | null; saldo: number }; onVolver: () => void; onCerrar: () => void }> = ({ riel, nombre, cliente, onVolver, onCerrar }) => {
+  const [d, setD] = useState<any>(null);
+  const [cargando, setCargando] = useState(true);
+  const [filtro, setFiltro] = useState<Filtro>('todos');
+  const [verSinEfecto, setVerSinEfecto] = useState(false);
+  const [q, setQ] = useState('');
+
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    setD(await pedirAdmin({ action: 'bolsillo_cliente', riel, userId: cliente.userId }));
+    setCargando(false);
+  }, [riel, cliente.userId]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  // El saldo acumulado se arma del más viejo al más nuevo con lo que movió
+  // cada uno; la tabla va del más nuevo al más viejo.
+  const filas: any[] = useMemo(() => {
+    const movs: any[] = d?.ok ? [...(d.movimientos ?? [])] : [];
+    movs.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || String(a.id).localeCompare(String(b.id)));
+    let acum = 0;
+    const conSaldo = movs.map(m => { acum += Number(m.efecto) || 0; return { ...m, despues: acum }; });
+    return conSaldo.reverse();
+  }, [d]);
+  const vista = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return filas.filter(m => {
+      const ef = Number(m.efecto) || 0;
+      if (!verSinEfecto && !ef) return false;
+      if (filtro === 'cargues' && !['cargue', 'otc', 'recaudo', 'ajuste'].includes(m.clase)) return false;
+      if (filtro === 'entradas' && !(ef > 0)) return false;
+      if (filtro === 'salidas' && !(ef < 0)) return false;
+      return !t || `${m.titulo ?? ''} ${m.detalle ?? ''} ${m.ref ?? ''} ${m.estado ?? ''}`.toLowerCase().includes(t);
+    });
+  }, [filas, filtro, verSinEfecto, q]);
+
+  const guardado = d?.ok ? Number(d.saldoGuardado ?? cliente.saldo) : cliente.saldo;
+  const suma = d?.ok ? Number(d.suma ?? 0) : 0;
+  const dif = Math.round((guardado - suma) * 100) / 100;
+  const cuadra = Math.abs(dif) < 1;
+  const entradas = filas.reduce((a, m) => a + Math.max(0, Number(m.efecto) || 0), 0);
+  const salidas = filas.reduce((a, m) => a + Math.min(0, Number(m.efecto) || 0), 0);
+  const sinEfecto = filas.filter(m => !(Number(m.efecto) || 0)).length;
+
+  const excel = () => {
+    const hoja: CeldaX[][] = [
+      ['Fecha', 'Tipo', 'Movimiento', 'Detalle', 'Estado', 'Entra', 'Sale', 'Saldo después', 'Nota', 'Id'],
+      ...filas.map(m => {
+        const ef = Number(m.efecto) || 0;
+        return [new Date(m.at), CLASE[m.clase]?.l ?? m.clase, m.titulo ?? '', [m.ref, m.detalle].filter(Boolean).join(' · '), m.estado ?? '',
+          ef > 0 ? { v: ef, s: 'cop' } : '', ef < 0 ? { v: -ef, s: 'cop' } : '', { v: m.despues, s: 'cop' }, m.nota ?? '', String(m.id)] as CeldaX[];
+      }),
+      [{ v: 'Suma de los movimientos', s: 'totalTexto' }, '', '', '', '', { v: entradas, s: 'totalCop' }, { v: -salidas, s: 'totalCop' }, { v: suma, s: 'totalCop' }, '', ''],
+      [{ v: 'Saldo guardado', s: 'totalTexto' }, '', '', '', '', '', '', { v: guardado, s: 'totalCop' }, '', ''],
+      [{ v: 'Diferencia (guardado − suma)', s: 'totalTexto' }, '', '', '', '', '', '', { v: dif, s: 'totalCop' }, '', ''],
+    ];
+    const slug = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase().slice(0, 40);
+    descargarXlsx(`lincoin-${slug(nombre)}-${slug(cliente.cliente)}-${hoy()}.xlsx`, [
+      { nombre: 'Movimientos', filas: hoja, anchos: [20, 14, 34, 40, 14, 16, 16, 18, 40, 38] },
+    ]);
+  };
+
+  const CHIP = (k: Filtro, l: string) => (
+    <button key={k} type="button" onClick={() => setFiltro(k)}
+      style={{ height: 30, padding: '0 11px', borderRadius: 999, fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+        border: `1px solid ${filtro === k ? C.texto : C.borde2}`, background: filtro === k ? C.texto : 'transparent', color: filtro === k ? '#0C0E0D' : C.texto }}>
+      {l}
+    </button>
+  );
+
+  return (
+    <Ventana titulo={<>{cliente.cliente} · {nombre}</>} onCerrar={onCerrar}
+      sub={`Cada cargue y movimiento que tocó este bolsillo, con lo que sumó o restó y el saldo que quedó después. Arriba, si la suma cuadra con el saldo guardado.${cliente.email ? ` · ${cliente.email}` : ''}`}
+      acciones={<>
+        <button type="button" onClick={onVolver} style={{ ...BOTON, background: 'transparent', border: `1px solid ${C.borde2}`, color: C.texto }}>
+          <ArrowLeft size={14} /> Clientes
+        </button>
+        <button type="button" onClick={cargar} disabled={cargando} style={{ ...BOTON, background: 'transparent', border: `1px solid ${C.borde2}`, color: C.texto, opacity: cargando ? 0.6 : 1 }}>
+          <RefreshCw size={14} className={cargando ? 'animate-spin' : undefined} /> Actualizar
+        </button>
+        <button type="button" onClick={excel} disabled={!filas.length} style={{ ...BOTON, background: C.verde, border: 'none', color: '#0C0E0D', opacity: filas.length ? 1 : 0.5 }}>
+          <Download size={14} /> Excel
+        </button>
+      </>}>
+      {cargando && !d && <p style={{ color: C.sub, fontSize: 13 }}>Trayendo los movimientos…</p>}
+      {d && !d.ok && <p style={{ color: C.rojo, fontSize: 13 }}>{d.error ?? 'No se pudieron leer los movimientos.'}</p>}
+      {d?.ok && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+            <Kpi rotulo="Saldo guardado" valor={cop(guardado)} pie={`Lo que tiene hoy en ${nombre}`} />
+            <Kpi rotulo="Suma de los movimientos" valor={cop(suma)} pie={`Entró ${cop(entradas)} · salió ${cop(-salidas)}`} />
+            <Kpi rotulo={cuadra ? 'Cuadra' : 'Diferencia'} valor={cuadra ? 'Sí' : cop(dif)} color={cuadra ? C.verde : C.ambar}
+              pie={cuadra ? 'El saldo es la suma de sus movimientos' : dif > 0 ? 'El saldo tiene más que la suma de sus movimientos' : 'El saldo tiene menos que la suma de sus movimientos'} />
+          </div>
+          {!cuadra && (
+            <p style={{ margin: 0, fontSize: 12.5, color: C.ambar, lineHeight: 1.55 }}>
+              La diferencia es plata que entró o salió de este bolsillo sin un movimiento que la explique (o un movimiento que no la movió).
+              Revisa los cargues y ajustes cerca de cuando empezó el descuadre: la columna «Saldo después» muestra el saldo que dan los movimientos en cada momento.
+            </p>
+          )}
+          {d.inciertos > 0 && (
+            <p style={{ margin: 0, fontSize: 12.5, color: C.ambar }}>
+              {d.inciertos} {d.inciertos === 1 ? 'movimiento está marcado' : 'movimientos están marcados'} como incierto (un crédito o una devolución sin confirmar): la suma los toma como quedaron registrados.
+            </p>
+          )}
+          {d.operador && <p style={{ margin: 0, fontSize: 12.5, color: C.sub }}>Es un operador: cuando le falta saldo para un envío, se cubre desde su Saldo Lincoin u otra cuenta sin un movimiento aparte. Una diferencia puede venir de ahí.</p>}
+          {d.comprasLeidas === false && <p style={{ margin: 0, fontSize: 12.5, color: C.ambar }}>No se pudieron leer sus compras de consultas AML y KYT: si pagó alguna con este saldo, falta en la suma.</p>}
+          {d.truncado && <p style={{ margin: 0, fontSize: 12.5, color: C.ambar }}>El historial pasa del tope que se lee de una vez: la suma no incluye los movimientos más viejos.</p>}
+          <Caja titulo={`Movimientos en ${nombre} · ${vista.length}`}
+            sub={`Del más reciente al más viejo.${sinEfecto ? ` ${sinEfecto} ${sinEfecto === 1 ? 'movimiento no movió' : 'movimientos no movieron'} este saldo (rechazados, devueltos, solo registro…).` : ''}`}
+            der={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {CHIP('todos', 'Todos')}{CHIP('cargues', 'Cargues')}{CHIP('entradas', 'Entradas')}{CHIP('salidas', 'Salidas')}
+              {sinEfecto > 0 && (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.sub, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={verSinEfecto} onChange={e => setVerSinEfecto(e.target.checked)} /> Ver los que no movieron saldo
+                </label>
+              )}
+              <Buscador valor={q} onCambio={setQ} placeholder="Referencia, beneficiario o nota" />
+            </div>}>
+            {vista.length === 0 ? <p style={{ margin: 0, fontSize: 12.5, color: C.sub }}>Sin movimientos para mostrar.</p> : (
+              <div style={{ overflowX: 'auto', maxHeight: 560, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: C.carbon }}><tr>
+                    <th style={TH}>Fecha</th><th style={TH}>Movimiento</th><th style={TH}>Estado</th>
+                    <th style={{ ...TH, textAlign: 'right' }}>Entra</th><th style={{ ...TH, textAlign: 'right' }}>Sale</th><th style={{ ...TH, textAlign: 'right' }}>Saldo después</th>
+                  </tr></thead>
+                  <tbody>
+                    {vista.map(m => {
+                      const ef = Number(m.efecto) || 0;
+                      const cl = CLASE[m.clase] ?? CLASE.otro;
+                      return (
+                        <tr key={m.id} style={{ opacity: ef ? 1 : 0.55 }}>
+                          <td style={{ ...TD, color: C.sub, whiteSpace: 'nowrap' }}>{fechaCorta(m.at)}</td>
+                          <td style={TD}>
+                            <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.5, padding: '2px 7px', borderRadius: 999, border: `1px solid ${cl.c}59`, color: cl.c, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{cl.l}</span>
+                            <span style={{ marginLeft: 7, fontWeight: 700 }}>{m.titulo}</span>
+                            {(m.detalle || m.ref) && <span style={{ display: 'block', fontSize: 11, color: C.tenue, marginTop: 2 }}>{[m.ref, m.detalle].filter(Boolean).join(' · ')}</span>}
+                            {m.nota && <span style={{ display: 'block', fontSize: 11, color: !ef || m.incierto ? C.ambar : C.tenue, marginTop: 2 }}>{m.nota}</span>}
+                          </td>
+                          <td style={{ ...TD, color: C.sub, whiteSpace: 'nowrap' }}>{m.estado ?? '—'}</td>
+                          <td style={{ ...NUM, color: C.verde, fontWeight: 700 }}>{ef > 0 ? `+${cop(ef)}` : ''}</td>
+                          <td style={{ ...NUM, color: C.rojo, fontWeight: 700 }}>{ef < 0 ? `−${cop(-ef)}` : ''}</td>
+                          <td style={{ ...NUM, color: m.despues < 0 ? C.rojo : C.texto }}>{cop(m.despues)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
                 </table>
               </div>
             )}

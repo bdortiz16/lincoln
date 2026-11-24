@@ -9,6 +9,7 @@ import { modelosDe, leerClaveDiaria, NOMBRE_MODELO, type ModeloFactura } from '.
 import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvio, normalizarBase } from '../_shared/tarifas-envio.ts'
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
+import { efectoEnBolsillo } from '../_shared/efecto-saldo.ts'
 import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
 import { canalDe, sentidoDe, idsDe, contraparteDe, motivoRechazoDe, marcasDe, docRiesgoDe, iniciadorDe, resolvioDe, hitosDe, costosDe, motivoDe, etiquetaClave, TIPO_TXT, TIPOS_ENTRADA, TIPOS_SALIDA, ESTADOS_OK, ESTADOS_MAL, CLAVES_CANAL } from './auditoria.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
@@ -409,6 +410,61 @@ async function bolsilloDetalle(rielIn: string) {
   })
   clientes.sort((a, b) => b.saldo - a.saldo)
   return { riel, proveedor: RIEL_PROVEEDOR[riel], total: Math.round(total * 100) / 100, cantidad: clientes.length, negativos, clientes }
+}
+
+// ── Un cliente en un bolsillo: sus movimientos y si cuadran (24 nov) ──
+// El dueño, en el detalle de Finity: "al seleccionar la empresa debe salir
+// los cargues para verificar que sí estén bien… siento que no se está
+// sumando el cargue de 69 millones". Cada movimiento de ESA fila de usuario
+// (el saldo es de la fila, no del correo) con lo que movió en ese bolsillo,
+// según efectoEnBolsillo (_shared/efecto-saldo.ts: las mismas reglas con las
+// que se movió la plata). La suma se compara con el saldo guardado; si no
+// cuadra, la diferencia es plata movida sin movimiento que la explique.
+async function bolsilloCliente(rielIn: string, userIdIn: string) {
+  const riel = String(rielIn ?? '').toUpperCase()
+  if (!RIEL_PROVEEDOR[riel]) throw new Error('Ese bolsillo no existe.')
+  const uid = String(userIdIn ?? '')
+  if (!/^[0-9a-f-]{36}$/i.test(uid)) throw new Error('Cliente inválido.')
+  const { data: u, error: eU } = await db.from('users').select(`id, role, email, full_name, company_name, saldo:balances->${riel}`).eq('id', uid).maybeSingle()
+  if (eU) throw new Error(eU.message)
+  if (!u) throw new Error('No se encontró el cliente.')
+  // leerPorPaginas pone su propio orden (por id): el cronológico va después.
+  const { filas, truncado } = await leerPorPaginas(() => db.from('transactions')
+    .select('id, type, amount, currency, status, created_at, raw_data').eq('user_id', uid), { tope: 20_000 })
+  const movimientos: any[] = []
+  let suma = 0, inciertos = 0
+  for (const t of filas as any[]) {
+    const e = efectoEnBolsillo(t, riel)
+    if (!e) continue   // no tiene que ver con este bolsillo
+    suma += e.efecto
+    if (e.incierto) inciertos++
+    movimientos.push({ id: String(t.id), at: t.created_at, estado: t.status ?? null, ...e })
+  }
+  // Las consultas de AML y KYT que se compran con un saldo COP se descuentan
+  // de ese bolsillo y quedan solo en risk_compras (no en transactions): sin
+  // ellas, cada compra se vería como un descuadre.
+  let comprasLeidas = true
+  try {
+    const { filas: compras } = await leerPorPaginas(() => db.from('risk_compras').select('id, at, cantidad, total, bolsillo').eq('user_id', uid).eq('bolsillo', riel), { tope: 5_000 })
+    for (const c of compras as any[]) {
+      const total = Number(c.total) || 0
+      if (!total) continue
+      suma -= total
+      movimientos.push({ id: `risk:${c.id}`, at: c.at, estado: 'Completado', efecto: -Math.round(total * 100) / 100, clase: 'otro', titulo: 'Compra de consultas AML y KYT', detalle: `${Number(c.cantidad) || 0} consultas`, ref: null, nota: null, incierto: false })
+    }
+  } catch { comprasLeidas = false }
+  movimientos.sort((a, b) => Date.parse(String(a.at)) - Date.parse(String(b.at)) || String(a.id).localeCompare(String(b.id)))
+  const saldoGuardado = Math.round((Number((u as any).saldo) || 0) * 100) / 100
+  return {
+    riel, proveedor: RIEL_PROVEEDOR[riel],
+    cliente: String((u as any).company_name || (u as any).full_name || (u as any).email || 'Cliente'),
+    // Un operador (role 'personal') cubre lo que le falte para un envío desde
+    // su Saldo Lincoin u otro riel sin una fila aparte: en ellos la diferencia
+    // puede venir de ahí.
+    operador: String((u as any).role ?? '') === 'personal',
+    saldoGuardado, suma: Math.round(suma * 100) / 100, diferencia: Math.round((saldoGuardado - suma) * 100) / 100,
+    truncado, inciertos, comprasLeidas, movimientos,
+  }
 }
 
 // La parte de Lincoin en cada bolsa, armada: la apertura, la utilidad de los
@@ -2184,6 +2240,9 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Al tocar un bolsillo o «Lincoin · utilidades» en la Billetera (23 nov): de
   // quién es el saldo comprometido y de dónde sale la utilidad. Solo lectura.
   bolsillo_detalle: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
+  // Al tocar un cliente en ese detalle (24 nov): sus movimientos en el
+  // bolsillo y si suman su saldo. Solo lectura, el mismo permiso.
+  bolsillo_cliente: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
   lincoin_utilidades_detalle: ['plata.ver', 'tesoreria', 'fn.billetera', 'fn.tesoreria', 'fn.lincoin'],
   // Tablero de Lincoin y sus movimientos: verlos y registrarlos. Anular un
   // movimiento es del dueño (no figura acá).
@@ -6850,6 +6909,10 @@ Deno.serve(async (req: Request) => {
 
       if (body.action === 'bolsillo_detalle') {
         try { return json({ ok: true, ...(await bolsilloDetalle(String(body.riel ?? ''))) }) }
+        catch (e: any) { return json({ ok: false, error: String(e?.message ?? e) }, 400) }
+      }
+      if (body.action === 'bolsillo_cliente') {
+        try { return json({ ok: true, ...(await bolsilloCliente(String(body.riel ?? ''), String(body.userId ?? ''))) }) }
         catch (e: any) { return json({ ok: false, error: String(e?.message ?? e) }, 400) }
       }
       if (body.action === 'lincoin_utilidades_detalle') {
