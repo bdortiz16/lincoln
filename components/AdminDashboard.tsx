@@ -112,7 +112,7 @@ import { ReporteFinanciero } from './ReporteFinanciero';
 import { AuditoriaMovimientos } from './AuditoriaMovimientos';
 import { descargarXlsx } from '../lib/xlsx';
 import { useMovimientosCliente } from './useMovimientosCliente';
-import { descargarMovimientosCliente, reversosDe } from './excelMovimientosCliente';
+import { descargarMovimientosCliente, reversosDe, esCargueManual, esCierreOtc, cierreOtcAnulado } from './excelMovimientosCliente';
 import { AdminEquipo } from './AdminEquipo';
 import { AdminRiskUtilidades } from './AdminRiskUtilidades';
 import { CollectionWalletCard } from './CollectionWalletCard';
@@ -2517,7 +2517,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         if (n === 1) { setCarguesClientId(null); setCarguesRail(null); setCarguesPaso(1); setCarguesMsg(null); setCarguesReversaDe(''); setCarguesReversaDeAjuste(''); return; }
         setCarguesPaso(n);
       };
-      // Últimos cargues manuales del cliente elegido, para la columna derecha.
+      // Últimos cargues del cliente elegido, para la columna derecha: los
+      // manuales y los cierres de la mesa OTC (que acreditan con una
+      // conversión, no con un cargue: antes no salían, 24 nov).
       const fechaCargue = (t: any): number => {
         const v = String(t?.creditedAt ?? t?.createdAt ?? t?.created_at ?? t?.date ?? '').trim();
         const dmy = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -2525,7 +2527,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         return isNaN(d.getTime()) ? 0 : d.getTime();
       };
       const ultimosCargues = carguesClient ? (histCargues.movimientos as any[])
-        .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
+        .filter(t => t.userId === carguesClient.id && (esCargueManual(t) || esCierreOtc(t)))
         .sort((a, b) => fechaCargue(b) - fechaCargue(a))
         .slice(0, 6) : [];
       // Quién hizo un movimiento manual. El servidor manda nombre y correo solo
@@ -2536,6 +2538,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
         if ('esYo' in a) return a.esYo ? 'ti' : 'el equipo';
         return String(a.nombre || a.email || 'admin');
       };
+      // Un cierre OTC no lleva "por" (no lo hace la pantalla de cargues): lo
+      // completó la mesa, y el nombre de quien lo completó queda en el
+      // movimiento (el mismo que ya ve la mesa en Cierres OTC).
+      const quienOtc = (t: any): string => t?.completadaPor ? `mesa · ${String(t.completadaPor)}` : 'la mesa';
+      // La billetera donde quedó. Un cierre en que el cliente compra USDT
+      // acredita el Saldo USDT, que no es una bolsa de pesos.
+      const billeteraDeTx = (t: any): string => String(t?.currency ?? '') === 'USD' ? 'Saldo USDT' : railLabelOf(t?.rail ?? t?.currency ?? 'COP');
+      const unidadDeTx = (t: any): string => String(t?.currency ?? '') === 'USD' ? 'USDT' : 'COP';
+      const montoDeTx = (t: any): string => unidadDeTx(t) === 'USDT'
+        ? (Number(t?.amount) || 0).toLocaleString('es-CO', { maximumFractionDigits: 2 })
+        : Math.round(Number(t?.amount) || 0).toLocaleString('es-CO');
       const CAMPO: React.CSSProperties = { width: '100%', boxSizing: 'border-box', background: '#070808', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 10, color: '#F4F4F2', padding: '11px 13px', fontSize: 14, outline: 'none' };
       const ROTULO: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: '#878E88', marginBottom: 7 };
       const BOTON_CAMBIAR: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' };
@@ -3107,26 +3120,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 Últimos cargues {carguesClient && <span style={{ color: '#878E88', fontWeight: 600, fontSize: 12 }}>· {carguesClient.name}</span>}
               </p>
               {!carguesClient ? (
-                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Elige un cliente para ver sus cargues manuales.</p>
+                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Elige un cliente para ver sus cargues manuales y de cierres OTC.</p>
               ) : histCargues.cargando && ultimosCargues.length === 0 ? (
                 <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Trayendo el historial…</p>
               ) : ultimosCargues.length === 0 ? (
-                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Todavía no se le ha hecho ningún cargue manual.</p>
+                <p style={{ margin: 0, fontSize: 12.5, color: '#878E88' }}>Todavía no se le ha hecho ningún cargue manual ni cierre OTC.</p>
               ) : (
                 <>
                   {ultimosCargues.map((t: any, i: number) => {
-                    const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
+                    const otc = esCierreOtc(t);
+                    const otcAnulado = otc && cierreOtcAnulado(t);
+                    const esCredito = otc || (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
                     const f = fechaCargue(t);
                     return (
                       <div key={t.id} className="flex items-center justify-between" style={{ gap: 10, padding: '10px 0', borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
                         <div style={{ minWidth: 0 }}>
-                          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>{railLabelOf(t.rail ?? t.currency ?? 'COP')}</p>
+                          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#F4F4F2' }}>
+                            {billeteraDeTx(t)}
+                            {otc && <span style={{ marginLeft: 6, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '2px 6px', borderRadius: 999, border: '1px solid rgba(74,222,128,0.35)', color: otcAnulado ? '#878E88' : '#4ADE80', verticalAlign: 'middle' }}>{otcAnulado ? 'OTC ANULADO' : 'CIERRE OTC'}</span>}
+                          </p>
                           <p style={{ margin: '2px 0 0', fontSize: 11, color: '#878E88', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {f ? new Date(f).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '—'} · <span style={{ color: (t.por as any)?.esYo ? '#4ADE80' : '#878E88' }}>por {quienTx(t)}</span>{t.note ? ` · ${t.note}` : ''}
+                            {f ? new Date(f).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) : '—'} · {otc
+                              ? <>{t.otcRef ? `${t.otcRef} · ` : ''}{quienOtc(t)}</>
+                              : <><span style={{ color: (t.por as any)?.esYo ? '#4ADE80' : '#878E88' }}>por {quienTx(t)}</span>{t.note ? ` · ${t.note}` : ''}</>}
                           </p>
                         </div>
-                        <span style={{ fontSize: 13.5, fontWeight: 800, color: esCredito ? '#4ADE80' : '#F87171', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-                          {esCredito ? '+' : '−'}{Math.round(Number(t.amount) || 0).toLocaleString('es-CO')}
+                        <span style={{ fontSize: 13.5, fontWeight: 800, color: otcAnulado ? '#878E88' : esCredito ? '#4ADE80' : '#F87171', textDecoration: otcAnulado ? 'line-through' : undefined, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                          {esCredito ? '+' : '−'}{montoDeTx(t)}{unidadDeTx(t) === 'USDT' ? ' USDT' : ''}
                         </span>
                       </div>
                     );
@@ -3151,11 +3171,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
               const d = dmy ? new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])) : new Date(s);
               return isNaN(d.getTime()) ? null : d;
             };
+            // Los cargues manuales y los cierres de la mesa OTC: los dos le
+            // acreditan plata al cliente por una operación de Lincoin. El
+            // cierre lo hace con una conversión, no con un cargue, y antes no
+            // salía acá (24 nov, el dueño: "no me muestra los cargues de
+            // cierres OTC").
             const cargues = (histCargues.movimientos as any[])
-              .filter(t => t.userId === carguesClient.id && (t.source === 'admin_cargue' || t.source === 'admin_backfill' || t.type === 'adjustment' || (t.type === 'load' && t.rail)))
+              .filter(t => t.userId === carguesClient.id && (esCargueManual(t) || esCierreOtc(t)))
               .map(t => ({ t, d: fechaDe(t) }))
               .sort((a, b) => (b.d?.getTime() ?? 0) - (a.d?.getTime() ?? 0));
+            const nOtc = cargues.filter(c => esCierreOtc(c.t)).length;
+            const nManuales = cargues.length - nOtc;
             const fmt = (v: any) => Math.round(Number(v) || 0).toLocaleString('es-CO');
+            const fmtTasa = (v: any) => Number(v).toLocaleString('es-CO', { maximumFractionDigits: 2 });
             // Qué débito revierte qué cargue (lo vincula Contabilidad). El
             // cargue anulado y su reversa se muestran como tales: antes el
             // débito salía como un "DESCONTADO" más, como si fuera un descuento
@@ -3189,12 +3217,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   <div>
                     <p style={{ fontSize: 14, fontWeight: 700, color: '#F4F4F2', margin: 0 }}>Cargues a {carguesClient.name}</p>
                     <p style={{ fontSize: 12, color: '#878E88', margin: '2px 0 0' }}>
-                      {cargues.length} {cargues.length === 1 ? 'movimiento manual' : 'movimientos manuales'} · lo más reciente primero
+                      {nManuales} {nManuales === 1 ? 'movimiento manual' : 'movimientos manuales'} · {nOtc} {nOtc === 1 ? 'cierre OTC' : 'cierres OTC'} · lo más reciente primero
                       {histCargues.cargando ? ' · trayendo el historial completo…' : histCargues.completo ? ' · historial completo' : ''}
                     </p>
                     {histCargues.completo && (
                       <p style={{ fontSize: 11.5, color: 'rgba(244,244,242,0.45)', margin: '2px 0 0' }}>
-                        El cliente tiene {histCargues.movimientos.length} movimientos en total{histCargues.ids.length > 1 ? ` (en ${histCargues.ids.length} cuentas con su mismo correo)` : ''}. Aquí van solo los cargues y ajustes manuales; todos sus movimientos están en Clientes → {carguesClient.name} → Movimientos.
+                        El cliente tiene {histCargues.movimientos.length} movimientos en total{histCargues.ids.length > 1 ? ` (en ${histCargues.ids.length} cuentas con su mismo correo)` : ''}. Aquí van los cargues y ajustes manuales y los cierres de la mesa OTC; todos sus movimientos están en Clientes → {carguesClient.name} → Movimientos.
                       </p>
                     )}
                     {histCargues.error && <p style={{ fontSize: 11.5, color: '#F87171', margin: '2px 0 0' }}>No se pudo traer el historial completo: {histCargues.error}. Se muestran solo los movimientos recientes.</p>}
@@ -3208,7 +3236,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                   </button>
                 </div>
                 {cargues.length === 0 ? (
-                  <p style={{ fontSize: 12.5, color: '#878E88', padding: '16px 18px', margin: 0 }}>Todavía no se le ha hecho ningún cargue manual.</p>
+                  <p style={{ fontSize: 12.5, color: '#878E88', padding: '16px 18px', margin: 0 }}>Todavía no se le ha hecho ningún cargue manual ni cierre OTC.</p>
                 ) : (
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}>
@@ -3217,6 +3245,67 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                       ))}</tr></thead>
                       <tbody>
                         {cargues.slice(0, carguesVer).map(({ t, d }) => {
+                          // ── Cierre de la mesa OTC ──
+                          // Sin "Revertir": no es un cargue. Deshacerlo es
+                          // ANULAR el cierre (Cierres OTC), que deja la
+                          // conversión en Rechazado y descuenta lo mismo; un
+                          // descuento manual encima lo quitaría dos veces.
+                          if (esCierreOtc(t)) {
+                            const anulado = cierreOtcAnulado(t);
+                            const l = t.otcLiq ?? null;
+                            const usd = Number(l?.usd ?? t.fromAmount);
+                            const tasaCli = Number(l?.tasaCliente ?? t.mouvRate);
+                            const tasaMesa = Number(l?.tasaLincoin);
+                            const compra = String(t.otcLado ?? '') === 'compra_usdt' || String(t.currency ?? '') === 'USD';
+                            const u = l?.utilidadCop != null ? Number(l.utilidadCop) : null;
+                            const celda: React.CSSProperties = { padding: '10px 18px', borderBottom: '1px solid rgba(255,255,255,0.06)' };
+                            const colorEt = anulado ? '#878E88' : '#4ADE80';
+                            return (
+                              <tr key={t.id}>
+                                <td style={{ ...celda, fontSize: 12, color: '#b9beba', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{d ? d.toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                                <td style={{ ...celda, fontSize: 12.5, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{billeteraDeTx(t)}</td>
+                                <td style={{ ...celda, whiteSpace: 'nowrap' }}>
+                                  <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', padding: '3px 8px', borderRadius: 999, border: `1px solid ${colorEt}59`, color: colorEt }}>
+                                    {anulado ? 'OTC ANULADO' : 'CIERRE OTC'}
+                                  </span>
+                                  <p style={{ fontSize: 10.5, color: '#878E88', margin: '3px 0 0' }}>
+                                    {t.otcRef ? `${t.otcRef} · ` : ''}{anulado ? 'anulado por la mesa: no suma' : 'acreditado al completar el cierre'}
+                                  </p>
+                                </td>
+                                <td style={{ ...celda, fontSize: 13, fontWeight: 700, textAlign: 'right', color: anulado ? '#878E88' : '#4ADE80', textDecoration: anulado ? 'line-through' : undefined, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                                  +{montoDeTx(t)} {unidadDeTx(t)}
+                                </td>
+                                <td style={{ ...celda, fontSize: 11.5, color: '#b9beba', whiteSpace: 'nowrap' }}>
+                                  {Number.isFinite(usd) && usd > 0 ? (
+                                    <>
+                                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                                        {usd.toLocaleString('es-CO', { maximumFractionDigits: 2 })} USDT
+                                        {tasaMesa > 0 && ` · ${compra ? 'compra' : 'venta'} ${fmtTasa(tasaMesa)}`}
+                                        {tasaCli > 0 && ` · cliente ${fmtTasa(tasaCli)}`}
+                                      </span>
+                                      {anulado ? null : u != null ? (
+                                        <p style={{ margin: '2px 0 0', fontWeight: 700, color: u >= 0 ? '#4ADE80' : '#F87171' }}
+                                          title={l?.fuente === 'estimada' ? (l?.nota || 'Estimada con la referencia del proveedor que quedó en el cierre') : 'Con la tasa a la que la mesa vendió (o compró) los USDT'}>
+                                          utilidad {fmt(u)} COP{pctUtilidad(u, l?.tercerosCop ?? t.amount) ? ` · ${pctUtilidad(u, l?.tercerosCop ?? t.amount)}` : ''}
+                                          {l?.fuente === 'estimada' && <span style={{ fontWeight: 600, color: '#FBBF24' }}> · estimada</span>}
+                                        </p>
+                                      ) : (
+                                        <p style={{ margin: '2px 0 0', color: 'rgba(244,244,242,0.45)' }}>{l ? 'sin tasa de venta: regístrala en Cierres OTC' : 'utilidad en Cierres OTC'}</p>
+                                      )}
+                                    </>
+                                  ) : <span style={{ color: 'rgba(244,244,242,0.45)' }}>sin contabilidad</span>}
+                                </td>
+                                <td style={{ ...celda, fontSize: 12, fontWeight: 700, color: '#F4F4F2', whiteSpace: 'nowrap' }}>{t.completadaPor ? `Mesa · ${String(t.completadaPor)}` : 'Mesa OTC'}</td>
+                                <td style={{ ...celda, fontSize: 11.5, color: '#878E88', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                  title={anulado ? String(t.anulacionOtc?.motivo ?? t.rejectReason ?? '') : String(t.title ?? '')}>
+                                  {anulado ? `Anulado: ${String(t.anulacionOtc?.motivo ?? t.rejectReason ?? '—')}` : String(t.title ?? '—')}
+                                </td>
+                                <td style={{ ...celda, textAlign: 'right', whiteSpace: 'nowrap', fontSize: 11, color: 'rgba(244,244,242,0.45)' }}>
+                                  {!anulado && <span title="Un cierre OTC no se revierte con un descuento: se anula en Cierres OTC (pide código 2FA).">Se anula en Cierres OTC</span>}
+                                </td>
+                              </tr>
+                            );
+                          }
                           const esCredito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
                           const backfill = t.source === 'admin_backfill' || t.recordOnly === true;
                           const a = t.acct;

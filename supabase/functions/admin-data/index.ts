@@ -6163,7 +6163,36 @@ Deno.serve(async (req: Request) => {
         }
         const visibles = filas.filter(t => accM.todosLosPaises || visibleEnPais(paisDeMovimiento(t), accM))
         const esDuenoM = accM.rol === 'dueno'
-        return json({ ok: true, total: visibles.length, truncado, ids, transactions: visibles.map(t => ({ ...t, raw_data: autoresParaPanel(slimRawData(t.raw_data), esDuenoM, String(auth.userId ?? '')) })) })
+        // Los cierres de la mesa OTC acreditan con una conversión (source
+        // OTC_MANUAL), y su utilidad vive en el cierre (payout.venta), no en
+        // el movimiento: el cliente lee sus propios movimientos con
+        // select('*') y no debe verla. Billetera → «Cargues a …» los muestra
+        // junto a los cargues manuales (24 nov, el dueño: "no me muestra los
+        // cargues de cierres OTC"); para eso se le adjunta a cada uno la
+        // liquidación, la MISMA que usa Contabilidad, solo en esta respuesta
+        // del panel. Si el cierre no se puede leer, el movimiento sale igual,
+        // sin utilidad.
+        const idsCierreM = Array.from(new Set(visibles
+          .filter(t => String((t.raw_data as any)?.source ?? '') === 'OTC_MANUAL')
+          .map(t => String((t.raw_data as any)?.otcCloseId ?? ''))
+          .filter(id => /^[0-9a-f-]{36}$/i.test(id))))
+        const cierresM = new Map<string, CierreOtc>()
+        for (let i = 0; i < idsCierreM.length; i += 200) {
+          const { data } = await db.from('otc_closes').select(COLUMNAS_CIERRE_OTC).in('id', idsCierreM.slice(i, i + 200))
+          for (const c of (data ?? []) as any[]) cierresM.set(String(c.id), c)
+        }
+        const conLiqOtc = (t: Record<string, unknown>, rd: unknown): unknown => {
+          const r = rd as Record<string, any> | null
+          if (!r || typeof r !== 'object' || String(r.source ?? '') !== 'OTC_MANUAL') return rd
+          const cierre = cierresM.get(String(r.otcCloseId ?? '')) ?? null
+          const l = liquidacionDe(t, cierre)
+          return {
+            ...r,
+            otcLado: cierre?.side ?? null,
+            otcLiq: l ? { utilidadCop: l.utilidadCop, fuente: l.fuente, usd: l.usd, tasaLincoin: l.tasaLincoin, tasaCliente: l.tasaCliente, tercerosCop: l.tercerosCop, nota: l.nota } : null,
+          }
+        }
+        return json({ ok: true, total: visibles.length, truncado, ids, transactions: visibles.map(t => ({ ...t, raw_data: conLiqOtc(t, autoresParaPanel(slimRawData(t.raw_data), esDuenoM, String(auth.userId ?? ''))) })) })
       }
 
       // ── Límites por envío ACH ──────────────────────────────────────────

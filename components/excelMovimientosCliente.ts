@@ -10,8 +10,8 @@
 //   · Movimientos — todo el historial, lo más reciente primero. Arriba, una
 //     fila que suma SOLO lo que se ve: al filtrar, la suma cambia.
 //   · Entradas / Salidas — lo mismo separado, cada una con su suma.
-//   · Cargues — los cargues y ajustes manuales con su contabilidad (USDT,
-//     tasas, utilidad), como la tabla de Cargues.
+//   · Cargues — los cargues y ajustes manuales y los cierres de la mesa OTC,
+//     con su contabilidad (USDT, tasas, utilidad), como la tabla de Cargues.
 //   · Por beneficiario — cuánto se le envió a cada uno.
 // Entrada y Salida solo llevan valor cuando el movimiento quedó Completado:
 // un envío rechazado o en proceso no movió plata y no se suma (su monto
@@ -55,6 +55,15 @@ export const direccionDe = (t: any): string => {
 };
 export const esCargueManual = (t: any) =>
   t?.source === 'admin_cargue' || t?.source === 'admin_backfill' || t?.type === 'adjustment' || (t?.type === 'load' && !!t?.rail);
+
+// Un cierre de la mesa OTC. Completar el cierre acredita con una CONVERSIÓN
+// (source OTC_MANUAL), no con un cargue: por eso no salía en la lista de
+// cargues de la Billetera (24 nov, el dueño: "no me muestra los cargues de
+// cierres OTC"). Si la mesa lo anula, la conversión queda 'Rechazado' con
+// anulacionOtc. La utilidad no va en el movimiento (el cliente lo lee): el
+// panel la recibe aparte en otcLiq (admin-data movimientos_cliente).
+export const esCierreOtc = (t: any) => t?.type === 'convert' && t?.source === 'OTC_MANUAL';
+export const cierreOtcAnulado = (t: any) => esCierreOtc(t) && (String(t?.status ?? '') === 'Rechazado' || !!t?.anulacionOtc || t?.reversado === true);
 
 // Qué débitos revierten qué cargues (lo vincula Contabilidad: el cargue guarda
 // reverso = { ajustes, montoCop, anulado } y el débito reversaDe = id del
@@ -181,7 +190,11 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
   const sal = hojaDe('Salida');
 
   // ── Cargues (con su contabilidad) ──
-  const cargues = ordenados.filter(({ t }) => esCargueManual(t));
+  // Los cierres de la mesa OTC van en la misma hoja (son plata que se le
+  // acreditó al cliente por una operación de Lincoin), pero se cuentan aparte
+  // en el resumen: no son cargues manuales.
+  const cargues = ordenados.filter(({ t }) => esCargueManual(t) || esCierreOtc(t));
+  const nManuales = cargues.filter(({ t }) => !esCierreOtc(t)).length;
   const rev = reversosDe(movimientos ?? []);
   const fechaPorId = new Map<string, Date | null>(ordenados.map(({ t, d }) => [String(t.id), d]));
   // Lo acreditado que SIGUE vigente (cargue menos lo que se le revirtió), los
@@ -189,6 +202,7 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
   // el mismo de siempre, pero un cargue anulado y su reversa ya no aparecen
   // como un acreditado más un descuento adicional.
   let vigente = 0, descontadoSuelto = 0, corregido = 0, anuladoCop = 0, nAnulados = 0;
+  let nOtc = 0, otcCop = 0, otcUtilidad = 0, nOtcAnulados = 0;
   const nCar = cargues.length, ca = 3, cb = Math.max(ca, nCar + 2);
   const rc = (col: number) => `${refCelda(col, ca - 1)}:${refCelda(col, cb - 1)}`;
   const hojaCargues: CeldaX[][] = [
@@ -196,6 +210,37 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
     ['Fecha', 'Cuenta', 'Movimiento', 'Neto COP', 'Bruto COP', 'Comisión COP', 'USDT', 'Tasa de venta', 'Tasa al cliente', 'Utilidad COP', 'Nota', 'Id'],
   ];
   for (const { t, d } of cargues) {
+    if (esCierreOtc(t)) {
+      // Anulado: la conversión quedó Rechazado y el saldo se descontó en la
+      // misma operación (no hay un débito aparte que lo compense), así que
+      // no suma en Neto ni en Utilidad.
+      const anulado = cierreOtcAnulado(t);
+      const enPesos = /^COP/i.test(txt(t.currency));
+      const monto = num(t.amount) ?? 0;
+      const l = t.otcLiq ?? null;
+      // Un dato que el cierre no tiene (null) queda vacío: Number(null) es 0,
+      // y un 0 en "Utilidad" se leería como un cierre que no dejó nada.
+      const dato = (v: any): number | null => (v == null || v === '' ? null : num(v));
+      const util = anulado ? null : dato(l?.utilidadCop);
+      if (anulado) nOtcAnulados++;
+      else { nOtc++; if (enPesos) otcCop += monto; otcUtilidad += util ?? 0; }
+      const ref = txt(t.otcRef);
+      const notas = [
+        `Mesa OTC${ref ? ` ${ref}` : ''}`,
+        anulado ? 'anulado por la mesa: no suma' : '',
+        !enPesos ? `acreditó ${monto.toLocaleString('es-CO')} ${txt(t.currency) === 'USD' ? 'USDT' : txt(t.currency)}` : '',
+        !anulado && l?.fuente === 'estimada' ? 'utilidad estimada con la referencia del proveedor' : '',
+        !anulado && l && l.utilidadCop == null ? 'sin tasa de venta: falta la utilidad' : '',
+      ].filter(Boolean).join(' · ');
+      hojaCargues.push([
+        d, txt(t.currency) === 'USD' ? 'Saldo USDT' : cuentaRielDe({ ...t, rail: null }),
+        anulado ? 'Cierre OTC anulado' : 'Cierre OTC',
+        cop(enPesos && !anulado ? monto : null), cop(null), cop(null),
+        dato(l?.usd ?? t.fromAmount), dato(l?.tasaLincoin), dato(l?.tasaCliente ?? t.mouvRate), cop(util),
+        notas, txt(t.id),
+      ]);
+      continue;
+    }
     const credito = (t.direction ?? (t.type === 'load' ? 'credit' : 'debit')) === 'credit';
     const soloRegistro = t.source === 'admin_backfill' || t.recordOnly === true;
     const monto = num(t.amount) ?? 0;
@@ -298,13 +343,18 @@ export function descargarMovimientosCliente(nombreCliente: string, movimientos: 
 
   hojaResumen.push([], [{ v: 'CARGUES Y AJUSTES MANUALES', s: 'seccion' }]);
   const val = (et: string, v: number, s: 'kpiCop' | 'kpiEntero' = 'kpiCop') => hojaResumen.push([{ v: et, s: 'etiqueta' }, { v, s }]);
-  val('Cargues y ajustes', nCar, 'kpiEntero');
+  val('Cargues y ajustes', nManuales, 'kpiEntero');
   val('Acreditado por cargues vigentes', vigente);
   val('Corregido en cargues (débitos vinculados)', corregido);
   val('Cargues anulados (se cancelan con su reversa)', nAnulados, 'kpiEntero');
   val('Monto de los cargues anulados', anuladoCop);
   val('Descontado por ajustes que no revierten un cargue', descontadoSuelto);
   val('Neto de cargues', vigente - descontadoSuelto);
+  hojaResumen.push([], [{ v: 'CIERRES DE LA MESA OTC', s: 'seccion' }]);
+  val('Cierres OTC acreditados', nOtc, 'kpiEntero');
+  val('Acreditado por cierres OTC (en pesos)', otcCop);
+  val('Utilidad de los cierres OTC', otcUtilidad);
+  val('Cierres OTC anulados (no suman)', nOtcAnulados, 'kpiEntero');
 
   // ── Consulta de sumatoria ──
   // Filtros en la columna B; vacío = no filtra. "Contiene" sin distinguir
