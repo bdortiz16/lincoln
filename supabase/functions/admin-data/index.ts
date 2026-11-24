@@ -540,6 +540,9 @@ async function utilidadesRisk() {
   // "Coinsenda"): la tarjeta y el reporte tienen que decir lo mismo.
   const etiqueta = (b: unknown) => BOLSILLO_RISK[String(b ?? '').toUpperCase()] ?? String(b ?? '—')
   const por: Record<string, { total: number; compras: number }> = {}
+  // Por riel (COP_BREB, COP_ACH…): la Billetera lo resta del disponible de
+  // esa bolsa (24 nov): esa plata ya es de Lincoin, no está libre.
+  const porRiel: Record<string, number> = {}
   let total = 0, subtotal = 0, iva = 0, consultas = 0, compras = 0
   await leerPorPaginas(() => db.from('risk_compras').select('id, bolsillo, cantidad, subtotal, iva, total'), {
     alLote: (lote) => {
@@ -547,6 +550,8 @@ async function utilidadesRisk() {
         const t = Number(c.total) || 0
         total += t; subtotal += Number(c.subtotal) || 0; iva += Number(c.iva) || 0
         consultas += Number(c.cantidad) || 0; compras++
+        const riel = String(c.bolsillo ?? '').toUpperCase()
+        if (riel) porRiel[riel] = (porRiel[riel] ?? 0) + t
         const k = etiqueta(c.bolsillo)
         const x = (por[k] ??= { total: 0, compras: 0 })
         x.total += t; x.compras++
@@ -569,6 +574,7 @@ async function utilidadesRisk() {
   return {
     total: Math.round(total), subtotal: Math.round(subtotal), iva: Math.round(iva),
     compras, consultasVendidas: consultas, usadas: { aml: usadasAml, kyt: usadasKyt }, porBolsillo,
+    porRiel: Object.fromEntries(Object.entries(porRiel).map(([k, v]) => [k, Math.round(v)])),
   }
 }
 

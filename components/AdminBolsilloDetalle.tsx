@@ -104,7 +104,7 @@ const Buscador: React.FC<{ valor: string; onCambio: (v: string) => void; placeho
 // ═════════════════════════════════════════════════════════════
 // 1) Un bolsillo: de quién es el saldo comprometido.
 // ═════════════════════════════════════════════════════════════
-export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: number | null; onCerrar: () => void }> = ({ riel, nombre, bolsa, onCerrar }) => {
+export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: number | null; aml?: number; onCerrar: () => void }> = ({ riel, nombre, bolsa, aml = 0, onCerrar }) => {
   const [d, setD] = useState<any>(null);
   const [cargando, setCargando] = useState(true);
   const [q, setQ] = useState('');
@@ -128,7 +128,9 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
     return t ? clientes.filter(c => `${c.cliente} ${c.email ?? ''}`.toLowerCase().includes(t)) : clientes;
   }, [clientes, q]);
   const maximo = clientes.reduce((m, c) => Math.max(m, Math.abs(c.saldo)), 0) || 1;
-  const disponible = bolsa != null ? bolsa - total : null;
+  // Igual que la tarjeta: la utilidad de AML y KYT pagada con este saldo es de
+  // Lincoin y va en su propia tarjeta, no como disponible (24 nov).
+  const disponible = bolsa != null ? bolsa - total - aml : null;
 
   const excel = () => {
     const filas: CeldaX[][] = [
@@ -163,7 +165,7 @@ export const BolsilloDetalle: React.FC<{ riel: string; nombre: string; bolsa: nu
             <Kpi rotulo="Comprometido" valor={cop(total)} pie={`${d.cantidad} ${d.cantidad === 1 ? 'cliente' : 'clientes'} con saldo`} />
             <Kpi rotulo={disponible != null && disponible < 0 ? 'Faltante' : 'Disponible'} valor={disponible != null ? cop(disponible) : '—'}
               color={disponible != null && disponible < 0 ? C.rojo : C.verde}
-              pie={disponible != null && disponible < 0 ? 'La bolsa no cubre lo que se les debe' : 'Bolsa − comprometido'} />
+              pie={disponible != null && disponible < 0 ? 'La bolsa no cubre lo que se les debe' : aml > 0 ? `Bolsa − comprometido − AML y KYT ${cop(aml)}` : 'Bolsa − comprometido'} />
           </div>
           {d.negativos > 0 && (
             <p style={{ margin: 0, fontSize: 12.5, color: C.ambar }}>

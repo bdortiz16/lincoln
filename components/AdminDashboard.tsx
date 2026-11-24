@@ -1464,7 +1464,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
   const [verUtilRisk, setVerUtilRisk] = useState(false);
   // Tocar un bolsillo o «Lincoin · utilidades» abre su detalle (23 nov): de
   // quién es el saldo comprometido y cómo se arma la utilidad.
-  const [verBolsillo, setVerBolsillo] = useState<null | { riel: string; nombre: string; bolsa: number | null }>(null);
+  const [verBolsillo, setVerBolsillo] = useState<null | { riel: string; nombre: string; bolsa: number | null; aml?: number }>(null);
   const [verUtilLincoin, setVerUtilLincoin] = useState(false);
   // Un clic en un botón, enlace o ventana DENTRO de la tarjeta no la abre
   // (actualizar, «Bancos ACH», «Inscripciones»).
@@ -2469,10 +2469,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const achPool   = Number(finityPool?.cop ?? 0);
       const c3Pool    = Number(coinsendaPool?.cop ?? 0);
       const c4Pool    = Number(coinsenda2Pool?.cop ?? 0);
-      const freeBreb  = brebPool - obligBreb;   // disponible para cargar Bre-B (= utilidad Mouv)
-      const freeAch   = achPool - obligAch;     // disponible para cargar ACH   (= utilidad Finity)
-      const freeC3    = c3Pool - obligC3;       // disponible para cargar Cuenta 3 (= utilidad Coinsenda)
-      const freeC4    = c4Pool - obligC4;       // disponible para cargar Cuenta 4 (= utilidad Coinsenda 2)
+      // La utilidad de AML y KYT que quedó en cada bolsa (24 nov, el dueño:
+      // "la utilidad de AML no la está descontando de Finity… o Mouv, de donde
+      // haya salido el pago"). Cuando un cliente compra consultas, se le
+      // descuenta del saldo del bolsillo que elige; la plata se queda en esa
+      // bolsa y ya es de Lincoin, con su propia tarjeta («Utilidades · AML y
+      // KYT»). Sin restarla aquí, el "disponible" de esa bolsa la contaba otra
+      // vez como libre. Va por bolsa: lo pagado con Finity sale de Finity, lo
+      // pagado con Mouv, de Mouv.
+      const ETIQUETA_AML: Record<string, string> = { COP_BREB: 'Mouv', COP_ACH: 'Finity', COP_C3: 'Coinsenda Jero', COP_C4: 'Coinsenda Kaupaloki' };
+      const amlDe = (code: string): number => {
+        const r: any = caja?.riskUtilidades;
+        if (!r || r.error) return 0;
+        if (r.porRiel && typeof r.porRiel[code] === 'number') return r.porRiel[code];
+        return Number((r.porBolsillo ?? []).find((b: any) => b.bolsillo === ETIQUETA_AML[code])?.total ?? 0) || 0;
+      };
+      const amlBreb   = amlDe('COP_BREB');
+      const amlAch    = amlDe('COP_ACH');
+      const amlC3     = amlDe('COP_C3');
+      const amlC4     = amlDe('COP_C4');
+      const freeBreb  = brebPool - obligBreb - amlBreb;   // disponible para cargar Bre-B (= utilidad Mouv)
+      const freeAch   = achPool - obligAch - amlAch;      // disponible para cargar ACH   (= utilidad Finity)
+      const freeC3    = c3Pool - obligC3 - amlC3;         // disponible para cargar Cuenta 3 (= utilidad Coinsenda)
+      const freeC4    = c4Pool - obligC4 - amlC4;         // disponible para cargar Cuenta 4 (= utilidad Coinsenda 2)
       // Disponible/utilidad del riel actualmente elegido (para el guard del cargue).
       const poolReady = carguesRail === 'COP_BREB' ? (mouvPool && !mouvPool.loading && !mouvPool.error)
                       : carguesRail === 'COP_ACH'  ? (finityPool && !finityPool.loading && !finityPool.error)
@@ -2553,11 +2572,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
       const ROTULO: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: '#878E88', marginBottom: 7 };
       const BOTON_CAMBIAR: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)', color: '#F4F4F2', borderRadius: 10, padding: '8px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' };
       const bolsas = [
-        { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
+        { rail: 'COP_BREB' as const, label: 'Mouv', icon: Zap, pool: brebPool, oblig: obligBreb, aml: amlBreb, free: freeBreb, loading: mouvPool?.loading, error: mouvPool?.error, reload: loadMouvPool,
           detalle: mouvPool && !mouvPool.loading && !mouvPool.error ? `Bre-B ${mouvPool.breb != null ? Math.round(mouvPool.breb).toLocaleString('es-CO') : '—'} · ACH ${mouvPool.ach != null ? Math.round(mouvPool.ach).toLocaleString('es-CO') : '—'}` : null },
-        { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: () => loadFinityPool({ forzar: true }), detalle: null },
-        { rail: 'COP_C3' as const, label: nombreBolsa('Coinsenda'), icon: Send, pool: c3Pool, oblig: obligC3, free: freeC3, loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 3 · billetera COP' },
-        { rail: 'COP_C4' as const, label: nombreBolsa('Coinsenda 2'), icon: Send, pool: c4Pool, oblig: obligC4, free: freeC4, loading: coinsenda2Pool?.loading, error: coinsenda2Pool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 4 · billetera COP' },
+        { rail: 'COP_ACH' as const, label: 'Finity', icon: Landmark, pool: achPool, oblig: obligAch, aml: amlAch, free: freeAch, loading: finityPool?.loading, error: finityPool?.error, reload: () => loadFinityPool({ forzar: true }), detalle: null },
+        { rail: 'COP_C3' as const, label: nombreBolsa('Coinsenda'), icon: Send, pool: c3Pool, oblig: obligC3, aml: amlC3, free: freeC3, loading: coinsendaPool?.loading, error: coinsendaPool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 3 · billetera COP' },
+        { rail: 'COP_C4' as const, label: nombreBolsa('Coinsenda 2'), icon: Send, pool: c4Pool, oblig: obligC4, aml: amlC4, free: freeC4, loading: coinsenda2Pool?.loading, error: coinsenda2Pool?.error, reload: loadCoinsendaPool, detalle: 'Cuenta 4 · billetera COP' },
       ];
 
       return (
@@ -2635,7 +2654,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 const activa = carguesRail === b.rail;
                 return (
                   <div key={b.rail}
-                    onClick={e => { if (esClicPropio(e)) setVerBolsillo({ riel: b.rail, nombre: b.label, bolsa: b.loading || b.error ? null : b.pool }); }}
+                    onClick={e => { if (esClicPropio(e)) setVerBolsillo({ riel: b.rail, nombre: b.label, bolsa: b.loading || b.error ? null : b.pool, aml: b.aml }); }}
                     title={`Ver de quién es el saldo comprometido en ${b.label}`}
                     className="transition-colors hover:border-white/25"
                     style={{ background: '#0C0E0D', border: `1px solid ${activa ? 'rgba(74,222,128,0.45)' : 'rgba(255,255,255,0.10)'}`, borderRadius: 12, padding: '9px 14px', minWidth: 0, cursor: 'pointer' }}>
@@ -2663,6 +2682,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                         <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>
                           <span style={{ whiteSpace: 'nowrap' }}>Bolsa {Math.round(b.pool).toLocaleString('es-CO')}</span>{' '}
                           <span style={{ whiteSpace: 'nowrap' }}>− comprometido {Math.round(b.oblig).toLocaleString('es-CO')}</span>
+                          {b.aml > 0 && <>{' '}<span style={{ whiteSpace: 'nowrap' }} title="Utilidad de AML y KYT pagada con este saldo: es de Lincoin y va en su propia tarjeta">− AML y KYT {Math.round(b.aml).toLocaleString('es-CO')}</span></>}
                         </p>
                         {b.detalle && <p style={{ margin: '1px 0 0', fontSize: 10.5, color: 'rgba(244,244,242,0.45)' }}>{b.detalle}</p>}
                         {/* Desde el 22 nov el saldo Bre-B también paga ACH · Cuenta 1:
@@ -2752,7 +2772,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout, rol, p
                 );
               })()}
               {verUtilRisk && <AdminRiskUtilidades onCerrar={() => setVerUtilRisk(false)} />}
-              {verBolsillo && <BolsilloDetalle riel={verBolsillo.riel} nombre={verBolsillo.nombre} bolsa={verBolsillo.bolsa} onCerrar={() => setVerBolsillo(null)} />}
+              {verBolsillo && <BolsilloDetalle riel={verBolsillo.riel} nombre={verBolsillo.nombre} bolsa={verBolsillo.bolsa} aml={verBolsillo.aml ?? 0} onCerrar={() => setVerBolsillo(null)} />}
               {verUtilLincoin && <LincoinUtilidadesDetalle nombreBolsa={nombreBolsa} onCerrar={() => setVerUtilLincoin(false)} />}
             </div>}
           </div>
