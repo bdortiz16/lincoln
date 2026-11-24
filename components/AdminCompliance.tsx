@@ -181,6 +181,16 @@ export const AdminCompliance: React.FC = () => {
     setMsg(null);
     if (pegada(c)) {
       const r = await reintentarPegada(c);
+      // Consulta relanzada que no termina: se ofrece volver al resultado
+      // anterior (ya completo salvo la fuente que faltaba) para poder
+      // decidir con él. Lo trae el servidor desde Sarblock.
+      if (r?.ok && r.resultado === 'sigue_consultando' && r.hayAnterior
+        && window.confirm('Sarblock todavía no termina la consulta nueva.\n\n¿Usar el resultado anterior (el que solo tenía pendiente una fuente) para poder aprobar o mantener bloqueado ya? La consulta nueva se descarta.')) {
+        const a: any = await llamarFuncion('sarblock', { action: 'reintentar_fuente', userId: c.userId, documento: c.documento, usarAnterior: true }).catch(() => null);
+        setMsg({ ok: !!a?.ok, texto: a?.ok ? 'Se volvió al resultado anterior. Revísalo y decide.' : (a?.error ?? 'No se pudo volver al resultado anterior.') });
+        if (a?.ok) cargar();
+        return;
+      }
       setMsg({ ok: !!r?.ok && r?.resultado !== 'sin_cambio', texto: r?.ok ? (TEXTO_REINTENTO[r.resultado] ?? 'Reintento enviado.') : (r?.error ?? 'No se pudo reintentar.') });
       if (r?.ok) cargar();
       return;

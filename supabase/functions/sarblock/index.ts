@@ -508,6 +508,44 @@ async function reintentarFuente(uid: string, doc: string, f: any, maxRelanzar: n
   return error ? 'sin_cambio' : 'reintento'
 }
 
+// ── Volver al resultado anterior ────────────────────────────────────────
+// 23 nov: una ficha cerrada con solo la Contraloría pendiente se relanzó
+// desde Cumplimiento (consulta nueva, un crédito) y Sarblock tardó más de
+// media hora en cerrarla. Mientras tanto la ficha estaba «en curso» y no se
+// podía aprobar, aunque el resultado anterior ya estaba completo salvo esa
+// fuente y Cumplimiento la había verificado a mano.
+// Esto trae ESE resultado anterior desde Sarblock (no lo escribe nadie a
+// mano), lo deja como el vigente y deja el registro. La consulta nueva se
+// abandona: su aviso ya no coincide con la ficha y no la pisa.
+async function checkAnteriorDe(uid: string, doc: string, checkActual: string): Promise<string | null> {
+  const { data } = await db.from('audit_log').select('metadata').eq('action', 'sarblock.relanzado_por_fuente')
+    .eq('metadata->>userId', uid).eq('metadata->>documento', doc).eq('metadata->>checkId', checkActual)
+    .order('created_at', { ascending: false }).limit(1)
+  const anterior = String((data?.[0] as any)?.metadata?.checkAnterior ?? '')
+  return anterior || null
+}
+async function usarCheckAnterior(uid: string, doc: string, f: any, por: string | null): Promise<{ ok: boolean; motivo?: string }> {
+  const anterior = await checkAnteriorDe(uid, doc, String(f.jobid ?? ''))
+  if (!anterior) return { ok: false, motivo: 'Esta consulta no reemplazó a otra: no hay resultado anterior al cual volver.' }
+  let check: any
+  try { check = await cliente().leerCheck(anterior) } catch (e) {
+    if (e instanceof ErrorSarblock && e.status === 429) return { ok: false, motivo: 'Sarblock está al límite de consultas. Intenta en un minuto.' }
+    return { ok: false, motivo: 'No se pudo leer el resultado anterior en Sarblock.' }
+  }
+  if (!terminado(check) || String(check?.status ?? '') !== 'COMPLETED') return { ok: false, motivo: 'El resultado anterior no está completo en Sarblock.' }
+  const ruesTraslado = await trasladoVigente(check, f.tipoDocumento, doc)
+  const revisionesPenales = f.revisionesPenales ?? await revisionesDelPadron(f.tipoDocumento, doc)
+  const nueva = { ...traducir(check, { documento: doc, tipoDocumento: f.tipoDocumento, nombre: f.nombreInscrito, ruesTraslado, revisionesPenales }),
+    lanzadoAt: f.lanzadoAt,
+    // Con el tope de consultas nuevas lleno: el barrido sigue pidiendo gratis
+    // la fuente que falta, pero no vuelve a relanzar (y a dejarla en curso).
+    relanzamientosFuente: Math.max(Number(f.relanzamientosFuente ?? 0), MAX_RELANZAMIENTOS_FUENTE),
+    checkDescartado: String(f.jobid ?? ''), restauradoAt: new Date().toISOString(), restauradoPor: por }
+  await guardarFicha(uid, doc, conDecision(nueva, f))
+  await auditar('sarblock.check_anterior_restaurado', { por, userId: uid, documento: doc, checkId: anterior, checkDescartado: f.jobid ?? null, categoria: nueva.categoria, operable: nueva.operable })
+  return { ok: true }
+}
+
 // ── Recoger ─────────────────────────────────────────────────────────────
 const MAX_REINTENTOS = 3
 const MAX_RELANZAMIENTOS_FUENTE = 2
@@ -1596,9 +1634,16 @@ Deno.serve(async (req) => {
       if (!f) return json({ ok: false, error: 'No hay consulta guardada para ese documento.' }, 404)
       if (f.proveedor !== 'sarblock' || !f.jobid) return json({ ok: false, error: 'Esta consulta no es de Sarblock o no tiene id de check.' }, 400)
       if (f.estado === 'procesando') {
+        if (body.usarAnterior === true) {
+          const r = await usarCheckAnterior(uid, doc, f, yo.userId)
+          return r.ok ? json({ ok: true, resultado: 'anterior' }) : json({ ok: false, error: r.motivo }, 409)
+        }
         const r = await recoger(uid, String(f.jobid))
         await auditar('sarblock.reintento_manual', { por: yo.userId, userId: uid, documento: doc, accion: 'leer', cerrados: r?.cerrados ?? 0 })
-        return json({ ok: true, resultado: (r as any)?.cerrados ? 'cerrada' : 'sigue_consultando' })
+        // Si sigue consultando y es una consulta relanzada por una fuente, la
+        // pantalla ofrece volver al resultado anterior (usarCheckAnterior).
+        const anterior = !(r as any)?.cerrados && f.relanzamientosFuente ? await checkAnteriorDe(uid, doc, String(f.jobid)) : null
+        return json({ ok: true, resultado: (r as any)?.cerrados ? 'cerrada' : 'sigue_consultando', ...(anterior ? { hayAnterior: true } : {}) })
       }
       if (!fichaIncompleta(f)) return json({ ok: false, error: 'Esta consulta ya está completa: no hay nada que reintentar.' }, 400)
       const r = await reintentarFuente(uid, doc, f, 4, yo.userId)
