@@ -1589,6 +1589,29 @@ export const ContactsSection: React.FC<{
         /* eslint-disable-next-line react-hooks/exhaustive-deps */
     }, [currentUser?.id, amlCorre, amlHechos, amlPendientes, bankContacts.length, leerTusdatos]);
 
+    // Fichas cerradas con una fuente pendiente («Falta una fuente»): el
+    // servidor la completa solo (barrido), pero el reloj de arriba ya no las
+    // cuenta y la pantalla seguía diciendo «Falta una fuente» hasta recargar
+    // (24 nov, dos beneficiarios ya completos en Sarblock). Aquí solo se
+    // RELEE la ficha, cada minuto y por una hora: no lanza ni reintenta nada,
+    // no gasta créditos.
+    const amlFuentePendiente = bankContacts.map(c => {
+        const doc = String(c.docNumber ?? '').replace(/\D/g, '');
+        const k = doc ? fichaAml(doc) : null;
+        return k && String(k.estado ?? '') === 'finalizado' && faltaFuente(k) ? doc : '';
+    }).filter(Boolean).join(',');
+    useEffect(() => {
+        const uid = currentUser?.id;
+        if (!uid || !amlFuentePendiente) return;
+        let vueltas = 0;
+        const t = setInterval(() => {
+            vueltas += 1;
+            if (vueltas > 60) { clearInterval(t); return; }
+            leerTusdatos(uid);
+        }, 60000);
+        return () => clearInterval(t);
+    }, [currentUser?.id, amlFuentePendiente, leerTusdatos]);
+
     // El registro con el banco se reintenta SOLO: la sincronización al entrar
     // vuelve a inscribir las cuentas ACH que quedaron sin id. Eso es trabajo
     // nuestro y no se le cuenta al cliente — para él la cuenta está EN
