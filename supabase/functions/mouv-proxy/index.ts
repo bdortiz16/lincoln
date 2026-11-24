@@ -1299,6 +1299,32 @@ async function finityCall(action: string, userId: string, extra: Record<string, 
   if (body == null) return { ok: false, status: r.status, desenlaceDesconocido: r.status === 0 || r.status >= 500, error: 'respuesta_ilegible' }
   return body
 }
+// ── Pausa de los envíos por Finity (ACH y Bre-B · Cuenta 2) ─────────────
+// 23 nov: con Finity bloqueándonos, dos envíos ACH · Cuenta 2 seguidos (4:05
+// y 4:07 p. m.) quedaron sin respuesta del retiro: saldo descontado, nada
+// creado en Finity, la plata del cliente retenida hasta revisarlos a mano.
+// Después del PRIMERO ya se sabía que Finity no estaba contestando. Ahora un
+// envío con desenlace desconocido pausa la Cuenta 2 por 15 minutos: los
+// siguientes no se descuentan y el cliente lo manda por otra cuenta. La
+// pausa se levanta sola; si Finity vuelve a fallar, se pone otra vez.
+const PAUSA_FINITY_KEY = 'finity_envios_pausa'
+const PAUSA_FINITY_MS = 15 * 60_000
+async function leerPausaEnviosFinity(): Promise<{ hasta: number; motivo: string } | null> {
+  try {
+    const { data } = await db.from('system_config').select('value').eq('key', PAUSA_FINITY_KEY).maybeSingle()
+    const v = (data as any)?.value ? JSON.parse((data as any).value) : null
+    return v && Number(v.hasta) > Date.now() ? { hasta: Number(v.hasta), motivo: String(v.motivo ?? '') } : null
+  } catch { return null }
+}
+async function pausarEnviosFinity(motivo: string, txId: unknown, userId: string) {
+  const hasta = Date.now() + PAUSA_FINITY_MS
+  try {
+    await db.from('system_config').upsert({ key: PAUSA_FINITY_KEY, value: JSON.stringify({ hasta, motivo, txId: txId ?? null, desde: Date.now() }) }, { onConflict: 'key' })
+    await logAudit(userId, 'finity.envios_pausados', { motivo, txId: txId ?? null, hasta: new Date(hasta).toISOString() })
+  } catch { /* sin pausa: el resto de controles sigue igual */ }
+}
+const horaBogota = (ms: number) => new Date(ms).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit' })
+
 // Precio por transferencia ACH que SE COBRA AL CLIENTE: $2.500 COP por
 // envío (override con el secret ACH_FEE_COP). Finity no devuelve costs en
 // la orden — doc oficial: { id, status, amount, destination_account }.
@@ -1530,13 +1556,22 @@ async function coinsendaPreparar(userId: string, cuenta: CuentaCoinsenda, rail: 
 // puede venir "active" (el registro existe) y a la vez en revisión. Y solo se
 // aprueba con una palabra que lo diga (aprobada / approved / verified).
 //
-// FALLA ABIERTO a propósito: si la lista no se puede consultar, o la cuenta no
-// aparece, no se bloquea — un control que no logra verificar no puede frenar
-// una transferencia legítima, y si de verdad no está aprobada el proveedor la
-// rechaza y el saldo se devuelve.
+// Si la cuenta no aparece en la lista (recién inscrita), no se bloquea: el
+// proveedor la valida al crear el retiro y, si la rechaza, el saldo vuelve.
+//
+// PERO SI EL PROVEEDOR NO CONTESTA, SE FRENA (24 nov). Antes también se
+// dejaba pasar ("un control que no logra verificar no puede frenar una
+// transferencia legítima"), y el 23 nov, con Finity bloqueándonos, así
+// salieron dos envíos ACH · Cuenta 2 de 20 y 50 millones: la revisión no pudo
+// leer, se descontó el saldo, la orden de retiro no tuvo respuesta y quedaron
+// "en revisión" con la plata del cliente retenida sin haberse creado en
+// Finity. Si el proveedor no responde la lista, tampoco va a responder el
+// retiro: es mejor que el cliente lo mande por otra cuenta sin que se le
+// descuente nada.
 async function revisarDestinoFinity(userId: string, destId: string | null, accDigits: string, docPedido: string): Promise<{
-  bloqueo: null | { estado: 'rechazada' | 'en_proceso' | 'otra_cuenta'; message: string }
+  bloqueo: null | { estado: 'rechazada' | 'en_proceso' | 'otra_cuenta' | 'no_disponible'; message: string }
 }> {
+  const noDisponible = { estado: 'no_disponible' as const, message: 'ACH · Cuenta 2 no está disponible en este momento: el banco no está respondiendo. No salió nada y no se descontó nada de tu saldo. Envíalo por otra cuenta o inténtalo en unos minutos.' }
   try {
     const filasDe = (l: any): any[] => l?.data?.data ?? l?.data?.results ?? (Array.isArray(l?.data) ? l.data : [])
     const idDe = (r: any) => String(r?.id ?? r?.external_account_id ?? r?.account_id ?? '')
@@ -1546,6 +1581,10 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
     const buscar = (fs: any[]) => (destId ? fs.find(r => idDe(r) === destId) : null)
       ?? (accDigits ? fs.find(r => accDe(r) === accDigits) : null)
     let lista = await finityCall('external_accounts', userId)
+    if (lista?.ok !== true) {
+      await logAudit(userId, 'finity.payout.sin_conexion', { status: lista?.status ?? 0, error: lista?.error ?? null, destId })
+      return { bloqueo: noDisponible }
+    }
     let filas: any[] = filasDe(lista)
     let fila = buscar(filas)
     // La lista puede venir de la copia de 45 s de finity-proxy, sin la cuenta
@@ -1561,7 +1600,7 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
     // pagaba a la cuenta que fuera dueña de ese id. Solo se deja pasar (como
     // antes) cuando la lista no se pudo leer, o cuando no hay id todavía y la
     // cuenta se inscribe en el mismo envío.
-    const listaLeida = lista?.ok !== false && filas.length > 0
+    const listaLeida = filas.length > 0
     if (!fila && destId && listaLeida) {
       // Cuántas filas trajo y qué claves tiene la respuesta: si el aliado
       // pagina la lista, aquí se ve (una cuenta válida fuera de la primera
@@ -1613,7 +1652,11 @@ async function revisarDestinoFinity(userId: string, destId: string | null, accDi
       }
     }
     return { bloqueo: null }
-  } catch { return { bloqueo: null } }
+  } catch (e) {
+    // Sin poder revisar, no se arriesga la plata del cliente (ver arriba).
+    await logAudit(userId, 'finity.payout.revision_excepcion', { error: String((e as Error)?.message ?? e).slice(0, 200) }).catch(() => {})
+    return { bloqueo: noDisponible }
+  }
 }
 
 async function finityPayoutAch(userId: string, recipient: Record<string, any>, amountCop: number):
@@ -5536,6 +5579,17 @@ serve(async (req: Request) => {
     if (!motivo || !(motivo in MOTIVOS_ENVIO)) return json(400, { error: 'falta_motivo', message: 'Elige el motivo del envío (pago a proveedores, servicios, nómina…).' })
     const motivoTexto = MOTIVOS_ENVIO[motivo]
 
+    // ── Cuenta 2 (Finity) en pausa: un envío anterior quedó sin respuesta del
+    //    banco (ver pausarEnviosFinity). No se descuenta nada.
+    if (brebFinity || (rail === 'ACH' && !porCoinsenda && !achMouv)) {
+      const pausa = await leerPausaEnviosFinity()
+      if (pausa) {
+        await logAudit(userId, `finity.${action}.en_pausa`, { amount, hasta: new Date(pausa.hasta).toISOString() })
+        return json(503, { error: 'cuenta_no_disponible', sinDebito: true,
+          message: `${brebFinity ? 'Bre-B' : 'ACH'} · Cuenta 2 está en pausa hasta las ${horaBogota(pausa.hasta)}: el banco no confirmó un envío anterior y no queremos arriesgar tu plata. No salió nada y no se descontó nada de tu saldo. Envíalo por otra cuenta.` })
+      }
+    }
+
     // ── ACH: la cuenta destino tiene que estar APROBADA en Finity ANTES de
     //    tocar el saldo. Esta revisión vivía solo dentro del pago, con el
     //    saldo ya descontado: un envío de 105 M a una cuenta que Finity tenía
@@ -5549,6 +5603,11 @@ serve(async (req: Request) => {
       const accD = String(recipient.accountNumber ?? '').replace(/\D/g, '')
       const rev = await revisarDestinoFinity(userId, recipient.finityId ? String(recipient.finityId) : null, accD, String(recipient.documentNumber ?? '').replace(/\D/g, ''))
       if (rev.bloqueo) {
+        // Banco sin responder: no es un problema de la cuenta destino. Ni se
+        // toca el contacto ni se dice que la cuenta está mal.
+        if (rev.bloqueo.estado === 'no_disponible') {
+          return json(503, { error: 'cuenta_no_disponible', sinDebito: true, message: rev.bloqueo.message })
+        }
         if (rev.bloqueo.estado !== 'otra_cuenta') {
           try {
             const { data: uC } = await db.from('users').select('raw_data').eq('id', userId).maybeSingle()
@@ -6015,6 +6074,7 @@ serve(async (req: Request) => {
           sinConfirmarDesde: ahora,
         })
         await logAudit(userId, `finity.${action}.desenlace_desconocido`, { txId, amount, providerRef: fb.providerRef ?? null, httpStatus: fb.httpStatus ?? null })
+        await pausarEnviosFinity(`Bre-B · Cuenta 2 sin respuesta al confirmar (HTTP ${fb.httpStatus ?? 0})`, txId, userId)
         await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, raw_data: prettyBase })
         await notifyTx(txId)
         return json(200, {
@@ -6340,6 +6400,7 @@ serve(async (req: Request) => {
         sinConfirmarDesde: new Date().toISOString(),
       })
       await logAudit(userId, `finity.${action}.desenlace_desconocido`, { txId, amount, httpStatus: (fin.error as any)?.httpStatus ?? null })
+      await pausarEnviosFinity(`ACH · Cuenta 2 sin respuesta al crear el retiro (HTTP ${(fin.error as any)?.httpStatus ?? 0})`, txId, userId)
       await avisarAdminSinConfirmar({ id: txId, user_id: userId, amount, currency: railCol, raw_data: prettyBase })
       await notifyTx(txId)
       return json(200, {
