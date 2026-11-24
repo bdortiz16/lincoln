@@ -7722,7 +7722,10 @@ Deno.serve(async (req: Request) => {
         // Clientes: todos los vinculados (KYC aprobado) y, además, cualquiera
         // que haya operado en el período aunque no lo esté (eso también se ve).
         const COLS_SIREL = 'id, email, phone, role, kyc_status, is_blocked, created_at, country, full_name, name, company_name, company_country, company_city, company_address, tax_id, tax_id_type, rep_legal_name, rep_first_name, rep_last_name, rep_doc_type, rep_doc_number, doc_type, doc_number, city, address, rd_empresa:raw_data->>companyName, rd_nit:raw_data->>nit, rd_tax_id:raw_data->>taxId, rd_doc:raw_data->>documentNumber, rd_tipo_doc:raw_data->>documentType, rd_rep:raw_data->>legalRep'
-        const { filas: vinculados } = await leerPorPaginas(() => db.from('users').select(COLS_SIREL).in('kyc_status', Array.from(VERIFICADO)), { tope: 100_000 })
+        // Solo los vinculados hasta el corte del período: el certificado de la
+        // UIAF del 24 nov mostró los reportes de clientes de enero a octubre sin
+        // recibir, y un mes atrasado no puede traer a quien se vinculó después.
+        const { filas: vinculados } = await leerPorPaginas(() => db.from('users').select(COLS_SIREL).in('kyc_status', Array.from(VERIFICADO)).lt('created_at', hastaIso), { tope: 100_000 })
         const porId = new Map<string, any>(vinculados.filter((u: any) => u.role !== 'admin').map((u: any) => [String(u.id), u]))
         const faltantes = idsConOps.filter(id => !porId.has(id))
         for (let i = 0; i < faltantes.length; i += 200) {
@@ -7735,7 +7738,8 @@ Deno.serve(async (req: Request) => {
 
         // 4) Las wallets de cada cliente (el Anexo 2 lo reporta una vez por
         //    billetera): las que verificó para la mesa OTC y pasaron la
-        //    revisión (audit_log kyt.otc_wallet), más las que usó en el período.
+        //    revisión (audit_log kyt.otc_wallet) hasta el corte del período, más
+        //    las que usó en el período.
         const walletsDe = new Map<string, Map<string, { address: string; red: string | null }>>()
         const sumarWallet = (uid: string, address: unknown, red: unknown) => {
           const a = String(address ?? '').trim()
@@ -7747,7 +7751,7 @@ Deno.serve(async (req: Request) => {
         let walletsError: string | null = null
         try {
           await leerPorPaginas(() => db.from('audit_log').select('id, user_id, address:metadata->>address, coin:metadata->>coin, red:metadata->>red')
-            .eq('action', 'kyt.otc_wallet').eq('metadata->>permitido', 'true'), {
+            .eq('action', 'kyt.otc_wallet').eq('metadata->>permitido', 'true').lt('created_at', hastaIso), {
             tope: 50_000,
             alLote: (lote) => { for (const w of lote as any[]) sumarWallet(String(w.user_id ?? ''), w.address, w.red ?? w.coin) },
           })
