@@ -10,7 +10,8 @@ import { CLAVE_TARIFAS_ENVIO, PROVEEDORES_RIEL, calcularTarifas, leerTarifasEnvi
 import { CUPO_DEF, TIPOS_DOC_CUPO, cupoGeneral, claveBeneficiario, clavesBeneficiario, cupoVigente, tipoCupo, enviosDelMes, usadoPara, normDoc, normDestino, type EnvioMes } from '../_shared/cupos.ts'
 import { leerPorPaginas } from '../_shared/paginas.ts'
 import { efectoEnBolsillo } from '../_shared/efecto-saldo.ts'
-import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, type OperacionAv, type MovEmpresa } from './sirel.ts'
+import { operacionAv, clienteSirel, VERIFICADO, movimientoEmpresa, diaBogota, tcrmDelDia, saldoDelActivo, saldoDespues, type OperacionAv, type MovEmpresa } from './sirel.ts'
+import { tcrmVigencias } from '../_shared/tcrm.ts'
 import { canalDe, sentidoDe, idsDe, contraparteDe, motivoRechazoDe, marcasDe, docRiesgoDe, iniciadorDe, resolvioDe, hitosDe, costosDe, motivoDe, etiquetaClave, TIPO_TXT, TIPOS_ENTRADA, TIPOS_SALIDA, ESTADOS_OK, ESTADOS_MAL, CLAVES_CANAL } from './auditoria.ts'
 import { municipioPorNombre } from '../_shared/municipios.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
@@ -2222,6 +2223,7 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   // Cumplimiento → Resumen (24 nov): cifras de solo lectura para la portada.
   cumplimiento_resumen: ['cumplimiento', 'fn.cumplimiento'],
   sirel_registrar_envio: ['cumplimiento', 'fn.cumplimiento'],
+  sirel_config_set: ['cumplimiento', 'fn.cumplimiento'],
   fact_lincoin_get: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_lista: ['plata.ver', 'fn.contabilidad'],
   fact_lincoin_probar: ['plata.mover', 'fn.contabilidad'],
@@ -4525,7 +4527,7 @@ Deno.serve(async (req: Request) => {
         // Lo que se le cobra a TODOS los clientes por cada envío
         'tarifas_envio_set',
         // SIREL: datos de todos los clientes y sus operaciones (datos personales)
-        'sirel_periodo', 'sirel_registrar_envio',
+        'sirel_periodo', 'sirel_registrar_envio', 'sirel_config_set',
       ])
       // Reconstruir movimientos escribe en la base; solo consultar, no.
       const sensiblePorParametro = body.action === 'conciliar_movimientos' && !!body.reparar
@@ -7646,6 +7648,77 @@ Deno.serve(async (req: Request) => {
         const ops = (movs.map(operacionAv).filter(Boolean) as OperacionAv[]).sort((a, b) => a.fecha.localeCompare(b.fecha))
         const idsConOps = Array.from(new Set(ops.map(o => o.userId)))
 
+        // ── Lo que pide el archivo plano de la UIAF (Anexo 3) ──
+        // 24 nov, el dueño: "en la UIAF es un solo archivo… busca el formato".
+        // Cada bloque va aparte y, si falla, la fila queda con el dato vacío y
+        // dice por qué: nunca un valor supuesto en un reporte a la UIAF.
+        //
+        // 1) La wallet desde donde el cliente mandó los USDT a la mesa OTC:
+        //    está en el cierre (payout.origen, la que verificó en la KYT).
+        const idsCierre = Array.from(new Set(ops.map(o => o.cierreOtcId).filter(Boolean) as string[]))
+        const origenCierre = new Map<string, { address: string | null; red: string | null }>()
+        for (let i = 0; i < idsCierre.length; i += 200) {
+          const { data } = await db.from('otc_closes').select('id, payout').in('id', idsCierre.slice(i, i + 200))
+          for (const c of (data ?? []) as any[]) {
+            const o = c?.payout?.origen
+            if (o && typeof o === 'object') origenCierre.set(String(c.id), { address: o.address ? String(o.address) : null, red: o.red ? String(o.red) : o.coin ? String(o.coin) : null })
+          }
+        }
+        for (const o of ops) {
+          const og = o.cierreOtcId ? origenCierre.get(o.cierreOtcId) : null
+          if (!og) continue
+          if (!o.walletCliente && og.address) o.walletCliente = og.address
+          if (!o.red && og.red) { o.red = og.red; o.faltan = o.faltan.filter(f => f !== 'red') }
+        }
+
+        // 2) La TCRM del día de cada operación (fuente oficial, datos.gov.co).
+        let tcrmError: string | null = null
+        let vigencias: { desde: string; hasta: string; valor: number }[] = []
+        if (ops.length) {
+          const r = await tcrmVigencias(desde, hasta)
+          if (r.ok) vigencias = r.vigencias; else tcrmError = r.error
+        }
+
+        // 3) El saldo del activo que le quedó al cliente después de cada
+        //    operación (saldoDespues en sirel.ts: solo si nada lo movió desde
+        //    entonces). Se leen el saldo de hoy y los movimientos del cliente
+        //    creados o cambiados desde su primera operación del período.
+        const saldosHoy = new Map<string, any>()
+        const movsDespues = new Map<string, any[]>()
+        let saldoError: string | null = null
+        try {
+          const primeraOp = new Map<string, string>()
+          for (const o of ops) if (!primeraOp.has(o.userId)) primeraOp.set(o.userId, o.fecha)
+          for (let i = 0; i < idsConOps.length; i += 100) {
+            const lote = idsConOps.slice(i, i + 100)
+            const { data: us, error: eU } = await db.from('users').select('id, balances').in('id', lote)
+            if (eU) throw new Error(eU.message)
+            for (const u of (us ?? []) as any[]) saldosHoy.set(String(u.id), u.balances ?? {})
+            // En ISO con Z: un "+00:00" dentro del filtro or() se puede leer como espacio.
+            const desdeLote = new Date(Math.min(...lote.map(id => Date.parse(primeraOp.get(id)!)))).toISOString()
+            const { filas } = await leerPorPaginas(() => db.from('transactions')
+              .select('id, user_id, created_at, updated_at, currency, fromCurrency:raw_data->>fromCurrency, targetCurrency:raw_data->>targetCurrency, destCurrency:raw_data->>destCurrency, settledRail:raw_data->>settledRail, debitadoCol:raw_data->>debitadoCol, fromRail:raw_data->>fromRail, toRail:raw_data->>toRail')
+              .in('user_id', lote).or(`created_at.gte.${desdeLote},updated_at.gte.${desdeLote}`), { tope: 100_000 })
+            for (const m of filas as any[]) {
+              const k = String(m.user_id)
+              if (!movsDespues.has(k)) movsDespues.set(k, [])
+              movsDespues.get(k)!.push(m)
+            }
+          }
+        } catch (e) { saldoError = String((e as Error)?.message ?? e).slice(0, 160) }
+
+        const opsUiaf = ops.map(o => {
+          const dia = diaBogota(o.fecha)
+          const tcrm = tcrmDelDia(dia, vigencias)
+          let saldoAv: number | null = null
+          let saldoMotivo: string | null = saldoError ? `no se pudo leer el saldo (${saldoError})` : null
+          if (!saldoError) {
+            const s = saldoDespues(o, saldoDelActivo(saldosHoy.get(o.userId), o.activo), movsDespues.get(o.userId) ?? [])
+            saldoAv = s.saldo; saldoMotivo = s.motivo
+          }
+          return { ...o, dia, tcrm, saldoAv, saldoMotivo }
+        })
+
         // Clientes: todos los vinculados (KYC aprobado) y, además, cualquiera
         // que haya operado en el período aunque no lo esté (eso también se ve).
         const COLS_SIREL = 'id, email, phone, role, kyc_status, is_blocked, created_at, country, full_name, name, company_name, company_country, company_city, company_address, tax_id, tax_id_type, rep_legal_name, rep_first_name, rep_last_name, rep_doc_type, rep_doc_number, doc_type, doc_number, city, address, rd_empresa:raw_data->>companyName, rd_nit:raw_data->>nit, rd_tax_id:raw_data->>taxId, rd_doc:raw_data->>documentNumber, rd_tipo_doc:raw_data->>documentType, rd_rep:raw_data->>legalRep'
@@ -7659,13 +7732,41 @@ Deno.serve(async (req: Request) => {
         const muniDe = (t: string | null) => { const m = municipioPorNombre(t); return m ? { codigo: m.codigo, nombre: m.nombre, deptoNombre: m.deptoNombre } : null }
         const usdPorCliente = new Map<string, { n: number; usd: number }>()
         for (const o of ops) { const a = usdPorCliente.get(o.userId) ?? { n: 0, usd: 0 }; a.n++; a.usd += o.valorUsd ?? 0; usdPorCliente.set(o.userId, a) }
+
+        // 4) Las wallets de cada cliente (el Anexo 2 lo reporta una vez por
+        //    billetera): las que verificó para la mesa OTC y pasaron la
+        //    revisión (audit_log kyt.otc_wallet), más las que usó en el período.
+        const walletsDe = new Map<string, Map<string, { address: string; red: string | null }>>()
+        const sumarWallet = (uid: string, address: unknown, red: unknown) => {
+          const a = String(address ?? '').trim()
+          if (!a || !porId.has(uid)) return
+          if (!walletsDe.has(uid)) walletsDe.set(uid, new Map())
+          const m = walletsDe.get(uid)!
+          if (!m.has(a.toLowerCase())) m.set(a.toLowerCase(), { address: a, red: red ? String(red) : null })
+        }
+        let walletsError: string | null = null
+        try {
+          await leerPorPaginas(() => db.from('audit_log').select('id, user_id, address:metadata->>address, coin:metadata->>coin, red:metadata->>red')
+            .eq('action', 'kyt.otc_wallet').eq('metadata->>permitido', 'true'), {
+            tope: 50_000,
+            alLote: (lote) => { for (const w of lote as any[]) sumarWallet(String(w.user_id ?? ''), w.address, w.red ?? w.coin) },
+          })
+        } catch (e) { walletsError = String((e as Error)?.message ?? e).slice(0, 160) }
+        for (const o of ops) if (o.walletCliente) sumarWallet(o.userId, o.walletCliente, o.red)
+
         const clientes = Array.from(porId.values()).map(u => {
           const c = clienteSirel(u, muniDe)
           const a = usdPorCliente.get(c.userId)
-          return { ...c, operaciones: a?.n ?? 0, usdPeriodo: Math.round((a?.usd ?? 0) * 100) / 100 }
+          return { ...c, operaciones: a?.n ?? 0, usdPeriodo: Math.round((a?.usd ?? 0) * 100) / 100, wallets: Array.from(walletsDe.get(c.userId)?.values() ?? []) }
         }).sort((a, b) => (b.operaciones - a.operaciones) || String(a.nombre ?? '').localeCompare(String(b.nombre ?? '')))
         const cliPorId = new Map(clientes.map(c => [c.userId, c]))
-        const operaciones = ops.map(o => { const c = cliPorId.get(o.userId); return { ...o, clienteNombre: c?.nombre ?? null, clienteDoc: c?.documento ?? null, clienteTipoDoc: c?.tipoDocumento ?? null } })
+        const operaciones = opsUiaf.map(o => { const c = cliPorId.get(o.userId); return { ...o, clienteNombre: c?.nombre ?? null, clienteDoc: c?.documento ?? null, clienteTipoDoc: c?.tipoDocumento ?? null } })
+
+        // El código que la UIAF le asignó a Lincoin (SSTTTCCC): va en el
+        // nombre, el encabezado y la cola de cada archivo. Lo pone el oficial.
+        const { data: cfgSirel } = await db.from('system_config').select('value').eq('key', 'sirel_config').maybeSingle()
+        let codigoEntidad: string | null = null
+        try { const v = (cfgSirel as any)?.value; codigoEntidad = ((typeof v === 'string' ? JSON.parse(v) : v)?.codigoEntidad ?? null) || null } catch { codigoEntidad = null }
 
         const { data: envCfg } = await db.from('system_config').select('value').eq('key', 'sirel_envios').maybeSingle()
         let envios: any[] = []
@@ -7675,6 +7776,7 @@ Deno.serve(async (req: Request) => {
         return json({
           ok: true, periodo, desde, hasta, clavePeriodo, truncado,
           clientes, operaciones,
+          uiaf: { codigoEntidad, tcrmError, saldoError, walletsError, tcrmFuente: 'datos.gov.co · Superintendencia Financiera (32sa-8pi3)' },
           resumen: {
             clientes: clientes.length,
             clientesConOperaciones: clientes.filter(c => c.operaciones > 0).length,
@@ -7757,6 +7859,22 @@ Deno.serve(async (req: Request) => {
         if (eS) return errorGenerico('sirel_registrar_envio', eS)
         await auditAdmin(req, 'sirel.envio_registrado', { tipo, periodo: periodoEnv, radicado, filas: filasEnv })
         return json({ ok: true, registro })
+      }
+
+      // El código de entidad que la UIAF asignó a Lincoin al pedir el código
+      // en SIREL (SSTTTCCC: sector, tipo de entidad y entidad). Sin él no se
+      // puede nombrar ni encabezar el archivo plano; no se adivina.
+      if (body.action === 'sirel_config_set') {
+        const codigo = String(body.codigoEntidad ?? '').trim().toUpperCase()
+        if (!/^[0-9A-Z]{8}$/.test(codigo)) return json({ ok: false, error: 'El código de entidad tiene 8 caracteres (SSTTTCCC), tal como lo asignó la UIAF.' }, 400)
+        const { data: prev } = await db.from('system_config').select('value').eq('key', 'sirel_config').maybeSingle()
+        let antes: Record<string, unknown> = {}
+        try { const v = (prev as any)?.value; antes = (typeof v === 'string' ? JSON.parse(v) : v) ?? {} } catch { antes = {} }
+        const valor = { ...antes, codigoEntidad: codigo, por: await autorDe(auth), at: new Date().toISOString() }
+        const { error: eC } = await db.from('system_config').upsert({ key: 'sirel_config', value: JSON.stringify(valor) }, { onConflict: 'key' })
+        if (eC) return errorGenerico('sirel_config_set', eC)
+        await auditAdmin(req, 'sirel.codigo_entidad', { antes: (antes as any)?.codigoEntidad ?? null, ahora: codigo })
+        return json({ ok: true, codigoEntidad: codigo })
       }
 
       if (body.action === 'tarifas_envio_get' || body.action === 'tarifas_envio_set') {

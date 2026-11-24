@@ -17,6 +17,8 @@
 // En Lincoin el saldo "USD" ES USDT (los depósitos por GasFree se acreditan
 // como USD): por eso USD cuenta como activo virtual.
 
+import type { VigenciaTcrm } from '../_shared/tcrm.ts'
+
 export type TipoOperacionAv = 'deposito' | 'retiro' | 'venta' | 'compra'
 
 export const ETIQUETA_TIPO: Record<TipoOperacionAv, string> = {
@@ -42,6 +44,7 @@ export type OperacionAv = {
   hash: string | null
   traza: string | null      // referencia del proveedor (no es el hash)
   referencia: string | null // ref. de la mesa OTC u otra
+  cierreOtcId: string | null // el cierre de la mesa (otc_closes), para traer la wallet de origen
   origen: string            // de dónde sale el registro
   faltan: string[]
 }
@@ -102,6 +105,7 @@ export function operacionAv(t: any): OperacionAv | null {
     red: redDe(moneda, rd), valorCop: null as number | null, tasaCop: null as number | null,
     walletCliente: null as string | null, walletContraparte: null as string | null,
     hash: hashDe(rd), traza: texto(rd.traceId ?? rd.providerTraceId), referencia: texto(rd.otcRef),
+    cierreOtcId: texto(rd.otcCloseId),
   }
   let op: Omit<OperacionAv, 'valorUsd' | 'faltan'> | null = null
 
@@ -160,6 +164,80 @@ export function operacionAv(t: any): OperacionAv | null {
   if (!op.red) faltan.push('red')
   if (valorUsd == null) faltan.push('valor en USD')
   return { ...op, valorUsd, faltan }
+}
+
+// ── Lo que pide el archivo plano de la UIAF y no está en el movimiento ────
+// (24 nov, el dueño: "en la UIAF es un solo archivo… busca el formato de la
+// UIAF"). El Anexo 3 de la Resolución 314 pide, por operación, el valor en
+// pesos a la TCRM del día y el saldo del activo virtual que le quedó al
+// cliente después. Ninguno de los dos se guarda con el movimiento: la TCRM
+// sale de la fuente oficial y el saldo se reconstruye solo cuando se puede
+// afirmar (ver saldoDespues). Si no, la fila dice que falta.
+
+// Día de la operación en Colombia (la TCRM y la fecha del reporte son de Bogotá).
+export const diaBogota = (iso: unknown): string | null => {
+  const t = Date.parse(String(iso ?? ''))
+  return Number.isFinite(t) ? new Date(t - 5 * 3600_000).toISOString().slice(0, 10) : null
+}
+
+// La TCRM certificada que rige un día: cada fila de la Superfinanciera
+// (datos.gov.co 32sa-8pi3) cubre de vigenciadesde a vigenciahasta (un fin de
+// semana es una sola fila).
+export function tcrmDelDia(dia: string | null, tabla: VigenciaTcrm[]): number | null {
+  if (!dia) return null
+  const f = tabla.find(v => v.desde <= dia && dia <= v.hasta)
+  return f ? f.valor : null
+}
+
+// Qué activo es cada bolsillo del saldo: USD es USDT en Lincoin (ver arriba).
+export function activoDeBolsillo(clave: unknown): string | null {
+  const k = String(clave ?? '').toUpperCase()
+  if (k === 'USD' || k.startsWith('USDT')) return 'USDT'
+  if (k.startsWith('USDC')) return 'USDC'
+  if (k.startsWith('EURC')) return 'EURC'
+  return null
+}
+
+// Lo que el cliente tiene hoy de un activo, sumando sus bolsillos (USD + USDT_TRON…).
+export function saldoDelActivo(balances: unknown, activo: string): number | null {
+  if (!balances || typeof balances !== 'object') return 0
+  let s = 0
+  for (const [k, v] of Object.entries(balances as Record<string, unknown>)) {
+    if (activoDeBolsillo(k) !== activo) continue
+    const n = Number(v)
+    if (!Number.isFinite(n)) return null
+    s += n
+  }
+  return Math.round(s * 1e8) / 1e8
+}
+
+// ¿Este movimiento pudo cambiar el bolsillo del activo? Basta con que alguna
+// de sus monedas (la de la fila, la de origen o destino de una conversión, el
+// riel liquidado, el bolsillo debitado) sea de ese activo.
+export function tocaActivo(t: any, activo: string): boolean {
+  const rd = (t?.raw_data && typeof t.raw_data === 'object') ? t.raw_data : {}
+  const monedas = [t?.currency, t?.fromCurrency ?? rd.fromCurrency, t?.targetCurrency ?? rd.targetCurrency, t?.destCurrency ?? rd.destCurrency,
+    t?.settledRail ?? rd.settledRail, t?.debitadoCol ?? rd.debitadoCol, t?.fromRail ?? rd.fromRail, t?.toRail ?? rd.toRail]
+  return monedas.some(m => activoDeBolsillo(m) === activo)
+}
+
+// El saldo del activo que le quedó al cliente después de la operación.
+// Se afirma solo si desde entonces NINGÚN otro movimiento del cliente tocó
+// ese activo (ni uno nuevo ni uno viejo que cambió de estado: una devolución
+// reescribe la misma fila y se ve en updated_at). En ese caso el saldo de
+// después es exactamente el de hoy. Si alguno lo tocó, no se adivina.
+export function saldoDespues(
+  op: { id: string; fecha: string; activo: string },
+  saldoHoy: number | null,
+  movsCliente: { id: string; created_at: string; updated_at?: string | null }[],
+): { saldo: number | null; motivo: string | null } {
+  if (saldoHoy == null) return { saldo: null, motivo: `el saldo de ${op.activo} guardado no es un número` }
+  const t0 = Date.parse(op.fecha)
+  const despues = movsCliente.filter(m => m.id !== op.id && tocaActivo(m, op.activo)
+    && (Date.parse(m.created_at) > t0 || Date.parse(String(m.updated_at ?? '')) > t0))
+  if (despues.length) return { saldo: null, motivo: `${despues.length} movimiento(s) en ${op.activo} después de esta operación` }
+  if (saldoHoy < 0) return { saldo: null, motivo: `el saldo de ${op.activo} guardado es negativo` }
+  return { saldo: saldoHoy, motivo: null }
 }
 
 // ── Clientes ─────────────────────────────────────────────────────────────
