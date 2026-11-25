@@ -2191,6 +2191,10 @@ const PERMISO_DE_ACCION: Record<string, string | string[]> = {
   log_login: 'clientes.ver',
   // Salud del 2FA de las cuentas (correos y estado, ningún secreto).
   mfa_health: 'cumplimiento',
+  // Restablecer el 2FA de un CLIENTE que perdió su app. Lo hace Cumplimiento
+  // (o el dueño), nunca un colaborador: es quitar el segundo factor de otro.
+  cliente_mfa_codigo_titular: 'cumplimiento',
+  cliente_mfa_restablecer: 'cumplimiento',
 
   // Consultar
   admin_logins: 'plata.ver',
@@ -4573,6 +4577,9 @@ Deno.serve(async (req: Request) => {
         // Borrar cuentas, y cambiar con qué correo entra un cliente (es
         // cambiar quién controla la cuenta)
         'delete_user', 'force_delete_by_email', 'cliente_cambiar_correo',
+        // Quitarle el 2FA a un cliente deja su cuenta con la contraseña y el
+        // código del correo: es cambiar quién puede entrar.
+        'cliente_mfa_restablecer',
         // Corregir la venta de un cargue cambia la utilidad de Lincoin, que
         // es lo que después se puede retirar de las bolsas y lo que se factura
         'contabilidad_corregir_venta',
@@ -6680,6 +6687,85 @@ Deno.serve(async (req: Request) => {
         await auditAdmin(req, 'admin.cliente_cambiar_correo', { userId: uidC, anterior, nuevo, aviso })
         await avisarCambioCorreo(anterior, nuevo, String((filaC as any).full_name ?? ''))
         return json({ ok: true, email: nuevo, anterior, aviso })
+      }
+
+      // ── Restablecer el 2FA de un CLIENTE ───────────────────────────────
+      // Para el cliente que ya no tiene la app autenticadora con el código
+      // bueno (cambió de celular, o alguien de la empresa reactivó el 2FA y
+      // los demás quedaron con el viejo) y no tiene ninguna sesión abierta
+      // desde donde desactivarlo. Antes la única salida era tocar la base.
+      //
+      // Dos pasos, y los dos tienen que ser de personas distintas:
+      //   1) cliente_mfa_codigo_titular: sale un código al correo del TITULAR,
+      //      con un texto que dice para qué es. El titular se lo lee a quien
+      //      lo atiende. Es la prueba de que quien lo pide controla el correo
+      //      de la cuenta (no basta con que alguien escriba por WhatsApp).
+      //   2) cliente_mfa_restablecer: con ese código y el código 2FA de quien
+      //      opera (ACCIONES_CON_CODIGO), se borra el secreto. Nunca se ve ni
+      //      se entrega el secreto: el cliente activa uno nuevo él mismo.
+      // Al terminar se le avisa al titular por correo. Las cuentas del panel
+      // no se tocan desde aquí.
+      if (body.action === 'cliente_mfa_codigo_titular' || body.action === 'cliente_mfa_restablecer') {
+        const uidM = String(body.userId ?? '')
+        if (!UUID_RE.test(uidM)) return json({ ok: false, error: 'Falta el cliente.' }, 400)
+        const { data: filaM } = await db.from('users').select('id, email, role, full_name, raw_data').eq('id', uidM).maybeSingle()
+        if (!filaM) return json({ ok: false, error: 'No se encontró el cliente.' }, 404)
+        if ((filaM as any).role === 'admin') return json({ ok: false, error: 'Las cuentas del panel no se restablecen desde aquí.' }, 400)
+        const rawM = ((filaM as any).raw_data ?? {}) as Record<string, any>
+        const tiene2fa = !!(rawM.mfaEnabled || rawM.totpSecretEnc || rawM.totpSecret)
+        if (!tiene2fa) return json({ ok: false, error: 'Esta cuenta no tiene la verificación en 2 pasos activa. Puede entrar con su contraseña y el código del correo.' }, 409)
+        const correoM = String((filaM as any).email ?? '')
+
+        if (body.action === 'cliente_mfa_codigo_titular') {
+          const env = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, 'x-ip-cliente': ipOf(req) ?? '' },
+            body: JSON.stringify({ action: 'send', userId: uidM, proposito: 'restablecer_2fa' }),
+          }).then(x => x.json()).catch(() => null)
+          await auditAdmin(req, 'admin.cliente_mfa_codigo_enviado', { userId: uidM, enviado: !!env?.ok, por: auth.userId })
+          if (!env?.ok) return json({ ok: false, error: env?.message ?? 'No se pudo enviar el código al correo del titular. Intenta de nuevo en un momento.' }, 502)
+          const [u, d] = correoM.split('@')
+          return json({ ok: true, enviado: true, esperar: env?.throttled ? (env?.esperaSegundos ?? 30) : 0, correo: u && d ? `${u.slice(0, 2)}•••@${d}` : '' })
+        }
+
+        const codigoT = String(body.codigoTitular ?? '').trim()
+        if (!/^\d{6}$/.test(codigoT)) return json({ ok: false, error: 'El código del titular son 6 dígitos.' }, 400)
+        const ver = await fetch(`${SUPABASE_URL}/functions/v1/email-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+          // Tiene que ser un código pedido PARA esto: uno de ingreso que el
+          // cliente reenvió por error no sirve.
+          body: JSON.stringify({ action: 'verify', userId: uidM, code: codigoT, proposito: 'restablecer_2fa' }),
+        }).then(x => x.json()).catch(() => null)
+        if (!ver?.ok) {
+          await auditAdmin(req, 'admin.cliente_mfa_codigo_invalido', { userId: uidM, motivo: ver?.error ?? 'sin respuesta', por: auth.userId })
+          return json({ ok: false, error: ver?.message ?? 'El código del titular no es válido o ya venció.' }, 403)
+        }
+        // Se relee: verificar el código escribió en raw_data (lo marcó usado).
+        const { data: u2 } = await db.from('users').select('raw_data').eq('id', uidM).single()
+        const raw2 = { ...(((u2 as any)?.raw_data ?? {}) as Record<string, any>) }
+        raw2.mfaEnabled = false
+        delete raw2.mfaFactorId
+        delete raw2.totpSecret
+        delete raw2.totpSecretEnc
+        delete raw2.mfaBackupHashes
+        raw2.mfaRestablecido = { at: new Date().toISOString(), por: auth.userId }
+        const { error: errM } = await db.from('users').update({ raw_data: raw2 }).eq('id', uidM)
+        if (errM) return errorGenerico('cliente_mfa_restablecer', errM)
+        // El 2FA nativo de Supabase (cuentas viejas): si quedó un factor, el
+        // ingreso lo seguiría pidiendo.
+        let nativos = 0
+        try {
+          const { data: fs } = await (db.auth.admin as any).mfa.listFactors({ userId: uidM })
+          for (const f of (fs?.factors ?? [])) {
+            const { error: e } = await (db.auth.admin as any).mfa.deleteFactor({ id: f.id, userId: uidM })
+            if (!e) nativos++
+          }
+        } catch { /* sin factores nativos, o la API no responde: el 2FA propio ya quedó apagado */ }
+        await auditAdmin(req, 'security.mfa_restablecido_por_admin', { userId: uidM, por: auth.userId, nativos })
+        await enviarCorreoLincoin(correoM, 'Se restableció la verificación en dos pasos de tu cuenta Lincoin', 'Se restableció tu verificación en dos pasos',
+          `A pedido tuyo, el equipo de Lincoin restableció la verificación en dos pasos (2FA) de la cuenta ${escHtml(String((filaM as any).full_name ?? ''))}. Ya puedes entrar con tu contraseña y el código que te llega a este correo. Para volver a enviar dinero, activa de nuevo la verificación en 2 pasos en <b style="color:#F4F4F2">Ajustes → Seguridad</b>, y si varias personas usan la cuenta, escaneen el QR con todos los celulares al mismo tiempo. Si no lo pediste, respóndenos de inmediato.`)
+        return json({ ok: true })
       }
 
       // Libera un correo "huérfano": borra el usuario de Supabase Auth que

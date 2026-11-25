@@ -282,6 +282,10 @@ export const AdminClientes: React.FC<{
   };
   const [menu, setMenu] = useState(false);
   const [confirmar, setConfirmar] = useState<{ titulo: string; cuerpo: string; nombre: string; accion: () => void } | null>(null);
+  // Restablecer el 2FA de un cliente que perdió su app: primero un código al
+  // correo del titular (él se lo lee a quien lo atiende), después el código
+  // 2FA de quien opera. Nunca se ve ni se entrega el secreto.
+  const [mfaReset, setMfaReset] = useState<{ paso: 'enviar' | 'codigo'; correo: string; codigo: string; busy: boolean; err: string } | null>(null);
   const [escrito, setEscrito] = useState('');
   const [nota, setNota] = useState('');
   const [editando, setEditando] = useState(false);
@@ -703,6 +707,7 @@ export const AdminClientes: React.FC<{
                         { l: 'Ver como cliente', f: () => showToast?.('Vista como cliente: próximamente.') },
                         { l: 'Exportar datos', f: () => { navigator.clipboard?.writeText(JSON.stringify(sel, null, 2)); showToast?.('Datos del cliente copiados.'); } },
                         ...(onSincronizarCripto ? [{ l: 'Sincronizar depósitos cripto', f: () => onSincronizarCripto(sel.id, sel.name) }] : []),
+                        { l: 'Restablecer 2FA…', f: () => setMfaReset({ paso: 'enviar', correo: '', codigo: '', busy: false, err: '' }) },
                         {
                           // La lista negra NO es un bloqueo más fuerte con otro
                           // nombre: el servidor rechaza toda operación de dinero
@@ -885,6 +890,63 @@ export const AdminClientes: React.FC<{
                   color: escrito.trim() === confirmar.nombre.trim() ? C.red : C.dim,
                   cursor: escrito.trim() === confirmar.nombre.trim() ? 'pointer' : 'not-allowed',
                 }}>Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mfaReset && sel && (
+        <div className="fixed inset-0 z-[60] p-4" style={{ background: 'rgba(4,5,4,0.78)', display: 'grid', placeItems: 'center' }}
+          onClick={() => { if (!mfaReset.busy) setMfaReset(null); }}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+            style={{ maxWidth: 440, width: '100%', background: C.card, border: `1px solid ${C.b2}`, borderRadius: 18, padding: '22px 24px', fontFamily: FONT }}>
+            <p style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.3px', margin: 0 }}>Restablecer 2FA</p>
+            <p style={{ fontSize: 12.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>
+              {mfaReset.paso === 'enviar'
+                ? <>Para {sel.name || sel.email}. Le llega un código al <b style={{ color: C.text }}>correo de la cuenta</b> y el titular te lo lee. Así se comprueba que quien lo pide controla ese correo. Nunca pidas ni envíes el código de la app.</>
+                : <>Enviamos el código a <b style={{ color: C.text }}>{mfaReset.correo || 'el correo de la cuenta'}</b>. Pídeselo al titular (vence en 10 minutos). Después te pedimos tu propio código 2FA.</>}
+            </p>
+            {mfaReset.paso === 'codigo' && (
+              <input value={mfaReset.codigo} autoFocus inputMode="numeric" maxLength={6} placeholder="Código del titular"
+                onChange={e => setMfaReset(m => m && { ...m, codigo: e.target.value.replace(/\D/g, '').slice(0, 6), err: '' })}
+                style={{ width: '100%', height: 44, marginTop: 14, background: C.elev, border: `1px solid ${C.b1}`, borderRadius: 10, padding: '0 13px', color: C.text, fontSize: 18, letterSpacing: 6, textAlign: 'center', outline: 'none', fontFamily: FONT }} />
+            )}
+            {mfaReset.err && <p style={{ fontSize: 12, color: C.red, margin: '10px 0 0', lineHeight: 1.5 }}>{mfaReset.err}</p>}
+            <p style={{ fontSize: 11, color: C.dim, margin: '12px 0 0', lineHeight: 1.5 }}>
+              Al restablecerlo, el cliente entra con su contraseña y el código del correo, y le avisamos por correo. Para volver a enviar dinero tiene que activar el 2FA de nuevo.
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button disabled={mfaReset.busy} onClick={() => setMfaReset(null)}
+                style={{ flex: 1, height: 44, borderRadius: 9, fontFamily: FONT, fontSize: 13, fontWeight: 700, background: 'transparent', border: `1px solid ${C.b2}`, color: C.sub, cursor: 'pointer' }}>Cancelar</button>
+              {mfaReset.paso === 'codigo' && (
+                <button disabled={mfaReset.busy}
+                  onClick={async () => {
+                    setMfaReset(m => m && { ...m, busy: true, err: '' });
+                    const r: any = await pedirAdmin({ action: 'cliente_mfa_codigo_titular', userId: sel.id });
+                    setMfaReset(m => m && { ...m, busy: false, err: r?.ok ? (r.esperar ? `Ya se envió uno hace poco: espera ${r.esperar} s.` : '') : (r?.error ?? 'No se pudo reenviar.') });
+                  }}
+                  style={{ height: 44, padding: '0 12px', borderRadius: 9, fontFamily: FONT, fontSize: 12.5, fontWeight: 700, background: 'transparent', border: `1px solid ${C.b2}`, color: C.sub, cursor: 'pointer' }}>Reenviar</button>
+              )}
+              <button
+                disabled={mfaReset.busy || (mfaReset.paso === 'codigo' && mfaReset.codigo.length !== 6)}
+                onClick={async () => {
+                  const uid = sel.id;
+                  setMfaReset(m => m && { ...m, busy: true, err: '' });
+                  if (mfaReset.paso === 'enviar') {
+                    const r: any = await pedirAdmin({ action: 'cliente_mfa_codigo_titular', userId: uid });
+                    if (!r?.ok) { setMfaReset(m => m && { ...m, busy: false, err: r?.permisoDenegado ? 'Solo Cumplimiento o el dueño pueden restablecer el 2FA de un cliente.' : (r?.error ?? 'No se pudo enviar el código.') }); return; }
+                    setMfaReset(m => m && { ...m, busy: false, paso: 'codigo', correo: r.correo ?? '' });
+                    return;
+                  }
+                  const r: any = await pedirAdmin({ action: 'cliente_mfa_restablecer', userId: uid, codigoTitular: mfaReset.codigo });
+                  if (!r?.ok) { setMfaReset(m => m && { ...m, busy: false, err: r?.error ?? 'No se pudo restablecer.' }); return; }
+                  setMfaReset(null);
+                  await refreshData?.();
+                  showToast?.('2FA restablecido. El cliente ya puede entrar con su contraseña y el código del correo.', 8000);
+                }}
+                style={{ flex: 1, height: 44, borderRadius: 9, fontFamily: FONT, fontSize: 13, fontWeight: 700, background: 'transparent', border: '1px solid rgba(248,113,113,0.4)', color: C.red, cursor: mfaReset.busy ? 'default' : 'pointer', opacity: mfaReset.busy || (mfaReset.paso === 'codigo' && mfaReset.codigo.length !== 6) ? 0.5 : 1 }}>
+                {mfaReset.busy ? 'Un momento…' : mfaReset.paso === 'enviar' ? 'Enviar código al titular' : 'Restablecer'}
+              </button>
             </div>
           </div>
         </div>

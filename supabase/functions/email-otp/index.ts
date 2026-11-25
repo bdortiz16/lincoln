@@ -66,6 +66,9 @@ const PROPOSITOS: Record<string, { asunto: string; intro: string }> = {
   login: { asunto: 'es tu código de Lincoin', intro: 'Alguien está intentando iniciar sesión en tu cuenta Lincoin. Usa este código para continuar:' },
   activar_2fa: { asunto: 'es tu código para activar la verificación en dos pasos', intro: 'Alguien está activando la verificación en dos pasos (2FA) en tu cuenta Lincoin. Si eres tú, usa este código para confirmarlo:' },
   desactivar_2fa: { asunto: 'es tu código para desactivar la verificación en dos pasos', intro: 'Alguien está desactivando la verificación en dos pasos (2FA) de tu cuenta Lincoin. Si eres tú, usa este código para confirmarlo:' },
+  // Lo pide solo el servidor (admin-data, cliente_mfa_codigo_titular): el
+  // titular se lo lee a quien lo atiende para que le restablezcan el 2FA.
+  restablecer_2fa: { asunto: 'es tu código para restablecer la verificación en dos pasos', intro: 'El equipo de Lincoin va a restablecer la verificación en dos pasos (2FA) de tu cuenta porque lo pediste a soporte. Solo si tú lo pediste, dale este código a la persona de Lincoin que te está atendiendo. Si no lo pediste, no lo compartas con nadie y respóndenos:' },
 }
 
 function findUser(email?: string, userId?: string) {
@@ -188,7 +191,7 @@ Deno.serve(async (req) => {
     // eso sacar plata), sin que saliera el correo de "están activando tu 2FA"
     // (revisión del 6 nov). El de activar 2FA solo lo pide el servidor.
     let propositoClave = PROPOSITOS[String(body.proposito ?? '')] ? String(body.proposito) : 'login'
-    if (!servicio && propositoClave === 'activar_2fa') propositoClave = 'login'
+    if (!servicio && (propositoClave === 'activar_2fa' || propositoClave === 'restablecer_2fa')) propositoClave = 'login'
     const proposito = PROPOSITOS[propositoClave]
 
     // IP del cliente, la que pone el proxy de la plataforma. Cuando llama el
