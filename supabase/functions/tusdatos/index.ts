@@ -2216,6 +2216,18 @@ Deno.serve(async (req: Request) => {
             reportId: f.reportId ?? null, enviadoAKumplo: !!f.enviadoAKumplo,
             at: f.at ?? null, alerta,
             decisionManual: f.decisionManual ?? null,
+            // En qué va la consulta (Sarblock): la bandeja lo muestra para que
+            // "Reintentar" no sea un botón a ciegas. Sin esto no se sabía si
+            // ya se estaba reintentando, cuántas veces ni qué fuente faltaba.
+            consulta: {
+              lanzadoAt: f.lanzadoAt ?? null,
+              reintentoFuenteAt: f.reintentoFuenteAt ?? null,
+              reintentosFuente: Number(f.reintentosFuente ?? 0),
+              relanzamientosFuente: Number(f.relanzamientosFuente ?? 0),
+              intentos: Number(f.intentos ?? 0),
+              fuentesConError: Array.isArray(f.fuentesConError) ? f.fuentesConError.slice(0, 8).map((x: unknown) => String(x)) : [],
+              detalle: est === 'error' ? String(f.detalle ?? '').slice(0, 200) || null : null,
+            },
           })
         }
       }

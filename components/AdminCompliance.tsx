@@ -56,6 +56,39 @@ const ALERTA: Record<string, { texto: string; explica: string; fuerte?: boolean 
 };
 
 const fmt = (n: number) => Number(n || 0).toLocaleString('es-CO');
+
+// Qué hace "Reintentar" según el estado de la ficha. Antes el botón decía lo
+// mismo para tres cosas distintas (leer gratis, pedir la fuente gratis,
+// consulta nueva que gasta crédito) y no se sabía qué había pasado.
+const esSarblockPegada = (c: any) => c.proveedor === 'sarblock' && !c.esTitular && (c.alerta === 'fuente_pendiente' || c.estado === 'procesando');
+const textoBotonReintento = (c: any): { t: string; ayuda: string } =>
+  c.proveedor === 'sarblock' && c.estado === 'procesando' && !c.esTitular
+    ? { t: 'Revisar si ya terminó', ayuda: 'Pregunta a Sarblock si la consulta ya terminó. No gasta crédito.' }
+    : esSarblockPegada(c)
+      ? { t: 'Reintentar fuente faltante', ayuda: 'Vuelve a pedir la fuente que no respondió (gratis). Si Sarblock no lo deja, lanza una consulta nueva (gasta 1 crédito).' }
+      : { t: 'Volver a consultar', ayuda: 'Lanza una consulta nueva a Sarblock (gasta 1 crédito si no hay un resultado vigente).' };
+
+// Una línea con en qué va la consulta: si se está reintentando sola, cuántas
+// veces, qué fuente falta y cuándo fue el último intento.
+const estadoConsulta = (c: any): string | null => {
+  const k = c.consulta;
+  if (!k || c.proveedor !== 'sarblock') return null;
+  const nuevas = k.relanzamientosFuente ? ` · consulta nueva ${k.relanzamientosFuente} de 2` : '';
+  if (c.estado === 'procesando') {
+    return `Sarblock está consultando (lanzada ${hace(k.lanzadoAt ?? c.at)})${nuevas}. El sistema revisa solo cada 5 min; no hace falta tocar nada.`;
+  }
+  if (c.alerta === 'fuente_pendiente') {
+    const falta = k.fuentesConError?.length ? `Falta: ${k.fuentesConError.join(', ')}` : 'Falta una fuente';
+    const reint = k.reintentosFuente
+      ? ` · ${k.reintentosFuente} reintento${k.reintentosFuente === 1 ? '' : 's'} gratis, el último ${hace(k.reintentoFuenteAt)}`
+      : ' · todavía sin reintentos';
+    return `${falta}${reint}${nuevas}. El sistema la reintenta solo cada 20 min. Si la fuente sigue caída, verifícala a mano y decide.`;
+  }
+  if (c.estado === 'error') {
+    return `La consulta falló${k.detalle ? `: ${k.detalle}` : ''}${k.intentos ? ` · ${k.intentos} intento${k.intentos === 1 ? '' : 's'}` : ''}. El sistema la relanza solo con espera creciente (5, 10, 20 min…).`;
+  }
+  return null;
+};
 const hace = (iso?: string | null) => {
   if (!iso) return '—';
   const ms = Date.now() - new Date(iso).getTime();
@@ -152,8 +185,8 @@ export const AdminCompliance: React.FC = () => {
     reintento: 'Se pidió de nuevo la fuente que faltaba (gratis). El resultado llega en unos minutos.',
     relanzada: 'Sarblock no dejaba reintentar esa consulta: se lanzó una nueva (gasta un crédito). El resultado llega en unos minutos.',
     sin_cambio: 'Sarblock no aceptó el reintento y esta ficha ya usó sus consultas nuevas. Revísala a mano y apruébala o mantenla bloqueada.',
-    cerrada: 'La consulta ya terminó: se actualizó el resultado.',
-    sigue_consultando: 'Sarblock todavía está consultando. Vuelve a intentar en unos minutos.',
+    cerrada: 'La consulta ya terminó y se actualizó el resultado. Revísalo y decide.',
+    sigue_consultando: 'Revisado: Sarblock todavía está consultando, no ha terminado. No se gastó crédito. El sistema vuelve a revisar solo cada 5 min.',
   };
   const reintentarPegada = async (c: any) => {
     const r: any = await llamarFuncion('sarblock', { action: 'reintentar_fuente', userId: c.userId, documento: c.documento }).catch(() => null);
@@ -177,8 +210,22 @@ export const AdminCompliance: React.FC = () => {
     cargar();
   };
 
+  // El resultado del reintento va DENTRO de la tarjeta: arriba de la página
+  // quedaba fuera de la vista y parecía que el botón no hacía nada.
+  const [reintentandoId, setReintentandoId] = useState<string | null>(null);
+  const [msgCaso, setMsgCaso] = useState<Record<string, { ok: boolean; texto: string; at: number }>>({});
+  const reintentarEnTarjeta = async (c: any) => {
+    const id = `${c.userId}:${c.documento}`;
+    if (reintentandoId) return;
+    setReintentandoId(id);
+    setMsgCaso(m => { const n = { ...m }; delete n[id]; return n; });
+    try { await reintentar(c); } finally { setReintentandoId(null); }
+  };
+  const avisar = (c: any, v: { ok: boolean; texto: string }) => {
+    setMsgCaso(m => ({ ...m, [`${c.userId}:${c.documento}`]: { ...v, at: Date.now() } }));
+  };
+
   const reintentar = async (c: any) => {
-    setMsg(null);
     if (pegada(c)) {
       const r = await reintentarPegada(c);
       // Consulta relanzada que no termina: se ofrece volver al resultado
@@ -187,11 +234,11 @@ export const AdminCompliance: React.FC = () => {
       if (r?.ok && r.resultado === 'sigue_consultando' && r.hayAnterior
         && window.confirm('Sarblock todavía no termina la consulta nueva.\n\n¿Usar el resultado anterior (el que solo tenía pendiente una fuente) para poder aprobar o mantener bloqueado ya? La consulta nueva se descarta.')) {
         const a: any = await llamarFuncion('sarblock', { action: 'reintentar_fuente', userId: c.userId, documento: c.documento, usarAnterior: true }).catch(() => null);
-        setMsg({ ok: !!a?.ok, texto: a?.ok ? 'Se volvió al resultado anterior. Revísalo y decide.' : (a?.error ?? 'No se pudo volver al resultado anterior.') });
+        avisar(c, { ok: !!a?.ok, texto: a?.ok ? 'Se volvió al resultado anterior. Revísalo y decide.' : (a?.error ?? 'No se pudo volver al resultado anterior.') });
         if (a?.ok) cargar();
         return;
       }
-      setMsg({ ok: !!r?.ok && r?.resultado !== 'sin_cambio', texto: r?.ok ? (TEXTO_REINTENTO[r.resultado] ?? 'Reintento enviado.') : (r?.error ?? 'No se pudo reintentar.') });
+      avisar(c, { ok: !!r?.ok && r?.resultado !== 'sin_cambio', texto: r?.ok ? (TEXTO_REINTENTO[r.resultado] ?? 'Reintento enviado.') : (r?.error ?? 'No se pudo reintentar.') });
       if (r?.ok) cargar();
       return;
     }
@@ -211,12 +258,12 @@ export const AdminCompliance: React.FC = () => {
         : r?.yaExistia ? 'Ya tiene un resultado vigente; no se volvió a consultar.'
         : r?.ok ? 'Consulta actualizada.'
         : (r?.motivo ?? r?.error ?? 'No se pudo volver a consultar.');
-      setMsg({ ok: !!r?.ok && !r?.yaExistia, texto });
+      avisar(c, { ok: !!r?.ok && !r?.yaExistia, texto });
       if (r?.ok) cargar();
       return;
     }
     const r = await call({ action: 'reintentar', userId: c.userId, documento: c.esTitular ? '' : c.documento });
-    setMsg({ ok: !!r?.ok, texto: r?.ok ? 'Consulta relanzada.' : (r?.motivo ?? 'No se pudo relanzar.') });
+    avisar(c, { ok: !!r?.ok, texto: r?.ok ? 'Consulta relanzada.' : (r?.motivo ?? 'No se pudo relanzar.') });
     if (r?.ok) cargar();
   };
 
@@ -544,9 +591,11 @@ export const AdminCompliance: React.FC = () => {
                           style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
                           {c.alerta === 'aprobado_manual' ? 'Quitar aprobación y bloquear' : 'Mantener bloqueado'}
                         </button>
-                        <button onClick={() => reintentar(c)} className="cmp-foco hover:bg-white/[0.09] transition-colors"
-                          style={{ fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9 }}>
-                          Reintentar consulta
+                        <button onClick={() => reintentarEnTarjeta(c)} disabled={!!reintentandoId} title={textoBotonReintento(c).ayuda}
+                          className="cmp-foco hover:bg-white/[0.09] transition-colors"
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '8px 14px', borderRadius: 9, opacity: reintentandoId && reintentandoId !== id ? 0.5 : 1, cursor: reintentandoId ? 'wait' : 'pointer' }}>
+                          {reintentandoId === id && <RefreshCw size={13} className="animate-spin" />}
+                          {reintentandoId === id ? 'Consultando a Sarblock…' : textoBotonReintento(c).t}
                         </button>
                         {c.userId && <button onClick={() => setRos({
                             userId: String(c.userId), nombre: c.cliente?.nombre ?? c.titular ?? null,
@@ -562,6 +611,14 @@ export const AdminCompliance: React.FC = () => {
                           Preparar ROS
                         </button>}
                       </div>
+                      {msgCaso[id] && (
+                        <p role="status" style={{ fontSize: 12, color: msgCaso[id].ok ? C.green : '#FBBF24', margin: '9px 0 0', lineHeight: 1.5 }}>
+                          {msgCaso[id].texto}
+                        </p>
+                      )}
+                      {estadoConsulta(c) && (
+                        <p style={{ fontSize: 11.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.5 }}>{estadoConsulta(c)}</p>
+                      )}
                       <p style={{ fontSize: 11, color: C.dim, margin: '8px 0 0' }}>Toda decisión queda en auditoría con tu usuario.</p>
                       {c.decisionManual && (
                         <p style={{ fontSize: 11.5, color: C.sub, margin: '6px 0 0', lineHeight: 1.45 }}>
