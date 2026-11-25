@@ -65,7 +65,7 @@ Deno.test('OFAC: alto, no operable, con el motivo', () => {
   assert(f.bloqueo?.startsWith('Riesgo alto: Coincidencia en lista restrictiva: OFAC SDN'));
   assertEquals(f.altos, 1);
   assertEquals(f.hallazgos?.[0], { nivel: 'alto', codigo: 'lista_restrictiva', texto: 'Coincidencia en lista restrictiva: OFAC SDN (Ada Lovelace)', fuente: 'OFAC SDN' });
-  assertEquals(f.criterio, 'lincoin-v5-2026-11-20');
+  assertEquals(f.criterio, 'lincoin-v6-2026-11-25');
 });
 
 Deno.test('revisión solo por una fuente caída, sin coincidencias: NO es riesgo medio', () => {
@@ -582,7 +582,86 @@ Deno.test('rejuzgar: una ficha de la matriz anterior se recalcula sin llamar a S
     criterio: 'lincoin-v1-2026-10-27', operable: false, nombreCoincide: false };
   const nueva = rejuzgar(vieja, { documento: '43689692', tipoDocumento: 'CC', nombre: 'JEISY URREA' });
   assertEquals(nueva?.operable, true);
-  assertEquals(nueva?.criterio, 'lincoin-v5-2026-11-20');
+  assertEquals(nueva?.criterio, 'lincoin-v6-2026-11-25');
+});
+
+// ── v6: el alto de Sarblock queda explicado ─────────────────────────────
+// Caso real (25 nov, Arama Motors S.A.S): un BDME solo. Sarblock dio nivel
+// general HIGH sin bloquear; la ficha decía "0 altos · 1 medio" y bloqueaba
+// por riesgo alto sin decir por qué.
+const bdme = {
+  code: 'co_bdme', label: 'Contaduría — Deudores morosos del Estado', category: 'COLOMBIA', categoryLabel: 'Antecedentes Colombia',
+  status: 'MATCH', statusReason: 'Deudor moroso del Estado (BDME)', isRestrictive: false, consulted: true, retryable: false,
+  matched: true, matchCount: 1, hits: [], coverage: null,
+};
+const empresa = { documento: '900123456', tipoDocumento: 'NIT', nombre: 'ARAMA MOTORS S.A.S' };
+
+Deno.test('v6: BDME solo con nivel general alto → el hallazgo es ALTO y el conteo cuadra', () => {
+  const f = traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, blockReason: null, matchedLists: 1, unavailableLists: 0 },
+    identity: null, catalog: [bdme],
+  }), empresa);
+  assertEquals(f.categoria, 'alto');
+  assertEquals(f.altos, 1);
+  assertEquals(f.medios, 0);
+  assertEquals(f.operable, false);
+  assertEquals(f.hallazgos?.length, 1);
+  assertEquals(f.hallazgos?.[0].nivel, 'alto');
+  assertEquals(f.hallazgos?.[0].codigo, 'revision_alto');
+  assert(f.hallazgos?.[0].texto.includes('Deudor moroso del Estado (BDME)'));
+  assert(f.bloqueo?.startsWith('Riesgo alto:'));
+  // El cliente nunca ve el nombre del aliado.
+  assert(!/sarblock/i.test(JSON.stringify(f.hallazgos)) && !/sarblock/i.test(String(f.bloqueo)));
+});
+
+Deno.test('v6: el mismo BDME con nivel general medio sigue en medio', () => {
+  const f = traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'MEDIUM', shouldBlock: false, blockReason: null, matchedLists: 1, unavailableLists: 0 },
+    identity: null, catalog: [bdme],
+  }), empresa);
+  assertEquals(f.categoria, 'medio');
+  assertEquals(f.altos, 0);
+  assertEquals(f.medios, 1);
+  assertEquals(f.operable, true);
+  assertEquals(f.hallazgos?.[0].codigo, 'revision');
+});
+
+Deno.test('v6: nivel general alto sin fuente sin regla (solo PEP) → se anota el nivel general', () => {
+  const f = traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, hasPepResult: true, matchedLists: 1, unavailableLists: 0 },
+    catalog: [pepMatch],
+  }), benef);
+  assertEquals(f.categoria, 'alto');
+  assertEquals(f.altos, 1);
+  assertEquals(f.medios, 1);
+  assertEquals(f.operable, false);
+  assertEquals(f.hallazgos?.[0].codigo, 'nivel_general');
+  assert(f.hallazgos?.[0].texto.includes('PEP Colombia'));
+  assertEquals(f.hallazgos?.[1].codigo, 'pep');
+});
+
+Deno.test('v6: con un alto de la matriz el BDME no se toca', () => {
+  const policia = { code: 'co_policia', label: 'Antecedentes Policía', category: 'COLOMBIA', status: 'MATCH', statusReason: 'Registra antecedentes',
+    isRestrictive: false, consulted: true, retryable: false, matched: true, matchCount: 1, hits: [], coverage: null };
+  const f = traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, matchedLists: 2, unavailableLists: 0 },
+    identity: null, catalog: [policia, bdme],
+  }), empresa);
+  assertEquals(f.altos, 1);
+  assertEquals(f.medios, 1);
+  assertEquals(f.hallazgos?.map(h => h.codigo), ['antecedentes', 'revision']);
+});
+
+Deno.test('v6: una ficha v5 del caso BDME se rejuzga a alto explicado, sin llamar a Sarblock', () => {
+  const v5 = { ...traducir(check({
+    summary: { action: 'HOLD_FOR_REVIEW', riskLevel: 'HIGH', shouldBlock: false, matchedLists: 1, unavailableLists: 0 },
+    identity: null, catalog: [bdme],
+  }), empresa), criterio: 'lincoin-v5-2026-11-20', altos: 0, medios: 1, operable: true };
+  const nueva = rejuzgar(v5, empresa)!;
+  assertEquals(nueva.criterio, 'lincoin-v6-2026-11-25');
+  assertEquals(nueva.categoria, 'alto');
+  assertEquals(nueva.altos, 1);
+  assertEquals(nueva.operable, false);
 });
 
 // ── Lincoin Risk prepago ────────────────────────────────────────────────

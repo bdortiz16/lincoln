@@ -56,7 +56,15 @@ export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string;
 // Y cuando lo único que Sarblock encontró son procesos judiciales, su propio
 // nivel o su "revisar" no mandan: esos procesos ya los juzga esta matriz,
 // uno por uno. Sin esto GENCELL seguía en medio por cinco demandas civiles.
-export const CRITERIO = 'lincoin-v5-2026-11-20';
+// v6 (2026-11-25): cuando el nivel general de Sarblock es alto (HIGH/CRITICAL
+// o BLOCK) y la matriz no encontró ningún alto, el veredicto ya era alto y el
+// envío se bloqueaba, pero el porqué no aparecía: la ficha decía "0 altos ·
+// 1 medio" y el único hallazgo, MEDIO (Arama Motors, un BDME solo). Ahora el
+// motivo queda escrito como ALTO: las fuentes sin regla propia en la matriz
+// ("revisión") toman el nivel de Sarblock, que es quien sabe qué pesa en esa
+// fuente, y si no hay ninguna se anota el nivel general. Nada baja: el nivel
+// alto de Sarblock se sigue respetando (misma regla que en KYT).
+export const CRITERIO = 'lincoin-v6-2026-11-25';
 
 export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string; radicado?: string };
 
@@ -278,7 +286,6 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const revisiones = d.revisionesPenales && typeof d.revisionesPenales === 'object' ? d.revisionesPenales : null;
   const motivos = reglasLincoin(catalogo, revisiones);
   const coinciden = catalogo.filter(e => e?.matched === true);
-  const hallazgos: Hallazgo[] = motivos.map(m => ({ nivel: m.nivel, codigo: m.regla, texto: m.texto, fuente: m.fuente, ...(m.radicado ? { radicado: m.radicado } : {}) }));
   // Los penales que Cumplimiento verificó como no relacionados: no pesan, pero
   // se siguen viendo (con quién, cuándo y por qué) en el panel y el PDF.
   const penalesVerificados = revisiones ? catalogo
@@ -289,8 +296,6 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     .filter(x => x.rev?.decision === 'sin_relacion')
     .map(x => ({ radicado: String(x.h.judicial.processKey), texto: `${limpio(x.h.judicial?.court)}, radicado ${x.h.judicial.processKey}`, nota: x.rev.nota, porNombre: x.rev.porNombre ?? null, at: x.rev.at }))
     : [];
-  const altos = motivos.filter(m => m.nivel === 'alto').length;
-  const medios = motivos.length - altos;
   // Procesos no penales como parte pasiva (v5): se listan, no pesan.
   const procesosInformativos = catalogo
     .filter(e => String(e?.code ?? '') === 'co_rama_judicial')
@@ -319,11 +324,6 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const suplantacion = comparacion === 'distinto' || (comparacion === undefined && id?.spoofSuspected === true);
   const nombreCoincide = comparacion ? comparacion !== 'distinto' : (id ? !suplantacion : undefined);
   const nombreIncompleto = comparacion === 'incompleto' || undefined;
-  if (suplantacion) {
-    // Va como motivo para que se lea en el detalle, el modal y el PDF.
-    hallazgos.unshift({ nivel: 'alto', codigo: 'identidad', fuente: 'Identidad Colombia',
-      texto: `El nombre inscrito${declarado ? ` (${declarado})` : ''} no corresponde al documento${id?.verifiedName ? `: según la Registraduría es ${id.verifiedName}` : ''}.` });
-  }
 
   // Si lo único que Sarblock objetó fue la identidad y nosotros la
   // aceptamos (nombre incompleto), su nivel y su "revisar" no aplican.
@@ -336,6 +336,39 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   const soloJudicial = coinciden.length > 0 && coinciden.every(e => String(e?.code ?? '') === 'co_rama_judicial') && s.shouldBlock !== true && String(s.action ?? '') !== 'BLOCK';
   const ignorarSarblock = (soloIdentidad || !!traslado || soloJudicial) && !suplantacion;
   const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
+
+  // ── El porqué del alto de Sarblock (v6) ────────────────────────────────
+  // Su nivel general alto ya hace alto el veredicto (abajo), y el envío se
+  // corta. Si la matriz no encontró ningún alto, la ficha quedaba diciendo
+  // "0 altos · 1 medio" con un bloqueo por riesgo alto: nadie podía leer por
+  // qué. Las fuentes que la matriz no juzga con una regla propia (regla
+  // 'revision': BDME, RUES, etc.) toman el nivel que Sarblock les dio; si no
+  // hay ninguna, se anota el nivel general como motivo. La identidad tiene su
+  // propio motivo (abajo) y no se duplica.
+  const sarblockAlto = !ignorarSarblock && (CATEGORIA[String(s.riskLevel ?? '')] === 'alto' || s.shouldBlock === true || accion === 'BLOCK');
+  if (sarblockAlto && !suplantacion && !motivos.some(m => m.nivel === 'alto')) {
+    const sinRegla = motivos.filter(m => m.regla === 'revision');
+    if (sinRegla.length) {
+      for (const m of sinRegla) {
+        m.nivel = 'alto';
+        m.regla = 'revision_alto';
+        m.texto = `${m.texto}. La verificación lo calificó riesgo alto`;
+      }
+    } else {
+      const fuentes = coinciden.map(e => limpio(e?.label ?? e?.code)).filter(Boolean);
+      motivos.push({ nivel: 'alto', regla: 'nivel_general', fuente: 'Verificación de antecedentes',
+        texto: `La verificación calificó el resultado general como riesgo alto${fuentes.length ? ` (coincidencias en: ${fuentes.join(', ')})` : ''}` });
+    }
+    motivos.sort((x, y) => (x.nivel === y.nivel ? 0 : x.nivel === 'alto' ? -1 : 1));
+  }
+  const hallazgos: Hallazgo[] = motivos.map(m => ({ nivel: m.nivel, codigo: m.regla, texto: m.texto, fuente: m.fuente, ...(m.radicado ? { radicado: m.radicado } : {}) }));
+  const altos = motivos.filter(m => m.nivel === 'alto').length;
+  const medios = motivos.length - altos;
+  if (suplantacion) {
+    // Va como motivo para que se lea en el detalle, el modal y el PDF.
+    hallazgos.unshift({ nivel: 'alto', codigo: 'identidad', fuente: 'Identidad Colombia',
+      texto: `El nombre inscrito${declarado ? ` (${declarado})` : ''} no corresponde al documento${id?.verifiedName ? `: según la Registraduría es ${id.verifiedName}` : ''}.` });
+  }
   // "Revisar" solo porque una fuente no respondió, sin ninguna coincidencia:
   // no es un hallazgo. Antes subía a riesgo medio una consulta limpia pero
   // incompleta (visto el 2026-10-30: 0 coincidencias, 1 fuente caída → "medio").
