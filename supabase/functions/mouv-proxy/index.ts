@@ -926,10 +926,17 @@ function normalizeMouvState(raw: any): { verdict: MouvVerdict; state: string } {
     // Eso fue LA causa de que un envio ya COMPLETED en Mouv se quedara en
     // "Procesando" en Lincoin durante dias. El proveedor contestaba bien todo
     // el tiempo; le estabamos preguntando por un campo que no existe.
-    return String(
-      o.kaminStatus ?? o.status ?? o.state ?? o.transferStatus ?? o.result
-      ?? o?.data?.kaminStatus ?? o?.data?.status ?? o?.data?.state ?? '',
-    )
+    // El PRIMER valor no vacío, no el primero que no sea null: en un envío
+    // ACH (25 nov) Kamin no interviene y `kaminStatus` puede venir como ""
+    // mientras `status` dice COMPLETED. Con `??` el "" ganaba, el veredicto
+    // salía 'unknown' y el pago quedaba En curso aunque Mouv lo diera Exitoso.
+    const cands = [o.kaminStatus, o.status, o.state, o.transferStatus, o.result, o?.data?.kaminStatus, o?.data?.status, o?.data?.state]
+    for (const c of cands) {
+      if (c == null) continue
+      const v = String(c).trim()
+      if (v) return v
+    }
+    return ''
   }
   const s = pickState(raw).trim().toUpperCase()
   if (!s) return { verdict: 'unknown', state: '' }
@@ -1143,11 +1150,18 @@ async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items
   // el ultimo recurso -- exige salida confirmada: un recaudo REVERSADO del
   // mismo importe, que entra sin `type`, podria emparejarse con una dispersion
   // y hacerla ver como devuelta. Seria reembolsar un envio que si salio.
+  // Bre-B Y ACH. Desde el 22 nov ACH · Cuenta 1 también sale por Mouv, y
+  // este filtro botaba todo lo que dijera rail=ACH: esos envíos no aparecían
+  // nunca en el listado y, sin su id guardado, no había cómo conciliarlos
+  // (25 nov: un ACH «Exitoso» en Mouv seguía igual en Lincoin). Cada
+  // movimiento queda marcado con su riel para no emparejar un ACH con una
+  // fila Bre-B ni al revés.
   const esSalidaBreb = (it: any): boolean => {
     const tipo = String(it?.type ?? it?.direction ?? '').toUpperCase()
     const rail = String(it?.rail ?? '').toUpperCase()
     if (tipo && !/OUT|DEBIT|TRANSFER_OUT|SALIDA/.test(tipo)) return false
-    if (rail && rail !== 'BREB') return false
+    if (rail && rail !== 'BREB' && rail !== 'ACH') return false
+    if (rail) it.__rail = rail
     if (tipo) it.__salidaConfirmada = true
     return true
   }
@@ -1178,7 +1192,10 @@ async function mouvListarBrebOut(desdeISO: string): Promise<{ ok: boolean; items
 // para que los mire una persona, que es la respuesta correcta cuando no se
 // puede distinguir cual es cual.
 function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: Set<string>, creadaAt?: string | null): { item: any; via: string } | null {
-  const libres = items.filter(it => !reclamados.has(String(it?.id ?? '')))
+  // Solo movimientos del mismo riel que la fila (un ACH no es un Bre-B del
+  // mismo monto). Lo que no declara riel sigue siendo candidato.
+  const railFila = String(rd?.rail ?? '').toUpperCase() === 'ACH' ? 'ACH' : 'BREB'
+  const libres = items.filter(it => !reclamados.has(String(it?.id ?? '')) && (!it?.__rail || it.__rail === railFila))
   const centavos = Math.round(Number(montoCop) * 100)
   if (!(centavos > 0)) return null
   // El monto en centavos es el ancla de TODOS los niveles. Nunca se empareja
@@ -1210,7 +1227,9 @@ function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: S
   //    guardar el dato del resolve-key.
   const doc = String(rd?.documentNumber ?? rd?.recipient?.documentNumber ?? '').replace(/\D/g, '')
   if (doc) {
-    const r = unico(mismoMonto.filter(it => String(it?.targetDocument ?? '').replace(/\D/g, '') === doc), 'monto + documento')
+    // En un ACH el documento viene dentro de la cuenta destino.
+    const docDe = (it: any) => String(it?.targetDocument ?? it?.destination?.bankAccount?.documentNumber ?? it?.bankAccount?.documentNumber ?? '').replace(/\D/g, '')
+    const r = unico(mismoMonto.filter(it => docDe(it) === doc), 'monto + documento')
     if (r) return r
   }
 
@@ -1219,7 +1238,11 @@ function emparejarConMouv(rd: any, montoCop: number, items: any[], reclamados: S
   //    cliente y no el oficial del directorio, asi que se compara flojo.
   const nom = limpiar(rd?.beneficiary ?? rd?.recipient?.holderName)
   if (nom) {
-    const r = unico(mismoMonto.filter(it => limpiar(it?.targetName) === nom), 'monto + nombre')
+    const nomDe = (it: any) => {
+      const ba = it?.destination?.bankAccount ?? it?.bankAccount
+      return limpiar(it?.targetName ?? (ba ? `${ba.holderFirstName ?? ''} ${ba.holderLastName ?? ''}` : ''))
+    }
+    const r = unico(mismoMonto.filter(it => nomDe(it) === nom), 'monto + nombre')
     if (r) return r
   }
 
@@ -3539,23 +3562,45 @@ serve(async (req: Request) => {
     // que a alguien se le ocurra entrar: la plata ya volvio y el saldo sigue
     // debitado. Con esto la mesa cierra el circulo desde el panel.
     const todos = caller.admin && caller.viaJwt && payload?.todos === true
-    let q = db.from('transactions')
-      .select('id, user_id, amount, currency, status, raw_data, created_at')
-      .eq('type', 'dispersion').eq('currency', 'COP_BREB')
-      // Bre-B · Cuenta 3 también paga con el saldo Bre-B, pero sale por
-      // Coinsenda: no está en el listado de Mouv. La concilia reconcile_cuenta3.
-      .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
-      .in('status', recientesMin > 0 ? ['Procesando'] : ['Procesando', 'Completado'])
-      .gte('created_at', since)
-      .order('created_at', { ascending: false })
-      .limit(todos ? 80 : 30)   // lectura = 100 req/min; 80 deja aire
-    if (!todos) q = q.eq('user_id', userId)
-    const { data: rows } = await q
+    // LAS QUE SIGUEN EN CURSO VAN PRIMERO Y APARTE (25 nov).
+    // Antes era UNA consulta de Procesando + Completado de los últimos 5 días,
+    // las 80 más recientes. Con muchos envíos al día, las Completado nuevas
+    // llenaban el cupo y una Procesando de hace tres días no entraba nunca al
+    // lote: un ACH · Cuenta 1 «Exitoso» en Mouv seguía En curso en Lincoin. Y
+    // pasados los 5 días salía de la ventana para siempre. Ahora las
+    // Procesando se buscan solas, hasta 30 días atrás, y las Completado
+    // (para atrapar devoluciones tardías) llenan lo que quede.
+    const base = () => {
+      let qq = db.from('transactions')
+        .select('id, user_id, amount, currency, status, raw_data, created_at')
+        .eq('type', 'dispersion').eq('currency', 'COP_BREB')
+        // Bre-B · Cuenta 3 también paga con el saldo Bre-B, pero sale por
+        // Coinsenda: no está en el listado de Mouv. La concilia reconcile_cuenta3.
+        .or('raw_data->>proveedor.is.null,raw_data->>proveedor.neq.coinsenda')
+      if (!todos) qq = qq.eq('user_id', userId)
+      return qq
+    }
+    const cupo = todos ? 80 : 30   // lectura = 100 req/min; 80 deja aire
+    const desdeEnCurso = recientesMin > 0 ? since : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+    // Las más nuevas primero: es donde hay alguien esperando. Las viejas sin
+    // confirmar ya están marcadas para revisión en Fallos.
+    const { data: enCurso } = await base().eq('status', 'Procesando').gte('created_at', desdeEnCurso)
+      .order('created_at', { ascending: false }).limit(cupo)
+    let completadas: any[] = []
+    const resto = cupo - (enCurso ?? []).length
+    if (recientesMin <= 0 && resto > 0) {
+      const { data: cs } = await base().eq('status', 'Completado').gte('created_at', since)
+        .order('created_at', { ascending: false }).limit(resto)
+      completadas = (cs ?? []) as any[]
+    }
+    const rows = [...((enCurso ?? []) as any[]), ...completadas]
 
     // UNA sola consulta trae el estado de todos los envios de la ventana. Se
     // usa como fuente principal; la consulta por id queda de respaldo para lo
     // que no aparezca en el listado.
-    const listado = await mouvListarBrebOut(since)
+    // El listado tiene que alcanzar a la Procesando más vieja del lote.
+    const masVieja = rows.reduce((m: string, r: any) => (String(r.created_at) < m ? String(r.created_at) : m), since)
+    const listado = await mouvListarBrebOut(new Date(Date.parse(masVieja) - 60 * 60 * 1000).toISOString())
     const porId = new Map<string, any>()
     for (const it of listado.items) { const k = String(it?.id ?? ''); if (k) porId.set(k, it) }
     // Un movimiento de Mouv no puede quedar emparejado con dos filas nuestras.
@@ -3807,13 +3852,17 @@ serve(async (req: Request) => {
         // Bre-B liquida en segundos. Pasado un rato sin confirmar, deja de ser
         // "en curso" y pasa a ser algo que alguien tiene que mirar contra la
         // consola del proveedor.
-        const revisar = ageMin >= 15
+        // Un ACH no liquida en segundos: va por los ciclos del sistema y puede
+        // tardar horas. Marcarlo "sin confirmar" a los 15 minutos llenaba
+        // Fallos de envíos que estaban bien.
+        const esAch = String(rd.rail ?? '').toUpperCase() === 'ACH'
+        const revisar = ageMin >= (esAch ? 6 * 60 : 15)
         // Aviso al admin UNA sola vez, pasada una hora. Quince minutos es el
         // umbral para marcarla en pantalla; una hora es cuando ya dejo de ser
         // "esta tardando" y hay plata de alguien sin destino conocido.
         // El aviso llega a los 30 minutos: tiene que haber margen para frenar
         // una devolucion antes de que la ventana la de por liquidada.
-        if (ageMin >= 30 && !rd.alertaEnviada) {
+        if (ageMin >= (esAch ? 12 * 60 : 30) && !rd.alertaEnviada) {
           const enviado = await avisarAdminSinConfirmar(tx)
           // Misma guarda: este update tambien escribe el snapshot viejo y
           // borraria `refunded` si otra corrida reembolso en el medio.
