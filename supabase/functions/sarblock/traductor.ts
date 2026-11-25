@@ -64,7 +64,21 @@ export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string;
 // ("revisión") toman el nivel de Sarblock, que es quien sabe qué pesa en esa
 // fuente, y si no hay ninguna se anota el nivel general. Nada baja: el nivel
 // alto de Sarblock se sigue respetando (misma regla que en KYT).
-export const CRITERIO = 'lincoin-v6-2026-11-25';
+// v7 (2026-11-25, el mismo día, decisión del dueño): el BDME (deudor moroso
+// del Estado, Contaduría) es riesgo MEDIO y NO retiene los envíos. Es una
+// deuda con el Estado, no una señal de LA/FT. Con v6, Arama Motors S.A.S
+// (un BDME solo) quedaba ALTO y bloqueado porque el nivel general de
+// Sarblock era HIGH. Ahora el BDME lo juzga la matriz, como la Rama
+// Judicial desde v5: si lo único que Sarblock encontró son procesos
+// judiciales y BDME, su nivel general no manda (un BLOCK explícito sí). Una
+// ficha cuyo único medio es BDME lleva `retiene: false`: se ve como riesgo
+// medio, queda a la vista de cumplimiento y el envío sale.
+export const CRITERIO = 'lincoin-v7-2026-11-25';
+
+// Boletín de Deudores Morosos del Estado (Contaduría General). Se reconoce
+// por el código o por lo que dice la fuente, no por un código fijo: el
+// catálogo de Sarblock tiene versiones.
+export const esBdme = (e: any) => /bdme|deudor(es)?\s+moros/i.test(`${e?.code ?? ''} ${e?.label ?? ''} ${e?.statusReason ?? ''}`);
 
 export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string; radicado?: string };
 
@@ -118,6 +132,12 @@ export function reglasLincoin(catalogo: any[], revisiones?: Revisiones | null): 
     const label = limpio(e?.label ?? e?.code);
     const hits: any[] = Array.isArray(e?.hits) ? e.hits : [];
     const code = String(e?.code ?? '');
+    // BDME (v7): medio, no retiene. Va antes que todo: una deuda con el
+    // Estado no es una lista restrictiva aunque la fuente la marque así.
+    if (e?.matched === true && esBdme(e)) {
+      out.push({ nivel: 'medio', regla: 'bdme', fuente: label, texto: `${label}${e.statusReason ? `: ${limpio(e.statusReason)}` : ''}. Deuda con el Estado: no es señal de LA/FT y no retiene los envíos` });
+      continue;
+    }
     if (e?.matched === true && e?.isRestrictive) {
       out.push({ nivel: 'alto', regla: 'lista_restrictiva', fuente: label, texto: `Coincidencia en lista restrictiva: ${label}${hits[0]?.matchedName ? ` (${limpio(hits[0].matchedName)})` : ''}` });
       continue;
@@ -210,6 +230,9 @@ export type Ficha = {
   procesosInformativos?: { radicado: string; rama: string; texto: string }[]   // civil, familia, laboral… (no pesan, v5)
   incompleta?: boolean              // alguna fuente no respondió (resultado parcial)
   operable?: boolean;
+  // Un riesgo medio que NO retiene el envío (v7: el único medio es BDME).
+  // Sin el campo, el medio retiene como siempre (según la configuración).
+  retiene?: boolean;
   bloqueo?: string;
   criterio?: string;
   altos?: number;
@@ -333,7 +356,8 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
   // Y si lo único que encontró son procesos judiciales (v5): esos los juzga la
   // matriz proceso por proceso; su nivel general no manda. Un bloqueo
   // explícito de Sarblock (shouldBlock) sí se respeta siempre.
-  const soloJudicial = coinciden.length > 0 && coinciden.every(e => String(e?.code ?? '') === 'co_rama_judicial') && s.shouldBlock !== true && String(s.action ?? '') !== 'BLOCK';
+  // v7: lo mismo con el BDME, solo o junto a procesos judiciales.
+  const soloJudicial = coinciden.length > 0 && coinciden.every(e => String(e?.code ?? '') === 'co_rama_judicial' || esBdme(e)) && s.shouldBlock !== true && String(s.action ?? '') !== 'BLOCK';
   const ignorarSarblock = (soloIdentidad || !!traslado || soloJudicial) && !suplantacion;
   const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
 
@@ -397,6 +421,13 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
 
   const bloqueaSarblock = !ignorarSarblock && (s.shouldBlock === true || accion === 'BLOCK');
   const operable = !(bloqueaSarblock || suplantacion || altos > 0);
+  // v7: un medio que no retiene. Solo cuando TODO lo que pesa lo juzgó la
+  // matriz (el nivel de Sarblock no entró) y el único medio es BDME. Con
+  // cualquier otro medio (PEP, prensa, penal sin revisar…) retiene como
+  // siempre.
+  const mediosDe = motivos.filter(m => m.nivel === 'medio');
+  const sinRetencion = categoria === 'medio' && operable && soloJudicial && !suplantacion
+    && mediosDe.length > 0 && mediosDe.every(m => m.regla === 'bdme');
   const motivosTexto = (nivel: 'alto' | 'medio') => motivos.filter(m => m.nivel === nivel).map(m => m.texto);
   const bloqueo = suplantacion
     ? `El nombre inscrito no corresponde al documento.${id?.verifiedName ? ` Según la fuente oficial es ${id.verifiedName}.` : ''}`
@@ -404,9 +435,11 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
       ? `Riesgo alto: ${motivosTexto('alto').join(' · ')}`
       : bloqueaSarblock
         ? String(s.blockReason || 'Coincidencia en una lista restrictiva.')
-        : medios > 0
-          ? `En revisión de cumplimiento: ${motivosTexto('medio').join(' · ')}`
-          : accion === 'HOLD_FOR_REVIEW' && !soloFuenteCaida ? 'Sarblock pidió revisión de cumplimiento.' : undefined;
+        : sinRetencion
+          ? undefined
+          : medios > 0
+            ? `En revisión de cumplimiento: ${motivosTexto('medio').join(' · ')}`
+            : accion === 'HOLD_FOR_REVIEW' && !soloFuenteCaida ? 'Sarblock pidió revisión de cumplimiento.' : undefined;
 
   return {
     ...base,
@@ -425,6 +458,7 @@ export function traducir(check: any, d: { documento: string; tipoDocumento: stri
     ...(procesosInformativos.length ? { procesosInformativos: procesosInformativos.slice(0, 40) } : {}),
     categoria,
     operable,
+    ...(sinRetencion ? { retiene: false } : {}),
     bloqueo,
     altos, medios, bajos,
     criterio: CRITERIO,

@@ -736,7 +736,11 @@ export const ContactsSection: React.FC<{
             ayuda = 'Falta la respuesta de una de las fuentes de antecedentes. Mientras tanto no se le puede transferir; se completa sola o la revisa el equipo de cumplimiento.';
         } else if (cat === 'medio') {
             tono = AMBAR; estado = k.operable === false ? 'EN REVISIÓN' : 'RIESGO MEDIO'; motivo = 'Riesgo medio';
-            ayuda = 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';
+            // retiene: false (p. ej. solo BDME, 25 nov): el servidor deja salir
+            // el envío, así que la ayuda no puede decir "en revisión".
+            ayuda = k.retiene === false
+                ? 'Hallazgos de riesgo medio que no impiden transferirle. Quedan a la vista de cumplimiento.'
+                : 'Hallazgos de riesgo medio. Queda en revisión de cumplimiento.';
         } else if (cat === 'sin_validar' && k.documentoNoEncontrado === true && !k.nombreReal) {
             // 9 nov: la Registraduría contestó que el número
             // no existe. La insignia decía solo "SIN VALIDAR" y nadie sabía
@@ -1795,7 +1799,8 @@ export const ContactsSection: React.FC<{
         if (!k) return 'sin_consulta';
         if (amlEsperando(c)) return 'esperando';
         if (amlFrena(c)) return 'bloqueado';
-        if (k.aprobadoManual !== true && (String(k.categoria ?? '') === 'medio' || k.operable === false)) return 'revision';
+        // Un medio que no retiene (retiene: false) no es un envío retenido.
+        if (k.aprobadoManual !== true && ((String(k.categoria ?? '') === 'medio' && k.retiene !== false) || k.operable === false)) return 'revision';
         return 'limpio';
     };
     useEffect(() => {
@@ -3044,6 +3049,7 @@ export const ContactsSection: React.FC<{
                                     : k.nombreCoincide === false ? `El nombre inscrito no corresponde a ese documento. Según la Registraduría la cédula pertenece a ${k.nombreReal ?? 'otra persona'}. No se le puede transferir hasta corregirlo.`
                                     : k.documentoVigente === false ? `El documento no está vigente${k.estadoDocumento ? `: ${k.estadoDocumento}` : ''}. No se le puede transferir.`
                                     : cat === 'alto' ? 'La consulta encontró hallazgos de riesgo alto. No se puede transferir a esta persona.'
+                                    : cat === 'medio' && k.retiene === false ? 'La consulta encontró hallazgos de riesgo medio que no impiden transferirle. Quedan a la vista de cumplimiento.'
                                     : cat === 'medio' ? 'La consulta encontró hallazgos de riesgo medio. Queda en revisión de cumplimiento y por ahora no se le puede transferir.'
                                     : cat === 'sin_validar' && k.nombreReal ? 'La Registraduría devolvió el nombre de este documento, pero no confirmó su estado. No se encontraron antecedentes. No impide transferirle.'
                                     : cat === 'sin_validar' && k.documentoNoEncontrado === true ? `La Registraduría no encontró el documento ${String(detail.docNumber ?? '')}: casi siempre es un número mal escrito. Confírmalo con el beneficiario y, si está mal, borra el beneficiario e inscríbelo con el número correcto. No impide transferirle.`

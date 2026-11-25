@@ -5490,7 +5490,10 @@ serve(async (req: Request) => {
             // no es operable, eso manda. Es lo mismo que lee la pantalla para
             // pintar BLOQUEADO, así que insignia y envío no se contradicen.
             const noOperable = cerrado && f?.operable === false
-            const medio = cerrado && cat === 'medio' && tdCfg?.soloBloquearAlto !== true && tdCfg?.bloquear !== false
+            // Un medio que la matriz marcó como no retenido (retiene: false,
+            // v7: el único hallazgo es BDME, decisión del dueño 25 nov) no
+            // frena: se ve como riesgo medio y el envío sale.
+            const medio = cerrado && cat === 'medio' && f?.retiene !== false && tdCfg?.soloBloquearAlto !== true && tdCfg?.bloquear !== false
             // Cumplimiento lo revisó y lo APROBÓ contra este mismo veredicto
             // (p. ej. un falso positivo de la fuente): pasa, y queda anotado.
             aprobadoAml = cerrado && aprobacionAmlVigente(f)

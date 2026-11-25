@@ -2175,7 +2175,9 @@ Deno.serve(async (req: Request) => {
             : f.nombreCoincide === false ? 'nombre_no_coincide'
               : f.documentoVigente === false ? 'documento_no_vigente'
                 : cat === 'alto' ? 'riesgo_alto'
-                  : cat === 'medio' ? 'riesgo_medio'
+                  // Un medio que no retiene (retiene: false, solo BDME, 25
+                  // nov) no pide decisión: el envío ya sale. Queda en la ficha.
+                  : cat === 'medio' && f.retiene !== false ? 'riesgo_medio'
                     // Cerrada sin una fuente (casi siempre la Rama Judicial):
                     // los envíos esperan; si no vuelve, decide Cumplimiento.
                     : est === 'finalizado' && (Number(f.fuentesEnCurso ?? 0) > 0 || f.incompleta === true || f.sarblock?.aggregateOutcome === 'PARTIAL') ? 'fuente_pendiente'
@@ -2207,6 +2209,7 @@ Deno.serve(async (req: Request) => {
             nombresAnteriores: Array.isArray(f.nombresAnteriores) ? f.nombresAnteriores : [],
             documentoVigente: f.documentoVigente ?? null, estadoDocumento: f.estadoDocumento ?? null,
             categoria: cat || null, estado: est || null, operable: f.operable ?? null,
+            ...(f.retiene === false ? { retiene: false } : {}),
             bloqueo: f.bloqueo ?? null,
             altos: f.altos ?? 0, medios: f.medios ?? 0, bajos: f.bajos ?? 0,
             hallazgos: Array.isArray(f.hallazgos) ? f.hallazgos : [],

@@ -44,6 +44,8 @@ function veredicto(f: any): { t: string; c: string; texto: string } {
   const bloquea = f.operable === false;
   if (f.nombreCoincide === false) return { t: 'BLOQUEADO · NOMBRE NO CORRESPONDE', c: T.rojo, texto: 'El nombre inscrito no corresponde al documento consultado.' };
   if (f.categoria === 'alto' || bloquea) return { t: bloquea ? 'BLOQUEADO · RIESGO ALTO' : 'RIESGO ALTO', c: T.rojo, texto: f.bloqueo || 'Coincidencia en una lista restrictiva.' };
+  // retiene: false (solo BDME, 25 nov): riesgo medio que no impide operar.
+  if (f.categoria === 'medio' && f.retiene === false) return { t: 'RIESGO MEDIO', c: T.ambar, texto: 'Hallazgos de riesgo medio que no impiden operar. Quedan a la vista de cumplimiento.' };
   if (f.categoria === 'medio') return { t: 'RIESGO MEDIO · EN REVISIÓN', c: T.ambar, texto: f.bloqueo || 'Hallazgos que requieren revisión de cumplimiento.' };
   if (f.categoria === 'sin_validar') return { t: 'IDENTIDAD SIN VALIDAR', c: T.ambar, texto: 'No se pudo contrastar el documento contra la fuente oficial.' };
   if (f.categoria === 'bajo') return { t: 'RIESGO BAJO', c: T.verde, texto: 'Sin coincidencias restrictivas. Se puede operar.' };
