@@ -38,7 +38,7 @@
 // ARRANCA APAGADO.
 // ════════════════════════════════════════════════════════
 
-import { CRITERIO as CRITERIO_RISK } from '../sarblock/traductor.ts'
+import { CRITERIO as CRITERIO_RISK, consultaSinFiltroJudicial } from '../sarblock/traductor.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { mergeRaw, setRawPath } from '../_shared/raw-data.ts'
 import { municipioPorNombre, municipioPorCodigo } from '../_shared/municipios.ts'
@@ -2047,6 +2047,9 @@ Deno.serve(async (req: Request) => {
           // PDF es el resumen de lo guardado: ya no se le pide nada a TusDatos.
           pdf: r.ficha?.sarblock?.catalog ? 'lincoin' : (r.categoria || r.estado === 'finalizado') ? 'resumen' : null,
           deSarblock: !!r.ficha?.sarblock?.catalog,
+          // Consulta anterior al filtro de homónimos de la Rama Judicial (18
+          // nov) con procesos: se puede volver a consultar (se paga).
+          sinFiltroJudicial: !!r.ficha?.sarblock?.catalog && consultaSinFiltroJudicial({ ...r.ficha, proveedor: 'sarblock', estado: 'finalizado', at: r.ficha?.lanzadoAt ?? r.ficha?.at ?? r.consultado_at }),
         })),
       })
     }

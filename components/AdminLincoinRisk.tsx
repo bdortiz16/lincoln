@@ -452,11 +452,11 @@ export const AdminLincoinRisk: React.FC = () => {
                       )}
                     </div>
                     <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-                      {(p.pdf === 'tusdatos' || p.pdf === 'resumen') && (
+                      {(p.pdf === 'tusdatos' || p.pdf === 'resumen' || p.sinFiltroJudicial) && (
                         <button onClick={() => setConfirmar({ tipo: 'reconsultar', p })} disabled={reconsultando !== null || !!enCurso[id]}
                           className="hover:bg-white/[0.09] transition-colors"
                           style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: C.text, background: 'rgba(255,255,255,0.055)', border: `1px solid ${C.border2}`, padding: '7px 12px', borderRadius: 9, opacity: reconsultando === id ? 0.6 : 1 }}>
-                          <RefreshCw size={12} className={reconsultando === id || enCurso[id] ? 'animate-spin' : ''} /> {reconsultando === id ? 'Enviando…' : enCurso[id] ? 'Esperando a Sarblock…' : 'Consultar de nuevo con detalle completo'}
+                          <RefreshCw size={12} className={reconsultando === id || enCurso[id] ? 'animate-spin' : ''} /> {reconsultando === id ? 'Enviando…' : enCurso[id] ? 'Esperando a Sarblock…' : p.sinFiltroJudicial ? 'Consultar de nuevo (filtra homónimos)' : 'Consultar de nuevo con detalle completo'}
                         </button>
                       )}
                       {p.pdf && (
@@ -590,7 +590,7 @@ export const AdminLincoinRisk: React.FC = () => {
                 {confirmar.tipo === 'reconsultar' ? <RefreshCw size={16} color={C.text} /> : <Trash2 size={16} color={C.text} />}
               </span>
               <p style={{ fontSize: 16, fontWeight: 800, color: C.text, margin: 0 }}>
-                {confirmar.tipo === 'una' ? '¿Eliminar del padrón?' : confirmar.tipo === 'reconsultar' ? '¿Consultar de nuevo con detalle completo?' : '¿Eliminar todas las consultas?'}
+                {confirmar.tipo === 'una' ? '¿Eliminar del padrón?' : confirmar.tipo === 'reconsultar' ? (confirmar.p.sinFiltroJudicial ? '¿Consultar de nuevo filtrando homónimos?' : '¿Consultar de nuevo con detalle completo?') : '¿Eliminar todas las consultas?'}
               </p>
             </div>
 
@@ -600,10 +600,17 @@ export const AdminLincoinRisk: React.FC = () => {
                   <p style={{ fontSize: 13.5, fontWeight: 700, color: C.text, margin: 0, overflowWrap: 'anywhere' }}>{confirmar.p.nombreReal || 'Sin nombre en el documento'}</p>
                   <p style={{ fontSize: 11.5, color: C.sub, fontFamily: MONO, margin: '3px 0 0' }}>{confirmar.p.tipoDocumento} {confirmar.p.documento}</p>
                 </div>
+                {confirmar.p.sinFiltroJudicial ? (
+                  <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
+                    Esta consulta es anterior al 18 de noviembre, cuando Sarblock todavía no filtraba los procesos de la Rama Judicial de <b style={{ color: C.text }}>otras personas con el mismo nombre</b>.
+                    Una consulta nueva sale con ese filtro. <b style={{ color: C.text }}>Se paga una consulta de Sarblock.</b>
+                  </p>
+                ) : (
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '12px 0 0', lineHeight: 1.55 }}>
                   Esta ficha es de una consulta vieja, de cuando se usaba TusDatos: solo quedó el resumen. Se consulta en Sarblock para tener el
                   <b style={{ color: C.text }}> reporte completo, fuente por fuente</b>. <b style={{ color: C.text }}>Se paga una consulta de Sarblock.</b>
                 </p>
+                )}
                 <p style={{ fontSize: 12.5, color: C.sub, margin: '8px 0 0', lineHeight: 1.55 }}>
                   Se hace por la cuenta que la tiene entre sus beneficiarios{Array.isArray(confirmar.p.consultantes) && confirmar.p.consultantes[0] ? <> (primero se intenta <b style={{ color: C.text }}>{confirmar.p.consultantes[0].nombre}</b>)</> : null}.
                   El resultado nuevo reemplaza el veredicto de ese beneficiario: si sale algo más grave, puede quedar bloqueado.
