@@ -611,6 +611,27 @@ const ENVIOS_COMISION = ['dispersion', 'send', 'pay_sent']
 // motivo y comisión a mano en depósitos); Lincoin lo redefinió así.
 const esMandato = (cfg: any) => ['comision', 'psp'].includes(String(cfg?.modelo ?? ''))
 
+// ── PSP con beneficiario EMPRESA: la factura espera (decisión del dueño,
+// 26 nov) ─────────────────────────────────────────────────────────────
+// Cuando la plata va a una persona jurídica, esa empresa puede ser la
+// titular del negocio o estar recibiendo por cuenta de otro (el mandante).
+// Lincoin no lo sabe: emitirla sola al beneficiario dejaba facturas a quien
+// no correspondía. Queda 'por_confirmar' hasta que el cliente elige:
+//   · titular  → a la empresa que recibió, como siempre;
+//   · mandante → a quien él registra (nombre, tipo y número de documento),
+//                y queda el registro de a quién se le transfirió.
+// A una persona natural sigue saliendo sola, al beneficiario.
+const MSG_POR_CONFIRMAR = 'Pendiente de confirmar: el beneficiario es una empresa. Elige si la factura va al titular (la empresa que recibió la plata) o a un mandante.'
+// Documentos con que se registra un mandante, con su código de Siigo (el
+// id_type de la tabla de la DIAN). Solo numéricos: el número se guarda en
+// dígitos en todo el flujo de la factura.
+const TIPOS_MANDANTE: Record<string, { idType: string; nombre: string; min: number; max: number }> = {
+  NIT: { idType: '31', nombre: 'NIT', min: 9, max: 10 },
+  CC: { idType: '13', nombre: 'Cédula de ciudadanía', min: 5, max: 10 },
+  CE: { idType: '22', nombre: 'Cédula de extranjería', min: 4, max: 10 },
+  PPT: { idType: '48', nombre: 'Permiso por protección temporal', min: 5, max: 15 },
+}
+
 // «Retefuente comisiones 11 %» del catálogo de la cuenta (en el Siigo de
 // MEXITECH, el impuesto 41). Se busca por tipo y nombre en lo que devolvió
 // GET /v1/taxes; si no aparece así, el 41 si es una retención.
@@ -886,7 +907,9 @@ function partirNit(doc: string): { identification: string; check_digit?: string 
 // rechaza el documento soporte si el tercero no tiene país ("Falta o es
 // inválido el país del tercero", regla vista en DS-1-10).
 type Direccion = { address: string; city: { country_code: string; state_code: string; city_code: string } }
-type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null; email?: string | null; nombreMov?: string }
+// idType: el tipo de documento en Siigo cuando no es cédula ni NIT (un
+// mandante con cédula de extranjería o PPT). Sin él: NIT → 31, persona → 13.
+type Contraparte = { identification: string; check_digit?: string; nombre: string; esDefault: boolean; esEmpresa: boolean; direccion: Direccion | null; email?: string | null; nombreMov?: string; idType?: string }
 // Sin calle no se inventa una: Siigo exige texto en address y la DIAN solo
 // valida el país, así que va dicho tal cual.
 const SIN_CALLE = 'Sin direccion informada'
@@ -1103,7 +1126,7 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
     const faltaPais = !conPaisSiigo(existente)
     const faltaCorreo = !cp.esDefault && !conCorreoSiigo(existente)
     if (!faltaPais && !faltaCorreo) return { ok: true }
-    const idType = existente.id_type?.code ?? existente.id_type ?? (cp.esEmpresa ? '31' : '13')
+    const idType = existente.id_type?.code ?? existente.id_type ?? (cp.esEmpresa ? '31' : (cp.idType ?? '13'))
     const contactos = (Array.isArray(existente.contacts) ? existente.contacts : []).map((k: any) => ({ first_name: k.first_name ?? cp.nombre, ...(k.last_name ? { last_name: k.last_name } : {}), ...(k.email ? { email: k.email } : {}), ...(k.phone ? { phone: k.phone } : {}) }))
     const cuerpo: Record<string, unknown> = {
       type: existente.type ?? rol, person_type: existente.person_type ?? (cp.esEmpresa ? 'Company' : 'Person'), id_type: String(idType),
@@ -1137,7 +1160,7 @@ async function asegurarCliente(token: string, partner: string, cfg: any, cp: Con
   const comunes = { branch_office: 0, active: true, vat_responsible: false, fiscal_responsibilities: [{ code: 'R-99-PN' }], address: cp.direccion ?? direccionGenerica(cfg), ...(cp.esDefault ? {} : { contacts: [contactoNuevo] }) }
   const cuerpo = cp.esEmpresa && !cp.esDefault
     ? { type: rol, person_type: 'Company', id_type: '31', identification: cp.identification, ...(cp.check_digit ? { check_digit: cp.check_digit } : {}), name: [cp.nombre], commercial_name: cp.nombre, ...comunes }
-    : { type: rol, person_type: 'Person', id_type: '13', identification: cp.identification, name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], ...comunes }
+    : { type: rol, person_type: 'Person', id_type: cp.idType ?? '13', identification: cp.identification, name: [partes[0] ?? cp.nombre, partes.slice(1).join(' ') || '.'], ...comunes }
   const crea = await siigo('POST', '/v1/customers', { token, partner, body: cuerpo })
   if (!crea.ok) return { ok: false, error: `Creando al cliente ${cp.identification} en Siigo — ${motivoDe(crea)}` }
   return { ok: true }
@@ -1214,7 +1237,8 @@ async function actualizarSiAlguna(tabla: string, patch: Record<string, unknown>,
 // Desde qué estados se puede tomar un comprobante para emitir. Desde la cola,
 // solo si sigue en cola (un «Detener» justo antes la devolvió a como estaba).
 // Un 'emitiendo' de más de 3 min se da por caído.
-const ESTADOS_EMITIBLES = ['error', 'omitida', 'pendiente', 'anulada', 'en_cola']
+// 'por_confirmar': PSP con beneficiario empresa, una vez elegido titular o mandante.
+const ESTADOS_EMITIBLES = ['error', 'omitida', 'pendiente', 'anulada', 'en_cola', 'por_confirmar']
 function candadoFactura(desdeCola: boolean): ((q: any) => any)[] {
   const hace3 = new Date(Date.now() - 180000).toISOString()
   const caido = (q: any) => q.eq('factura_estado', 'emitiendo').lt('factura_at', hace3)
@@ -1337,7 +1361,11 @@ async function emitirSinSello(folio: number, opts: { forzar?: boolean; desdeCola
     // anulada (la FV-2-725 de XATECH era un depósito: anulada queda). No se
     // toca su estado: marcarla "no aplica" borraría que estuvo anulada.
     if (opts.forzar && yaFueAnulada && !esSalida) return { ok: false, error: 'En el modelo Comisión los depósitos no llevan factura: la anulada queda anulada.' }
-    if (opts.forzar && yaFueAnulada && clienteAnt?.identification) {
+    // PSP con la decisión titular/mandante guardada: decide ella (abajo), no
+    // el cliente de la anulada. Si la anularon por ir a quien no era, la
+    // nueva elección es la que vale.
+    const conDecisionPsp = esSalida && String(cfg.modelo) === 'psp' && !!detAnt?.destinatario?.tipo
+    if (opts.forzar && yaFueAnulada && clienteAnt?.identification && !conDecisionPsp) {
       return emitirComision(userId, String((comp as any).transaction_id), {
         identification: String(clienteAnt.identification), nombre: clienteAnt.nombre ? String(clienteAnt.nombre) : undefined,
         pct: Number(detAnt?.comision?.pct) || undefined, reemplazo: true, emisora,
@@ -1350,6 +1378,22 @@ async function emitirSinSello(folio: number, opts: { forzar?: boolean; desdeCola
       if (ben.esDefault) {
         const e = 'El envío no trae el documento del beneficiario, y en PSP la factura va a su nombre. Revisá el beneficiario en la lista y emití de nuevo.'
         await marcar({ factura_estado: 'error', factura_error: e, factura_tipo: 'FV' }); return { ok: false, error: e }
+      }
+      // Beneficiario EMPRESA: no sale sola (26 nov). Espera a que el cliente
+      // elija titular o mandante (acción factura_destinatario); ni el cron ni
+      // un «Reintentar» la emiten sin esa decisión.
+      const dest: any = detD?.destinatario ?? null
+      if (ben.esEmpresa && !dest?.tipo) {
+        await marcar({ factura_estado: 'por_confirmar', factura_error: MSG_POR_CONFIRMAR, factura_tipo: 'FV' })
+        return { ok: true, estado: 'por_confirmar', aviso: MSG_POR_CONFIRMAR }
+      }
+      if (ben.esEmpresa && dest?.tipo === 'mandante' && dest.mandante?.documento) {
+        const tipoM = TIPOS_MANDANTE[String(dest.mandante.tipoDoc ?? '')]
+        return emitirComision(userId, String((comp as any).transaction_id), {
+          identification: String(dest.mandante.documento), nombre: String(dest.mandante.nombre ?? ''),
+          esEmpresa: dest.mandante.tipoDoc === 'NIT', ...(tipoM && dest.mandante.tipoDoc !== 'NIT' ? { idType: tipoM.idType } : {}),
+          auto: !opts.forzar, emisora,
+        })
       }
       return emitirComision(userId, String((comp as any).transaction_id), { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa, auto: !opts.forzar, emisora })
     }
@@ -1963,7 +2007,7 @@ async function reenviarRechazada(userId: string, txId: string): Promise<any> {
 // Siigo la toma como duplicada, vuelve a la cola con espera en vez de quedar
 // 'pendiente': el cron reintenta los 'pendiente' con las reglas automáticas,
 // que no saben del cliente elegido en el lote.
-type DatosComision = { identification: string; nombre?: string; esEmpresa?: boolean; pct?: number; auto?: boolean; reemplazo?: boolean; cola?: Record<string, any>; emisora?: string }
+type DatosComision = { identification: string; nombre?: string; esEmpresa?: boolean; idType?: string; pct?: number; auto?: boolean; reemplazo?: boolean; cola?: Record<string, any>; emisora?: string }
 async function emitirComision(userId: string, txId: string, d: DatosComision): Promise<any> {
   const emisora = d.emisora ?? await emisoraDeTx(userId, txId)
   const r = await emitirComisionSinSello(userId, txId, { ...d, emisora })
@@ -2001,6 +2045,9 @@ async function emitirComisionSinSello(userId: string, txId: string, d: DatosComi
   // Siigo no contestó, el próximo intento busca la factura con esto. Se borra
   // cuando la factura queda registrada.
   if (detPrevio.intento) historia.intento = detPrevio.intento
+  // La elección titular/mandante (PSP con beneficiario empresa) tampoco: es
+  // el registro de a quién se facturó y a quién se le transfirió.
+  if (detPrevio.destinatario) historia.destinatario = detPrevio.destinatario
   // ¿Un envío anterior quedó A MEDIAS? (un 'emitiendo' de más de 3 min, lo
   // que se encoló estando así, o la marca `a_medias` que deja este código).
   // Revisión del 6 nov, igual que en emitir: si un intento sobre un
@@ -2064,7 +2111,7 @@ async function emitirComisionSinSello(userId: string, txId: string, d: DatosComi
   // beneficiario, RUES para empresas, o el respaldo).
   const esEmpresa = d.esEmpresa ?? (identification.length === 9)
   const partes = esEmpresa ? partirNit(identification) : { identification }
-  const cp: Contraparte = { ...partes, nombre: String(d.nombre ?? '').trim() || identification, esDefault: false, esEmpresa, direccion: null }
+  const cp: Contraparte = { ...partes, nombre: String(d.nombre ?? '').trim() || identification, esDefault: false, esEmpresa, direccion: null, ...(d.idType && !esEmpresa ? { idType: d.idType } : {}) }
   // En paralelo: ¿el cliente ya existe en Siigo? y el ítem en vivo. La
   // dirección (que puede pedir el RUES, lento) solo se busca si hay que
   // CREAR al cliente: uno que ya existe no la necesita para la factura.
@@ -2146,8 +2193,15 @@ async function emitirComisionSinSello(userId: string, txId: string, d: DatosComi
   // es el mismo cliente (un depósito), la línea queda con el cliente.
   let terceroLinea: { identification: string; branch_office: number } | null = null
   let notaTercero = ''
+  // PSP facturado a un MANDANTE: la factura dice a quién se le transfirió la
+  // plata (la empresa beneficiaria), con nombre y documento. Es el registro
+  // que pidió el dueño (26 nov); va también en la línea de terceros.
+  let transferidoA = ''
   if (mandato) {
     const benef = contraparteDe(comp, cfg)
+    if ((detPrevio as any)?.destinatario?.tipo === 'mandante' && !benef.esDefault && benef.identification) {
+      transferidoA = `Pago transferido a ${benef.nombre} (${benef.esEmpresa ? 'NIT' : 'doc.'} ${benef.identification}${benef.check_digit ? `-${benef.check_digit}` : ''})`
+    }
     if (!benef.esDefault && benef.identification && benef.identification !== cp.identification) {
       const claveB = `${userId}|${benef.identification}`
       const cliB = siigoVisto(clientesEnSiigo, claveB) ? { ok: true as const } : await asegurarCliente(t.token, partner, cfg, benef, 'Customer')
@@ -2160,7 +2214,7 @@ async function emitirComisionSinSello(userId: string, txId: string, d: DatosComi
   const descripcion = plantilla(cfg.desc_comision || (mandato ? 'Comisión por intermediación en recaudo y dispersión' : 'Comisión {utilidad} % sobre {monto} · Comprobante Lincoin {numero}')).slice(0, 500)
   const descTerceros = plantilla(cfg.desc_terceros || 'Ingresos recibidos para terceros').slice(0, 500)
   const observations = mandato
-    ? observacionConMarca([cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros por cuenta del mandante; no constituyen ingreso propio (art. 29 ET). Ítem 2: comisión por intermediación en recaudo y dispersión de pagos, gravada con IVA.`], `Operación según liquidación Lincoin ${(comp as any).numero}`)
+    ? observacionConMarca([cfg.observaciones || `Factura en desarrollo del contrato de mandato con ${cp.nombre}. Ítem 1: ingresos recibidos para terceros por cuenta del mandante; no constituyen ingreso propio (art. 29 ET). Ítem 2: comisión por intermediación en recaudo y dispersión de pagos, gravada con IVA.`], `Operación según liquidación Lincoin ${(comp as any).numero}`, transferidoA ? [transferidoA] : [])
     : observacionConMarca([cfg.observaciones], `Comprobante Lincoin ${(comp as any).numero}`, [`Comisión ${pct} % sobre ${ctx.monto} COP (IVA incluido)`])
   // La tarifa que manda es la que SIIGO aplica al ítem, no la del catálogo
   // guardado (puede estar viejo, o Siigo no devolver el impuesto en la lista
@@ -2745,13 +2799,20 @@ async function encolarLote(userId: string, body: any): Promise<any> {
         } else {
           if (!salida) { no(`En el modelo ${modelo === 'psp' ? 'PSP' : 'Comisión'} los depósitos no llevan factura.`); continue }
           const rd: any = tx.raw_data ?? {}
-          let cli: { identification: string; nombre: string; esEmpresa: boolean } | null
+          let cli: { identification: string; nombre: string; esEmpresa: boolean; idType?: string } | null
           if (modelo === 'psp') {
             // PSP: al beneficiario del envío, con el documento con que se le
             // envió. Sin documento no hay a quién facturar.
             const ben = contraparteDe({ detalle: { raw_data: rd }, tipo: tx.type }, cfgTx)
             if (ben.esDefault) { no('El envío no trae el documento del beneficiario, y en PSP la factura va a su nombre.'); continue }
-            cli = { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa }
+            // Beneficiario EMPRESA (26 nov): tampoco en lote sin la decisión
+            // titular/mandante. Con ella, a quien se eligió.
+            const dest: any = det?.destinatario ?? null
+            if (ben.esEmpresa && !dest?.tipo) { no('Pendiente de confirmar: el beneficiario es una empresa. Elige desde el movimiento si la factura va al titular o a un mandante.'); continue }
+            if (ben.esEmpresa && dest.tipo === 'mandante' && dest.mandante?.documento) {
+              const tipoM = TIPOS_MANDANTE[String(dest.mandante.tipoDoc ?? '')]
+              cli = { identification: String(dest.mandante.documento), nombre: String(dest.mandante.nombre ?? ''), esEmpresa: dest.mandante.tipoDoc === 'NIT', ...(tipoM && dest.mandante.tipoDoc !== 'NIT' ? { idType: tipoM.idType } : {}) }
+            } else cli = { identification: ben.identification, nombre: ben.nombre, esEmpresa: ben.esEmpresa }
           } else {
             const o: any = rd?.recipient?.ordenante ?? rd?.ordenante ?? null
             const docO = String(o?.doc ?? '').replace(/\D/g, '')
@@ -2805,6 +2866,7 @@ async function emitirDeCola(userId: string, f: any): Promise<'emitida' | 'error'
     else r = await emitirComision(userId, String(f.transaction_id), {
       identification: String(lote.cliente?.identification ?? ''), nombre: lote.cliente?.nombre ? String(lote.cliente.nombre) : undefined,
       esEmpresa: typeof lote.cliente?.esEmpresa === 'boolean' ? lote.cliente.esEmpresa : undefined,
+      ...(lote.cliente?.idType ? { idType: String(lote.cliente.idType) } : {}),
       pct: Number(lote.pct) || undefined, reemplazo: !!lote.reemplazo, cola: { ...lote, pasadas },
     })
   } catch (e) { r = { ok: false, error: String((e as Error)?.message ?? e) } }
@@ -4330,6 +4392,66 @@ Deno.serve(async (req) => {
         pct: body.comisionPct != null && body.comisionPct !== '' ? Number(body.comisionPct) : undefined,
       }))
     }
+    // ── PSP con beneficiario empresa: a quién va la factura ─────────────
+    // La factura quedó 'por_confirmar' (MSG_POR_CONFIRMAR). El cliente (o su
+    // contador aprobado) elige:
+    //   · titular: a la empresa que recibió la plata;
+    //   · mandante: a quien registra acá (nombre, tipo y número de
+    //     documento). La empresa que recibió queda registrada como a quien se
+    //     le transfirió (en la factura y en el comprobante).
+    // La decisión se guarda con quién la tomó y se emite enseguida. Una ya
+    // emitida no se cambia: primero se anula en Siigo con nota crédito.
+    if (accion === 'factura_destinatario') {
+      const txId = String(body.transactionId ?? '')
+      const destino = String(body.destino ?? '')
+      if (!txId) return json({ ok: false, error: 'falta_transactionId' }, 400)
+      if (destino !== 'titular' && destino !== 'mandante') return json({ ok: false, error: 'Elige si la factura va al titular o a un mandante.' }, 400)
+      const { data: tx } = await db.from('transactions').select('id, user_id, type, amount, currency, status, raw_data').eq('id', txId).maybeSingle()
+      if (!tx || String((tx as any).user_id) !== userId) return json({ ok: false, error: 'movimiento_no_encontrado' }, 404)
+      if (String((tx as any).status) !== 'Completado') return json({ ok: false, error: `La operación está en "${(tx as any).status}". Solo se factura cuando queda Completada.` })
+      if (!SALIDAS.includes(String((tx as any).type))) return json({ ok: false, error: 'Solo los envíos llevan esta factura.' })
+      const cfgD = await leerConfig(userId, await emisoraDeTx(userId, txId))
+      if (String(cfgD?.modelo ?? '') !== 'psp') return json({ ok: false, error: 'Esta elección es del modelo PSP / pasarela.' })
+      const rc = await asegurarComprobante(tx, userId)
+      if ('error' in rc) return json({ ok: false, error: rc.error }, 500)
+      const { data: compD } = await db.from('comprobantes').select('*').eq('folio', rc.folio).maybeSingle()
+      if (!compD) return json({ ok: false, error: 'comprobante_no_encontrado' }, 404)
+      const cD = compD as any
+      if (cD.factura_estado === 'emitida' && cD.factura_numero) return json({ ok: false, error: `Este envío ya tiene la factura ${cD.factura_numero}. Para cambiar a quién va, anúlala en Siigo con una nota crédito y vuelve a elegir.` })
+      if (cD.factura_estado === 'emitiendo' && Date.parse(String(cD.factura_at ?? '')) > Date.now() - 180000) return json({ ok: false, error: 'La factura se está emitiendo en este momento. Espera un minuto.' })
+      const ben = contraparteDe(cD, cfgD ?? {})
+      if (ben.esDefault) return json({ ok: false, error: 'El envío no trae el documento del beneficiario. Revísalo en la lista de beneficiarios.' })
+      const docBen = `${ben.identification}${ben.check_digit ? `-${ben.check_digit}` : ''}`
+      let mandante: { nombre: string; tipoDoc: string; documento: string } | null = null
+      if (destino === 'mandante') {
+        const m = body.mandante ?? {}
+        const nombre = String(m.nombre ?? '').replace(/\s+/g, ' ').trim()
+        const tipoDoc = String(m.tipoDoc ?? '').toUpperCase()
+        const numero = String(m.numero ?? '').replace(/[\s.\-]/g, '')
+        const t = TIPOS_MANDANTE[tipoDoc]
+        if (nombre.length < 3 || nombre.length > 150 || !/^[\p{L}\p{N} .,&'()\-]+$/u.test(nombre)) return json({ ok: false, error: 'Escribe el nombre o la razón social del mandante (letras, números y . , & \' ( ) -).' })
+        if (!t) return json({ ok: false, error: 'Elige el tipo de documento del mandante.' })
+        if (!/^\d+$/.test(numero) || numero.length < t.min || numero.length > t.max) return json({ ok: false, error: `El número de ${t.nombre} va solo con dígitos, de ${t.min} a ${t.max}.` })
+        // Un NIT con el dígito de verificación pegado: que sea el correcto.
+        if (tipoDoc === 'NIT' && numero.length === 10 && dvNit(numero.slice(0, 9)) !== Number(numero[9])) return json({ ok: false, error: `El dígito de verificación de ese NIT no corresponde. Escríbelo sin el dígito (9 números) o revísalo.` })
+        const base = tipoDoc === 'NIT' ? numero.slice(0, 9) : numero
+        if (base === ben.identification) return json({ ok: false, error: 'Ese es el documento de la empresa que recibió la plata: elige «Titular».' })
+        if ((await documentosPropios(userId)).has(baseDoc(base))) return json({ ok: false, error: 'Ese documento es de tu propia empresa: a la misma empresa no se le factura.' })
+        mandante = { nombre, tipoDoc, documento: base }
+      }
+      const destinatario = {
+        tipo: destino,
+        ...(mandante ? { mandante } : {}),
+        // A quién se le transfirió la plata: queda registrado siempre.
+        transferidoA: { nombre: ben.nombre, documento: docBen, esEmpresa: ben.esEmpresa },
+        por: yo.userId ?? null, at: new Date().toISOString(),
+      }
+      const anteriorD = cD.factura_detalle?.destinatario ?? null
+      await db.from('comprobantes').update({ factura_detalle: { ...(cD.factura_detalle ?? {}), destinatario } }).eq('folio', rc.folio)
+      await db.from('audit_log').insert({ user_id: userId, action: 'facturacion.destinatario', metadata: { transactionId: txId, folio: rc.folio, destino, mandante, transferidoA: destinatario.transferidoA, anterior: anteriorD ? { tipo: anteriorD.tipo, mandante: anteriorD.mandante ?? null } : null, por: yo.userId ?? null } }).then(() => {}, () => {})
+      return json(await emitir(rc.folio, { forzar: true }))
+    }
+
     if (accion === 'buscar_clientes') {
       // En el Siigo de la empresa elegida, o en el de la que factura ese movimiento.
       const em = body.emisora ? String(body.emisora) : body.transactionId ? await emisoraDeTx(userId, String(body.transactionId)) : 'principal'
@@ -4615,6 +4737,14 @@ Deno.serve(async (req) => {
             return { cliente: { identification: String(c.factura_detalle.comision.cliente.identification), nombre: c.factura_detalle.comision.cliente.nombre ?? null }, pct, terceros: r2(monto), comision, total: r2(monto + comision) }
           })() : null,
           respuesta_cruda: d ? JSON.stringify(d).slice(0, 6000) : null,
+          // PSP con beneficiario empresa: a quién se eligió facturar y a quién
+          // se le transfirió; y, mientras está por confirmar, quién es el
+          // titular (para la ventana titular/mandante).
+          destinatario: c.factura_detalle?.destinatario ?? null,
+          ...(c.factura_estado === 'por_confirmar' ? (() => {
+            const b = contraparteDe(c, cfg ?? {})
+            return { titular: { nombre: b.nombre, documento: `${b.identification}${b.check_digit ? `-${b.check_digit}` : ''}`, esEmpresa: b.esEmpresa } }
+          })() : {}),
           actualizado, aviso: avisoSiigo,
         } : null,
       })

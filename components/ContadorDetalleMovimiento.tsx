@@ -267,6 +267,8 @@ export const ContadorDetalleMovimiento: React.FC<{ tx: any; comprobante: any | n
     : doc.estado === 'anulada' ? { t: 'ANULADO', c: C.sub, b: 'rgba(255,255,255,0.14)' }
     : doc.estado === 'error' ? { t: 'NO SE EMITIÓ', c: C.rojo, b: 'rgba(248,113,113,0.35)' }
     : doc.estado === 'omitida' ? { t: 'NO APLICA', c: C.sub, b: 'rgba(255,255,255,0.14)' }
+    // PSP con beneficiario empresa: espera la elección titular / mandante.
+    : doc.estado === 'por_confirmar' ? { t: 'PENDIENTE', c: '#FBBF24', b: 'rgba(251,191,36,0.35)' }
     : { t: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
   const items: any[] = (Array.isArray(sg?.items) && sg.items.length ? sg.items : Array.isArray(doc?.enviado?.items) ? doc.enviado.items : []);
   const rechazoMsgs: string[] = Array.isArray(doc?.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];

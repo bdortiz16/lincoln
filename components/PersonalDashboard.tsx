@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrebRecaudo } from './BrebRecaudo';
 import { ReenvioDianModal } from './ReenvioDianModal';
+import FacturaDestinatarioModal from './FacturaDestinatarioModal';
 import { DocumentosContables } from './DocumentosContables';
 import { CambiarCorreo } from './CambiarCorreo';
 import {
@@ -547,6 +548,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
   // Factura rechazada por la DIAN: la ventana de Lincoin pregunta, la
   // corrige (fecha de hoy) y reenvía la MISMA factura de Siigo.
   const [reenvioDian, setReenvioDian] = useState<{ txId: string; numero: string | null } | null>(null);
+  // PSP con beneficiario empresa: la factura espera a que se elija si va al
+  // titular o a un mandante (26 nov). La ventana es la misma de Contabilidad.
+  const [destinoFacturaTx, setDestinoFacturaTx] = useState<string | null>(null);
   const emitirDeNuevoSiigo = async (txId: string) => {
     setDocEmitiendo(true);
     try {
@@ -4588,10 +4592,20 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                 if (Array.isArray(doc.notas_credito) && doc.notas_credito.length) filas.push({ label: doc.notas_credito.length === 1 ? 'Nota crédito' : 'Notas crédito', value: doc.notas_credito.map((n: any) => `${n.nombre}${n.total ? ` · ${formatMoney(Number(n.total), 'COP')}` : ''}`).join(' · '), mono: true, color: doc.estado === 'anulada' ? '#F4F4F2' : '#FB923C' });
               }
               if (ds.comprobante?.numero) filas.push({ label: 'Comprobante Lincoin', value: String(ds.comprobante.numero), mono: true });
+              // PSP a una empresa: a quién se eligió facturar y a quién se le
+              // transfirió la plata (queda registrado con la decisión).
+              const dest: any = doc.destinatario;
+              if (dest?.tipo) {
+                filas.push({ label: 'Facturada a', value: dest.tipo === 'mandante' && dest.mandante
+                  ? `Mandante · ${dest.mandante.nombre} · ${dest.mandante.tipoDoc} ${dest.mandante.documento}`
+                  : 'Titular (la empresa que recibió)' });
+                if (dest.transferidoA?.nombre) filas.push({ label: 'Transferido a', value: `${dest.transferidoA.nombre}${dest.transferidoA.documento ? ` · ${dest.transferidoA.esEmpresa ? 'NIT' : 'doc.'} ${dest.transferidoA.documento}` : ''}` });
+              }
               const estadoTxt = doc.estado === 'emitida' ? (rechazado ? { l: 'RECHAZADO POR LA DIAN', c: '#F87171', b: 'rgba(248,113,113,0.35)' } : { l: 'EMITIDO', c: '#4ADE80', b: 'rgba(74,222,128,0.3)' })
                 : doc.estado === 'anulada' ? { l: 'ANULADO EN SIIGO', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
                 : doc.estado === 'error' ? { l: 'ERROR', c: '#F87171', b: 'rgba(248,113,113,0.35)' }
                 : doc.estado === 'omitida' ? { l: 'NO APLICA', c: '#878E88', b: 'rgba(255,255,255,0.14)' }
+                : doc.estado === 'por_confirmar' ? { l: 'PENDIENTE', c: '#FBBF24', b: 'rgba(251,191,36,0.35)' }
                 : { l: String(doc.estado).toUpperCase(), c: 'rgba(244,244,242,0.7)', b: 'rgba(255,255,255,0.14)' };
               const rechazoMsgs: string[] = Array.isArray(doc.rechazo_dian?.mensajes) ? doc.rechazo_dian.mensajes : [];
               // Modelo Comisión: un depósito no lleva factura, ni para
@@ -4651,6 +4665,32 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({ onLogout }
                   )}
                   {(doc.estado === 'error' || doc.estado === 'anulada') && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'error' ? '#F87171' : '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
                   {doc.estado === 'omitida' && doc.error && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error}</p>}
+                  {/* PSP con beneficiario empresa: no sale sola. */}
+                  {doc.estado === 'por_confirmar' && (
+                    <>
+                      <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>{doc.error ?? 'Elige si la factura va al titular o a un mandante.'}</p>
+                      {tx.status === 'Completado' && (
+                        <button onClick={() => setDestinoFacturaTx(String(tx.id))}
+                          className="w-full flex items-center justify-center hover:opacity-90 transition-opacity"
+                          style={{ gap: 6, marginTop: 10, padding: '9px 0', borderRadius: 9, fontSize: 12, fontWeight: 700, color: '#0A0A0A', background: '#F4F4F2', border: 'none' }}>
+                          <FileText size={13} /> Elegir a quién se factura
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {destinoFacturaTx === String(tx.id) && (
+                    <FacturaDestinatarioModal
+                      transactionId={String(tx.id)}
+                      titularInicial={doc.titular ?? null}
+                      resumen={`${formatMoney(Math.abs(Number(tx.amount) || 0), 'COP')} COP`}
+                      onCerrar={() => setDestinoFacturaTx(null)}
+                      onListo={(r: any) => {
+                        setDestinoFacturaTx(null); setDocVersion(v => v + 1);
+                        if (r?.estado === 'emitida') showToast(`Factura emitida: ${r.numero ?? ''}`.trim());
+                        else showToast(String(r?.aviso ?? `La factura quedó en «${r?.estado ?? 'pendiente'}».`), 9000);
+                      }}
+                    />
+                  )}
                   {doc.solo_envios && doc.estado === 'anulada' && <p style={{ marginTop: 8, fontSize: 11.5, color: '#878E88', lineHeight: 1.45 }}>En el modelo Comisión los depósitos no llevan factura: esta queda anulada y no se vuelve a emitir.</p>}
                   {doc.ajuste && doc.estado !== 'omitida' && <p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'emitida' ? '#FB923C' : '#878E88', lineHeight: 1.45 }}>{doc.estado === 'emitida' ? `${doc.ajuste} Anula la factura con una nota crédito en Siigo.` : doc.ajuste}</p>}
                   {doc.misma_empresa && doc.estado !== 'omitida' &&<p style={{ marginTop: 8, fontSize: 11.5, color: doc.estado === 'emitida' ? '#FB923C' : '#878E88', lineHeight: 1.45 }}>{doc.estado === 'emitida' ? 'Este movimiento es con la misma empresa (la factura va a su nombre, o el envío fue a una cuenta propia): es utilidad o gasto de la empresa y lo registra su contador. Anula la factura con una nota crédito en Siigo.' : 'El movimiento es con la misma empresa (utilidad o gasto que registra su contador): no se vuelve a emitir.'}</p>}

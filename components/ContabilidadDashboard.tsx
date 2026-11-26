@@ -33,6 +33,7 @@ import { EmpresaFacturacion, useFacturacion, useOrdenantesEmpresa } from '../lib
 import { useDatabase } from '../context/DatabaseContext';
 import { descargarXlsx, refCelda, type CeldaX, type Estilo, type Hoja } from '../lib/xlsx';
 import { FacturacionConfig } from './FacturacionConfig';
+import FacturaDestinatarioModal from './FacturaDestinatarioModal';
 import { AccesoContadorModal, type Vinculo as SolicitudContador } from './AccesoContadorModal';
 import { Bolita, FichaEmpresaModal } from './FichaEmpresa';
 import { EstadoCuentaHoja } from './EstadoCuentaHoja';
@@ -1274,6 +1275,16 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       Emitir factura
     </button>
   );
+  // PSP con beneficiario EMPRESA (26 nov): la factura no sale sola; se
+  // pregunta si va al titular (la empresa que recibió) o a un mandante.
+  const [destinoPara, setDestinoPara] = useState<Asiento | null>(null);
+  const botonDestino = (a: Asiento) => (
+    <button onClick={() => setDestinoPara(a)}
+      title="El beneficiario es una empresa: elige si la factura va al titular o a un mandante"
+      style={{ fontFamily: FONT, fontSize: 11, fontWeight: 700, color: C.text, background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.40)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer' }}>
+      Elegir a quién
+    </button>
+  );
   // Modelo Comisión: cualquier movimiento se factura a mano con el mismo
   // modal (elegir cliente y porcentaje), por si la automática no aplicaba.
   const esComision = String(cfgFact?.modelo ?? '') === 'comision';
@@ -1285,7 +1296,12 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
   // estos modelos).
   const botonSegunTipo = (a: Asiento, txId: string) => {
     if (noAplicaPor(a.tx)) return null;
-    if (esMandato) return a.dir === 'out' && !esPropio(clienteDe(a.tx)?.identification) ? botonFacturaComision(a) : null;
+    if (esMandato) {
+      if (a.dir !== 'out' || esPropio(clienteDe(a.tx)?.identification)) return null;
+      // PSP a una empresa: titular o mandante, no la factura directa.
+      if (esPsp && clienteDe(a.tx)?.esEmpresa && !soloLectura) return botonDestino(a);
+      return botonFacturaComision(a);
+    }
     return botonEmitir(txId);
   };
   // SIN FACTURA: un movimiento completado que se puede facturar y no tiene
@@ -1869,6 +1885,19 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
       {lote && cfgFact && (
         <EmisionLoteModal items={lote} cfg={cfgFact} periodoTxt={periodoTxt} vivo={vivo} lecturas={lecturas} esPropio={esPropio} onCerrar={() => { setLote(null); setLoteAbierto(false); setPulsoFolios(v => v + 1); }} onEncolado={() => setPulsoFolios(v => v + 1)} />
       )}
+      {destinoPara && (
+        <FacturaDestinatarioModal
+          transactionId={String((destinoPara.tx as any)?.id ?? '')}
+          titularInicial={(() => { const b = clienteDe(destinoPara.tx); return b ? { nombre: b.nombre, documento: b.identification, esEmpresa: b.esEmpresa } : null; })()}
+          resumen={`${destinoPara.tipo} · ${destinoPara.contraparte || '—'} · ${fmtMon(destinoPara.monto, destinoPara.moneda)}`}
+          onCerrar={() => setDestinoPara(null)}
+          onListo={(r: any) => {
+            setDestinoPara(null); setFoliosVersion(v => v + 1);
+            if (r?.estado === 'emitida') alert(`Factura ${r.numero ?? ''} emitida.`.replace('  ', ' '));
+            else if (r?.aviso || r?.estado) alert(String(r.aviso ?? `La factura quedó en «${r.estado}».`));
+          }}
+        />
+      )}
       {comisionPara && cfgFact && (
         <FacturaComisionModal asiento={comisionPara} cfg={cfgFact} onCerrar={() => setComisionPara(null)} onEmitida={() => { setComisionPara(null); setFoliosVersion(v => v + 1); }} />
       )}
@@ -2137,6 +2166,14 @@ export const ContabilidadDashboard: React.FC<Props> = ({ transactions, userId, o
                               <span style={{ color: C.tenue }} title={noAplicaPor(a.tx) === 'cuenta propia' ? 'Movimiento con una cuenta de la misma empresa: es utilidad o gasto de la empresa y lo registra su contador.' : noAplicaPor(a.tx) ? 'Ajuste de saldo de Lincoin por un error del admin al cargar: no es una operación con un tercero.' : undefined}>{facturacionActiva && noAplicaPor(a.tx) ? `no aplica · ${noAplicaPor(a.tx)}` : f && facturacionActiva ? 'pendiente' : '—'}</span>
                               {completado && facturacionActiva && txId && botonSegunTipo(a, txId)}
                             </span>
+                          </span>
+                        );
+                        // PSP con beneficiario empresa: espera la elección
+                        // titular / mandante (no sale sola).
+                        if (fa.estado === 'por_confirmar') return (
+                          <span className="flex items-center" style={{ gap: 6 }} title={fa.error ?? ''}>
+                            <span style={{ color: AMBAR, fontWeight: 700 }}>pendiente</span>
+                            {!soloLectura && completado && txId && !rech && botonDestino(a)}
                           </span>
                         );
                         if (fa.estado === 'omitida' || fa.estado === 'pendiente' || fa.estado === 'anulada') return (
