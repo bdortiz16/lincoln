@@ -35,7 +35,7 @@ import { setRawPath } from '../_shared/raw-data.ts'
 import { requireMfaSession, igualSeguro } from '../_shared/admin-auth.ts'
 import { traeSecretoDeLaBase } from '../_shared/webhook-auth.ts'
 import { ClienteSarblock, ErrorSarblock, sujetoDe, saldoScreening, claveIdempotencia, documentoInvalido } from './cliente.ts'
-import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, fichaIncompleta, rejuzgar, CRITERIO, soloTrasladoRues, PASIVA, type RuesTraslado, type Revisiones } from './traductor.ts'
+import { traducir, fichaLanzada, terminado, hayQueReintentar, pasoFuentePendiente, fichaIncompleta, rejuzgar, CRITERIO, consultaSinFiltroJudicial, soloTrasladoRues, PASIVA, type RuesTraslado, type Revisiones } from './traductor.ts'
 import { buscar as padronBuscar, guardar as padronGuardar, anotarUso, fichaParaCuenta, docPadron, tipoPadron } from './padron.ts'
 import * as R from './risk.ts'
 import { normDoc } from '../_shared/cupos.ts'
@@ -366,10 +366,15 @@ async function lanzar(uid: string, d: { documento: string; tipoDocumento: string
   // vence y solo guardó el resumen (sin el detalle fuente por fuente), así
   // que Cumplimiento no tenía cómo sustentar el veredicto. La pide un admin
   // desde Lincoin Risk, sabiendo que se paga una consulta.
+  // 26 nov: también una consulta de Sarblock anterior al filtro de homónimos
+  // de la Rama Judicial que trae procesos (consultaSinFiltroJudicial): la
+  // nueva sale con minJudicialScore y los procesos de otras personas ya no
+  // aparecen. Se paga, y solo la pide un admin.
   const tusdatosVieja = previa?.estado === 'finalizado' && previa?.proveedor !== 'sarblock'
-  const forzada = forzar && esAdmin && previa?.estado === 'finalizado' && (previa?.categoria === 'sin_validar' || tusdatosVieja)
-  if (forzar && !forzada) return { ok: false, motivo: 'Solo se puede volver a consultar un beneficiario con la identidad sin validar o con una consulta vieja sin detalle.' }
-  if (forzada) await auditar('sarblock.reconsulta_forzada', { userId: uid, documento: doc, identidadAnterior: previa?.sarblock?.identity ?? null })
+  const sinFiltroJudicial = consultaSinFiltroJudicial(previa)
+  const forzada = forzar && esAdmin && previa?.estado === 'finalizado' && (previa?.categoria === 'sin_validar' || tusdatosVieja || sinFiltroJudicial)
+  if (forzar && !forzada) return { ok: false, motivo: 'Solo se puede volver a consultar un beneficiario con la identidad sin validar, con una consulta vieja sin detalle, o con una consulta anterior al 18 nov que trae procesos de la Rama Judicial.' }
+  if (forzada) await auditar('sarblock.reconsulta_forzada', { userId: uid, documento: doc, identidadAnterior: previa?.sarblock?.identity ?? null, motivo: previa?.categoria === 'sin_validar' ? 'sin_validar' : tusdatosVieja ? 'tusdatos' : 'sin_filtro_judicial', categoriaAnterior: previa?.categoria ?? null })
   // Documento que Sarblock rechaza seguro (una cédula de 11 dígitos): no se
   // llama. La ficha queda en 'documento_invalido', que el envío sigue
   // frenando ("sin resultado no sale plata") pero que ya no se reintenta, y

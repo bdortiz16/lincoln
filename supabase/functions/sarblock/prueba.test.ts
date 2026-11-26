@@ -780,3 +780,20 @@ Deno.test('cliente: minJudicialScore viaja en el cuerpo del check (y no va si no
   assertEquals(cuerpos[0].minJudicialScore, 0.7);
   assertEquals('minJudicialScore' in cuerpos[1], false);
 });
+
+// 26 nov: consulta anterior al filtro de homónimos de la Rama Judicial.
+import { consultaSinFiltroJudicial } from './traductor.ts';
+Deno.test('consultaSinFiltroJudicial: vieja con procesos sí; nueva, sin procesos o sin terminar no', () => {
+  const ramaMatch = { code: 'co_rama_judicial', matched: true, hits: [] };
+  const ramaLimpia = { code: 'co_rama_judicial', matched: false, hits: [] };
+  const f = (at: string, catalog: any[], extra: any = {}) => ({ proveedor: 'sarblock', estado: 'finalizado', at, sarblock: { catalog }, ...extra });
+  assertEquals(consultaSinFiltroJudicial(f('2026-10-29T21:45:43.956Z', [ramaMatch])), true);
+  assertEquals(consultaSinFiltroJudicial(f('2026-11-17T20:00:00Z', [ramaMatch])), true);
+  assertEquals(consultaSinFiltroJudicial(f('2026-11-18T01:00:00Z', [ramaMatch])), false);
+  assertEquals(consultaSinFiltroJudicial(f('2026-10-29T21:45:43.956Z', [ramaLimpia])), false);
+  assertEquals(consultaSinFiltroJudicial(f('2026-10-29T21:45:43.956Z', [ramaMatch], { estado: 'procesando' })), false);
+  assertEquals(consultaSinFiltroJudicial(f('2026-10-29T21:45:43.956Z', [ramaMatch], { proveedor: 'tusdatos' })), false);
+  // lanzadoAt manda sobre at (at es cuando terminó).
+  assertEquals(consultaSinFiltroJudicial(f('2026-11-18T05:00:00Z', [ramaMatch], { lanzadoAt: '2026-11-17T23:00:00Z' })), true);
+  assertEquals(consultaSinFiltroJudicial(null), false);
+});

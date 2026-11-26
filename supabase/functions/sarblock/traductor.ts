@@ -504,6 +504,23 @@ export const fichaIncompleta = (f: any): boolean =>
   );
 export const releerFicha = (f: any) => fichaIncompleta(f) && !!f.jobid;
 
+// Consulta hecha ANTES de que le pidiéramos a Sarblock el filtro de homónimos
+// de la Rama Judicial (minJudicialScore 0,7, desde el 17 nov; el corte va al
+// final del día para cubrir el despliegue). Esas traen procesos de otras
+// personas con el mismo nombre (caso Tatiana López Mejía: una extinción de
+// dominio de "Anefaidy Tatiana López Mejía" la dejaba en alto). Sarblock
+// (26 nov): re-consultar el check viejo no sirve, hay que crear uno nuevo.
+// Cumplimiento puede pedir esa consulta nueva (se paga) cuando la ficha
+// tiene procesos de la Rama Judicial.
+export const DESDE_FILTRO_JUDICIAL = Date.parse('2026-11-18T00:00:00Z');
+export const consultaSinFiltroJudicial = (f: any): boolean => {
+  if (f?.proveedor !== 'sarblock' || f.estado !== 'finalizado') return false;
+  const cuando = Date.parse(String(f.lanzadoAt ?? f.at ?? ''));
+  if (!Number.isFinite(cuando) || cuando >= DESDE_FILTRO_JUDICIAL) return false;
+  const catalogo: any[] = Array.isArray(f.sarblock?.catalog) ? f.sarblock.catalog : [];
+  return catalogo.some(e => String(e?.code ?? '') === 'co_rama_judicial' && e?.matched === true);
+};
+
 // Qué hacer con una ficha que tiene fuentes en curso. Sarblock (12 nov): la
 // fuente oficial a veces no está disponible; el retry manual del check es
 // GRATIS y no vence, aunque la fuente diga retryable=false. Su retry

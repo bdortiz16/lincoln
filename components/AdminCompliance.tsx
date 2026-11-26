@@ -66,7 +66,7 @@ const textoBotonReintento = (c: any): { t: string; ayuda: string } =>
     ? { t: 'Revisar si ya terminó', ayuda: 'Pregunta a Sarblock si la consulta ya terminó. No gasta crédito.' }
     : esSarblockPegada(c)
       ? { t: 'Reintentar fuente faltante', ayuda: 'Vuelve a pedir la fuente que no respondió (gratis). Si Sarblock no lo deja, lanza una consulta nueva (gasta 1 crédito).' }
-      : { t: 'Volver a consultar', ayuda: 'Lanza una consulta nueva a Sarblock (gasta 1 crédito si no hay un resultado vigente).' };
+      : { t: 'Volver a consultar', ayuda: 'Lanza una consulta nueva a Sarblock y gasta 1 crédito. Sirve para identidad sin validar y para consultas anteriores al 18 nov con procesos de la Rama Judicial (filtra homónimos).' };
 
 // Una línea con en qué va la consulta: si se está reintentando sola, cuántas
 // veces, qué fuente falta y cuándo fue el último intento.
@@ -249,10 +249,15 @@ export const AdminCompliance: React.FC = () => {
     // de TusDatos que quedaron en error (oct): TusDatos ya no se usa y su
     // reintento no hacía nada (17 nov: 6 beneficiarios frenados así).
     if (!c.esTitular) {
+      // Una ficha terminada de Sarblock solo se vuelve a consultar forzando
+      // (se paga): el servidor decide si aplica (identidad sin validar, o una
+      // consulta anterior al filtro de homónimos de la Rama Judicial).
+      const terminadaSarblock = c.proveedor === 'sarblock' && c.estado === 'finalizado';
+      if (terminadaSarblock && !window.confirm('Se lanza una consulta NUEVA a Sarblock y gasta 1 crédito.\n\nMientras responde (cerca de un minuto) no se le puede enviar a este beneficiario. ¿Continuar?')) return;
       const r: any = await llamarFuncion('sarblock', {
         action: 'verificar_beneficiario', userId: c.userId, documento: c.documento,
         tipoDocumento: c.tipoDocumento ?? 'CC', nombre: c.nombreInscrito ?? undefined,
-        forzar: c.categoria === 'sin_validar',
+        forzar: c.categoria === 'sin_validar' || terminadaSarblock,
       }).catch(() => null);
       const texto = r?.checkId ? 'Consulta enviada a Sarblock. El resultado llega en cerca de un minuto; mientras tanto no se le puede transferir.'
         : r?.yaExistia ? 'Ya tiene un resultado vigente; no se volvió a consultar.'
