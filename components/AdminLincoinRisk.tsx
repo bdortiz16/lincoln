@@ -216,24 +216,35 @@ export const AdminLincoinRisk: React.FC = () => {
       : { ok: false, t: 'Sarblock todavía no devuelve el resultado (algunas fuentes tardan). Se recoge solo: vuelve a mirar en unos minutos con «Actualizar».' });
     cargar();
   };
+  // El resultado de «Consultar de nuevo» también va en la tarjeta: arriba de
+  // la página no se veía y parecía que el botón no hacía nada (26 nov).
+  const [avisoFicha, setAvisoFicha] = useState<{ id: string; ok: boolean; t: string } | null>(null);
   const reconsultar = async (p: any) => {
-    setConfirmar(null);
     const id = `${p.tipoDocumento}:${p.documento}`;
+    const r0 = await reconsultarUna(p, id);
+    if (r0) setAvisoFicha({ id, ...r0 });
+  };
+  const reconsultarUna = async (p: any, id: string): Promise<{ ok: boolean; t: string } | null> => {
+    setConfirmar(null);
+    setAvisoFicha(null);
     setReconsultando(id);
     const r = await llamarFuncion('sarblock', { action: 'admin_risk_reconsultar', tipoDocumento: p.tipoDocumento, documento: p.documento }, 60000).catch(() => null);
     setReconsultando(null);
-    if (!r?.ok) { setAviso({ ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo volver a consultar.' }); return; }
+    if (!r?.ok) { const v = { ok: false, t: r?.motivo ?? r?.error ?? 'No se pudo volver a consultar.' }; setAviso(v); return v; }
     if (r.enCurso && r.cuenta) {
       // Ya estaba en curso: no se pagó otra consulta, se sigue esperando esa.
       vigilar(p, String(r.cuenta));
-      setAviso({ ok: true, t: r.cerrada ? 'Llegó el resultado de Sarblock. Actualizando…' : 'La consulta en Sarblock ya estaba en curso (no se pagó otra). Esta pantalla se actualiza sola cuando llegue el resultado.' });
-      return;
+      const v = { ok: true, t: r.cerrada ? 'Llegó el resultado de Sarblock. Actualizando…' : 'La consulta en Sarblock ya estaba en curso (no se pagó otra). Esta pantalla se actualiza sola cuando llegue el resultado.' };
+      setAviso(v);
+      return v;
     }
     if (r.checkId && r.cuenta) vigilar(p, String(r.cuenta));
-    setAviso({ ok: true, t: r.checkId
+    const v = { ok: true, t: r.checkId
       ? `Consulta enviada a Sarblock${r.cuentaNombre ? ` por la cuenta de ${r.cuentaNombre}` : ''}. Esta pantalla se actualiza sola cuando llegue el resultado (uno a cinco minutos).`
       : r.yaExistia ? 'Esa ficha ya tenía un resultado vigente; no se volvió a consultar.'
-      : 'Consulta actualizada. Toca «Actualizar» para ver el resultado.' });
+      : 'Consulta actualizada. Toca «Actualizar» para ver el resultado.' };
+    setAviso(v);
+    return v;
   };
 
   const borrarTodas = async () => {
@@ -451,6 +462,9 @@ export const AdminLincoinRisk: React.FC = () => {
                         </p>
                       )}
                     </div>
+                    {avisoFicha?.id === id && (
+                      <p role="status" style={{ marginTop: 12, marginBottom: 0, fontSize: 12.5, lineHeight: 1.5, color: avisoFicha.ok ? C.green : '#FBBF24' }}>{avisoFicha.t}</p>
+                    )}
                     <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
                       {(p.pdf === 'tusdatos' || p.pdf === 'resumen' || p.sinFiltroJudicial) && (
                         <button onClick={() => setConfirmar({ tipo: 'reconsultar', p })} disabled={reconsultando !== null || !!enCurso[id]}

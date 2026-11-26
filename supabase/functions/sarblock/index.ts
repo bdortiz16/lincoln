@@ -866,7 +866,14 @@ async function risk(req: Request, yo: Yo, uid: string, accion: string, body: Rec
       if (!doc) return { ok: false, motivo: 'Falta el documento.' }
       const { data: fila } = await db.from('risk_registry').select('empresas, nombre_real, ficha').eq('doc_type', tipo).eq('doc_number', doc).maybeSingle()
       if (!fila) return { ok: false, motivo: 'Esa persona ya no está en el padrón.' }
-      if ((fila as any).ficha?.sarblock?.catalog) return { ok: false, motivo: 'Esta consulta ya tiene el detalle completo: descarga el PDF.' }
+      // Ya tiene el detalle de Sarblock: solo se vuelve a consultar si es
+      // anterior al filtro de homónimos de la Rama Judicial (26 nov). Antes
+      // este freno devolvía siempre "ya tiene el detalle" y el botón de
+      // Lincoin Risk no hacía nada para esas fichas.
+      const fichaPadron = (fila as any).ficha
+      if (fichaPadron?.sarblock?.catalog && !consultaSinFiltroJudicial({ ...fichaPadron, proveedor: 'sarblock', estado: 'finalizado', at: fichaPadron?.lanzadoAt ?? fichaPadron?.at })) {
+        return { ok: false, motivo: 'Esta consulta ya tiene el detalle completo: descarga el PDF.' }
+      }
       const c = await leerConfig()
       if (!c.activo) return { ok: false, motivo: 'Sarblock no está activo: no se puede consultar ahora.' }
       const empresas: string[] = Array.isArray((fila as any).empresas) ? (fila as any).empresas.map((x: unknown) => String(x)) : []
