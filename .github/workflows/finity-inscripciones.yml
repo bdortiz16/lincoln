@@ -1,0 +1,58 @@
+name: Inscripciones pendientes en Finity
+
+# POR QUE EXISTE
+#   Las cuentas ACH de los beneficiarios se inscriben en Finity (ACH · Cuenta 2)
+#   desde la pantalla del cliente. Si la primera inscripcion fallaba (Finity no
+#   respondio, la pausa por 403/429, el token), el reintento solo corria cuando
+#   ESE cliente volvia a abrir sus beneficiarios: si no volvia, la cuenta no le
+#   llegaba nunca a Finity (23 nov: "no estan llegando las inscripciones").
+#
+#   Esto le pide al servidor (finity-proxy `inscribir_pendientes`) que las
+#   inscriba solo, cada 15 minutos, de a 3 (cada inscripcion puede tardar hasta
+#   ~50 s y la funcion tiene un tiempo maximo). Respeta la pausa de Finity y la
+#   espera por cuenta: un rechazo por datos no se repite cada 15 minutos.
+
+on:
+  schedule:
+    # Cada 15 minutos, corrido del :00, donde GitHub se atrasa.
+    - cron: '4,19,34,49 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: finity-inscripciones
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  inscribir:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inscribir cuentas pendientes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then
+            echo "⏭️  Todavía sin configurar: faltan los secretos SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY."
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then exit 1; fi
+            exit 0
+          fi
+
+          RESP=$(curl -sS --max-time 150 -w '\n%{http_code}' \
+            -X POST "$SUPABASE_URL/functions/v1/finity-proxy" \
+            -H "Content-Type: application/json" \
+            -H "apikey: $SERVICE_KEY" \
+            -H "Authorization: Bearer $SERVICE_KEY" \
+            -d '{"action":"inscribir_pendientes","limite":3}')
+
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+
+          # Solo contadores: el cuerpo trae nombres de clientes y beneficiarios.
+          echo "HTTP $CODE"
+          echo "$BODY" | jq -r 'if .frenado then "en pausa hasta \(.hasta) (Finity respondió \(.http))" else "pendientes: \(.pendientes // 0) · listas: \(.candidatas // 0) · intentadas: \(.intentadas // 0) · inscritas: \(.inscritas // 0)" end' || true
+          echo "$BODY" | jq -r '[.resultados[]?.status] | group_by(.) | map("  HTTP \(.[0]): \(length)") | .[]' || true
+          echo "$BODY" | jq -r 'select(.ok != true) | "ERROR: \(.message // .error)"' || true
+          if [ "$CODE" -ge 500 ]; then exit 1; fi

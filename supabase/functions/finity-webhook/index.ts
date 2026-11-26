@@ -38,21 +38,38 @@ const CORS = {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
 
-// Busca recursivamente (máx 3 niveles) el primer valor string/number de
-// alguna de las claves dadas.
-function dig(obj: unknown, keys: string[], depth = 0): string | null {
-  if (!obj || typeof obj !== 'object' || depth > 3) return null
-  const rec = obj as Record<string, unknown>
-  for (const k of keys) {
-    const v = rec[k]
-    if (typeof v === 'string' && v.trim()) return v.trim()
-    if (typeof v === 'number') return String(v)
+// Todos los valores de claves tipo id/referencia del aviso (cualquier nivel),
+// los más específicos primero (orden de retiro, movimiento) y el `id` suelto
+// al final. Solo texto corto y sin espacios: los ids de Finity (mvm-…, uuid).
+function idsDelAviso(obj: unknown): string[] {
+  const especificos: string[] = [], sueltos: string[] = []
+  const RE_ESPECIFICA = /^(withdrawal_?order_?id|withdrawalorderid|order_?id|orderid|movement_?id|movementid|transaction_?id|transactionid|withdrawal_?id|withdrawalid|reference|reference_?id|external_?id|externalid)$/i
+  const NO_ES = /^(user|customer|company|account|destination|external_account|wallet|owner|client|event|webhook|delivery)_?id$/i
+  const ver = (o: unknown, nivel: number) => {
+    if (!o || typeof o !== 'object' || nivel > 4) return
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if ((typeof v === 'string' || typeof v === 'number') && !NO_ES.test(k)) {
+        const t = String(v).trim()
+        if (!/^[\w.:-]{4,120}$/.test(t)) continue
+        if (RE_ESPECIFICA.test(k)) especificos.push(t)
+        else if (k.toLowerCase() === 'id') sueltos.push(t)
+      } else if (v && typeof v === 'object') ver(v, nivel + 1)
+    }
   }
-  for (const v of Object.values(rec)) {
-    const found = dig(v, keys, depth + 1)
-    if (found) return found
+  ver(obj, 0)
+  return Array.from(new Set([...especificos, ...sueltos])).slice(0, 12)
+}
+function estadosDelAviso(obj: unknown): string[] {
+  const out: string[] = []
+  const ver = (o: unknown, nivel: number) => {
+    if (!o || typeof o !== 'object' || nivel > 4) return
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if (typeof v === 'string' && /^(status|state|estado|kaminstatus|kamin_status|transaction_status|transfer_status)$/i.test(k) && v.trim()) out.push(v.trim().toUpperCase())
+      else if (v && typeof v === 'object') ver(v, nivel + 1)
+    }
   }
-  return null
+  ver(obj, 0)
+  return out.slice(0, 10)
 }
 
 async function audit(event: string, metadata: Record<string, unknown>) {
@@ -62,6 +79,23 @@ async function audit(event: string, metadata: Record<string, unknown>) {
       action: event, target_type: 'finity_webhook', target_id: null, metadata,
     })
   } catch (e) { console.warn('[finity-webhook] audit failed:', e) }
+}
+
+// Un aviso que llega y se RECHAZA (sin secreto configurado, o con otro) antes
+// no dejaba rastro: el 3 nov el portal de Finity mostraba los avisos enviados
+// y aquí no había nada, sin forma de saber si llegaban y se rechazaban o no
+// llegaban. Se anota el motivo y qué encabezados traía (solo los NOMBRES,
+// nunca valores ni el cuerpo), uno cada 10 minutos como mucho para que
+// alguien que mande basura no llene la tabla.
+let ultimoRechazo = 0
+async function auditRechazo(motivo: string, req: Request) {
+  if (Date.now() - ultimoRechazo < 10 * 60_000) return
+  ultimoRechazo = Date.now()
+  const url = new URL(req.url)
+  await audit('finity.webhook.rechazado', {
+    motivo, traeSecretEnUrl: url.searchParams.has('secret'),
+    encabezados: Array.from(req.headers.keys()).filter(k => !/^(authorization|cookie|apikey)$/i.test(k)).slice(0, 30),
+  })
 }
 
 // HMAC-SHA256 del cuerpo con el secret — la forma usual en que los
@@ -86,6 +120,7 @@ Deno.serve(async (req) => {
   // procesa nada.
   if (!SECRET) {
     console.error('[finity-webhook] FINITY_WEBHOOK_SECRET no configurado — rechazando (fail-closed)')
+    await auditRechazo('sin_secreto_configurado', req)
     return json(503, { error: 'webhook_not_configured' })
   }
 
@@ -106,8 +141,16 @@ Deno.serve(async (req) => {
       req.headers.get('signature'),
     ].filter((v): v is string => !!v).map(v => v.trim().replace(/^sha256=/i, ''))
     const { hex, b64 } = await hmacOf(rawBody, SECRET)
-    const okAuth = candidates.some(v => v === SECRET || v.toLowerCase() === hex || v === b64)
-    if (!okAuth) return json(401, { error: 'unauthorized' })
+    // En tiempo constante: con === la demora delataba cuánto del secreto
+    // coincidía.
+    const igual = (a: string, b: string) => {
+      const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b)
+      let d = x.length ^ y.length
+      for (let i = 0; i < Math.max(x.length, y.length); i++) d |= (x[i] ?? 0) ^ (y[i] ?? 0)
+      return d === 0
+    }
+    const okAuth = candidates.some(v => igual(v, SECRET) || igual(v.toLowerCase(), hex) || igual(v, b64))
+    if (!okAuth) { await auditRechazo(candidates.length ? 'secreto_no_coincide' : 'sin_secreto_en_el_aviso', req); return json(401, { error: 'unauthorized' }) }
   }
 
   let payload: unknown = null
@@ -132,69 +175,50 @@ Deno.serve(async (req) => {
   } catch (e) { console.warn('[finity-webhook] kick_pending_converts failed:', e) }
 
   // ── Conciliación de órdenes de retiro (dispersión ACH) ──
-  const orderId = dig(payload, ['withdrawal_order_id', 'order_id', 'withdrawalOrderId', 'orderId', 'id'])
-  const status  = (dig(payload, ['status', 'state', 'event_type', 'event']) ?? '').toUpperCase()
-  if (!orderId || !status) return json(200, { ok: true, matched: false })
-
-  const isDone   = /COMPLETED|SUCCESS|PAID|SETTLED/.test(status)
-  const isFailed = /FAILED|REJECT|CANCEL|RETURNED|ERROR/.test(status)
-  if (!isDone && !isFailed) return json(200, { ok: true, matched: false, note: `estado ${status} sin acción` })
-
-  // Buscar la transacción de dispersión con ese providerRef.
-  const { data: rows } = await db
-    .from('transactions')
-    .select('id, user_id, amount, currency, status, raw_data')
-    .eq('type', 'dispersion')
-    .filter('raw_data->>providerRef', 'eq', orderId)
-    .limit(2)
-  const tx = (rows ?? [])[0] as any
-  if (!tx) return json(200, { ok: true, matched: false, orderId, status })
-
-  const rd = (tx.raw_data ?? {}) as Record<string, any>
-
-  if (isDone) {
-    // NO marcar Completado si ya se reembolsó/rechazó (Finity puede mandar un
-    // FAILED transitorio y luego un COMPLETED — sin este guardia el cliente
-    // se quedaba con el reembolso Y el pago).
-    if (tx.status === 'Rechazado' || rd.refunded) {
-      return json(200, { ok: true, matched: true, result: 'already_refunded_ignored' })
-    }
-    if (tx.status !== 'Completado') {
-      await db.from('transactions').update({
-        status: 'Completado',
-        raw_data: { ...rd, webhookStatus: status, webhookAt: new Date().toISOString() },
-      }).eq('id', tx.id).neq('status', 'Rechazado')
-      await audit('finity.webhook.withdrawal.completed', { txId: tx.id, orderId, status })
-    }
-    return json(200, { ok: true, matched: true, result: 'completed' })
+  // TODOS los identificadores del aviso, no el primero. Incidente (3 nov):
+  // Finity avisó WITHDRAW_COP FAILED de pagos que el cliente seguía viendo
+  // "Completado". dig() devolvía el primer `id` que encontraba —el de arriba,
+  // que puede ser el del EVENTO— antes de bajar a `data`, donde viene el de
+  // la orden de retiro: el aviso no coincidía con ningún envío, se respondía
+  // 200 y no pasaba nada. Ahora se prueban todos (la orden, el movimiento, la
+  // referencia…) y mouv-proxy busca el envío por cualquiera de ellos.
+  const ids = idsDelAviso(payload)
+  const orderId = ids[0] ?? null
+  // El estado del aviso: el primero que diga algo (FAILED, COMPLETED…). No
+  // decide nada solo: sirve para marcar a revisión si Finity avisa un
+  // rechazo y la consulta no lo confirma.
+  const estados = estadosDelAviso(payload)
+  const status = (estados.find(e => /FAIL|REJECT|RECHAZ|CANCEL|DECLIN|RETURN|DEVUEL|REVERS|EXPIR/.test(e)) ?? estados.find(e => /COMPLET|SUCCESS|PAID|SETTLE/.test(e)) ?? estados[0] ?? '').toUpperCase()
+  if (!ids.length) {
+    await audit('finity.webhook.sin_id', { status, estados })
+    return json(200, { ok: true, matched: false })
   }
 
-  // FALLÓ: reembolso IDEMPOTENTE de monto + comisión al riel del cliente.
-  if (tx.status === 'Rechazado' || rd.refunded) {
-    return json(200, { ok: true, matched: true, result: 'already_refunded' })
+  // EL AVISO NO DECIDE NADA. Antes este webhook reembolsaba por su cuenta, sin
+  // las protecciones de la conciliación: no miraba la firma del servidor, tomaba
+  // cualquiera de dos filas con la misma referencia, ignoraba si el crédito
+  // fallaba (la fila quedaba "reembolsada" sin plata) y su respaldo podía
+  // escribir el saldo de una sola moneda borrando las demás. Y clasificaba con
+  // regex que leían UNSUCCESSFUL como éxito.
+  //
+  // Ahora le pide a mouv-proxy que concilie ESA referencia: allá se le vuelve a
+  // preguntar a Finity el estado y se aplica la misma regla que usa el
+  // vigilante — un solo camino para mover la plata.
+  let r: Response
+  try {
+    r = await fetch(`${SUPABASE_URL}/functions/v1/mouv-proxy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      body: JSON.stringify({ action: 'vigilar_finity', ref: orderId, refs: ids, estadoAviso: status }),
+      signal: AbortSignal.timeout(60000),
+    })
+  } catch (e) {
+    await audit('finity.webhook.conciliar_fallo', { orderId, status, error: String((e as Error)?.message ?? e).slice(0, 200) })
+    // 5xx: que Finity reintente el aviso. El vigilante también lo atrapa.
+    return json(502, { ok: false, orderId, error: 'conciliacion_no_disponible' })
   }
-  // CAS: reclamar el reembolso ANTES de tocar el saldo. El update solo afecta
-  // filas que aún NO están Rechazadas; si otra ejecución (reconcile_ach o un
-  // segundo webhook) ya reclamó, updRows viene vacío y NO se acredita de
-  // nuevo. Sin esto, webhook + reconcile reembolsaban dos veces.
-  const railCol = String(tx.currency ?? 'COP_ACH')
-  const refund = Number(tx.amount ?? 0) + Number(rd.feeCop ?? rd.feeDetail?.feeCop ?? 0)
-  const { data: claimed } = await db.from('transactions').update({
-    status: 'Rechazado',
-    raw_data: { ...rd, refunded: true, refundCop: refund, webhookStatus: status, webhookAt: new Date().toISOString() },
-  }).eq('id', tx.id).neq('status', 'Rechazado').filter('raw_data->>refunded', 'is', null).select('id')
-  if (!claimed?.length) {
-    return json(200, { ok: true, matched: true, result: 'refund_already_claimed' })
-  }
-  // Reintegro ATÓMICO (bloqueo de fila) — evita la carrera de duplicación con
-  // un payout concurrente (pentest #3). Fallback a read-write si la RPC falta.
-  const { error: adjErr } = await db.rpc('adjust_balances', { p_user_id: tx.user_id, p_fiat: { [railCol]: refund } })
-  if (adjErr) {
-    const { data: u } = await db.from('users').select('balances').eq('id', tx.user_id).single()
-    const bals: Record<string, number> = (u?.balances as any) ?? {}
-    const newBal = parseFloat(((bals[railCol] ?? 0) + refund).toFixed(2))
-    await db.from('users').update({ balances: { ...bals, [railCol]: newBal } }).eq('id', tx.user_id)
-  }
-  await audit('finity.webhook.withdrawal.failed_refunded', { txId: tx.id, orderId, status, refund })
-  return json(200, { ok: true, matched: true, result: 'refunded', refund })
+  const out = await r.json().catch(() => null) as any
+  await audit('finity.webhook.conciliado', { orderId, ids, status, httpStatus: r.status, revisadas: out?.revisadas ?? null, results: out?.results ?? null })
+  if (!r.ok) return json(502, { ok: false, orderId, error: 'conciliacion_fallo' })
+  return json(200, { ok: true, matched: Number(out?.revisadas ?? 0) > 0, orderId, results: out?.results ?? [] })
 })

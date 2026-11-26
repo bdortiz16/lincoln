@@ -1,0 +1,1693 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { sonarCampana, campanaActiva, guardarCampana, TONOS, tonoActual, guardarTono, volumenActual, guardarVolumen } from './campanaOtc';
+import { estadoPush, activarPush, desactivarPush, probarPush, type EstadoPush } from './pushLincoin';
+import { pedirAdmin } from './adminApi';
+import {
+    RefreshCw, Send, X, MessageSquare, CheckCircle2, Clock, XCircle,
+    AlertTriangle, Landmark, Wallet, User, Hash, Copy, Lock, Zap, Paperclip,
+    ChevronRight, Bell, BellOff, Plus, ChevronDown, ChevronUp, Settings, Play, Smartphone, Eye,
+} from 'lucide-react';
+
+// ─────────────────────────────────────────────
+// AdminOtcCierres — bandeja de la Mesa OTC manual.
+//
+// Cada fila es una operación que alguien está esperando. El orden por defecto
+// es el de las que siguen vivas, más viejas primero: la bandeja tiene que
+// mostrar a quién se está haciendo esperar, no las últimas que entraron.
+//
+// EL HILO VIVE PEGADO A LA ORDEN
+//   Abrir un cierre muestra la operación y su conversación en la misma
+//   pantalla. Es lo que hace falta para decidir: la tasa que se acordó, quién
+//   dijo que ya pagó y a qué hora están en el mismo lugar que el botón de
+//   completar.
+//
+// TOMAR ANTES DE HABLAR
+//   Un cierre sin dueño lo puede contestar cualquiera, y dos operadores dando
+//   dos tasas distintas al mismo cliente es la peor falla posible de una mesa.
+//   Por eso el hilo y las acciones se desbloquean recién al tomarlo, y tomarlo
+//   es exclusivo: el servidor lo resuelve con un CAS, no con un chequeo en
+//   pantalla que dos clicks simultáneos se saltan.
+//
+// LA PALETA
+//   Fondos #070808 / #0C0E0D / #121413, texto #F4F4F2 / #878E88, bordes
+//   translúcidos. El verde es PUNTUAL — un punto, un borde, un botón — nunca
+//   un bloque grande: antes la cabecera del detalle era un panel verde claro
+//   dentro de una pantalla negra y se leía como un error de maquetación.
+// ─────────────────────────────────────────────
+
+const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
+const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+
+// La sesión de ESTE proyecto primero (como lib/edge.ts). Con la primera
+// clave 'sb-…' que apareciera, otra sesión guardada en el navegador (un
+// proyecto anterior o de pruebas) mandaba su token: el servidor respondía
+// "no autorizado" y la mesa leía eso como si no hubiera tasa ni cierres
+// (23 nov, mismo caso que la pantalla del cliente).
+function claveSesion(): string | undefined {
+    let propia: string | null = null;
+    try { const ref = new URL(SURL).hostname.split('.')[0]; propia = ref ? `sb-${ref}-auth-token` : null; } catch { /* */ }
+    if (propia && localStorage.getItem(propia) != null) return propia;
+    return Object.keys(localStorage).find(key => key.startsWith('sb-') && key.endsWith('-auth-token'));
+}
+
+function adminAuthHeader(): string {
+    try {
+        const k = claveSesion();
+        if (k) {
+            const d = JSON.parse(localStorage.getItem(k) || '{}');
+            if (d.access_token) return `Bearer ${d.access_token}`;
+        }
+    } catch { /* sin sesión */ }
+    return `Bearer ${SKEY}`;
+}
+
+// Quién está operando, sacado del mismo JWT con el que se llama al servidor.
+// Hace falta para saber si un cierre lo tomé YO o lo tomó otro.
+function miIdAdmin(): string {
+    try {
+        const k = claveSesion();
+        if (!k) return '';
+        const d = JSON.parse(localStorage.getItem(k) || '{}');
+        const t = String(d.access_token ?? '');
+        if (!t) return '';
+        const p = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        return String(p.sub ?? '');
+    } catch { return ''; }
+}
+
+async function callMesa(action: string, body: Record<string, unknown> = {}): Promise<any> {
+    try {
+        const r = await fetch(`${SURL}/functions/v1/otc-mesa`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: adminAuthHeader() },
+            body: JSON.stringify({ action, ...body }),
+            signal: AbortSignal.timeout(25000),
+        });
+        const t = await r.text();
+        if (!t) return { ok: false, error: 'Sin respuesta del servicio.' };
+        try { return JSON.parse(t); } catch { return { ok: false, error: `Respuesta no válida (HTTP ${r.status})` }; }
+    } catch (e: any) {
+        return { ok: false, error: e?.name === 'TimeoutError' ? 'Timeout.' : `Error de red: ${String(e?.message ?? e)}` };
+    }
+}
+
+// ─── Paleta ─────────────────────────────────────────────
+const FONDO   = '#070808';
+const PANEL   = '#0C0E0D';
+const ELEVADO = '#121413';
+const BORDE   = 'rgba(255,255,255,0.09)';
+const BORDE2  = 'rgba(255,255,255,0.14)';
+const TXT     = '#F4F4F2';
+const TXT2    = '#878E88';
+const TXT3    = 'rgba(244,244,242,0.45)';
+const VERDE   = '#4ADE80';
+const AMBAR   = '#FBBF24';
+const ROJO    = '#F87171';
+
+// El estado se dice con un punto y una palabra, no con un bloque de color.
+const ESTADO: Record<string, { label: string; c: string }> = {
+    abierta:        { label: 'SIN TOMAR',      c: AMBAR },
+    en_proceso:     { label: 'EN PROCESO',     c: '#60A5FA' },
+    esperando_pago: { label: 'ESPERANDO PAGO', c: VERDE },
+    pagada:         { label: 'POR VERIFICAR',  c: AMBAR },
+    completada:     { label: 'COMPLETADO',     c: VERDE },
+    cancelada:      { label: 'CANCELADO',      c: TXT2 },
+    // Completado y después deshecho por la mesa (se descontó lo acreditado).
+    anulada:        { label: 'ANULADO',        c: ROJO },
+};
+const caraDe = (s: string) => ESTADO[s] ?? { label: String(s ?? '—').toUpperCase(), c: TXT2 };
+
+const Pill: React.FC<{ estado: string }> = ({ estado }) => {
+    const { label, c } = caraDe(estado);
+    return (
+        <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0,
+            border: `1px solid ${c}44`, background: `${c}12`, color: c,
+            fontSize: 9, fontWeight: 700, letterSpacing: '0.6px', padding: '3px 9px', borderRadius: 999,
+        }}>
+            <span style={{ width: 5, height: 5, borderRadius: 999, background: c }} /> {label}
+        </span>
+    );
+};
+
+// Billeteras del cliente donde se le acredita lo que recibe. El cierre NO es
+// un envío: la mesa cambia una moneda por otra dentro de la cuenta.
+// En el panel se nombra al aliado: es quien opera la mesa el que elige por
+// dónde entra la plata. Al cliente le llega solo "Bre-B", "ACH", "Cuenta 3 ·
+// Jero" o "Cuenta 4 · Kaupaloki" (otc-mesa, NOMBRE_BILLETERA).
+const BILLETERA: Record<string, string> = {
+    COP: 'Saldo Lincoin', COP_BREB: 'Cuenta 1 · Mouv', COP_ACH: 'Cuenta 2 · Finity', USD: 'Saldo USDT',
+    COP_C3: 'Coinsenda Jero · Cuenta 3', COP_C4: 'Coinsenda Kaupaloki · Cuenta 4',
+};
+// Los canales donde la mesa puede acreditar una venta de USDT (la misma lista
+// cerrada que valida el servidor, CANALES_MESA).
+const CANALES: Array<{ v: string; l: string; pie: string }> = [
+    { v: 'COP_BREB', l: 'Mouv', pie: 'Cuenta 1' },
+    { v: 'COP_ACH', l: 'Finity', pie: 'Cuenta 2' },
+    { v: 'COP_C3', l: 'Coinsenda Jero', pie: 'Cuenta 3' },
+    { v: 'COP_C4', l: 'Coinsenda Kaupaloki', pie: 'Cuenta 4' },
+];
+const RIESGO: Record<string, { t: string; c: string }> = {
+    bajo: { t: 'BAJO', c: VERDE }, medio: { t: 'MEDIO', c: AMBAR }, alto: { t: 'ALTO', c: ROJO }, sin_dato: { t: 'SIN DATO', c: TXT2 },
+};
+
+const FILTROS: Array<{ id: string; label: string }> = [
+    { id: 'vivos',          label: 'En curso' },
+    { id: 'abierta',        label: 'Sin tomar' },
+    { id: 'esperando_pago', label: 'Esperando pago' },
+    { id: 'pagada',         label: 'Por verificar' },
+    { id: 'completada',     label: 'Completadas' },
+    { id: 'cancelada',      label: 'Canceladas' },
+    { id: 'anulada',        label: 'Anuladas' },
+    { id: 'todas',          label: 'Todas' },
+];
+
+const nf = (n: any, dec = 2) => Number(n ?? 0).toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: dec });
+// Decimales de lo que recibe el cliente: pesos enteros, USDT con 2. Con 0 en
+// todo, 1.234,56 USDT se mostraba como 1.235 USDT.
+const decDe = (moneda: string) => (moneda === 'COP' ? 0 : 2);
+// La tasa como la escribe la mesa: "3.912,50" (formato colombiano), "3912.5"
+// o "3.912". Antes se borraba todo lo que no fuera dígito o punto, así que
+// "3.912,50" se leía 3,9125: la coma desaparecía y el punto quedaba de decimal.
+const leerTasa = (txt: string): number => {
+    const t = String(txt ?? '').replace(/[^\d.,]/g, '');
+    const p = t.lastIndexOf('.'), c = t.lastIndexOf(',');
+    let ent = t, dec = '';
+    if (p >= 0 && c >= 0) { const i = Math.max(p, c); ent = t.slice(0, i); dec = t.slice(i + 1); }
+    else if (c >= 0) { ent = t.slice(0, c); dec = t.slice(c + 1); }
+    else if (p >= 0 && t.split('.').length === 2 && t.slice(p + 1).length !== 3) { ent = t.slice(0, p); dec = t.slice(p + 1); }
+    const n = Number(`${ent.replace(/\D/g, '') || '0'}.${dec.replace(/\D/g, '') || '0'}`);
+    return Number.isFinite(n) ? n : NaN;
+};
+// Lo que gana Lincoin con la tasa a la que la mesa vendió los USDT (o compró
+// los que entrega). La MISMA cuenta que hace el servidor al completar
+// (ventaDeMesa en otc-mesa) y la contabilidad: si cambia allá, cambia acá.
+// El % es sobre lo que valen los USDT a la tasa de la mesa, para que
+// coincida con el margen pactado.
+const ventaDe = (c: any, tasa: number) => {
+    const vende = String(c?.side ?? 'vende_usdt') === 'vende_usdt';
+    const usdt = Number(vende ? c?.from_amount : c?.to_amount);
+    if (!(tasa > 0) || !(usdt > 0)) return null;
+    const totalCop = vende ? usdt * tasa : Number(c?.from_amount);
+    const tercerosCop = vende ? Number(c?.to_amount) : usdt * tasa;
+    const utilidadCop = totalCop - tercerosCop;
+    const base = vende ? totalCop : tercerosCop;
+    return { totalCop, tercerosCop, utilidadCop, pct: base > 0 ? (utilidadCop / base) * 100 : null };
+};
+// Las mismas cotas que el servidor: la tasa de la mesa no puede alejarse
+// más de un 15 % de la del cliente (un cero de más sería una "utilidad" con
+// IVA en la factura).
+const TOPE_VENTA = 0.15;
+const fueraDeRango = (tasa: number, base: number) => base > 0 && Math.abs(tasa - base) / base > TOPE_VENTA;
+const signoCop = (n: number) => `${n < 0 ? '−' : '+'}${nf(Math.abs(n), 0)} COP`;
+// El % con el mismo signo menos que los pesos ("−0,16 %", no "-0,16 %").
+const pctTxt = (n: number) => `${n < 0 ? '−' : ''}${Math.abs(n).toLocaleString('es-CO', { maximumFractionDigits: 2 })} %`;
+const fecha = (d: any) => {
+    const t = new Date(d ?? '');
+    if (!d || Number.isNaN(t.getTime())) return '—';
+    return t.toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+};
+// Cuánto le queda al cliente para subir el comprobante. Vencido, el servidor
+// cancela la solicitud solo.
+const restante = (d: any) => {
+    const t = new Date(d ?? '').getTime();
+    if (!Number.isFinite(t)) return '';
+    const s = Math.floor((t - Date.now()) / 1000);
+    if (s <= 0) return 'vencido';
+    return `quedan ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+// Cuánto lleva esperando. Es el dato que decide a cuál se entra primero.
+const espera = (d: any) => {
+    const t = new Date(d ?? '').getTime();
+    if (!Number.isFinite(t)) return '';
+    const min = Math.floor((Date.now() - t) / 60000);
+    if (min < 1) return 'recién';
+    if (min < 60) return `hace ${min} min`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `hace ${h} h`;
+    return `hace ${Math.floor(h / 24)} d`;
+};
+
+const INPUT: React.CSSProperties = {
+    width: '100%', background: 'rgba(255,255,255,0.04)', border: `1px solid ${BORDE2}`,
+    borderRadius: 9, padding: '9px 11px', color: TXT, fontSize: 13, outline: 'none',
+    fontFamily: "'Archivo', system-ui, sans-serif",
+};
+const ROTULO: React.CSSProperties = {
+    fontSize: 9.5, fontWeight: 700, color: TXT3, letterSpacing: '0.6px', textTransform: 'uppercase',
+};
+
+// ── ¿Hay tasa automática? (23 nov) ──────────────────────────────────
+// Cuando el proveedor no devuelve tasa, el cliente solo lee "No hay
+// cotización automática" (no le corresponde saber quién ni por qué) y la
+// mesa no tenía dónde ver el motivo: el servidor se lo manda solo a la mesa
+// (`motivo`, `crudo`), pero ninguna pantalla lo pedía. Esto cotiza como la
+// mesa cada minuto y dice la tasa o por qué no hay.
+const TasaAutomatica: React.FC = () => {
+    const [r, setR] = useState<any>(null);
+    const [ver, setVer] = useState(false);
+    const probar = useCallback(async () => {
+        const x = await callMesa('cotizar', { side: 'vende_usdt' });
+        setR({ ...x, at: new Date() });
+    }, []);
+    useEffect(() => { probar(); const t = setInterval(probar, 60_000); return () => clearInterval(t); }, [probar]);
+    if (!r) return null;
+    const hay = r.ok && Number(r.rate) > 0;
+    const hora = r.at.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit' });
+    return (
+        <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '4px 10px', borderRadius: 999, border: `1px solid ${hay ? VERDE + '44' : AMBAR + '55'}`, background: hay ? VERDE + '10' : AMBAR + '12', color: TXT }}>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: hay ? VERDE : AMBAR }} />
+                {hay
+                    ? <>Tasa automática · venta 1 USDT = <b>{nf(r.rate, 2)}</b> COP <span style={{ color: TXT2 }}>· {hora}</span></>
+                    : <>Sin tasa automática <span style={{ color: TXT2 }}>· {hora}</span></>}
+            </span>
+            {!hay && (
+                <span style={{ display: 'block', marginTop: 5, color: TXT2, maxWidth: 560 }}>
+                    {r.motivo ? <>Motivo: <span style={{ color: TXT }}>{String(r.motivo)}</span>. </> : r.error ? <>Error: <span style={{ color: TXT }}>{String(r.error)}</span>. </> : null}
+                    Los clientes pueden pedir el cierre igual y la mesa lo cotiza a mano.
+                    {r.crudo && (
+                        <button onClick={() => setVer(v => !v)} style={{ marginLeft: 6, color: VERDE, background: 'transparent', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                            {ver ? 'Ocultar respuesta' : 'Ver respuesta del proveedor'}
+                        </button>
+                    )}
+                    {ver && r.crudo && (
+                        <pre style={{ marginTop: 6, padding: '8px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: `1px solid ${BORDE}`, color: TXT2, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxWidth: 560 }}>{String(r.crudo)}</pre>
+                    )}
+                    <button onClick={probar} style={{ marginLeft: 6, color: VERDE, background: 'transparent', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Probar de nuevo</button>
+                </span>
+            )}
+        </div>
+    );
+};
+
+export const AdminOtcCierres: React.FC = () => {
+    const [filtro, setFiltro]   = useState('vivos');
+    const [filas, setFilas]     = useState<any[]>([]);
+    const [cargando, setCargando] = useState(true);
+    const [abierta, setAbierta] = useState<string | null>(null);
+    const [error, setError]     = useState<string | null>(null);
+    // Se puede apagar: una campana que no se puede silenciar en un panel que
+    // alguien tiene abierto todo el dia deja de ser un aviso y pasa a ser
+    // ruido -- y lo que se hace con el ruido es ignorarlo.
+    const [sonido, setSonido] = useState(campanaActiva);
+    const [ajustes, setAjustes] = useState(false);
+    const [horario, setHorario] = useState(false);
+    const conocidos = useRef<Set<string> | null>(null);
+    const sonidoRef = useRef(sonido);
+    useEffect(() => {
+        sonidoRef.current = sonido;
+        guardarCampana(sonido);
+    }, [sonido]);
+
+    const cargar = useCallback(async () => {
+        const r = await callMesa('lista', { estado: filtro === 'todas' ? '' : filtro });
+        if (r?.ok) {
+            const lista = r.cierres ?? [];
+            setFilas(lista); setError(null);
+            // La PRIMERA lectura solo toma nota. Sonar ahi haria repicar la
+            // campana cada vez que alguien abre el panel o cambia de filtro,
+            // por cierres que ya estaban.
+            const ids = new Set<string>(lista.map((c: any) => String(c.id)));
+            if (conocidos.current == null) conocidos.current = ids;
+            else {
+                const nuevos = lista.filter((c: any) => !conocidos.current!.has(String(c.id)));
+                conocidos.current = ids;
+                if (nuevos.length && sonidoRef.current) sonarCampana();
+            }
+        }
+        else setError(r?.message ?? r?.error ?? 'No pude cargar la bandeja.');
+        setCargando(false);
+    }, [filtro]);
+
+    // Al cambiar de filtro la lista es otra: se vuelve a empezar para no tomar
+    // como "nuevas" a las que simplemente no estaban en el filtro anterior.
+    useEffect(() => { conocidos.current = null; }, [filtro]);
+
+    useEffect(() => { setCargando(true); cargar(); }, [cargar]);
+
+    // La bandeja se relee sola cada 5 s: un operador mirando la lista tiene que
+    // ver entrar el cierre casi al instante. Antes eran 15 s y se sentia
+    // lento -- del otro lado hay alguien con un reloj corriendo.
+    //
+    // Se PAUSA con la pestana oculta y se relee al volver: consultar cada 5 s
+    // una pantalla que nadie mira es gasto puro, y al volver lo que importa es
+    // el estado de AHORA, no esperar al proximo tick.
+    useEffect(() => {
+        let t: any = null;
+        const arrancar = () => {
+            if (t) clearInterval(t);
+            t = setInterval(() => { if (!abierta && !document.hidden) cargar(); }, 5000);
+        };
+        const alVolver = () => { if (!document.hidden) { cargar(); arrancar(); } };
+        arrancar();
+        document.addEventListener('visibilitychange', alVolver);
+        window.addEventListener('focus', alVolver);
+        return () => {
+            if (t) clearInterval(t);
+            document.removeEventListener('visibilitychange', alVolver);
+            window.removeEventListener('focus', alVolver);
+        };
+    }, [cargar, abierta]);
+
+    return (
+        <div style={{ fontFamily: "'Archivo', system-ui, sans-serif" }}>
+            <div className="flex items-center justify-between gap-3 flex-wrap" style={{ marginBottom: 16 }}>
+                <div>
+                    <h2 style={{ fontSize: 18, fontWeight: 800, color: TXT, letterSpacing: '-0.4px' }}>Cierres OTC</h2>
+                    <p style={{ fontSize: 12, color: TXT2, marginTop: 3 }}>Solicitudes de la mesa manual. Se atienden por orden de llegada.</p>
+                    <TasaAutomatica />
+                </div>
+                <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
+                    <button onClick={() => { setCargando(true); cargar(); }}
+                        className="flex items-center gap-1.5 transition-colors hover:bg-white/[0.07]"
+                        style={{ padding: '8px 13px', fontSize: 12, fontWeight: 700, color: TXT, borderRadius: 9, border: `1px solid ${BORDE2}`, background: 'rgba(255,255,255,0.045)' }}>
+                        <RefreshCw size={13} className={cargando ? 'animate-spin' : ''} /> Actualizar
+                    </button>
+                    <button
+                        onClick={() => setAjustes(v => !v)}
+                        title="Aviso sonoro"
+                        className="flex items-center justify-center transition-colors hover:bg-white/[0.07]"
+                        style={{ width: 38, height: 38, color: sonido ? VERDE : TXT2, borderRadius: 9, border: `1px solid ${sonido ? VERDE + '44' : BORDE2}`, background: sonido ? VERDE + '10' : 'rgba(255,255,255,0.045)' }}>
+                        <Settings size={15} />
+                    </button>
+                    {ajustes && (
+                        <AjustesCampana
+                            sonido={sonido} setSonido={setSonido}
+                            onCerrar={() => setAjustes(false)}
+                            onHorario={() => { setAjustes(false); setHorario(true); }}
+                        />
+                    )}
+                </div>
+            </div>
+
+            {horario && <HorarioMesa onCerrar={() => setHorario(false)} />}
+
+            <div className="flex gap-1.5 flex-wrap" style={{ marginBottom: 14 }}>
+                {FILTROS.map(f => {
+                    const on = filtro === f.id;
+                    return (
+                        <button key={f.id} onClick={() => setFiltro(f.id)}
+                            className="transition-colors"
+                            style={{
+                                padding: '6px 12px', fontSize: 12, fontWeight: 700, borderRadius: 999,
+                                color: on ? '#0C0E0D' : TXT2,
+                                background: on ? TXT : 'rgba(255,255,255,0.045)',
+                                border: on ? 'none' : `1px solid ${BORDE}`,
+                            }}>
+                            {f.label}
+                        </button>
+                    );
+                })}
+            </div>
+
+            {error && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, border: `1px solid ${ROJO}44`, background: `${ROJO}10`, borderRadius: 11, padding: '11px 13px', marginBottom: 14 }}>
+                    <AlertTriangle size={14} style={{ color: ROJO, marginTop: 1, flexShrink: 0 }} />
+                    <p style={{ fontSize: 12.5, color: ROJO }}>{error}</p>
+                </div>
+            )}
+
+            <div style={{ background: PANEL, border: `1px solid ${BORDE}`, borderRadius: 14, overflow: 'hidden' }}>
+                {cargando && filas.length === 0 && <p style={{ padding: 32, textAlign: 'center', fontSize: 13, color: TXT2 }}>Cargando…</p>}
+                {!cargando && filas.length === 0 && (
+                    <p style={{ padding: 44, textAlign: 'center', fontSize: 13, color: TXT2 }}>No hay cierres en este filtro.</p>
+                )}
+                {filas.map((c, i) => {
+                    const sinLeer = c.last_msg_por === 'cliente' && (!c.visto_mesa || new Date(c.last_msg_at) > new Date(c.visto_mesa));
+                    return (
+                        <button key={c.id} onClick={() => setAbierta(c.id)}
+                            className="w-full text-left transition-colors hover:bg-white/[0.025]"
+                            style={{ padding: '15px 18px', display: 'grid', gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,1fr) minmax(0,1.2fr) auto', gap: 14, alignItems: 'center', borderTop: i > 0 ? `1px solid ${BORDE}` : 'none' }}>
+                            <div style={{ minWidth: 0 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5, color: TXT2 }}>{c.ref}</span>
+                                    {sinLeer && (
+                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: VERDE, color: '#0C0E0D', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 999 }}>
+                                            <MessageSquare size={9} /> NUEVO
+                                        </span>
+                                    )}
+                                </div>
+                                <p style={{ fontSize: 12.5, fontWeight: 700, color: c.side === 'vende_usdt' ? TXT : VERDE, marginTop: 4 }}>
+                                    {c.side === 'vende_usdt' ? 'Vende USDT' : 'Compra USDT'}
+                                </p>
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                                <p style={{ fontSize: 14.5, fontWeight: 700, color: TXT }}>{nf(c.from_amount)} {c.from_currency}</p>
+                                <p style={{ fontSize: 12, color: TXT2, marginTop: 2 }}>
+                                    {c.to_amount != null ? `→ ${nf(c.to_amount, decDe(c.to_currency))} ${c.to_currency}` : '→ a cotizar'}
+                                </p>
+                                {(c.rate_final ?? c.rate_cotizada) != null && (
+                                    <p style={{ fontSize: 10.5, color: TXT3, marginTop: 2 }}>
+                                        {nf(c.rate_final ?? c.rate_cotizada)} {c.rate_final ? '· final' : '· indicativa'}
+                                    </p>
+                                )}
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                                <p style={{ fontSize: 13, color: TXT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.cliente?.nombre ?? '—'}</p>
+                                <p style={{ fontSize: 11.5, color: TXT3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.cliente?.email ?? ''}</p>
+                                <p style={{ fontSize: 10.5, color: TXT3, marginTop: 3 }}>{fecha(c.created_at)} · {espera(c.created_at)}</p>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'flex-end' }}>
+                                <Pill estado={c.status} />
+                                <ChevronRight size={15} style={{ color: TXT3, flexShrink: 0 }} />
+                            </div>
+                        </button>
+                    );
+                })}
+            </div>
+
+            {abierta && (
+                <DetalleMesa id={abierta} onClose={() => { setAbierta(null); cargar(); }} onCambio={cargar} />
+            )}
+        </div>
+    );
+};
+
+
+// ─── Horario de la mesa ─────────────────────────────────
+// La mesa manual la atienden personas. Declarar el horario no es cosmética:
+// una solicitud creada un domingo a las once de la noche arranca con el plazo
+// de pago corriendo contra nadie, se vence sola, y el cliente queda pensando
+// que el servicio anda mal.
+//
+// Lo que se guarda acá lo hace valer el SERVIDOR. La pantalla del cliente
+// esconde el botón, pero una pestaña abierta desde el viernes lo sigue
+// teniendo — y una pestaña vieja no es permiso para abrir la mesa.
+const DIAS_UI: Array<{ id: string; nombre: string }> = [
+    { id: 'lun', nombre: 'Lunes' },     { id: 'mar', nombre: 'Martes' },
+    { id: 'mie', nombre: 'Miércoles' }, { id: 'jue', nombre: 'Jueves' },
+    { id: 'vie', nombre: 'Viernes' },   { id: 'sab', nombre: 'Sábado' },
+    { id: 'dom', nombre: 'Domingo' },
+];
+
+const HorarioMesa: React.FC<{ onCerrar: () => void }> = ({ onCerrar }) => {
+    const [hor, setHor] = useState<Record<string, any> | null>(null);
+    const [estado, setEstado] = useState<any>(null);
+    const [zona, setZona] = useState('America/Bogota');
+    const [guardando, setGuardando] = useState(false);
+    const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
+    const leer = useCallback(async () => {
+        const r = await callMesa('config_get');
+        if (r?.ok) { setHor(r.horario ?? null); setEstado(r.estado ?? null); setZona(r.zona ?? 'America/Bogota'); }
+        else setMsg({ ok: false, texto: r?.error ?? 'No se pudo leer el horario.' });
+    }, []);
+    useEffect(() => { leer(); }, [leer]);
+
+    useEffect(() => {
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [onCerrar]);
+
+    const set = (dia: string, campo: string, valor: any) =>
+        setHor(h => ({ ...(h ?? {}), [dia]: { ...(h?.[dia] ?? {}), [campo]: valor } }));
+
+    const guardar = async () => {
+        setGuardando(true); setMsg(null);
+        const r = await callMesa('config_set', { horario: hor });
+        setGuardando(false);
+        if (r?.ok) { setMsg({ ok: true, texto: 'Horario guardado.' }); leer(); }
+        else setMsg({ ok: false, texto: r?.error ?? 'No se pudo guardar.' });
+    };
+
+    return (
+        <div onClick={onCerrar}
+            style={{ position: 'fixed', inset: 0, zIndex: 95, background: 'rgba(0,0,0,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+            <div onClick={e => e.stopPropagation()}
+                style={{ width: '100%', maxWidth: 520, maxHeight: '88vh', overflowY: 'auto', background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 16, boxShadow: '0 24px 70px rgba(0,0,0,0.7)', fontFamily: "'Archivo', system-ui, sans-serif" }}>
+
+                <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                        <h3 style={{ fontSize: 15.5, fontWeight: 800, color: TXT, margin: 0, letterSpacing: '-0.3px' }}>Horario de la mesa</h3>
+                        <p style={{ fontSize: 12, color: TXT2, margin: '5px 0 0', lineHeight: 1.5 }}>
+                            Fuera de estas horas el cliente no puede crear solicitudes. Hora de Colombia ({zona}).
+                        </p>
+                    </div>
+                    <button onClick={onCerrar} aria-label="Cerrar"
+                        style={{ width: 32, height: 32, flexShrink: 0, display: 'grid', placeItems: 'center', color: TXT2, background: 'rgba(255,255,255,0.05)', border: `1px solid ${BORDE}`, borderRadius: 9 }}>
+                        <X size={15} />
+                    </button>
+                </div>
+
+                {estado && (
+                    <div style={{ padding: '11px 20px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ width: 6, height: 6, borderRadius: 999, background: estado.abierta ? VERDE : TXT2, flexShrink: 0 }} />
+                        <span style={{ fontSize: 12.5, color: estado.abierta ? VERDE : TXT2, fontWeight: 700 }}>
+                            {estado.abierta ? 'Abierta ahora' : 'Cerrada ahora'}
+                        </span>
+                        <span style={{ fontSize: 11.5, color: TXT3 }}>
+                            {estado.hhmm}{!estado.abierta && estado.proxima ? ` · abre ${estado.proxima}` : ''}
+                        </span>
+                    </div>
+                )}
+
+                <div style={{ padding: '14px 20px 18px' }}>
+                    {!hor ? (
+                        <p style={{ fontSize: 12.5, color: TXT2 }}>Cargando…</p>
+                    ) : DIAS_UI.map(d => {
+                        const f = hor[d.id] ?? { activo: false, desde: '08:00', hasta: '18:00' };
+                        return (
+                            <div key={d.id} className="flex items-center flex-wrap"
+                                style={{ gap: 10, padding: '9px 0', borderTop: `1px solid ${BORDE}` }}>
+                                <button onClick={() => set(d.id, 'activo', !f.activo)}
+                                    title={f.activo ? 'Opera este día' : 'No opera este día'}
+                                    style={{
+                                        width: 38, height: 22, borderRadius: 999, flexShrink: 0, position: 'relative',
+                                        background: f.activo ? VERDE : 'rgba(255,255,255,0.12)', border: 'none', cursor: 'pointer',
+                                        transition: 'background 140ms',
+                                    }}>
+                                    <span style={{ position: 'absolute', top: 3, left: f.activo ? 19 : 3, width: 16, height: 16, borderRadius: 999, background: f.activo ? '#0C0E0D' : TXT2, transition: 'left 140ms' }} />
+                                </button>
+                                <span style={{ fontSize: 13, fontWeight: 700, color: f.activo ? TXT : TXT3, minWidth: 82 }}>{d.nombre}</span>
+                                {f.activo ? (
+                                    <span className="flex items-center" style={{ gap: 7, marginLeft: 'auto' }}>
+                                        <input type="time" value={f.desde} onChange={e => set(d.id, 'desde', e.target.value)}
+                                            style={{ ...INPUT, width: 108, padding: '6px 9px', fontSize: 12.5 }} />
+                                        <span style={{ fontSize: 12, color: TXT3 }}>a</span>
+                                        <input type="time" value={f.hasta} onChange={e => set(d.id, 'hasta', e.target.value)}
+                                            style={{ ...INPUT, width: 108, padding: '6px 9px', fontSize: 12.5 }} />
+                                    </span>
+                                ) : (
+                                    <span style={{ marginLeft: 'auto', fontSize: 11.5, color: TXT3 }}>No opera</span>
+                                )}
+                            </div>
+                        );
+                    })}
+
+                    {msg && (
+                        <p style={{ fontSize: 12, color: msg.ok ? VERDE : ROJO, marginTop: 12, lineHeight: 1.5 }}>{msg.texto}</p>
+                    )}
+
+                    <button onClick={guardar} disabled={guardando || !hor}
+                        style={{ marginTop: 16, width: '100%', padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', cursor: guardando ? 'default' : 'pointer', opacity: guardando || !hor ? 0.5 : 1 }}>
+                        {guardando ? 'Guardando…' : 'Guardar horario'}
+                    </button>
+                    <p style={{ fontSize: 10.5, color: TXT3, marginTop: 9, lineHeight: 1.5 }}>
+                        La mesa puede crear y atender cierres fuera de hora: si estás trabajando, estás abierta.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ─── Ajustes del aviso ──────────────────────────────────
+// Quien atiende la mesa tiene esto sonando todo el dia. El tono que a una
+// persona le resulta claro a otra le resulta molesto, y un aviso molesto
+// termina apagado — que es peor que no tenerlo, porque nadie se entera de que
+// se apago. Por eso se elige, y cada opcion se puede escuchar antes.
+const AjustesCampana: React.FC<{
+    sonido: boolean;
+    setSonido: (v: boolean) => void;
+    onCerrar: () => void;
+    onHorario: () => void;
+}> = ({ sonido, setSonido, onCerrar, onHorario }) => {
+    const [tono, setTono] = useState(tonoActual);
+    const [vol, setVol]   = useState(volumenActual);
+    const caja = useRef<HTMLDivElement | null>(null);
+
+    // Cerrar al clickear afuera o con Esc: un panel que solo se cierra con su
+    // propio boton se queda abierto tapando la bandeja.
+    useEffect(() => {
+        const fuera = (e: MouseEvent) => { if (caja.current && !caja.current.contains(e.target as Node)) onCerrar(); };
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        document.addEventListener('mousedown', fuera);
+        window.addEventListener('keydown', esc);
+        return () => { document.removeEventListener('mousedown', fuera); window.removeEventListener('keydown', esc); };
+    }, [onCerrar]);
+
+    const elegirTono = (id: string) => {
+        setTono(id); guardarTono(id);
+        // Suena al elegirlo: probar un tono sin escucharlo no es elegir.
+        sonarCampana({ tono: id, volumen: vol });
+    };
+
+    return (
+        <div ref={caja}
+            style={{
+                position: 'absolute', top: 46, right: 0, zIndex: 40, width: 268,
+                background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 14,
+                padding: 16, boxShadow: '0 18px 50px rgba(0,0,0,0.65)',
+            }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: TXT }}>Aviso de cierre nuevo</span>
+                <button
+                    onClick={() => { const v = !sonido; setSonido(v); guardarCampana(v); if (v) sonarCampana({ tono, volumen: vol }); }}
+                    className="flex items-center gap-1.5 transition-colors"
+                    style={{ padding: '5px 10px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, color: sonido ? '#0C0E0D' : TXT2, background: sonido ? VERDE : 'rgba(255,255,255,0.06)', border: 'none' }}>
+                    {sonido ? <Bell size={11} /> : <BellOff size={11} />} {sonido ? 'ON' : 'OFF'}
+                </button>
+            </div>
+
+            <div style={{ opacity: sonido ? 1 : 0.45, pointerEvents: sonido ? 'auto' : 'none', marginTop: 14 }}>
+                <p style={{ ...ROTULO, marginBottom: 8 }}>Tono</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    {TONOS.map(t => {
+                        const on = t.id === tono;
+                        return (
+                            <button key={t.id} onClick={() => elegirTono(t.id)}
+                                className="transition-colors hover:bg-white/[0.05]"
+                                style={{
+                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                                    padding: '8px 11px', borderRadius: 9, textAlign: 'left',
+                                    border: `1px solid ${on ? VERDE + '55' : BORDE}`,
+                                    background: on ? VERDE + '10' : 'transparent',
+                                    color: on ? VERDE : TXT, fontSize: 12.5, fontWeight: on ? 700 : 500,
+                                }}>
+                                {t.nombre}
+                                <Play size={11} style={{ opacity: 0.7, flexShrink: 0 }} />
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <p style={{ ...ROTULO, margin: '14px 0 8px' }}>Volumen</p>
+                <input
+                    type="range" min={0} max={100} value={Math.round(vol * 100)}
+                    onChange={e => { const v = Number(e.target.value) / 100; setVol(v); guardarVolumen(v); }}
+                    onMouseUp={() => sonarCampana({ tono, volumen: vol })}
+                    onTouchEnd={() => sonarCampana({ tono, volumen: vol })}
+                    style={{ width: '100%', accentColor: VERDE }}
+                />
+                <p style={{ fontSize: 10.5, color: TXT3, marginTop: 4 }}>{Math.round(vol * 100)}%</p>
+            </div>
+
+            <p style={{ fontSize: 10.5, color: TXT3, marginTop: 12, lineHeight: 1.5, borderTop: `1px solid ${BORDE}`, paddingTop: 10 }}>
+                El navegador no deja sonar nada hasta que hayas hecho un clic en la página.
+            </p>
+
+            <AvisosTelefono />
+
+            <button onClick={onHorario}
+                className="w-full flex items-center justify-between transition-colors hover:bg-white/[0.05]"
+                style={{ marginTop: 12, padding: '9px 11px', borderRadius: 9, border: `1px solid ${BORDE}`, background: 'transparent', color: TXT, fontSize: 12.5, fontWeight: 700 }}>
+                <span className="flex items-center" style={{ gap: 7 }}><Clock size={13} style={{ color: TXT2 }} /> Horario de la mesa</span>
+                <ChevronRight size={13} style={{ color: TXT2 }} />
+            </button>
+        </div>
+    );
+};
+
+// ─── Notificaciones al teléfono ─────────────────────────
+// La campana de arriba solo suena con este panel abierto. Esto llega con el
+// teléfono guardado, que es cuando el retraso cuesta plata.
+//
+// NO REEMPLAZA AL CORREO. El push no tiene garantía de entrega: iOS suelta la
+// suscripción sola si la app no se abre por semanas, y borrar el ícono de la
+// pantalla de inicio la mata sin avisar. Para plata, es un extra.
+const AvisosTelefono: React.FC = () => {
+    const [estado, setEstado] = useState<EstadoPush | null>(null);
+    const [ocupado, setOcupado] = useState(false);
+    const [msg, setMsg] = useState<string | null>(null);
+
+    const releer = useCallback(() => { estadoPush().then(setEstado); }, []);
+    useEffect(() => { releer(); }, [releer]);
+
+    const activar = async () => {
+        setOcupado(true); setMsg(null);
+        const r = await activarPush();
+        setOcupado(false);
+        setMsg(r.ok ? 'Listo. Este aparato ya recibe los avisos.' : (r.error ?? 'No se pudo.'));
+        releer();
+    };
+    const apagar = async () => {
+        setOcupado(true); setMsg(null);
+        await desactivarPush();
+        setOcupado(false); setMsg('Este aparato ya no recibe avisos.');
+        releer();
+    };
+    const probar = async () => {
+        setOcupado(true); setMsg(null);
+        const r = await probarPush();
+        setOcupado(false);
+        setMsg(r.ok ? 'Enviado. Debería llegarte en segundos.' : (r.error ?? 'No llegó a ningún aparato.'));
+    };
+
+    const boton = (texto: string, onClick: () => void, principal = false) => (
+        <button onClick={onClick} disabled={ocupado}
+            className="transition-colors"
+            style={{
+                padding: '7px 11px', borderRadius: 8, fontSize: 11.5, fontWeight: 700,
+                color: principal ? '#0C0E0D' : TXT,
+                background: principal ? VERDE : 'rgba(255,255,255,0.06)',
+                border: principal ? 'none' : `1px solid ${BORDE2}`,
+                opacity: ocupado ? 0.5 : 1, flex: 1,
+            }}>
+            {texto}
+        </button>
+    );
+
+    return (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${BORDE}`, paddingTop: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <Smartphone size={12} style={{ color: estado === 'activo' ? VERDE : TXT2, flexShrink: 0 }} />
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: TXT }}>Avisos al teléfono</span>
+            </div>
+
+            {estado === 'falta_instalar' && (
+                <p style={{ fontSize: 10.5, color: TXT2, lineHeight: 1.55 }}>
+                    En iPhone hay que agregar Lincoin a la pantalla de inicio (Compartir → “Añadir a pantalla de inicio”) y activarlos desde ahí. En una pestaña del navegador iOS no entrega notificaciones.
+                </p>
+            )}
+            {estado === 'no_soportado' && (
+                <p style={{ fontSize: 10.5, color: TXT2, lineHeight: 1.55 }}>Este navegador no admite notificaciones push.</p>
+            )}
+            {estado === 'bloqueado' && (
+                <p style={{ fontSize: 10.5, color: AMBAR, lineHeight: 1.55 }}>
+                    Están bloqueadas para este sitio. Hay que habilitarlas en los ajustes del navegador — el permiso no se puede volver a pedir desde acá.
+                </p>
+            )}
+            {(estado === 'pedir' || estado === 'permitido') && (
+                <div style={{ display: 'flex', gap: 6 }}>{boton('Activar en este aparato', activar, true)}</div>
+            )}
+            {estado === 'activo' && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                    {boton('Probar', probar)}
+                    {boton('Apagar', apagar)}
+                </div>
+            )}
+
+            {msg && <p style={{ fontSize: 10.5, color: TXT2, marginTop: 8, lineHeight: 1.5 }}>{msg}</p>}
+
+            <p style={{ fontSize: 10, color: TXT3, marginTop: 8, lineHeight: 1.5 }}>
+                Se activa por aparato. No reemplaza al correo: el push no tiene entrega garantizada.
+            </p>
+        </div>
+    );
+};
+
+// ─── Detalle: la orden a la izquierda, el hilo a la derecha ──
+const DetalleMesa: React.FC<{ id: string; onClose: () => void; onCambio: () => void }> = ({ id, onClose, onCambio }) => {
+    const [cierre, setCierre] = useState<any>(null);
+    const [cliente, setCliente] = useState<any>(null);
+    const [msgs, setMsgs]     = useState<any[]>([]);
+    const [texto, setTexto]   = useState('');
+    const [cargando, setCargando] = useState(true);
+    const [ocupado, setOcupado]   = useState(false);
+    const [aviso, setAviso]   = useState<string | null>(null);
+    const [tasaInput, setTasaInput] = useState('');
+    const [instrucciones, setInstrucciones] = useState('');
+    const [notas, setNotas]   = useState('');
+    const [notasGuardadas, setNotasGuardadas] = useState(false);
+    const [lupa, setLupa] = useState<string | null>(null);
+    // Confirmación propia en vez del window.confirm del navegador: completar
+    // ACREDITA plata, y el diálogo tiene que decir cuánta y en qué billetera.
+    const [pide, setPide] = useState<null | 'completar' | 'cancelar' | 'anular'>(null);
+    const [motivo, setMotivo] = useState('');
+    // El canal donde se acredita una venta de USDT: lo elige la mesa al completar.
+    const [canal, setCanal] = useState<string>('');
+    // La tasa a la que la mesa vendió (o compró) los USDT: se pide al completar
+    // y con ella queda la utilidad del cierre.
+    const [tasaVentaTxt, setTasaVentaTxt] = useState('');
+    // Registrar o corregir la tasa de venta de un cierre YA completado (los de
+    // antes del 23 nov no la tienen y no suman a la caja de Lincoin).
+    const [ventaEdit, setVentaEdit] = useState<null | string>(null);
+    const [tasaAbierta, setTasaAbierta] = useState(false);
+    // Corregir la tasa de un cierre que el cliente YA pagó ("Por verificar"):
+    // no reinicia el plazo y pide un motivo que el cliente ve en el chat.
+    const [corrAbierta, setCorrAbierta] = useState(false);
+    const [corrMotivo, setCorrMotivo] = useState('');
+    const [subiendo, setSubiendo] = useState(false);
+    const finRef = useRef<HTMLDivElement | null>(null);
+    const fileRef = useRef<HTMLInputElement | null>(null);
+
+    const cargar = useCallback(async () => {
+        const r = await callMesa('detalle', { id });
+        if (r?.ok) {
+            setCierre(r.cierre); setCliente(r.cliente ?? null); setMsgs(r.mensajes ?? []);
+            setCanal(prev => prev || (CANALES.some(x => x.v === r.cierre?.payout?.wallet) ? String(r.cierre.payout.wallet) : ''));
+            setNotas(prev => (prev === '' ? (r.cierre?.notas_internas ?? '') : prev));
+            // La tasa VIGENTE (la fija, si ya la hay), escrita como se escribe
+            // aquí: "3.912,5". Antes se ponía la cotizada en crudo
+            // ("3912.4871") aunque la mesa ya hubiera fijado otra.
+            setTasaInput(prev => {
+                if (prev !== '') return prev;
+                const t = Number(r.cierre?.rate_final ?? r.cierre?.rate_cotizada);
+                return t > 0 ? t.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : prev;
+            });
+        } else setAviso(r?.message ?? r?.error ?? 'No pude abrir el cierre.');
+        setCargando(false);
+    }, [id]);
+
+    useEffect(() => { cargar(); }, [cargar]);
+    useEffect(() => {
+        const t = setInterval(() => {
+            if (cierre && ['completada', 'cancelada', 'anulada'].includes(cierre.status)) return;
+            cargar();
+        }, 8000);
+        return () => clearInterval(t);
+    }, [cargar, cierre]);
+    useEffect(() => { finRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs.length]);
+
+    // Devuelve la respuesta del servidor si salió bien (o null): completar
+    // necesita leer de ella si la utilidad quedó guardada.
+    const hacer = async (action: string, extra: Record<string, unknown> = {}): Promise<any | null> => {
+        setOcupado(true); setAviso(null);
+        const r = await callMesa(action, { id, ...extra });
+        setOcupado(false);
+        if (!r?.ok) {
+            setAviso(r?.message ?? r?.error ?? 'No se pudo.');
+            // El cierre cambió en el servidor aunque la acción "falló" (lo
+            // completó otro, o quedó completado con la acreditación sin
+            // confirmar): se relee para no mostrar un estado que ya no es.
+            if (r?.error === 'acreditacion_incierta' || r?.error === 'estado_invalido') { await cargar(); onCambio(); }
+            return null;
+        }
+        await cargar(); onCambio();
+        return r;
+    };
+
+    // Anular va por admin-data y no por otc-mesa: le QUITA plata al cliente,
+    // y eso pide el código 2FA de la operación (pedirAdmin lo pide solo).
+    const anular = async (m: string) => {
+        setOcupado(true); setAviso(null);
+        const r = await pedirAdmin({ action: 'otc_anular_cierre', id, motivo: m });
+        setOcupado(false);
+        if (!r?.success) { setAviso(r?.error ?? 'No se pudo anular.'); return; }
+        setAviso(r.aviso
+            ? `Anulado: se descontaron ${nf(r.descontado, 0)} de ${BILLETERA[r.billetera] ?? r.billetera}. ${r.aviso}`
+            : r.yaEstaba ? 'Este cierre ya estaba anulado.' : `Anulado: se descontaron ${nf(r.descontado, 0)} de ${BILLETERA[r.billetera] ?? r.billetera}.`);
+        await cargar(); onCambio();
+    };
+
+    const enviar = async () => {
+        const t = texto.trim();
+        if (!t || ocupado) return;
+        setOcupado(true);
+        const r = await callMesa('mensaje', { id, body: t });
+        setOcupado(false);
+        if (r?.ok) { setTexto(''); cargar(); onCambio(); }
+        else setAviso(r?.message ?? r?.error ?? 'No se pudo enviar.');
+    };
+
+    const copiar = (t: string) => { try { navigator.clipboard.writeText(t); } catch { /* */ } };
+
+    // La mesa también adjunta: el soporte de lo que liberó, o lo que le pida al
+    // cliente. Se guarda como mensaje DE LA MESA — si contara como del cliente,
+    // habilitaría sin querer el "ya pagué" de alguien que no pagó.
+    const adjuntar = async (f: File | null | undefined) => {
+        if (!f) return;
+        setAviso(null);
+        if (f.size > 5 * 1024 * 1024) { setAviso('El archivo no puede pesar más de 5 MB.'); return; }
+        setSubiendo(true);
+        try {
+            const b64: string = await new Promise((res, rej) => {
+                const fr = new FileReader();
+                fr.onload = () => res(String(fr.result ?? ''));
+                fr.onerror = () => rej(new Error('no se pudo leer el archivo'));
+                fr.readAsDataURL(f);
+            });
+            const r = await callMesa('comprobante', { id, archivo: b64, nombre: f.name, tipo: f.type });
+            if (r?.ok) { cargar(); onCambio(); }
+            else setAviso(r?.message ?? r?.error ?? 'No se pudo subir el archivo.');
+        } catch (e: any) {
+            setAviso(e?.message ?? 'No se pudo leer el archivo.');
+        }
+        setSubiendo(false);
+        if (fileRef.current) fileRef.current.value = '';
+    };
+
+    const marco = (hijo: React.ReactNode) => (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3" style={{ background: 'rgba(0,0,0,0.72)' }} onClick={onClose}>
+            {hijo}
+        </div>
+    );
+
+    if (cargando && !cierre) {
+        return marco(<div style={{ background: PANEL, border: `1px solid ${BORDE}`, borderRadius: 16, padding: 32, fontSize: 13, color: TXT2 }}>Cargando…</div>);
+    }
+    if (!cierre) {
+        return marco(<div style={{ background: PANEL, border: `1px solid ${BORDE}`, borderRadius: 16, padding: 32, fontSize: 13, color: TXT2 }}>{aviso ?? 'No pude abrir el cierre.'}</div>);
+    }
+
+    // "Mía" tiene que significar MÍA. Antes solo comprobaba que ALGUIEN lo
+    // hubiera tomado: el operador veía "Atiende Fulano" en la cabecera y todos
+    // los botones activos igual, así que podía fijar otra tasa, completar y
+    // acreditar sobre un cierre ajeno. Es exactamente la falla que el
+    // comentario de cabecera de este archivo llama la peor posible en una mesa.
+    //
+    // Si el servidor no devuelve `tomada_por` no se bloquea: quedarse sin poder
+    // atender por un campo que no vino sería peor que el riesgo que evita.
+    const mia  = !!cierre.tomada_at && (!cierre.tomada_por || String(cierre.tomada_por) === miIdAdmin());
+    const viva = !['completada', 'cancelada', 'anulada'].includes(cierre.status);
+    const bloqueado = viva && !mia;
+
+    const verbo = cierre.side === 'vende_usdt' ? 'Vende' : 'Compra';
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3" style={{ background: 'rgba(0,0,0,0.72)', fontFamily: "'Archivo', system-ui, sans-serif" }} onClick={onClose}>
+            <div className="w-full max-w-5xl max-h-[94vh] overflow-hidden flex flex-col md:flex-row"
+                style={{ background: FONDO, border: `1px solid ${BORDE2}`, borderRadius: 18, boxShadow: '0 24px 70px rgba(0,0,0,0.6)' }}
+                onClick={e => e.stopPropagation()}>
+
+                {/* ── Izquierda: la operación ── */}
+                <div className="md:w-[46%] flex flex-col overflow-auto" style={{ borderRight: `1px solid ${BORDE}` }}>
+                    <div style={{ padding: '18px 20px', borderBottom: `1px solid ${BORDE}` }}>
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12.5, color: TXT2 }}>{cierre.ref}</span>
+                            <Pill estado={cierre.status} />
+                        </div>
+                        <p style={{ fontSize: 22, fontWeight: 800, color: TXT, marginTop: 12, letterSpacing: '-0.5px', lineHeight: 1.25 }}>
+                            {verbo} {nf(cierre.from_amount)} {cierre.from_currency}
+                        </p>
+                        <p style={{ fontSize: 13.5, color: TXT2, marginTop: 3 }}>
+                            recibe <b style={{ color: VERDE }}>{cierre.to_amount != null ? `${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}` : 'a cotizar'}</b>
+                        </p>
+                        {cierre.status === 'esperando_pago' && cierre.vence_at && (
+                            <p style={{ fontSize: 12.5, color: TXT2, marginTop: 6 }}>
+                                Plazo del cliente: <b style={{ color: restante(cierre.vence_at) === 'vencido' ? ROJO : AMBAR, fontFamily: 'ui-monospace, monospace' }}>{restante(cierre.vence_at)}</b>
+                            </p>
+                        )}
+                    </div>
+
+                    <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                            {/* Si la mesa la corrigió después de que el cliente pagó,
+                                se dice de cuál a cuál y quién: la última corrección. */}
+                            {(() => {
+                                const cs = Array.isArray(cierre.payout?.correccionesTasa) ? cierre.payout.correccionesTasa : [];
+                                const u = cs[cs.length - 1];
+                                return <KV label="Tasa final" valor={cierre.rate_final != null ? nf(cierre.rate_final) : 'sin fijar'}
+                                    pie={u ? `corregida${u.de != null ? ` de ${nf(u.de)}` : ''}${u.por ? ` por ${u.por}` : ''}${cs.length > 1 ? ` · ${cs.length} correcciones` : ''}` : undefined} />;
+                            })()}
+                            <KV label="Tasa que vio el cliente" valor={cierre.rate_cotizada != null ? nf(cierre.rate_cotizada) : 'no se pudo cotizar'} pie={cierre.rate_fuente ?? undefined} />
+                            <KV label="Solicitado" valor={fecha(cierre.created_at)} pie={espera(cierre.created_at)} />
+                            {/* Lo que dejó el cierre, con la tasa que la mesa
+                                escribió al completar. Solo lo ve la mesa. */}
+                            {cierre.payout?.venta?.tasa > 0 && (
+                                <KV
+                                    label={cierre.side === 'vende_usdt' ? 'Vendiste a' : 'Compraste a'}
+                                    valor={nf(cierre.payout.venta.tasa)}
+                                    pie={cierre.payout.venta.por ? `escribió ${cierre.payout.venta.por}` : undefined}
+                                />
+                            )}
+                            {cierre.payout?.venta?.tasa > 0 && Number.isFinite(Number(cierre.payout.venta.utilidadCop)) && (
+                                <div>
+                                    <p style={ROTULO}>{Number(cierre.payout.venta.utilidadCop) < 0 ? 'Pérdida' : 'Utilidad'}</p>
+                                    <p style={{ fontSize: 14, fontWeight: 800, marginTop: 3, color: Number(cierre.payout.venta.utilidadCop) < 0 ? ROJO : VERDE }}>
+                                        {signoCop(Number(cierre.payout.venta.utilidadCop))}
+                                    </p>
+                                    {cierre.payout.venta.pct != null && (
+                                        <p style={{ fontSize: 10.5, color: TXT3, marginTop: 2 }}>{pctTxt(Number(cierre.payout.venta.pct))} del cierre</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Un cierre completado sin tasa de venta no suma a la
+                            utilidad de Lincoin (Billetera → Lincoin · utilidades):
+                            se registra aquí. Con tasa, se puede corregir. */}
+                        {cierre.status === 'completada' && (() => {
+                            const tiene = cierre.payout?.venta?.tasa > 0;
+                            const vende = cierre.side === 'vende_usdt';
+                            if (ventaEdit === null) {
+                                return tiene ? (
+                                    <button type="button" onClick={() => setVentaEdit(nf(cierre.payout.venta.tasa))}
+                                        style={{ alignSelf: 'flex-start', marginTop: -8, background: 'none', border: 'none', padding: 0, color: TXT2, fontSize: 11.5, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                        Corregir la tasa de {vende ? 'venta' : 'compra'}
+                                    </button>
+                                ) : (
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', padding: '10px 12px', borderRadius: 10, border: `1px solid ${AMBAR}44`, background: `${AMBAR}0D` }}>
+                                        <span style={{ fontSize: 12, color: TXT, lineHeight: 1.45 }}>Sin tasa de {vende ? 'venta' : 'compra'}: su utilidad no suma a Lincoin.</span>
+                                        <button type="button" onClick={() => setVentaEdit('')}
+                                            style={{ padding: '6px 11px', borderRadius: 8, fontSize: 12, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                            Registrar tasa
+                                        </button>
+                                    </div>
+                                );
+                            }
+                            const t = leerTasa(ventaEdit);
+                            const v = ventaEdit.trim() && t > 0 ? ventaDe(cierre, t) : null;
+                            const lejos = !!v && fueraDeRango(t, Number(cierre.rate_final));
+                            const guardar = async () => {
+                                if (!v || lejos) return;
+                                const r = await hacer('registrar_venta', { tasaVenta: t });
+                                if (r) setVentaEdit(null);
+                            };
+                            return (
+                                <div style={{ padding: '11px 12px', borderRadius: 10, border: `1px solid ${BORDE2}`, background: ELEVADO, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    <p style={ROTULO}>{vende ? '¿A qué tasa vendiste los USDT?' : '¿A qué tasa compraste los USDT?'}</p>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <input autoFocus value={ventaEdit} onChange={e => setVentaEdit(e.target.value)} inputMode="decimal"
+                                            aria-label="Tasa de venta del cierre" placeholder={`Ej: ${nf(Number(cierre.rate_final) * (vende ? 1.005 : 0.995))}`}
+                                            onKeyDown={e => { if (e.key === 'Enter') guardar(); }}
+                                            style={{ ...INPUT, fontFamily: 'ui-monospace, monospace', fontWeight: 700, borderColor: lejos ? `${ROJO}88` : BORDE2 }} />
+                                        <button type="button" onClick={guardar} disabled={ocupado || !v || lejos}
+                                            style={{ flexShrink: 0, padding: '0 14px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado || !v || lejos ? 0.5 : 1, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                            Guardar
+                                        </button>
+                                        <button type="button" onClick={() => setVentaEdit(null)}
+                                            style={{ flexShrink: 0, padding: '0 10px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                                            Cancelar
+                                        </button>
+                                    </div>
+                                    {v && !lejos && (
+                                        <p style={{ fontSize: 12, color: TXT2 }}>
+                                            {v.utilidadCop < 0 ? 'Pérdida' : 'Utilidad'}: <b style={{ color: v.utilidadCop < 0 ? ROJO : VERDE }}>{signoCop(v.utilidadCop)}</b>{v.pct != null ? ` · ${pctTxt(v.pct)}` : ''}
+                                        </p>
+                                    )}
+                                    {lejos && <p style={{ fontSize: 11.5, color: ROJO }}>Se aleja más de {TOPE_VENTA * 100} % de la tasa del cliente ({nf(cierre.rate_final)}). Revisa el número.</p>}
+                                </div>
+                            );
+                        })()}
+
+                        <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
+                            <p style={{ ...ROTULO, marginBottom: 9 }}>Cliente</p>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, color: TXT }}>
+                                <User size={13} style={{ color: TXT3 }} /> {cliente?.company_name ?? cliente?.full_name ?? '—'}
+                            </div>
+                            <p style={{ fontSize: 12, color: TXT2, marginTop: 3 }}>{cliente?.email ?? '—'}</p>
+                            {cliente?.kyc_status && (
+                                <span style={{ display: 'inline-block', marginTop: 8, padding: '3px 9px', borderRadius: 999, fontSize: 9.5, fontWeight: 700, letterSpacing: '0.5px', color: TXT2, border: `1px solid ${BORDE2}` }}>
+                                    KYC {String(cliente.kyc_status).toUpperCase()}
+                                </span>
+                            )}
+                        </div>
+
+                        <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
+                            <p style={{ ...ROTULO, marginBottom: 9 }}>Dónde se le acredita</p>
+                            <div style={{ background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                {(cierre.payout?.tipo === 'saldo' || (!cierre.payout?.tipo && 'wallet' in (cierre.payout ?? {}))) && (
+                                    <>
+                                        <Fila icon={Wallet} label="Canal" valor={cierre.payout.wallet
+                                            ? `${BILLETERA[cierre.payout.wallet] ?? cierre.payout.wallet}${cierre.payout.canalPor ? ` · eligió ${cierre.payout.canalPor}` : ''}`
+                                            : 'Lo eliges al completar'} />
+                                        <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5, marginTop: 2 }}>
+                                            Se acredita en la cuenta del cliente. No sale plata hacia ningún banco.
+                                        </p>
+                                    </>
+                                )}
+                                {cierre.payout?.tipo === 'lincoin' && <Fila icon={Wallet} label="Billetera" valor="Saldo Lincoin" />}
+                                {cierre.payout?.tipo === 'breb' && (
+                                    <>
+                                        <Fila icon={Zap}  label="Riel"  valor="Bre-B" />
+                                        <Fila icon={Hash} label="Llave" valor={cierre.payout.llave} mono onCopy={() => copiar(String(cierre.payout.llave ?? ''))} />
+                                    </>
+                                )}
+                                {(cierre.payout?.tipo === 'ach' || cierre.payout?.tipo === 'banco') && (
+                                    <>
+                                        <Fila icon={Landmark} label="Banco"   valor={cierre.payout.banco} />
+                                        <Fila icon={Hash}     label="Cuenta"  valor={cierre.payout.cuenta} mono onCopy={() => copiar(String(cierre.payout.cuenta ?? ''))} />
+                                        <Fila icon={User}     label="Titular" valor={cierre.payout.titular} />
+                                    </>
+                                )}
+                                {cierre.payout?.tipo === 'wallet' && (
+                                    <>
+                                        <Fila icon={Wallet} label="Red"       valor={cierre.payout.red} />
+                                        <Fila icon={Hash}   label="Dirección" valor={cierre.payout.direccion} mono onCopy={() => copiar(String(cierre.payout.direccion ?? ''))} />
+                                    </>
+                                )}
+                                {!cierre.payout?.tipo && !('wallet' in (cierre.payout ?? {})) && <p style={{ fontSize: 12, color: TXT3 }}>Sin datos de destino.</p>}
+                            </div>
+                        </div>
+
+                        {/* La wallet desde donde el cliente dijo que manda los
+                            USDT, ya revisada en la KYT. Los USDT que lleguen
+                            tienen que salir de ESTA wallet: si vienen de otra,
+                            no es la operación que se aprobó. */}
+                        {cierre.side === 'vende_usdt' && (
+                            <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
+                                <p style={{ ...ROTULO, marginBottom: 9 }}>Wallet de origen (KYT)</p>
+                                {cierre.payout?.origen?.address ? (() => {
+                                    const o = cierre.payout.origen;
+                                    const rz = RIESGO[o.categoria] ?? RIESGO.sin_dato;
+                                    return (
+                                        <div style={{ background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                            <Fila icon={Hash} label="Dirección" valor={o.address} mono onCopy={() => copiar(String(o.address ?? ''))} />
+                                            <Fila icon={Wallet} label="Red" valor={o.coin === 'TRX' ? 'TRON (TRC20)' : o.coin === 'ETH' ? 'Ethereum (ERC20)' : o.coin === 'BNB' ? 'BNB Chain (BEP20)' : o.coin} />
+                                            <Fila icon={AlertTriangle} label="Riesgo" valor={<span style={{ color: rz.c, fontWeight: 800 }}>{rz.t}{o.puntaje != null ? ` · ${o.puntaje}/100` : ''}</span>} />
+                                            {/* Aceptada con vigilancia (23 nov): riesgo bajo, pero el
+                                                proveedor recomendó seguir sus movimientos. La mesa
+                                                tiene que saberlo antes de completar. */}
+                                            {o.excepcion === 'vigilancia' && <Fila icon={Eye} label="Aceptada" valor={<span style={{ color: '#FBBF24', fontWeight: 700 }}>Con vigilancia · tiene señales, queda en monitoreo</span>} />}
+                                            {o.excepcion === 'wallet_nueva' && <Fila icon={Eye} label="Aceptada" valor="Wallet nueva, sin otras señales" />}
+                                            {o.saldoUsdt != null && <Fila icon={Wallet} label="Saldo USDT al revisar" valor={nf(o.saldoUsdt)} />}
+                                            <Fila icon={Clock} label="Verificada" valor={fecha(o.verificadaAt ?? o.consultadoAt)} />
+                                            <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5, marginTop: 2 }}>
+                                                Confirma que los USDT lleguen desde esta dirección antes de completar. El reporte completo está en Cumplimiento → KYT.
+                                            </p>
+                                        </div>
+                                    );
+                                })() : (
+                                    <p style={{ fontSize: 12, color: TXT3, lineHeight: 1.5 }}>
+                                        Sin wallet de origen verificada (cierre anterior al 19 nov o creado por la mesa).
+                                    </p>
+                                )}
+                            </div>
+                        )}
+
+                        <div style={{ borderTop: `1px solid ${BORDE}`, paddingTop: 16 }}>
+                            <p style={{ ...ROTULO, marginBottom: 9, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Lock size={10} /> Notas internas · el cliente no las ve
+                            </p>
+                            <textarea
+                                value={notas}
+                                onChange={e => { setNotas(e.target.value); setNotasGuardadas(false); }}
+                                onBlur={async () => { if (!notasGuardadas) { await callMesa('notas', { id, notas }); setNotasGuardadas(true); } }}
+                                rows={2}
+                                placeholder="Contexto para el resto de la mesa…"
+                                style={{ ...INPUT, fontSize: 12.5, resize: 'vertical' }}
+                            />
+                            {notasGuardadas && <p style={{ fontSize: 10.5, color: VERDE, marginTop: 5 }}>Guardado.</p>}
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── Derecha: hilo + acciones ── */}
+                <div className="md:w-[54%] flex flex-col min-h-0" style={{ background: PANEL }}>
+                    <div style={{ padding: '14px 18px', borderBottom: `1px solid ${BORDE}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                            <MessageSquare size={15} style={{ color: TXT3, flexShrink: 0 }} />
+                            <span style={{ fontSize: 13.5, fontWeight: 700, color: cierre.tomada_at ? TXT : TXT2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {/* Tomado por otro operador también es "tomado": antes
+                                    decía "Sin tomar" y dos personas lo atendían. */}
+                                {cierre.tomada_at ? (mia ? `Atiendes tú · ${cierre.tomada_por_nom ?? 'la mesa'}` : `Atiende ${cierre.tomada_por_nom ?? 'otro operador'}`) : 'Sin tomar'}
+                            </span>
+                        </div>
+                        <button onClick={onClose} className="transition-colors hover:bg-white/[0.07]"
+                            style={{ padding: 6, borderRadius: 8, color: TXT2, flexShrink: 0, background: 'transparent', border: 'none' }}>
+                            <X size={17} />
+                        </button>
+                    </div>
+
+                    {cierre.payout?.acreditacion === 'incierta' && (
+                        <div style={{ margin: '12px 16px 0', display: 'flex', alignItems: 'flex-start', gap: 7, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.08)', borderRadius: 9, padding: '9px 11px' }}>
+                            <AlertTriangle size={13} style={{ color: '#F87171', marginTop: 1, flexShrink: 0 }} />
+                            <p style={{ fontSize: 12, color: TXT, lineHeight: 1.5 }}>
+                                <b>Acreditación sin confirmar.</b> Al completar no llegó la respuesta del saldo. Revisa el saldo del cliente antes de cargar nada a mano: el cierre quedó completado para que no se acredite dos veces.
+                            </p>
+                        </div>
+                    )}
+                    {aviso && (
+                        <div style={{ margin: '12px 16px 0', display: 'flex', alignItems: 'flex-start', gap: 7, border: `1px solid ${AMBAR}44`, background: `${AMBAR}10`, borderRadius: 9, padding: '9px 11px' }}>
+                            <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
+                            <p style={{ fontSize: 12, color: TXT, lineHeight: 1.5 }}>{aviso}</p>
+                        </div>
+                    )}
+
+                    <div className="flex-1 overflow-auto" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 180 }}>
+                        {msgs.map(m => <Burbuja key={m.id} m={m} onVer={setLupa} />)}
+                        <div ref={finRef} />
+                    </div>
+
+                    {/* Tomar primero: sin dueño no se habla ni se opera */}
+                    {bloqueado && (
+                        <div style={{ padding: '16px', borderTop: `1px solid ${BORDE}` }}>
+                            <p style={{ fontSize: 12, color: TXT2, marginBottom: 10, lineHeight: 1.5 }}>
+                                Tomá el cierre para escribirle al cliente y operarlo. Queda a tu nombre para que nadie más conteste en paralelo.
+                            </p>
+                            <button onClick={() => hacer('tomar')} disabled={ocupado}
+                                className="lincoin-btn-white transition-colors"
+                                style={{ width: '100%', padding: '11px 0', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 700, opacity: ocupado ? 0.5 : 1 }}>
+                                {ocupado ? 'Tomando…' : 'Tomar este cierre'}
+                            </button>
+                        </div>
+                    )}
+
+                    {viva && mia && (
+                        <>
+                            {/* La tasa y las instrucciones, plegadas: se usan una
+                                vez por cierre y el resto del tiempo solo estorban
+                                entre el hilo y los botones que sí se aprietan. */}
+                            {/* Un cancelado que nunca se acreditó se reabre fijando
+                                una tasa nueva (el servidor lo permite): es el camino
+                                del cliente que pagó después de vencer el plazo. */}
+                            {(['abierta', 'en_proceso', 'esperando_pago'].includes(cierre.status) || (cierre.status === 'cancelada' && !cierre.completada_at)) && (
+                                <div style={{ padding: '10px 16px 0' }}>
+                                    <button onClick={() => setTasaAbierta(v => !v)}
+                                        style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color: VERDE, background: 'transparent', border: 'none', padding: 0 }}>
+                                        {cierre.status === 'esperando_pago' ? 'Corregir tasa e instrucciones' : cierre.status === 'cancelada' ? 'Reabrir con tasa e instrucciones' : 'Confirmar tasa y dar instrucciones'}
+                                        {tasaAbierta ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                    </button>
+                                    {tasaAbierta && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                                            <div style={{ display: 'flex', gap: 8 }}>
+                                                <input
+                                                    value={tasaInput}
+                                                    onChange={e => setTasaInput(e.target.value)}
+                                                    inputMode="decimal"
+                                                    placeholder="Tasa final"
+                                                    style={{ ...INPUT, fontFamily: 'ui-monospace, monospace' }}
+                                                />
+                                                <button
+                                                    onClick={async () => {
+                                                        const n = leerTasa(tasaInput);
+                                                        if (!(n > 0)) { setAviso('Escribe la tasa final.'); return; }
+                                                        if (await hacer('fijar_tasa', { rateFinal: n, instrucciones })) { setInstrucciones(''); setTasaAbierta(false); }
+                                                    }}
+                                                    disabled={ocupado}
+                                                    className="transition-colors hover:bg-white/[0.1]"
+                                                    style={{ flexShrink: 0, padding: '0 15px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: TXT, background: 'rgba(255,255,255,0.07)', border: `1px solid ${BORDE2}`, opacity: ocupado ? 0.5 : 1 }}
+                                                >
+                                                    Confirmar
+                                                </button>
+                                            </div>
+                                            <textarea
+                                                value={instrucciones}
+                                                onChange={e => setInstrucciones(e.target.value)}
+                                                rows={2}
+                                                placeholder="Instrucciones de pago para el cliente (se le envían por el chat)"
+                                                style={{ ...INPUT, fontSize: 12.5, resize: 'vertical' }}
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* El cliente ya marcó el pago: la tasa se corrige sin
+                                devolverlo a "esperando pago" ni abrirle otro plazo
+                                (23 nov). Completar acredita con la tasa corregida. */}
+                            {cierre.status === 'pagada' && !cierre.completada_at && (() => {
+                                const n = leerTasa(tasaInput);
+                                const monto = Number(cierre.from_amount);
+                                const dec = cierre.to_currency === 'COP' ? 0 : 2;
+                                // Redondeado hacia abajo, como lo hace el servidor (redondearRecibe).
+                                const f = dec === 0 ? 1 : 100;
+                                const nuevo = n > 0 && monto > 0 ? Math.floor((cierre.side === 'vende_usdt' ? monto * n : monto / n) * f + 1e-6) / f : null;
+                                const igual = n > 0 && Number(cierre.rate_final) > 0 && Math.abs(n - Number(cierre.rate_final)) < 1e-9;
+                                return (
+                                    <div style={{ padding: '10px 16px 0' }}>
+                                        <button onClick={() => setCorrAbierta(v => !v)}
+                                            style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color: VERDE, background: 'transparent', border: 'none', padding: 0 }}>
+                                            Corregir la tasa del cliente
+                                            {corrAbierta ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                        </button>
+                                        {corrAbierta && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                                                <input
+                                                    value={tasaInput}
+                                                    onChange={e => setTasaInput(e.target.value)}
+                                                    inputMode="decimal"
+                                                    placeholder="Tasa corregida"
+                                                    style={{ ...INPUT, fontFamily: 'ui-monospace, monospace' }}
+                                                />
+                                                {nuevo != null && !igual && (
+                                                    <p style={{ fontSize: 12, color: TXT2, lineHeight: 1.5 }}>
+                                                        Recibirá <b style={{ color: TXT }}>{nuevo.toLocaleString('es-CO', { maximumFractionDigits: dec })} {cierre.to_currency}</b>
+                                                        {Number(cierre.to_amount) > 0 && <> en vez de {Number(cierre.to_amount).toLocaleString('es-CO', { maximumFractionDigits: dec })}</>}.
+                                                    </p>
+                                                )}
+                                                <textarea
+                                                    value={corrMotivo}
+                                                    onChange={e => setCorrMotivo(e.target.value)}
+                                                    rows={2}
+                                                    placeholder="Motivo de la corrección (el cliente lo ve en el chat)"
+                                                    style={{ ...INPUT, fontSize: 12.5, resize: 'vertical' }}
+                                                />
+                                                <button
+                                                    onClick={async () => {
+                                                        if (!(n > 0)) { setAviso('Escribe la tasa corregida.'); return; }
+                                                        if (igual) { setAviso('Es la misma tasa que ya tiene el cierre.'); return; }
+                                                        if (corrMotivo.trim().length < 5) { setAviso('Escribe el motivo de la corrección: el cliente lo ve en el chat.'); return; }
+                                                        if (await hacer('corregir_tasa', { rateFinal: n, motivo: corrMotivo.trim() })) { setCorrMotivo(''); setCorrAbierta(false); }
+                                                    }}
+                                                    disabled={ocupado}
+                                                    className="transition-colors hover:bg-white/[0.1]"
+                                                    style={{ alignSelf: 'flex-start', padding: '9px 15px', borderRadius: 9, fontSize: 12.5, fontWeight: 700, color: TXT, background: 'rgba(255,255,255,0.07)', border: `1px solid ${BORDE2}`, opacity: ocupado ? 0.5 : 1 }}
+                                                >
+                                                    Corregir tasa
+                                                </button>
+                                                <p style={{ fontSize: 11, color: TXT3, lineHeight: 1.5 }}>
+                                                    No le abre otro plazo: el cierre sigue por verificar. Al completar se le acredita con esta tasa.
+                                                </p>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+
+                            <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                {cierre.status === 'pagada' && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, border: `1px solid ${AMBAR}44`, background: `${AMBAR}10`, borderRadius: 9, padding: '10px 12px' }}>
+                                        <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
+                                        <p style={{ fontSize: 12, color: TXT, lineHeight: 1.5 }}>
+                                            El cliente marcó el envío. <b>Verificalo en tu banco o en la cadena antes de completar</b> — lo que él marque no es prueba de que el dinero llegó.
+                                        </p>
+                                    </div>
+                                )}
+
+                                <div className="flex flex-col sm:flex-row" style={{ gap: 8 }}>
+                                    <button
+                                        onClick={() => {
+                                            if (!cierre.rate_final) { setAviso('Fija la tasa final antes de completar.'); return; }
+                                            setPide('completar');
+                                        }}
+                                        disabled={ocupado}
+                                        className="transition-colors"
+                                        style={{ flex: 1, padding: '13px 0', borderRadius: 11, fontSize: 13.5, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, opacity: ocupado ? 0.5 : 1 }}
+                                    >
+                                        <CheckCircle2 size={15} /> Completar
+                                    </button>
+                                    <button
+                                        onClick={() => setPide('cancelar')}
+                                        disabled={ocupado}
+                                        className="sm:w-auto transition-colors hover:bg-white/[0.04]"
+                                        style={{ padding: '13px 20px', borderRadius: 11, fontSize: 13, fontWeight: 700, color: ROJO, background: 'transparent', border: `1px solid ${ROJO}44`, opacity: ocupado ? 0.5 : 1, whiteSpace: 'nowrap' }}
+                                    >
+                                        Cancelar
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Composer, con el adjuntar adentro: la mesa también
+                                manda comprobantes (el soporte de lo que liberó). */}
+                            <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderTop: `1px solid ${BORDE}`, alignItems: 'center' }}>
+                                <input
+                                    ref={fileRef}
+                                    type="file"
+                                    accept="image/jpeg,image/png,image/webp,image/heic,application/pdf"
+                                    onChange={e => adjuntar(e.target.files?.[0])}
+                                    style={{ display: 'none' }}
+                                />
+                                <button onClick={() => fileRef.current?.click()} disabled={subiendo} title="Adjuntar archivo"
+                                    className="transition-colors hover:bg-white/[0.09]"
+                                    style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 999, background: 'rgba(255,255,255,0.055)', border: `1px solid ${BORDE2}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: TXT }}>
+                                    {subiendo ? <RefreshCw size={15} className="animate-spin" /> : <Plus size={17} />}
+                                </button>
+                                <input
+                                    value={texto}
+                                    onChange={e => setTexto(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); enviar(); } }}
+                                    placeholder="Escribile al cliente…"
+                                    style={INPUT}
+                                />
+                                <button onClick={enviar} disabled={ocupado || !texto.trim()}
+                                    style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 999, background: texto.trim() ? VERDE : 'rgba(255,255,255,0.055)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    {ocupado ? <RefreshCw size={15} className="animate-spin" style={{ color: '#0C0E0D' }} /> : <Send size={15} style={{ color: texto.trim() ? '#0C0E0D' : TXT2 }} />}
+                                </button>
+                            </div>
+                        </>
+                    )}
+
+                    {!viva && (
+                        <div style={{ padding: '14px 18px', borderTop: `1px solid ${BORDE}`, fontSize: 12, color: TXT3, lineHeight: 1.5 }}>
+                            {cierre.status === 'completada'
+                                ? <>Completado el {fecha(cierre.completada_at)}. El hilo queda como registro.</>
+                                : cierre.status === 'anulada'
+                                    ? <>Anulado el {fecha(cierre.cancelada_at)}{cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}. Se descontó lo acreditado.</>
+                                    : <>Cancelado el {fecha(cierre.cancelada_at)}{cierre.motivo_cierre ? ` — ${cierre.motivo_cierre}` : ''}.</>}
+                            {/* Completado por error (un comprobante que no era el
+                                envío, otro monto): se deshace descontando lo que
+                                se acreditó. Antes no había cómo y quedaba a mano. */}
+                            {cierre.status === 'completada' && (
+                                <div style={{ marginTop: 10 }}>
+                                    <button onClick={() => setPide('anular')} disabled={ocupado}
+                                        className="transition-colors hover:bg-white/[0.04]"
+                                        style={{ padding: '9px 14px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: ROJO, background: 'transparent', border: `1px solid ${ROJO}44`, opacity: ocupado ? 0.5 : 1 }}>
+                                        Anular cierre
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {lupa && <Lupa url={lupa} onCerrar={() => setLupa(null)} />}
+
+            {/* Confirmación de completar / cancelar */}
+            {pide && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.75)' }} onClick={e => { e.stopPropagation(); setPide(null); setMotivo(''); }}>
+                    <div style={{ background: PANEL, border: `1px solid ${BORDE2}`, borderRadius: 16, padding: 22, width: '100%', maxWidth: 400, maxHeight: '92vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+                        {pide === 'completar' ? (
+                            <>
+                                <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Completar {cierre.ref}</h4>
+                                <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>Esto acredita el saldo y cierra la operación.</p>
+                                <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                    <Fila icon={Wallet} label="Se acredita" valor={`${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}`} />
+                                    {cierre.side !== 'vende_usdt' && <Fila icon={Landmark} label="En" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />}
+                                    <Fila icon={Hash} label="Tasa cliente" valor={nf(cierre.rate_final)} />
+                                </div>
+                                {/* La tasa a la que la mesa vendió los USDT (o compró
+                                    los que entrega) y lo que deja el cierre. Con esto
+                                    la utilidad queda registrada y no estimada. */}
+                                {(() => {
+                                    const vende = cierre.side === 'vende_usdt';
+                                    const t = leerTasa(tasaVentaTxt);
+                                    const v = tasaVentaTxt.trim() && t > 0 ? ventaDe(cierre, t) : null;
+                                    const lejos = !!v && fueraDeRango(t, Number(cierre.rate_final));
+                                    const color = !v ? TXT2 : v.utilidadCop < 0 ? ROJO : v.utilidadCop > 0 ? VERDE : TXT2;
+                                    return (
+                                        <div style={{ marginTop: 12 }}>
+                                            <p style={{ ...ROTULO, marginBottom: 7 }}>{vende ? '¿A qué tasa vendiste los USDT?' : '¿A qué tasa compraste los USDT?'}</p>
+                                            <input
+                                                value={tasaVentaTxt}
+                                                onChange={e => setTasaVentaTxt(e.target.value)}
+                                                inputMode="decimal"
+                                                placeholder={`Ej: ${nf(Number(cierre.rate_final) * (vende ? 1.005 : 0.995))}`}
+                                                aria-label={vende ? 'Tasa a la que vendiste los USDT' : 'Tasa a la que compraste los USDT'}
+                                                style={{ ...INPUT, fontSize: 14, fontWeight: 700, fontFamily: 'ui-monospace, monospace', borderColor: lejos ? `${ROJO}88` : BORDE2 }}
+                                            />
+                                            {v && !lejos && (
+                                                <div style={{ marginTop: 8, background: v.utilidadCop < 0 ? `${ROJO}10` : `${VERDE}0D`, border: `1px solid ${v.utilidadCop < 0 ? `${ROJO}44` : `${VERDE}33`}`, borderRadius: 11, padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                                                        <span style={{ color: TXT2 }}>{vende ? 'Vendiste por' : 'Te costaron'}</span>
+                                                        <span style={{ color: TXT, fontWeight: 600 }}>{nf(vende ? v.totalCop : v.tercerosCop, 0)} COP</span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
+                                                        <span style={{ color: TXT2 }}>{vende ? 'Le pagas al cliente' : 'Te pagó el cliente'}</span>
+                                                        <span style={{ color: TXT, fontWeight: 600 }}>{nf(vende ? v.tercerosCop : v.totalCop, 0)} COP</span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, borderTop: `1px solid ${BORDE}`, paddingTop: 7, marginTop: 1 }}>
+                                                        <span style={{ fontSize: 12, fontWeight: 700, color: TXT }}>{v.utilidadCop < 0 ? 'Pérdida' : 'Utilidad'}</span>
+                                                        <span style={{ fontSize: 15, fontWeight: 800, color, letterSpacing: '-0.3px' }}>
+                                                            {signoCop(v.utilidadCop)}
+                                                            {v.pct != null && <span style={{ fontSize: 12, fontWeight: 700, marginLeft: 6 }}>· {pctTxt(v.pct)}</span>}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {lejos && (
+                                                <p style={{ marginTop: 7, fontSize: 11.5, color: ROJO, lineHeight: 1.5 }}>
+                                                    Se aleja más de {TOPE_VENTA * 100} % de la tasa del cliente ({nf(cierre.rate_final)}). Revisa el número.
+                                                </p>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
+                                {cierre.side === 'vende_usdt' && (
+                                    <div style={{ marginTop: 12 }}>
+                                        <p style={{ ...ROTULO, marginBottom: 7 }}>¿En qué canal se le acredita?</p>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                                            {CANALES.map(o => (
+                                                <button key={o.v} onClick={() => setCanal(o.v)}
+                                                    style={{ textAlign: 'left', padding: '9px 10px', borderRadius: 10,
+                                                        border: `1px solid ${canal === o.v ? `${VERDE}88` : BORDE2}`,
+                                                        background: canal === o.v ? `${VERDE}12` : 'rgba(255,255,255,0.03)' }}>
+                                                    <span style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: canal === o.v ? VERDE : TXT }}>{o.l}</span>
+                                                    <span style={{ display: 'block', fontSize: 10.5, color: TXT2, marginTop: 1 }}>{o.pie}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                                    <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
+                                    <p style={{ fontSize: 11.5, color: TXT2, lineHeight: 1.5 }}>
+                                        Verifica que el envío del cliente haya llegado. Lo que marque no es prueba de que el dinero entró.
+                                    </p>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                                    <button onClick={() => setPide(null)} className="transition-colors hover:bg-white/[0.06]"
+                                        style={{ padding: '11px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none' }}>
+                                        Volver
+                                    </button>
+                                    {(() => {
+                                        const tv = leerTasa(tasaVentaTxt);
+                                        const faltaCanal = cierre.side === 'vende_usdt' && !canal;
+                                        const faltaTasa = !(tasaVentaTxt.trim() && tv > 0) || fueraDeRango(tv, Number(cierre.rate_final));
+                                        const listo = !faltaCanal && !faltaTasa;
+                                        return (
+                                            <button onClick={async () => {
+                                                    if (!listo) return;
+                                                    setPide(null);
+                                                    const r = await hacer('completar', { ...(cierre.side === 'vende_usdt' ? { wallet: canal } : {}), tasaVenta: tv });
+                                                    if (r) {
+                                                        setTasaVentaTxt('');
+                                                        if (r.venta && r.ventaGuardada === false) setAviso('Cierre completado, pero la utilidad no quedó guardada. Avísale a soporte con la referencia del cierre.');
+                                                    }
+                                                }}
+                                                disabled={ocupado || !listo}
+                                                style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: '#0C0E0D', background: VERDE, border: 'none', opacity: ocupado || !listo ? 0.5 : 1 }}>
+                                                {faltaCanal ? 'Elige el canal' : faltaTasa ? (cierre.side === 'vende_usdt' ? 'Escribe la tasa de venta' : 'Escribe la tasa de compra') : 'Sí, acreditar y completar'}
+                                            </button>
+                                        );
+                                    })()}
+                                </div>
+                            </>
+                        ) : pide === 'anular' ? (
+                            <>
+                                <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Anular {cierre.ref}</h4>
+                                <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>Deshace el cierre completado: se le descuenta al cliente lo que se le acreditó.</p>
+                                <div style={{ marginTop: 14, background: ELEVADO, border: `1px solid ${BORDE}`, borderRadius: 11, padding: '12px 13px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+                                    <Fila icon={Wallet} label="Se descuenta" valor={`${nf(cierre.to_amount, decDe(cierre.to_currency))} ${cierre.to_currency}`} />
+                                    <Fila icon={Landmark} label="De" valor={BILLETERA[cierre.payout?.wallet] ?? (cierre.payout?.wallet ?? '—')} />
+                                    <Fila icon={User} label="Cliente" valor={cliente?.company_name || cliente?.full_name || cliente?.email || '—'} />
+                                </div>
+                                <div style={{ marginTop: 12, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+                                    <AlertTriangle size={13} style={{ color: AMBAR, marginTop: 1, flexShrink: 0 }} />
+                                    <p style={{ fontSize: 11.5, color: TXT2, lineHeight: 1.5 }}>
+                                        Si el cliente ya movió esa plata, no se anula nada y te dice cuánto le queda. El movimiento de la conversión queda rechazado y sale de Contabilidad. El motivo lo ve el cliente en el chat. Te pide el código 2FA.
+                                    </p>
+                                </div>
+                                <textarea
+                                    autoFocus
+                                    value={motivo}
+                                    onChange={e => setMotivo(e.target.value)}
+                                    rows={3}
+                                    placeholder="Ej: el comprobante era una factura, no el envío de los USDT"
+                                    style={{ ...INPUT, fontSize: 12.5, marginTop: 12, resize: 'vertical' }}
+                                />
+                                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                                    <button onClick={() => { setPide(null); setMotivo(''); }} className="transition-colors hover:bg-white/[0.06]"
+                                        style={{ padding: '11px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none' }}>
+                                        Volver
+                                    </button>
+                                    <button
+                                        onClick={async () => { const m = motivo.trim(); if (m.length < 5) return; setPide(null); setMotivo(''); await anular(m); }}
+                                        disabled={ocupado || motivo.trim().length < 5}
+                                        style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: motivo.trim().length >= 5 ? '#0C0E0D' : TXT2, background: motivo.trim().length >= 5 ? ROJO : 'rgba(255,255,255,0.06)', border: 'none', opacity: ocupado ? 0.5 : 1 }}>
+                                        Sí, descontar y anular
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h4 style={{ fontSize: 16, fontWeight: 800, color: TXT, letterSpacing: '-0.3px' }}>Cancelar {cierre.ref}</h4>
+                                <p style={{ fontSize: 12, color: TXT2, marginTop: 4 }}>El motivo queda en el hilo y el cliente lo ve.</p>
+                                <textarea
+                                    autoFocus
+                                    value={motivo}
+                                    onChange={e => setMotivo(e.target.value)}
+                                    rows={3}
+                                    placeholder="Ej: el comprobante no corresponde al monto acordado"
+                                    style={{ ...INPUT, fontSize: 12.5, marginTop: 12, resize: 'vertical' }}
+                                />
+                                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+                                    <button onClick={() => { setPide(null); setMotivo(''); }} className="transition-colors hover:bg-white/[0.06]"
+                                        style={{ padding: '11px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 700, color: TXT2, background: 'transparent', border: 'none' }}>
+                                        Volver
+                                    </button>
+                                    <button
+                                        onClick={async () => { const m = motivo.trim(); if (!m) return; setPide(null); setMotivo(''); await hacer('cancelar_mesa', { motivo: m }); }}
+                                        disabled={ocupado || !motivo.trim()}
+                                        style={{ flex: 1, padding: '11px 0', borderRadius: 10, fontSize: 13, fontWeight: 700, color: motivo.trim() ? '#0C0E0D' : TXT2, background: motivo.trim() ? ROJO : 'rgba(255,255,255,0.06)', border: 'none', opacity: ocupado ? 0.5 : 1 }}>
+                                        Cancelar el cierre
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+// La mesa tiene que VER el comprobante para verificar el ingreso, no abrirlo en
+// otra pestaña: comparar lo que dice el papel con lo que dice la orden exige
+// tener las dos cosas a la vista.
+//
+// La URL firmada no siempre delata la extensión, así que se intenta pintar como
+// imagen y recién si el navegador no puede se cae al enlace. Probar, no adivinar.
+const Adjunto: React.FC<{ url: string; onVer?: (url: string) => void }> = ({ url, onVer }) => {
+    const [falla, setFalla] = useState(false);
+    const esPdf = /\.pdf(\?|$)/i.test(url);
+    if (esPdf || falla) {
+        return (
+            <a href={url} target="_blank" rel="noreferrer"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 7, padding: '8px 11px', borderRadius: 9, border: `1px solid ${BORDE2}`, background: 'rgba(255,255,255,0.05)', fontSize: 12, color: TXT, fontWeight: 600 }}>
+                <Paperclip size={12} /> {esPdf ? 'Abrir comprobante (PDF)' : 'Abrir comprobante'}
+            </a>
+        );
+    }
+    return (
+        <button onClick={() => onVer?.(url)} title="Ampliar"
+            style={{ display: 'block', width: '100%', marginTop: 7, padding: 0, border: 'none', background: 'transparent', cursor: 'zoom-in' }}>
+            <img src={url} alt="Comprobante" onError={() => setFalla(true)}
+                style={{ display: 'block', width: '100%', maxHeight: 300, objectFit: 'contain', borderRadius: 9, border: `1px solid ${BORDE2}`, background: 'rgba(0,0,0,0.35)' }} />
+        </button>
+    );
+};
+
+const Lupa: React.FC<{ url: string; onCerrar: () => void }> = ({ url, onCerrar }) => {
+    useEffect(() => {
+        const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar(); };
+        window.addEventListener('keydown', esc);
+        return () => window.removeEventListener('keydown', esc);
+    }, [onCerrar]);
+
+    return (
+        <div onClick={e => { e.stopPropagation(); onCerrar(); }}
+            className="fixed inset-0 z-[70] flex items-center justify-center"
+            style={{ background: 'rgba(0,0,0,0.93)', padding: '76px 16px 16px' }}>
+            {/* La X lleva su propio fondo y borde: un comprobante es casi
+                siempre una captura BLANCA, y una X translucida encima de eso
+                desaparece. No puede depender del color de la imagen. */}
+            <button onClick={e => { e.stopPropagation(); onCerrar(); }} aria-label="Cerrar"
+                className="transition-colors hover:bg-black"
+                style={{
+                    position: 'absolute', top: 18, right: 18, width: 52, height: 52, borderRadius: 999,
+                    background: 'rgba(12,14,13,0.92)', border: '1.5px solid rgba(255,255,255,0.45)',
+                    color: TXT, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 4px 18px rgba(0,0,0,0.6)', zIndex: 2, cursor: 'pointer',
+                }}>
+                <X size={26} strokeWidth={2.6} />
+            </button>
+            <img src={url} alt="Comprobante" onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 10 }} />
+            <p style={{ position: 'absolute', bottom: 18, left: 0, right: 0, textAlign: 'center', fontSize: 11.5, color: TXT3 }}>
+                Hacé clic fuera de la imagen o apretá Esc para cerrar
+            </p>
+        </div>
+    );
+};
+
+const KV: React.FC<{ label: string; valor: string; pie?: string }> = ({ label, valor, pie }) => (
+    <div>
+        <p style={ROTULO}>{label}</p>
+        <p style={{ fontSize: 14, fontWeight: 700, color: TXT, marginTop: 3 }}>{valor}</p>
+        {pie && <p style={{ fontSize: 10.5, color: TXT3, marginTop: 2 }}>{pie}</p>}
+    </div>
+);
+
+const Fila: React.FC<{ icon: any; label: string; valor: any; mono?: boolean; onCopy?: () => void }> = ({ icon: Icon, label, valor, mono, onCopy }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+        <Icon size={12} style={{ color: TXT3, flexShrink: 0 }} />
+        <span style={{ color: TXT2, minWidth: 68 }}>{label}</span>
+        <span style={{ flex: 1, color: TXT, wordBreak: 'break-all', fontFamily: mono ? 'ui-monospace, monospace' : undefined }}>{valor ?? '—'}</span>
+        {onCopy && (
+            <button onClick={onCopy} title="Copiar" className="transition-colors hover:bg-white/[0.08]"
+                style={{ padding: 4, borderRadius: 6, color: TXT3, background: 'transparent', border: 'none', flexShrink: 0 }}>
+                <Copy size={11} />
+            </button>
+        )}
+    </div>
+);
+
+const Burbuja: React.FC<{ m: any; onVer?: (url: string) => void }> = ({ m, onVer }) => {
+    // El mensaje de sistema va centrado y sin burbuja: narra lo que pasó, no lo
+    // dijo nadie. Mezclarlo con los de la mesa haría creer que un operador
+    // escribió "tasa confirmada" cuando lo escribió el propio flujo.
+    if (m.autor === 'sistema') {
+        return <p style={{ textAlign: 'center', fontSize: 11.5, color: TXT3, lineHeight: 1.5, padding: '2px 14px' }}>{m.body}</p>;
+    }
+    const deLaMesa = m.autor === 'mesa';
+    return (
+        <div style={{ display: 'flex', justifyContent: deLaMesa ? 'flex-end' : 'flex-start' }}>
+            <div style={{
+                maxWidth: '82%', padding: '9px 12px', borderRadius: 12,
+                background: deLaMesa ? 'rgba(74,222,128,0.10)' : 'rgba(255,255,255,0.055)',
+                border: `1px solid ${deLaMesa ? 'rgba(74,222,128,0.22)' : BORDE}`,
+            }}>
+                <p style={{ fontSize: 9.5, fontWeight: 700, color: deLaMesa ? VERDE : TXT2, marginBottom: 3, letterSpacing: '0.4px' }}>
+                    {deLaMesa ? (m.autor_nom ?? 'MESA').toUpperCase() : 'CLIENTE'}
+                </p>
+                {m.body && <p style={{ fontSize: 13, color: TXT, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{m.body}</p>}
+                {m.adjunto_url && <Adjunto url={m.adjunto_url} onVer={onVer} />}
+                <p style={{ fontSize: 10, color: TXT3, marginTop: 4, textAlign: 'right' }}>{fecha(m.created_at)}</p>
+            </div>
+        </div>
+    );
+};

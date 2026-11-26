@@ -1,21 +1,48 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { llamarFuncion } from '../lib/edge';
 
 // Puerta de verificación por correo tras el login (Google incluido).
 // Envía un código de 6 dígitos al correo del usuario y no deja pasar al
 // dashboard hasta confirmarlo. "Recordar este dispositivo" evita pedirlo
 // de nuevo por 30 días en el mismo navegador.
-const REMEMBER_DAYS = 30;
-export const otpDeviceKey = (userId: string) => `lincoin_otp_ok_${userId}`;
-export function isOtpRemembered(userId?: string): boolean {
+// ── Identificador de este dispositivo ─────────────────────────────────────
+//
+// Antes "confiar en este dispositivo" era una FECHA en localStorage. Eso lo
+// hacía frágil por los dos lados: cualquier limpieza del almacenamiento la
+// borraba y el código se volvía a pedir en cada ingreso; y escribiendo esa
+// fecha a mano se saltaba el paso entero.
+//
+// Ahora acá solo vive un identificador aleatorio, que por sí mismo no abre
+// nada: quien decide si este dispositivo ya pasó el código es el SERVIDOR,
+// que lleva la lista. Si el identificador se pierde, se vuelve a pedir el
+// código una vez y se registra otro — que es lo correcto.
+//
+// RESPALDO LOCAL: se conserva la marca de antes (una fecha por usuario) y se
+// usa SOLO cuando el servidor todavía no conoce esta función — o sea, cuando
+// la versión desplegada es anterior a este cambio. Sin ese respaldo, el
+// navegador nuevo contra el servidor viejo pide el código en CADA ingreso:
+// pregunta por el dispositivo, recibe "acción desconocida", y por diseño ante
+// la duda se pide el código. El arreglo terminaba empeorando el síntoma.
+// Cuando el servidor esté al día, manda él y esto deja de usarse.
+const DEVICE_KEY = 'lincoin_device';
+const LEGACY_KEY = (userId: string) => `lincoin_otp_ok_${userId}`;
+export function recuerdoLocal(userId?: string): boolean {
   if (!userId) return false;
-  try {
-    const v = localStorage.getItem(otpDeviceKey(userId));
-    if (!v) return false;
-    return Number(v) > Date.now();
-  } catch { return false; }
+  try { return Number(localStorage.getItem(LEGACY_KEY(userId))) > Date.now(); } catch { return false; }
 }
-function rememberDevice(userId: string) {
-  try { localStorage.setItem(otpDeviceKey(userId), String(Date.now() + REMEMBER_DAYS * 864e5)); } catch { /* modo incógnito */ }
+function guardarRecuerdoLocal(userId: string) {
+  try { localStorage.setItem(LEGACY_KEY(userId), String(Date.now() + 30 * 864e5)); } catch { /* sin almacenamiento */ }
+}
+export function deviceId(): string {
+  try {
+    let v = localStorage.getItem(DEVICE_KEY);
+    if (v && /^[A-Za-z0-9_-]{16,64}$/.test(v)) return v;
+    const b = new Uint8Array(24);
+    crypto.getRandomValues(b);
+    v = btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    localStorage.setItem(DEVICE_KEY, v);
+    return v;
+  } catch { return ''; }   // sin almacenamiento: se pide el código siempre
 }
 
 interface Props {
@@ -37,14 +64,10 @@ export const EmailOtpGate: React.FC<Props> = ({ userId, email, onVerified, onLog
   const inputRef = useRef<HTMLInputElement>(null);
   const sentOnce = useRef(false);
 
-  const SURL = (import.meta.env.VITE_SUPABASE_URL as string) || '';
-  const SKEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || '';
+  // Con el token de la sesión: el servidor solo manda y valida el código de
+  // la cuenta que está entrando (antes bastaba la llave pública y un userId).
   const call = (action: string, extra: Record<string, unknown> = {}) =>
-    fetch(`${SURL}/functions/v1/email-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', apikey: SKEY, Authorization: `Bearer ${SKEY}` },
-      body: JSON.stringify({ action, userId, email, ...extra }),
-    }).then(r => r.json()).catch(() => null);
+    llamarFuncion('email-otp', { action, userId, email, ...extra }, 20000).catch(() => null);
 
   const send = async () => {
     if (sending || cooldown > 0) return;
@@ -70,10 +93,13 @@ export const EmailOtpGate: React.FC<Props> = ({ userId, email, onVerified, onLog
   const verify = async () => {
     if (verifying || code.length !== 6) return;
     setVerifying(true); setErr(null);
-    const r = await call('verify', { code });
+    // La confianza del dispositivo se pide EN LA MISMA llamada que verifica
+    // el código: así el servidor la registra solo si el código era bueno.
+    const r = await call('verify', { code, trust: remember, deviceId: deviceId() });
     setVerifying(false);
     if (r?.ok) {
-      if (remember) rememberDevice(userId);
+      // También la marca local, por si el servidor aún no guarda dispositivos.
+      if (remember) guardarRecuerdoLocal(userId);
       onVerified();
     } else {
       setErr(r?.message || 'Código incorrecto.');

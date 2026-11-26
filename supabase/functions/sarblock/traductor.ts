@@ -1,0 +1,560 @@
+// ════════════════════════════════════════════════════════
+// De la respuesta de Sarblock a la FICHA que ya lee todo Lincoin.
+//
+// La ficha vive en raw_data.tusdatos.beneficiarios[documento] y de ella
+// dependen el bloqueo del envío (mouv-proxy), la insignia y el detalle del
+// beneficiario, el modal KYC y la ciudad del tercero en Siigo. Si Sarblock
+// escribe la MISMA forma, nada de eso cambia durante la transición. Lo que
+// Sarblock trae de más (el catálogo entero) va en `sarblock`, para el modal
+// y el PDF con marca Lincoin.
+//
+// Criterio: Sarblock ya entrega la decisión derivada (summary.action,
+// shouldBlock). Se usa esa, no se recalcula: dos criterios terminan
+// separándose. Y como con TusDatos, un veredicto AUSENTE no es un veredicto
+// en contra: solo corta una decisión explícita.
+// ════════════════════════════════════════════════════════
+
+import { compararNombres } from './nombres.ts';
+
+// ── Matrícula cancelada por TRASLADO de domicilio ───────────────────────
+// La empresa no se cerró: se mudó de cámara. Si es lo ÚNICO que encontró
+// Sarblock, devuelve esa entrada; si hay cualquier otra coincidencia, null
+// (no se tapa nada más). Solo se ignora con la matrícula nueva confirmada en
+// el RUES (d.ruesTraslado), que trae quien llama: el traductor no sale a red.
+export function soloTrasladoRues(catalogo: any[]): any | null {
+  const coinciden = (Array.isArray(catalogo) ? catalogo : []).filter(e => e?.matched === true);
+  if (coinciden.length !== 1) return null;
+  const e = coinciden[0];
+  return e?.code === 'co_rues' && /traslado de domicilio/i.test(String(e?.statusReason ?? '')) ? e : null;
+}
+export type RuesTraslado = { camara: string | null; matricula: string | null; estado?: string | null; renovado?: string | null; verificadoAt?: string };
+
+// `radicado` va en los procesos penales: es la llave con la que Cumplimiento
+// los revisa uno por uno (revisionesPenales).
+export type Hallazgo = { nivel: 'alto' | 'medio'; codigo: string; texto: string; fuente: string; radicado?: string };
+
+// Qué versión de la matriz decidió esta ficha. Si la matriz cambia, se sabe
+// con qué regla se juzgó cada caso.
+// v3 (2026-10-30): un "pedir revisión" de Sarblock que solo se debe a una
+// fuente caída, sin ninguna coincidencia, ya no sube a riesgo medio; y se
+// marca cuando la Registraduría no encontró el documento.
+// v4 (2026-11-20, pedido del dueño): un proceso penal como parte pasiva ya no
+// es riesgo alto por sí solo. Sarblock no trae el delito ni si sigue activo
+// (solo despacho, radicado y fechas), y empresas con las que se puede operar
+// salían bloqueadas (GENCELL PHARMA: dos penales y cinco civiles). Ahora:
+//   · penal con señal de LA/FT o delito fuente en lo que trae la fuente → alto
+//   · penal marcado por Cumplimiento como LA/FT                        → alto
+//   · penal marcado por Cumplimiento "no relacionado / inactivo"       → no pesa
+//   · penal sin señal y sin revisar                                     → medio
+//     (operable, queda para revisión). El dueño eligió esto sabiendo que un
+//     caso como CC 75104651 (penal por delito fuente) opera hasta que alguien
+//     lo revise.
+//   · extinción de dominio sigue siendo alto: es sobre bienes ilícitos.
+// v5 (2026-11-20, mismo día, pedido del dueño): los procesos civiles, de
+// familia, laborales y demás no penales como parte pasiva son INFORMATIVOS:
+// se ven en la ficha y el PDF pero no suben el riesgo (no son señal de LA/FT).
+// Y cuando lo único que Sarblock encontró son procesos judiciales, su propio
+// nivel o su "revisar" no mandan: esos procesos ya los juzga esta matriz,
+// uno por uno. Sin esto GENCELL seguía en medio por cinco demandas civiles.
+// v6 (2026-11-25): cuando el nivel general de Sarblock es alto (HIGH/CRITICAL
+// o BLOCK) y la matriz no encontró ningún alto, el veredicto ya era alto y el
+// envío se bloqueaba, pero el porqué no aparecía: la ficha decía "0 altos ·
+// 1 medio" y el único hallazgo, MEDIO (Arama Motors, un BDME solo). Ahora el
+// motivo queda escrito como ALTO: las fuentes sin regla propia en la matriz
+// ("revisión") toman el nivel de Sarblock, que es quien sabe qué pesa en esa
+// fuente, y si no hay ninguna se anota el nivel general. Nada baja: el nivel
+// alto de Sarblock se sigue respetando (misma regla que en KYT).
+// v7 (2026-11-25, el mismo día, decisión del dueño): el BDME (deudor moroso
+// del Estado, Contaduría) es riesgo MEDIO y NO retiene los envíos. Es una
+// deuda con el Estado, no una señal de LA/FT. Con v6, Arama Motors S.A.S
+// (un BDME solo) quedaba ALTO y bloqueado porque el nivel general de
+// Sarblock era HIGH. Ahora el BDME lo juzga la matriz, como la Rama
+// Judicial desde v5: si lo único que Sarblock encontró son procesos
+// judiciales y BDME, su nivel general no manda (un BLOCK explícito sí). Una
+// ficha cuyo único medio es BDME lleva `retiene: false`: se ve como riesgo
+// medio, queda a la vista de cumplimiento y el envío sale.
+export const CRITERIO = 'lincoin-v7-2026-11-25';
+
+// Boletín de Deudores Morosos del Estado (Contaduría General). Se reconoce
+// por el código o por lo que dice la fuente, no por un código fijo: el
+// catálogo de Sarblock tiene versiones.
+export const esBdme = (e: any) => /bdme|deudor(es)?\s+moros/i.test(`${e?.code ?? ''} ${e?.label ?? ''} ${e?.statusReason ?? ''}`);
+
+export type Motivo = { nivel: 'alto' | 'medio'; regla: string; texto: string; fuente: string; radicado?: string };
+
+// La revisión de Cumplimiento de UN proceso penal (por radicado): quien
+// consultó la Rama Judicial y encontró el delito y el estado.
+export type RevisionPenal = { decision: 'laft' | 'sin_relacion'; nota?: string; por?: string | null; porNombre?: string | null; at?: string };
+export type Revisiones = Record<string, RevisionPenal>;
+
+// Delitos que hacen de un proceso penal un asunto de LA/FT: el lavado mismo,
+// la financiación del terrorismo y los delitos fuente del art. 323 del Código
+// Penal. Se buscan en lo que la fuente describe del proceso (despacho, rama y
+// cualquier campo de delito o clase que llegue), NUNCA en el nombre de la
+// persona: "LAVADO EXPRESS S.A.S." es un lavadero, no un hallazgo.
+const DELITO_LAFT = /lavado de activos|enriquecimiento il[ií]cito|testaferr|financiaci[oó]n del terrorismo|terroris|narcotr[aá]fico|estupefacient|tr[aá]fico de drogas|concierto para delinquir|extinci[oó]n de dominio|trata de personas|tr[aá]fico de migrantes|extorsi[oó]n|secuestro|tr[aá]fico de armas|contrabando|fraude aduanero|captaci[oó]n (masiva|ilegal)|cohecho|peculado|concusi[oó]n|soborno/i;
+const sinTildes = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+// Ramas que no son penales: el proceso se muestra pero no pesa. Una rama vacía
+// o "promiscua" (un juzgado promiscuo también lleva penal) NO entra acá: sin
+// saber qué es, sigue en medio.
+export const RAMA_INFORMATIVA = (rama: string) => !!rama && !/promiscu/.test(rama)
+  && /civil|famil|laboral|comercial|administr|contencios|agrari|tierras|constitucional|tutela|ejecuci[oó]n civil|peque[nñ]as causas/.test(rama);
+function describeProceso(h: any): string {
+  const j = h?.judicial ?? {};
+  const { processKey: _k, partySide: _p, startDate: _s, lastActionDate: _l, ...resto } = j;
+  const extra = [h?.description, h?.delito, h?.crime, h?.offense, h?.details, h?.clase, h?.processClass]
+    .filter(v => v != null).map(v => typeof v === 'string' ? v : JSON.stringify(v));
+  return [JSON.stringify(resto), ...extra].join(' ');
+}
+export const senalLaft = (h: any) => DELITO_LAFT.test(describeProceso(h)) || DELITO_LAFT.test(sinTildes(describeProceso(h)));
+
+export const PASIVA = (h: any) => String(h?.judicial?.partySide ?? '').toLowerCase() === 'pasiva';
+const RAMA_GRAVE = (rama: string) => /penal|extinci/.test(rama);
+const ANTECEDENTES = new Set(['co_policia', 'co_procuraduria', 'co_contraloria']);
+const GRAVEDAD_ALTA = new Set(['EXTREMO', 'ALTO']);
+const CERTEZA_ALTA = new Set(['CONFIRMADA', 'PROBABLE']);
+const limpio = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim();
+
+// La matriz, fila por fila (v4):
+//   Lista restrictiva (OFAC, ONU…)                                → alto
+//   Rama Judicial: parte pasiva en extinción de dominio           → alto
+//   Rama Judicial: parte pasiva en penal con señal de LA/FT       → alto
+//     (en los datos del proceso, o marcado así por Cumplimiento)
+//   Antecedentes Policía / Procuraduría / Contraloría con coinc.  → alto
+//   Prensa adversa EXTREMO/ALTO con certeza CONFIRMADA/PROBABLE    → alto
+//   Rama Judicial: parte pasiva en penal sin señal ni revisión    → medio
+//   Rama Judicial: parte pasiva en civil, familia, laboral…       → medio
+//   PEP · fuente que pide revisión · prensa de menor gravedad     → medio
+//   Penal marcado por Cumplimiento "no relacionado / inactivo"    → no pesa
+export function reglasLincoin(catalogo: any[], revisiones?: Revisiones | null): Motivo[] {
+  const out: Motivo[] = [];
+  for (const e of catalogo) {
+    const label = limpio(e?.label ?? e?.code);
+    const hits: any[] = Array.isArray(e?.hits) ? e.hits : [];
+    const code = String(e?.code ?? '');
+    // BDME (v7): medio, no retiene. Va antes que todo: una deuda con el
+    // Estado no es una lista restrictiva aunque la fuente la marque así.
+    if (e?.matched === true && esBdme(e)) {
+      out.push({ nivel: 'medio', regla: 'bdme', fuente: label, texto: `${label}${e.statusReason ? `: ${limpio(e.statusReason)}` : ''}. Deuda con el Estado: no es señal de LA/FT y no retiene los envíos` });
+      continue;
+    }
+    if (e?.matched === true && e?.isRestrictive) {
+      out.push({ nivel: 'alto', regla: 'lista_restrictiva', fuente: label, texto: `Coincidencia en lista restrictiva: ${label}${hits[0]?.matchedName ? ` (${limpio(hits[0].matchedName)})` : ''}` });
+      continue;
+    }
+    if (code === 'co_rama_judicial') {
+      // Se miran los procesos uno por uno: lo que pesa es la rama y el lado.
+      for (const h of hits.filter(PASIVA)) {
+        const rama = String(h.judicial?.branch ?? '').toLowerCase();
+        const radicado = String(h.judicial?.processKey ?? '').trim();
+        const ult = h.judicial?.lastActionDate;
+        const donde = `${limpio(h.judicial?.court)}, radicado ${radicado || '—'}${h.judicial?.startDate ? `, desde ${h.judicial.startDate}` : ''}${ult ? `, última actuación ${ult}` : ''}`;
+        const nomRama = rama.replace(/_/g, ' ');
+        if (!RAMA_GRAVE(rama)) {
+          // Una señal de LA/FT pesa en cualquier rama.
+          if (senalLaft(h)) {
+            out.push({ nivel: 'alto', regla: 'rama_laft', fuente: label, radicado, texto: `Parte pasiva en proceso ${nomRama || 'judicial'} con señal de LA/FT o delito fuente: ${donde}` });
+            continue;
+          }
+          // Civil, familia, laboral…: informativo (v5), no es un motivo.
+          if (RAMA_INFORMATIVA(rama)) continue;
+          out.push({ nivel: 'medio', regla: 'rama_pasiva', fuente: label, texto: `Parte pasiva en proceso ${nomRama || 'judicial'}: ${donde}` });
+          continue;
+        }
+        if (/extinci/.test(rama)) {
+          out.push({ nivel: 'alto', regla: 'rama_extincion', fuente: label, radicado, texto: `Parte pasiva en proceso de extinción de dominio: ${donde}` });
+          continue;
+        }
+        const rev = radicado ? revisiones?.[radicado] : undefined;
+        if (rev?.decision === 'sin_relacion') continue;   // verificado: no pesa (queda en penalesVerificados)
+        if (rev?.decision === 'laft') {
+          out.push({ nivel: 'alto', regla: 'rama_penal_laft', fuente: label, radicado,
+            texto: `Proceso penal vinculado a LA/FT o delito fuente (verificado por Cumplimiento${rev.porNombre ? `, ${rev.porNombre}` : ''}): ${donde}${rev.nota ? ` — ${limpio(rev.nota)}` : ''}` });
+          continue;
+        }
+        out.push(senalLaft(h)
+          ? { nivel: 'alto', regla: 'rama_penal_laft', fuente: label, radicado, texto: `Parte pasiva en proceso ${nomRama} con señal de LA/FT o delito fuente: ${donde}` }
+          : { nivel: 'medio', regla: 'rama_penal_pasiva', fuente: label, radicado, texto: `Parte pasiva en proceso ${nomRama}: ${donde}. Falta verificar el delito: si es LA/FT o delito fuente, Cumplimiento lo sube a alto` });
+      }
+      continue;
+    }
+    if (ANTECEDENTES.has(code) && e?.matched === true) {
+      out.push({ nivel: 'alto', regla: 'antecedentes', fuente: label, texto: `${label}: registra antecedentes${e.statusReason ? ` (${limpio(e.statusReason)})` : ''}` });
+      continue;
+    }
+    if (String(e?.category) === 'ADVERSE_MEDIA') {
+      for (const h of hits) {
+        const sev = String(h?.severity ?? '').toUpperCase();
+        const cer = String(h?.identityConfidence ?? '').toUpperCase();
+        if (sev === 'DESCARTADO' || (!sev && e?.matched !== true)) continue;
+        const nota = `Noticia adversa (gravedad ${sev || '—'}, certeza ${cer || '—'})${h?.sourceUrl ? `: ${h.sourceUrl}` : ''}`;
+        out.push(GRAVEDAD_ALTA.has(sev) && CERTEZA_ALTA.has(cer)
+          ? { nivel: 'alto', regla: 'prensa_grave', fuente: label, texto: nota }
+          : { nivel: 'medio', regla: 'prensa', fuente: label, texto: nota });
+      }
+      continue;
+    }
+    if (e?.matched === true && String(e?.category) === 'PEP') {
+      out.push({ nivel: 'medio', regla: 'pep', fuente: label, texto: `Persona expuesta políticamente: ${label}` });
+      continue;
+    }
+    if (e?.matched === true) {
+      out.push({ nivel: 'medio', regla: 'revision', fuente: label, texto: `${label}${e.statusReason ? `: ${limpio(e.statusReason)}` : ''}` });
+    }
+  }
+  // Lo alto primero: es el porqué del bloqueo.
+  return out.sort((x, y) => (x.nivel === y.nivel ? 0 : x.nivel === 'alto' ? -1 : 1));
+}
+
+export type Ficha = {
+  proveedor: 'sarblock';
+  documento: string;
+  tipoDocumento: string;
+  estado: 'procesando' | 'finalizado' | 'error';
+  detalle?: string;
+  jobid?: string;
+  nombre?: string;
+  nombreInscrito?: string;
+  nombreReal?: string;
+  nombreCoincide?: boolean;
+  // El mismo nombre escrito corto o con una letra distinta: no bloquea, y
+  // en pantalla se muestra el nombre completo del documento.
+  nombreIncompleto?: boolean;
+  validado?: boolean;
+  hallazgo?: boolean;
+  categoria?: 'alto' | 'medio' | 'bajo' | 'ninguno' | 'sin_validar';
+  documentoNoEncontrado?: boolean   // la Registraduría no encontró el documento
+  ruesTraslado?: RuesTraslado       // matrícula cancelada por traslado, con la nueva vigente
+  revisionesPenales?: Revisiones    // lo que Cumplimiento decidió de cada proceso penal (por radicado)
+  penalesVerificados?: { radicado: string; texto: string; nota?: string; porNombre?: string | null; at?: string }[]
+  procesosInformativos?: { radicado: string; rama: string; texto: string }[]   // civil, familia, laboral… (no pesan, v5)
+  incompleta?: boolean              // alguna fuente no respondió (resultado parcial)
+  operable?: boolean;
+  // Un riesgo medio que NO retiene el envío (v7: el único medio es BDME).
+  // Sin el campo, el medio retiene como siempre (según la configuración).
+  retiene?: boolean;
+  bloqueo?: string;
+  criterio?: string;
+  altos?: number;
+  medios?: number;
+  bajos?: number;
+  codigos?: string[];
+  hallazgos?: Hallazgo[];
+  fuentesConError?: string[];
+  // Fuentes que Sarblock sigue consultando por su cuenta ("consulta en curso
+  // en la fuente oficial: el resultado se añadirá al llegar"). No se
+  // reintentan: el MISMO check se completa solo y hay que volver a leerlo.
+  fuentesEnCurso?: number;
+  lanzadoAt?: string;
+  at?: string;
+  sarblock?: {
+    checkId: string;
+    screeningRecordId: string | null;
+    catalogVersion: string | null;
+    aggregateOutcome: string | null;
+    summary: any;
+    identity: any;
+    catalog: any[];
+  };
+};
+
+const TERMINALES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+export const terminado = (check: any) => TERMINALES.has(String(check?.status ?? ''));
+
+// La ficha recién lanzada: "procesando" hasta que vuelva el resultado. Es lo
+// que hace que el envío espere en vez de salir antes del veredicto.
+export function fichaLanzada(d: { documento: string; tipoDocumento: string; nombre?: string; checkId: string }): Ficha {
+  const ahora = new Date().toISOString();
+  return {
+    proveedor: 'sarblock', documento: d.documento, tipoDocumento: d.tipoDocumento,
+    estado: 'procesando', jobid: d.checkId, nombreInscrito: d.nombre || undefined,
+    lanzadoAt: ahora, at: ahora,
+  };
+}
+
+// riskLevel es un nivel, no un número. CRITICAL y HIGH son nuestro "alto".
+const CATEGORIA: Record<string, Ficha['categoria']> = {
+  CRITICAL: 'alto', HIGH: 'alto', MEDIUM: 'medio', LOW: 'bajo', NONE: 'ninguno',
+};
+
+export function traducir(check: any, d: { documento: string; tipoDocumento: string; nombre?: string; ruesTraslado?: RuesTraslado | null; revisionesPenales?: Revisiones | null }): Ficha {
+  const base: Ficha = {
+    proveedor: 'sarblock', documento: d.documento, tipoDocumento: d.tipoDocumento,
+    estado: 'procesando', jobid: String(check?.id ?? ''), nombreInscrito: d.nombre || undefined,
+    at: new Date().toISOString(),
+  };
+  const st = String(check?.status ?? '');
+  if (!terminado(check)) return base;
+  if (st !== 'COMPLETED') {
+    return { ...base, estado: 'error', detalle: st === 'CANCELLED' ? 'Sarblock canceló la consulta.' : 'Sarblock no pudo completar la consulta.' };
+  }
+
+  const s = check.summary ?? {};
+  const id = check.identity ?? null;
+  const catalogoCompleto: any[] = Array.isArray(check.catalog) ? check.catalog : [];
+  // Traslado de domicilio confirmado: esa entrada no cuenta como hallazgo.
+  // El catálogo completo se guarda igual (abajo, en `sarblock`).
+  const entradaTraslado = d.ruesTraslado ? soloTrasladoRues(catalogoCompleto) : null;
+  const traslado = entradaTraslado && !check?.summary?.shouldBlock ? d.ruesTraslado! : null;
+  const catalogo: any[] = traslado ? catalogoCompleto.filter(e => e !== entradaTraslado) : catalogoCompleto;
+
+  // ── Matriz de riesgo de Lincoin (aprobada el 2026-10-27) ──────────────
+  // Sarblock solo bloquea por listas restrictivas: para él la Rama Judicial,
+  // la Policía o los PEP nunca bloquean. Con eso, alguien con un proceso
+  // penal como parte pasiva salía "riesgo bajo" (caso real CC 75104651, que
+  // TusDatos había marcado alto por delito fuente de LAFT). Estas reglas se
+  // aplican encima del catálogo y el veredicto es el MÁS estricto entre el
+  // de Sarblock y el de la matriz. Cada motivo queda escrito con la regla,
+  // la fuente y el dato, para que quien revisa sepa por qué.
+  const revisiones = d.revisionesPenales && typeof d.revisionesPenales === 'object' ? d.revisionesPenales : null;
+  const motivos = reglasLincoin(catalogo, revisiones);
+  const coinciden = catalogo.filter(e => e?.matched === true);
+  // Los penales que Cumplimiento verificó como no relacionados: no pesan, pero
+  // se siguen viendo (con quién, cuándo y por qué) en el panel y el PDF.
+  const penalesVerificados = revisiones ? catalogo
+    .filter(e => String(e?.code ?? '') === 'co_rama_judicial')
+    .flatMap(e => (Array.isArray(e?.hits) ? e.hits : []).filter(PASIVA))
+    .filter(h => /penal/.test(String(h?.judicial?.branch ?? '').toLowerCase()))
+    .map(h => ({ h, rev: revisiones[String(h?.judicial?.processKey ?? '').trim()] }))
+    .filter(x => x.rev?.decision === 'sin_relacion')
+    .map(x => ({ radicado: String(x.h.judicial.processKey), texto: `${limpio(x.h.judicial?.court)}, radicado ${x.h.judicial.processKey}`, nota: x.rev.nota, porNombre: x.rev.porNombre ?? null, at: x.rev.at }))
+    : [];
+  // Procesos no penales como parte pasiva (v5): se listan, no pesan.
+  const procesosInformativos = catalogo
+    .filter(e => String(e?.code ?? '') === 'co_rama_judicial')
+    .flatMap(e => (Array.isArray(e?.hits) ? e.hits : []).filter(PASIVA))
+    .filter(h => { const r = String(h?.judicial?.branch ?? '').toLowerCase(); return !RAMA_GRAVE(r) && RAMA_INFORMATIVA(r) && !senalLaft(h); })
+    .map(h => ({
+      radicado: String(h?.judicial?.processKey ?? ''), rama: String(h?.judicial?.branch ?? '').replace(/_/g, ' '),
+      texto: `Parte pasiva en proceso ${String(h?.judicial?.branch ?? '').replace(/_/g, ' ')}: ${limpio(h?.judicial?.court)}, radicado ${h?.judicial?.processKey ?? '—'}${h?.judicial?.startDate ? `, desde ${h.judicial.startDate}` : ''}`,
+    }));
+  // Menciones que NO son coincidencia (p. ej. procesos como demandante) y los
+  // procesos informativos: se cuentan como bajos, igual que TusDatos contaba
+  // sus bajos sin listarlos.
+  const bajos = catalogo.filter(e => e?.matched !== true && Number(e?.matchCount ?? 0) > 0).length + procesosInformativos.length;
+
+  // Una fuente sin respuesta no es una fuente limpia.
+  const fuentesConError = catalogo.filter(e => e?.status === 'UNAVAILABLE').map(e => String(e.label ?? e.code));
+  const fuentesEnCurso = enCurso(check);
+
+  // ── Identidad: el documento manda ──────────────────────────────────────
+  // Sarblock marca "posible suplantación" por similitud de texto, y un nombre
+  // abreviado ("JEISY URREA" para "JEISSY TATIANA URREA RAMIREZ") le da una
+  // similitud baja. La decisión es nuestra, palabra por palabra
+  // (nombres.ts): el mismo nombre incompleto NO bloquea; otra persona sí.
+  const declarado = d.nombre || id?.declaredName || undefined;
+  const comparacion = id?.verifiedName ? compararNombres(declarado, id.verifiedName) : undefined;
+  const suplantacion = comparacion === 'distinto' || (comparacion === undefined && id?.spoofSuspected === true);
+  const nombreCoincide = comparacion ? comparacion !== 'distinto' : (id ? !suplantacion : undefined);
+  const nombreIncompleto = comparacion === 'incompleto' || undefined;
+
+  // Si lo único que Sarblock objetó fue la identidad y nosotros la
+  // aceptamos (nombre incompleto), su nivel y su "revisar" no aplican.
+  const soloIdentidad = /spoof/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0;
+  // Y si lo único fue la matrícula cancelada por traslado (con la nueva
+  // vigente en el RUES), su HIGH / HOLD_FOR_REVIEW tampoco.
+  // Y si lo único que encontró son procesos judiciales (v5): esos los juzga la
+  // matriz proceso por proceso; su nivel general no manda. Un bloqueo
+  // explícito de Sarblock (shouldBlock) sí se respeta siempre.
+  // v7: lo mismo con el BDME, solo o junto a procesos judiciales.
+  const soloJudicial = coinciden.length > 0 && coinciden.every(e => String(e?.code ?? '') === 'co_rama_judicial' || esBdme(e)) && s.shouldBlock !== true && String(s.action ?? '') !== 'BLOCK';
+  const ignorarSarblock = (soloIdentidad || !!traslado || soloJudicial) && !suplantacion;
+  const accion = ignorarSarblock ? 'CLEAR' : String(s.action ?? '');
+
+  // ── El porqué del alto de Sarblock (v6) ────────────────────────────────
+  // Su nivel general alto ya hace alto el veredicto (abajo), y el envío se
+  // corta. Si la matriz no encontró ningún alto, la ficha quedaba diciendo
+  // "0 altos · 1 medio" con un bloqueo por riesgo alto: nadie podía leer por
+  // qué. Las fuentes que la matriz no juzga con una regla propia (regla
+  // 'revision': BDME, RUES, etc.) toman el nivel que Sarblock les dio; si no
+  // hay ninguna, se anota el nivel general como motivo. La identidad tiene su
+  // propio motivo (abajo) y no se duplica.
+  const sarblockAlto = !ignorarSarblock && (CATEGORIA[String(s.riskLevel ?? '')] === 'alto' || s.shouldBlock === true || accion === 'BLOCK');
+  if (sarblockAlto && !suplantacion && !motivos.some(m => m.nivel === 'alto')) {
+    const sinRegla = motivos.filter(m => m.regla === 'revision');
+    if (sinRegla.length) {
+      for (const m of sinRegla) {
+        m.nivel = 'alto';
+        m.regla = 'revision_alto';
+        m.texto = `${m.texto}. La verificación lo calificó riesgo alto`;
+      }
+    } else {
+      const fuentes = coinciden.map(e => limpio(e?.label ?? e?.code)).filter(Boolean);
+      motivos.push({ nivel: 'alto', regla: 'nivel_general', fuente: 'Verificación de antecedentes',
+        texto: `La verificación calificó el resultado general como riesgo alto${fuentes.length ? ` (coincidencias en: ${fuentes.join(', ')})` : ''}` });
+    }
+    motivos.sort((x, y) => (x.nivel === y.nivel ? 0 : x.nivel === 'alto' ? -1 : 1));
+  }
+  const hallazgos: Hallazgo[] = motivos.map(m => ({ nivel: m.nivel, codigo: m.regla, texto: m.texto, fuente: m.fuente, ...(m.radicado ? { radicado: m.radicado } : {}) }));
+  const altos = motivos.filter(m => m.nivel === 'alto').length;
+  const medios = motivos.length - altos;
+  if (suplantacion) {
+    // Va como motivo para que se lea en el detalle, el modal y el PDF.
+    hallazgos.unshift({ nivel: 'alto', codigo: 'identidad', fuente: 'Identidad Colombia',
+      texto: `El nombre inscrito${declarado ? ` (${declarado})` : ''} no corresponde al documento${id?.verifiedName ? `: según la Registraduría es ${id.verifiedName}` : ''}.` });
+  }
+  // "Revisar" solo porque una fuente no respondió, sin ninguna coincidencia:
+  // no es un hallazgo. Antes subía a riesgo medio una consulta limpia pero
+  // incompleta (visto el 2026-10-30: 0 coincidencias, 1 fuente caída → "medio").
+  const soloFuenteCaida = /provider_error|unavailable/i.test(String(s.blockReason ?? '')) && Number(s.matchedLists ?? 0) === 0 && Number(s.totalHits ?? 0) === 0;
+  // La Registraduría no encontró el documento: no se sabe de quién son los
+  // antecedentes (suele ser un tipo o número mal escrito).
+  // Ojo: Sarblock puede decir NOT_FOUND y a la vez traer el nombre oficial
+  // del documento (9 nov: verifiedName lleno, vitalStatus NOT_FOUND). Si trajo
+  // el nombre, el documento existe: lo que no se confirmó fue su estado. Eso
+  // no es "no encontrado" (que le dice al cliente que lo escribió mal).
+  const documentoNoEncontrado = (String(id?.vitalStatus ?? '').toUpperCase() === 'NOT_FOUND' && !id?.verifiedName) || undefined;
+  let categoria = ignorarSarblock ? ('ninguno' as Ficha['categoria']) : (CATEGORIA[String(s.riskLevel ?? '')] ?? undefined);
+  // La decisión explícita de Sarblock manda sobre su nivel: BLOCK es alto y
+  // HOLD_FOR_REVIEW es al menos medio.
+  if (!ignorarSarblock && (s.shouldBlock === true || accion === 'BLOCK')) categoria = 'alto';
+  else if (accion === 'HOLD_FOR_REVIEW' && !soloFuenteCaida && (categoria === 'bajo' || categoria === 'ninguno' || !categoria)) categoria = 'medio';
+  // Y la matriz de Lincoin sube el nivel si encontró algo más grave.
+  if (altos > 0) categoria = 'alto';
+  else if (medios > 0 && categoria !== 'alto') categoria = 'medio';
+  // Solo procesos informativos (o verificados por Cumplimiento): riesgo bajo,
+  // no "sin hallazgos": algo se encontró y está a la vista.
+  else if (soloJudicial && (categoria === 'ninguno' || !categoria) && (procesosInformativos.length > 0 || penalesVerificados.length > 0)) categoria = 'bajo';
+  // Sin identidad contrastada y sin nada encontrado no se sabe de quién son
+  // los antecedentes: igual que el 'sin_validar' de TusDatos, no bloquea.
+  if (id && id.validated === false && (categoria === 'ninguno' || categoria === 'bajo')) categoria = 'sin_validar';
+
+  const bloqueaSarblock = !ignorarSarblock && (s.shouldBlock === true || accion === 'BLOCK');
+  const operable = !(bloqueaSarblock || suplantacion || altos > 0);
+  // v7: un medio que no retiene. Solo cuando TODO lo que pesa lo juzgó la
+  // matriz (el nivel de Sarblock no entró) y el único medio es BDME. Con
+  // cualquier otro medio (PEP, prensa, penal sin revisar…) retiene como
+  // siempre.
+  const mediosDe = motivos.filter(m => m.nivel === 'medio');
+  const sinRetencion = categoria === 'medio' && operable && soloJudicial && !suplantacion
+    && mediosDe.length > 0 && mediosDe.every(m => m.regla === 'bdme');
+  const motivosTexto = (nivel: 'alto' | 'medio') => motivos.filter(m => m.nivel === nivel).map(m => m.texto);
+  const bloqueo = suplantacion
+    ? `El nombre inscrito no corresponde al documento.${id?.verifiedName ? ` Según la fuente oficial es ${id.verifiedName}.` : ''}`
+    : altos > 0
+      ? `Riesgo alto: ${motivosTexto('alto').join(' · ')}`
+      : bloqueaSarblock
+        ? String(s.blockReason || 'Coincidencia en una lista restrictiva.')
+        : sinRetencion
+          ? undefined
+          : medios > 0
+            ? `En revisión de cumplimiento: ${motivosTexto('medio').join(' · ')}`
+            : accion === 'HOLD_FOR_REVIEW' && !soloFuenteCaida ? 'Sarblock pidió revisión de cumplimiento.' : undefined;
+
+  return {
+    ...base,
+    estado: 'finalizado',
+    nombre: id?.verifiedName || undefined,
+    nombreReal: id?.verifiedName || undefined,
+    nombreCoincide,
+    ...(nombreIncompleto ? { nombreIncompleto, nombreInscrito: declarado } : {}),
+    validado: id ? id.validated === true : undefined,
+    ...(documentoNoEncontrado ? { documentoNoEncontrado } : {}),
+    ...(check.aggregateOutcome === 'PARTIAL' ? { incompleta: true } : {}),
+    hallazgo: traslado ? coinciden.length > 0 : Number(s.matchedLists ?? coinciden.length) > 0,
+    ...(traslado ? { ruesTraslado: traslado } : {}),
+    ...(revisiones && Object.keys(revisiones).length ? { revisionesPenales: revisiones } : {}),
+    ...(penalesVerificados.length ? { penalesVerificados } : {}),
+    ...(procesosInformativos.length ? { procesosInformativos: procesosInformativos.slice(0, 40) } : {}),
+    categoria,
+    operable,
+    ...(sinRetencion ? { retiene: false } : {}),
+    bloqueo,
+    altos, medios, bajos,
+    criterio: CRITERIO,
+    codigos: coinciden.map(e => String(e.code ?? '')).slice(0, 60),
+    hallazgos: hallazgos.slice(0, 60),
+    fuentesConError,
+    ...(fuentesEnCurso > 0 ? { fuentesEnCurso } : {}),
+    // El resultado de una PARTIAL se guarda —es lo que hay—, pero con las
+    // fuentes caídas a la vista; el servidor intenta el retry gratis.
+    ...(check.aggregateOutcome === 'PARTIAL' ? { detalle: `${fuentesConError.length} fuente(s) no respondieron.` } : {}),
+    at: String(check.completedAt ?? new Date().toISOString()),
+    sarblock: {
+      checkId: String(check.id ?? ''),
+      screeningRecordId: check.screeningRecordId ?? null,
+      catalogVersion: check.catalogVersion ?? null,
+      aggregateOutcome: check.aggregateOutcome ?? null,
+      // El catálogo COMPLETO (con la entrada del traslado): rejuzgar sale de acá.
+      summary: s, identity: id, catalog: catalogoCompleto,
+    },
+  };
+}
+
+// Fuentes caídas que NO se reintentan porque Sarblock las sigue esperando.
+// Visto en la primera consulta real (2026-10-27): la Policía quedó
+// UNAVAILABLE con «Consulta en curso…», retryable false, y minutos después
+// el mismo check pasó a COMPLETED con la Policía en CLEAR.
+export const enCurso = (check: any) =>
+  (Array.isArray(check?.catalog) ? check.catalog : []).filter((e: any) => e?.status === 'UNAVAILABLE' && e?.retryable !== true).length;
+
+// Una ficha cerrada que hay que volver a leer: quedó con fuentes en curso.
+// Ya no se da por perdida a las 24 h: sin la fuente (casi siempre la Rama
+// Judicial) el envío no sale, así que se insiste hasta que llegue.
+// Una ficha cerrada a la que le faltan fuentes: alguna sigue "en curso", o
+// Sarblock dijo aggregateOutcome = PARTIAL ("quedaron consultas sin
+// realizarse", recomendación de Sarblock del 12 nov). Mientras sea así el
+// envío espera y se sigue insistiendo. Misma regla en mouv-proxy, en la
+// bandeja (tusdatos) y en la insignia de contactos.
+export const fichaIncompleta = (f: any): boolean =>
+  f?.proveedor === 'sarblock' && f.estado === 'finalizado' && (
+    Number(f.fuentesEnCurso ?? enCurso({ catalog: f.sarblock?.catalog })) > 0
+    || f.incompleta === true
+    || f.sarblock?.aggregateOutcome === 'PARTIAL'
+  );
+export const releerFicha = (f: any) => fichaIncompleta(f) && !!f.jobid;
+
+// Consulta hecha ANTES de que le pidiéramos a Sarblock el filtro de homónimos
+// de la Rama Judicial (minJudicialScore 0,7, desde el 17 nov; el corte va al
+// final del día para cubrir el despliegue). Esas traen procesos de otras
+// personas con el mismo nombre (caso Tatiana López Mejía: una extinción de
+// dominio de "Anefaidy Tatiana López Mejía" la dejaba en alto). Sarblock
+// (26 nov): re-consultar el check viejo no sirve, hay que crear uno nuevo.
+// Cumplimiento puede pedir esa consulta nueva (se paga) cuando la ficha
+// tiene procesos de la Rama Judicial.
+export const DESDE_FILTRO_JUDICIAL = Date.parse('2026-11-18T00:00:00Z');
+export const consultaSinFiltroJudicial = (f: any): boolean => {
+  if (f?.proveedor !== 'sarblock' || f.estado !== 'finalizado') return false;
+  const cuando = Date.parse(String(f.lanzadoAt ?? f.at ?? ''));
+  if (!Number.isFinite(cuando) || cuando >= DESDE_FILTRO_JUDICIAL) return false;
+  const catalogo: any[] = Array.isArray(f.sarblock?.catalog) ? f.sarblock.catalog : [];
+  return catalogo.some(e => String(e?.code ?? '') === 'co_rama_judicial' && e?.matched === true);
+};
+
+// Qué hacer con una ficha que tiene fuentes en curso. Sarblock (12 nov): la
+// fuente oficial a veces no está disponible; el retry manual del check es
+// GRATIS y no vence, aunque la fuente diga retryable=false. Su retry
+// automático solo mira las últimas 24 h.
+//   · los primeros 10 min: leer en cada vuelta (suele completarse sola);
+//   · después: un retry gratis cada 20 min, leyendo en cada vuelta entre
+//     uno y otro. Antes el primero era a la hora, y las fichas que esperaban
+//     la Rama Judicial tardaban 30–40 min (13 nov). Sarblock subió el límite
+//     a 120 req/min, y el retry no cuesta.
+export const PRIMER_REINTENTO_MS = 10 * 60 * 1000;
+export const REINTENTO_FUENTE_MS = 20 * 60 * 1000;
+export function pasoFuentePendiente(f: any, ahora = Date.now()): 'leer' | 'reintentar' | 'esperar' | null {
+  if (!releerFicha(f)) return null;
+  const edad = ahora - (Date.parse(String(f.lanzadoAt ?? f.at ?? '')) || 0);
+  if (edad < PRIMER_REINTENTO_MS) return 'leer';
+  const ultimo = Date.parse(String(f.reintentoFuenteAt ?? '')) || 0;
+  if (ahora - ultimo >= REINTENTO_FUENTE_MS) return 'reintentar';
+  return 'leer';
+}
+
+// ¿Vale la pena un retry? Solo si quedaron fuentes caídas recuperables. Es
+// gratis y sobre el mismo check, hasta tres lotes.
+export const hayQueReintentar = (check: any) =>
+  terminado(check) && Number(check?.summary?.unavailableLists ?? 0) > 0
+  && (Array.isArray(check?.catalog) ? check.catalog : []).some((e: any) => e?.status === 'UNAVAILABLE' && e?.retryable === true);
+
+// Vuelve a juzgar una ficha de Sarblock con la matriz vigente, desde el
+// catálogo que ya se pagó (no llama a Sarblock). Sirve para el padrón, para
+// las fichas juzgadas con una versión anterior de la matriz y para comparar
+// el nombre que escribió OTRA cuenta contra el oficial.
+export function rejuzgar(f: any, d: { documento: string; tipoDocumento: string; nombre?: string }): Ficha | null {
+  const s = f?.sarblock;
+  if (!s?.catalog) return null;
+  const check = { id: s.checkId, status: 'COMPLETED', aggregateOutcome: s.aggregateOutcome, screeningRecordId: s.screeningRecordId,
+    catalogVersion: s.catalogVersion, summary: s.summary, identity: s.identity, catalog: s.catalog, completedAt: f.at };
+  return { ...traducir(check, { ...d, ruesTraslado: f.ruesTraslado ?? null, revisionesPenales: f.revisionesPenales ?? null }), ...(f.lanzadoAt ? { lanzadoAt: f.lanzadoAt } : {}) };
+}

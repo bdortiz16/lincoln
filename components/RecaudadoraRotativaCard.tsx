@@ -138,7 +138,7 @@ export const RecaudadoraRotativaCard: React.FC = () => {
                 <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.35)', color: '#fca5a5', borderRadius: 12, padding: 12, fontSize: 12.5, marginBottom: 12 }}>
                     ⚠️ {error}
                     {/GASFREE_TRON_MNEMONIC/i.test(error) && (
-                        <div style={{ marginTop: 6, color: '#f8b4b4' }}>Configura <b>GASFREE_TRON_MNEMONIC</b> (y <b>GASFREE_NET</b>) en Supabase → Edge Functions → Secrets.</div>
+                        <div style={{ marginTop: 6, color: '#f8b4b4' }}>Falta configurar la semilla de custodia en la Bóveda. Se hace fuera del panel.</div>
                     )}
                 </div>
             )}

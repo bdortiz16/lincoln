@@ -27,6 +27,47 @@ if (!isSupabaseConfigured) {
 const validUrl = isSupabaseConfigured ? SUPABASE_URL : 'https://placeholder.supabase.co';
 const validKey = isSupabaseConfigured ? SUPABASE_ANON_KEY : 'placeholder-key';
 
+// ── Enlace del correo para crear o recuperar la contraseña ──────────────
+// Llega como #access_token=…&type=recovery. El cliente de Supabase (abajo)
+// lee ese token y BORRA el hash apenas se crea, y emite PASSWORD_RECOVERY en
+// ese momento. El panel de colaboradores se carga después (lazy): ya no veía
+// ni el hash ni el evento, la sesión del enlace quedaba como una sesión
+// normal y la pantalla decía "tu sesión no es de administrador" en vez de
+// pedir la contraseña (visto el 2026-11-04 con la primera invitación). Por
+// eso se anota AQUÍ, antes de crear el cliente, y en sessionStorage para que
+// sobreviva una recarga de la pestaña. Si el enlace venció o ya se usó,
+// Supabase vuelve con #error_code=…: también se anota, para decirlo.
+const CLAVE_ENLACE = 'lincoin_enlace_clave';
+export const enlaceClave: { abierto: boolean; error: 'vencido' | string | null } = (() => {
+    try {
+        const crudo = `${window.location.hash || ''}&${window.location.search || ''}`.replace(/[#?]/g, '&');
+        const p = new URLSearchParams(crudo);
+        const codigo = p.get('error_code') || p.get('error');
+        if (codigo) {
+            const texto = `${codigo} ${p.get('error_description') || ''}`;
+            return { abierto: false, error: /expired|invalid|otp/i.test(texto) ? 'vencido' : codigo };
+        }
+        if (p.get('type') === 'recovery' || p.get('type') === 'invite') {
+            try { sessionStorage.setItem(CLAVE_ENLACE, '1'); } catch { /* sin almacenamiento: vale para esta carga */ }
+            return { abierto: true, error: null };
+        }
+        let guardado = false;
+        try { guardado = sessionStorage.getItem(CLAVE_ENLACE) === '1'; } catch { /* */ }
+        return { abierto: guardado, error: null };
+    } catch { return { abierto: false, error: null }; }
+})();
+// La invitación de colaboradores llega con el token en ?invitacion= y se usa
+// al tocar un botón (verifyOtp). Esto deja la marca para que, al recargar, la
+// pantalla abra el formulario de crear contraseña igual que con el enlace viejo.
+export const marcarEnlaceClave = () => {
+    enlaceClave.abierto = true;
+    try { sessionStorage.setItem(CLAVE_ENLACE, '1'); } catch { /* */ }
+};
+export const olvidarEnlaceClave = () => {
+    enlaceClave.abierto = false;
+    try { sessionStorage.removeItem(CLAVE_ENLACE); } catch { /* */ }
+};
+
 // Cliente Empresas (web) — usado por la app web actual
 export const supabase = createClient(validUrl, validKey, {
     auth: {
@@ -54,7 +95,7 @@ const isPersonasKeyConfigured = !!SUPABASE_PERSONAS_ANON_KEY;
 export const isSupabasePersonasConfigured = isPersonasUrlConfigured && isPersonasKeyConfigured;
 
 if (!isSupabasePersonasConfigured) {
-    console.warn('Supabase Personas no está configurado. Agrega VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY a Vercel.');
+    console.warn('Supabase Personas no está configurado. Agrega VITE_SUPABASE_PERSONAS_URL y VITE_SUPABASE_PERSONAS_ANON_KEY en las variables de compilación del hosting (Cloudflare → Worker lincoln).');
 }
 
 const validPersonasUrl = isSupabasePersonasConfigured ? SUPABASE_PERSONAS_URL : 'https://placeholder-personas.supabase.co';
@@ -74,3 +115,54 @@ export const supabasePersonas = createClient(validPersonasUrl, validPersonasKey,
         headers: { 'x-my-custom-header': 'lincoin-personas' },
     },
 });
+
+// =====================================================
+// SESIÓN VIGENTE EN TODAS LAS LLAMADAS A SUPABASE
+// =====================================================
+// Muchas pantallas arman su propio fetch a /functions/v1 o /rest/v1 con el
+// token guardado en localStorage. Ese token puede estar vencido: el navegador
+// deja de renovarlo con la pestaña oculta y, al volver, lo renueva tarde. El
+// resultado eran 401 sueltos — una inscripción que no llegaba, una
+// conversión que caía al camino de error. En vez de tocar cada llamada, se
+// intercepta acá: si el token de usuario que viaja vence en menos de un
+// minuto, se renueva la sesión y se manda el nuevo.
+let renovando: Promise<string | null> | null = null;
+function vencePronto(token: string): boolean {
+    try {
+        const p = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        if (p?.role !== 'authenticated' || !p?.exp) return false;
+        return Number(p.exp) * 1000 - Date.now() < 60_000;
+    } catch { return false; }
+}
+function renovarUnaVez(): Promise<string | null> {
+    if (!renovando) {
+        renovando = supabase.auth.refreshSession()
+            .then(r => r.data?.session?.access_token ?? null)
+            .catch(() => null)
+            .finally(() => { setTimeout(() => { renovando = null; }, 5000); });
+    }
+    return renovando;
+}
+if (typeof window !== 'undefined' && isSupabaseConfigured && !(window as any).__lcFetchSesion) {
+    (window as any).__lcFetchSesion = true;
+    const fetchOriginal = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        try {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+            if (url.startsWith(SUPABASE_URL) && (url.includes('/functions/v1/') || url.includes('/rest/v1/'))) {
+                const h = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+                const auth = h.get('Authorization') ?? h.get('authorization') ?? '';
+                const tok = auth.replace(/^Bearer\s+/i, '');
+                if (tok && vencePronto(tok)) {
+                    const nuevo = await renovarUnaVez();
+                    if (nuevo) {
+                        h.set('Authorization', `Bearer ${nuevo}`);
+                        if (input instanceof Request) return fetchOriginal(new Request(input, { ...init, headers: h }));
+                        return fetchOriginal(input, { ...init, headers: h });
+                    }
+                }
+            }
+        } catch { /* ante cualquier duda, la llamada sale tal cual */ }
+        return fetchOriginal(input as any, init);
+    };
+}

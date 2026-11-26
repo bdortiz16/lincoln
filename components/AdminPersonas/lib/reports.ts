@@ -1,4 +1,5 @@
 import { supabasePersonas } from '../../../lib/supabaseClient';
+import { sinFormula } from '../../../lib/csv';
 
 /** Convierte un array de objetos a CSV y lo descarga en el navegador. */
 export function downloadCsv(filename: string, rows: Record<string, any>[]) {
@@ -9,7 +10,8 @@ export function downloadCsv(filename: string, rows: Record<string, any>[]) {
     const headers = Object.keys(rows[0]);
     const escape = (v: any) => {
         if (v == null) return '';
-        const s = String(v).replace(/"/g, '""');
+        // sinFormula: un texto que empieza por "=" no se ejecuta al abrir el CSV.
+        const s = sinFormula(v).replace(/"/g, '""');
         return /[",\n]/.test(s) ? `"${s}"` : s;
     };
     const csv = [

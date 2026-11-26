@@ -1,0 +1,63 @@
+name: Monitoreo de wallets (KYT)
+
+# POR QUE EXISTE
+#   Las wallets que un cliente verifica o consulta entran al monitoreo de
+#   Lincoin Risk (23 nov). La ronda que las vuelve a revisar y avisa por correo
+#   si cambian de estado (accion `monitorear` de la funcion kyt) ya existia,
+#   pero nada la disparaba: las wallets guardadas no se revisaban nunca.
+#
+#   Esto la corre cada 20 minutos, de a 10 wallets (cada analisis puede tardar
+#   unos segundos y la funcion tiene un tiempo maximo: 40 de una vez se podian
+#   cortar a la mitad). Cada wallet se revisa una vez por ventana
+#   (horasMonitoreo en el panel, 24 h por defecto): la ronda solo toma las que
+#   llevan mas que eso sin revisar. Son hasta 720 revisiones al dia. Revisar no le
+#   gasta consultas al cliente; cada analisis nuevo cuesta un credito del
+#   proveedor a Lincoin.
+
+on:
+  schedule:
+    # Cada 20 minutos, corrido del :00, donde GitHub se atrasa.
+    - cron: '7,27,47 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: kyt-monitoreo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  monitorear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ronda de monitoreo de wallets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then
+            echo "⏭️  Todavía sin configurar: faltan los secretos SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY."
+            # Igual que conciliar-breb: la corrida programada no falla por una
+            # configuracion pendiente (si no, un correo de falla cada hora); a
+            # mano si, para que quien la pruebe se entere.
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then exit 1; fi
+            exit 0
+          fi
+
+          RESP=$(curl -sS --max-time 200 -w '\n%{http_code}' \
+            -X POST "$SUPABASE_URL/functions/v1/kyt" \
+            -H "Content-Type: application/json" \
+            -H "apikey: $SERVICE_KEY" \
+            -H "Authorization: Bearer $SERVICE_KEY" \
+            -d '{"action":"monitorear","limite":10}')
+
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY=$(echo "$RESP" | sed '$d')
+
+          # Solo contadores: el cuerpo trae ids de wallets de clientes.
+          echo "HTTP $CODE"
+          echo "$BODY" | jq -r '"revisadas: \(.revisadas // 0)"' || true
+          echo "$BODY" | jq -r '[.resultados[]?.r] | group_by(.) | map("  \(.[0]): \(length)") | .[]' || true
+          echo "$BODY" | jq -r 'select(.ok != true) | "ERROR: \(.mensaje // .error)"' || true
+          if [ "$CODE" -ge 500 ]; then exit 1; fi
